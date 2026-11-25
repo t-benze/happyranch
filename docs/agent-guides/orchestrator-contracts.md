@@ -4331,6 +4331,9 @@ complete and the dual-text feature remains unaccepted.
 
 ## Inline Delegation Chains
 
+Per-target optional attributes, carrier/implicit-first values, trusted provenance
+and current-definition refusal follow the [manager task attribute handoff contract](contracts/task-orchestration.md#manager-task-attribute-handoffs-thr-390-pr4).
+
 Ordinary manager handoffs accept optional `model` and `reasoning_effort` on
 `delegate`, each `then` leg, and each `fanout`/`parallel` child, including
 pipeline-carrier nested legs. PR1's resolver validates the whole decision

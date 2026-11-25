@@ -2883,3 +2883,761 @@ class RootListExportCliTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DecisionCreationTests(unittest.IsolatedAsyncioTestCase):
+    """PR4 accepted cases 01–24; real decision consumer and SQLite writers.
+
+    Case/four-answer mapping is in the PR evidence; no production test seam.
+    """
+    asyncSetUp = RouteTests.asyncSetUp
+    asyncTearDown = RouteTests.asyncTearDown
+    create = RouteTests.create
+    attachment = CreationTests.attachment
+    inventory = CreationTests.inventory
+
+    def owner(self):
+        db = self.org.db
+        task_id = f"TASK-owner-{db.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]}"
+        db.insert_task(TaskRecord(id=task_id, team="retiring", assigned_agent="manager",
+            brief="Synthetic PR4 owner", status=TaskStatus.IN_PROGRESS, task_type="task",
+            current_session_id=task_id + "-session", orchestration_step_count=1))
+        db._task_pause_store.ensure_uncommitted(task_id)
+        db._conn.commit()
+        return task_id
+
+    def consume(self, decision, task_id=None, *, summary="Synthetic decision"):
+        from runtime.orchestrator.orchestrator import completion_report_from_result_row
+        from runtime.orchestrator.run_step import _consume_completion_report
+        task_id = task_id or self.owner()
+        task = self.org.db.get_task(task_id)
+        self.org.db.insert_task_result(task_id, task.assigned_agent, task.current_session_id,
+            summary, 90, decision_json=json.dumps(decision))
+        row = self.org.db.get_latest_task_result(task_id, task.assigned_agent, task.current_session_id)
+        report = completion_report_from_result_row(task_id, row)
+        _consume_completion_report(self.org.orchestrator, task_id, report,
+            result_row_id=row["id"], reclaim_terminal_worktree=False)
+        return task_id
+
+    def queue(self):
+        queue = self.org.orchestrator._queue
+        result = []
+        while not queue._queue.empty():
+            result.append(queue._queue.get_nowait()[1])
+        return result
+
+    def manifest(self, task_id, values):
+        db = self.org.db
+        path = db.execute("PRAGMA database_list").fetchone()[2]
+        with closing(sqlite3.connect(path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM workflow_task_ownership WHERE task_id=?", (task_id,)).fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT actor_id,actor_kind FROM task_attribute_admissions WHERE task_id=?", (task_id,)).fetchall(), [("manager", "agent")])
+            stored = conn.execute("SELECT v.key,i.value_json FROM task_attribute_initial_values i JOIN task_attribute_definition_versions v ON v.definition_id=i.definition_id AND v.version=i.definition_version WHERE i.task_id=?", (task_id,)).fetchall()
+            self.assertEqual({k: json.loads(v) for k, v in stored}, values)
+            for key, value in stored:
+                self.assertIs(type(json.loads(value)), type(values[key]))
+            for table in ("task_attribute_initial_values", "task_attribute_values", "task_attribute_value_events"):
+                self.assertEqual(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE task_id=?", (task_id,)).fetchone()[0], len(values))
+            audits = conn.execute("SELECT agent,payload FROM audit_log WHERE task_id=? AND action='task_attribute_set' ORDER BY id", (task_id,)).fetchall()
+            self.assertEqual(len(audits), len(values))
+            for (actor, raw), (key, value) in zip(audits, values.items()):
+                definition_id = conn.execute("SELECT definition_id FROM task_attribute_key_owners WHERE key=?", (key,)).fetchone()[0]
+                self.assertEqual(json.loads(raw), {"definition_id": definition_id,
+                    "definition_version": 1, "revision": 1, "actor_id": "manager", "actor_kind": "agent",
+                    "old": {"present": False}, "new": {"present": True, "value": value}})
+                self.assertEqual(actor, "manager")
+
+    def feedback(self, owner, *parts):
+        from runtime.models import BlockKind
+        task = self.org.db.get_task(owner)
+        self.assertEqual((task.status, task.block_kind, task.active_chain, task.active_fanout),
+                         (TaskStatus.PENDING, None, None, None))
+        self.assertEqual(self.org.db.get_children(owner), [])
+        results = self.org.db.execute("SELECT * FROM task_results WHERE task_id=? AND confidence_score=0", (owner,)).fetchall()
+        self.assertEqual(len(results), 1)
+        for part in parts:
+            self.assertIn(part, results[0]["output_summary"])
+        self.assertEqual(self.queue(), [owner])
+        self.assertFalse(any(a["action"] in {"fanout_spawned", "task_attribute_set", "chain_auto_advance"}
+                             for a in self.org.db.get_audit_logs(owner)))
+
+    def finish(self, task_id, verdict=None):
+        from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+        task = self.org.db.get_task(task_id)
+        sid = task_id + "-landed"
+        self.org.db.update_task(task_id, current_session_id=sid, status=TaskStatus.COMPLETED,
+                                completed_at=datetime.now(timezone.utc).isoformat())
+        self.org.db.insert_task_result(task_id, task.assigned_agent, sid, "Synthetic completed leg", 90, verdict=verdict)
+        _enqueue_parent_if_waiting(self.org.orchestrator, task_id)
+
+    async def test_d01_d03_d17_delegate_native_own_values_and_omission(self):
+        await self.create(constraints={"min": 1, "max": 10})
+        await self.create("zero")
+        await self.create("ready", type="boolean")
+        await self.create("label", type="string")
+        for attrs in ({"effort": 4, "zero": 0, "ready": False, "label": ""}, {}, None):
+            with self.subTest(attributes=attrs):
+                payload = {"action": "delegate", "agent": "worker", "prompt": "Own values",
+                           **({"attributes": attrs} if attrs is not None else {}),
+                           "actor_id": "forged-target"}
+                owner = self.consume(payload)
+                children = self.org.db.get_children(owner)
+                self.assertEqual(len(children), 1)
+                self.manifest(children[0], attrs or {})
+                self.assertEqual(self.queue(), children)
+
+    async def test_d02_d04_d10_invalid_sets_containers_and_then(self):
+        await self.create(constraints={"min": 1, "max": 10, "integer_only": True})
+        cases = [(x, "expected_object") for x in (None, [], [["effort", 4]], "raw", 1, False)]
+        cases += [({"effort": x, "missing": 2}, "missing") for x in (None, True, 0, 11, 1.5, "4", {}, [])]
+        for location in ("delegate", "then"):
+            for value, reason in cases:
+                with self.subTest(location=location, attributes=value):
+                    payload = {"action": "delegate", "agent": "worker", "prompt": "Refused"}
+                    if location == "delegate":
+                        payload["attributes"] = value
+                    else:
+                        payload["attributes"] = {"effort": 4}
+                        payload["then"] = [{"agent": "sibling", "prompt": "Future", "attributes": value}]
+                    before = self.inventory()
+                    owner = self.consume(payload)
+                    self.feedback(owner, ("then[0]." if location == "then" else "") + "attributes", reason)
+                    after = self.inventory()
+                    for table in TABLES + ["workflow_task_ownership", "task_attachments"]:
+                        # Only the newly seeded owner has an ownership row.
+                        if table == "workflow_task_ownership":
+                            self.assertEqual(len(after[table]), len(before[table]) + 1)
+                        else:
+                            self.assertEqual(after[table], before[table])
+
+    async def test_d05_d06_attachments_admit_and_refuse_jointly(self):
+        await self.create()
+        ref, later = await self.attachment(), await self.attachment()
+        owner = self.owner()
+        self.consume({"action": "delegate", "agent": "worker", "prompt": "Attachment",
+                      "attachments": [ref], "attributes": {"missing": 1}}, owner)
+        self.feedback(owner, "unknown_key")
+        self.assertIsNone(self.org.db.get_task_attachment_by_storage_key(ref["storage_key"]))
+        # Genuinely new session/result corrects the same manager's decision.
+        self.org.db.update_task(owner, status=TaskStatus.IN_PROGRESS,
+            current_session_id=owner + "-correction", orchestration_step_count=2)
+        self.consume({"action": "delegate", "agent": "worker", "prompt": "Attachment",
+            "attachments": [ref], "attributes": {"effort": 4}, "then": [
+                {"agent": "sibling", "prompt": "Then", "attachments": [later], "attributes": {"effort": 2}}]}, owner)
+        first = self.org.db.get_children(owner)[0]
+        self.manifest(first, {"effort": 4})
+        self.assertEqual(self.org.db.get_task_attachment_by_storage_key(ref["storage_key"]).task_id, first)
+        self.assertIsNone(self.org.db.get_task_attachment_by_storage_key(later["storage_key"]))
+        self.queue()
+        self.finish(first)
+        last = self.org.db.get_children(owner)[-1]
+        self.assertNotEqual(first, last)
+        self.manifest(last, {"effort": 2})
+        self.assertEqual(self.org.db.get_task_attachment_by_storage_key(later["storage_key"]).task_id, last)
+        self.assertEqual(self.queue(), [last])
+
+    async def test_d07_d09_d15_parallel_carriers_and_empty_first_legs(self):
+        d = await self.create()
+        owner = self.owner()
+        self.org.db.set_task_attribute(owner, d["definition_id"], 9, expected_revision=0, expected_version=1, actor_id="manager", actor_kind="agent")
+        self.consume({"action": "parallel", "width_cap_ack": 3, "children": [
+            {"agent": "worker", "prompt": "Carrier A", "attributes": {"effort": 5}, "then": [
+                {"agent": "sibling", "prompt": "Later A", "attributes": {"effort": 2}}]},
+            {"agent": "sibling", "prompt": "Carrier B", "attributes": {"effort": 7}, "then": [
+                {"agent": "worker", "prompt": "Later B"}]},
+            {"agent": "worker", "prompt": "Plain"}]}, owner)
+        children = self.org.db.get_children(owner)
+        self.assertEqual(len(children), 3)
+        for child, expected in zip(children, ({"effort": 5}, {"effort": 7}, {})):
+            self.manifest(child, expected)
+        firsts = [self.org.db.get_children(c)[0] for c in children[:2]]
+        self.assertCountEqual(self.queue(), firsts + children[2:])
+        for child, first, expected in zip(children[:2], firsts, ({"effort": 2}, {})):
+            self.manifest(first, {})
+            self.finish(first)
+            last = self.org.db.get_children(child)[-1]
+            self.assertNotEqual(first, last)
+            self.manifest(last, expected)
+            self.assertEqual(self.queue(), [last])
+
+    async def test_d08_d09_all_fanout_targets_before_allocation(self):
+        await self.create()
+        import runtime.infrastructure.db.tasks as task_writers
+        for location in ("direct", "nested", "both"):
+            with self.subTest(location=location):
+                children = [{"agent": "worker", "prompt": "Good", "attributes": {"effort": 4},
+                    "then": [{"agent": "sibling", "prompt": "Good future"}]},
+                    {"agent": "sibling", "prompt": "Bad last", "attributes": {},
+                     "then": [{"agent": "worker", "prompt": "Last future"}]}]
+                if location in ("direct", "both"):
+                    children[1]["attributes"] = {"missing": 1}
+                if location in ("nested", "both"):
+                    children[1]["then"][0]["attributes"] = None
+                seen = []
+                native_validate = task_writers.validate_initial_attributes
+                def validate(db, raw):
+                    seen.append(raw)
+                    return native_validate(db, raw)
+                with patch.object(self.org.db, "next_task_id", wraps=self.org.db.next_task_id) as allocate, patch.object(task_writers, "validate_initial_attributes", side_effect=validate):
+                    owner = self.consume({"action": "fanout", "width_cap_ack": 2, "children": children})
+                allocate.assert_not_called()
+                self.feedback(owner, "children[1]", "unknown_key" if location == "direct" else "expected_object")
+                # Both carriers' implicit empty task maps are in the preallocation inventory.
+                self.assertEqual(len(seen), 5 if location in ("nested", "both") else 6)
+                self.assertEqual(seen[-1], {})
+
+    async def test_d11_saved_legs_revalidate_current_version(self):
+        d = await self.create()
+        owner = self.consume({"action": "delegate", "agent": "worker", "prompt": "First", "then": [
+            {"agent": "sibling", "prompt": "Future", "attributes": {"effort": 4}}]})
+        first = self.org.db.get_children(owner)[0]
+        self.queue()
+        raw = self.org.db.get_task(owner).active_chain
+        from runtime.orchestrator.chain import ChainState
+        self.assertEqual(ChainState.deserialize(raw).serialize(), raw)
+        self.assertEqual(json.loads(raw)["attributes_actor_id"], "manager")
+        self.assertIsNone(self.org.db.get_task_attribute_definition(d["definition_id"])["first_used_at"])
+        self.org.db.update_task_attribute_definition(d["definition_id"], expected_version=1, constraints={"max": 10})
+        self.finish(first)
+        last = self.org.db.get_children(owner)[-1]
+        field = self.org.db.get_task_attribute(last, d["definition_id"])
+        self.assertEqual(field["current"]["value"], 4)
+        self.assertEqual(field["initial"]["definition_version"], 2)
+        self.assertEqual(self.queue(), [last])
+
+    async def test_d12_d13_current_definition_refusal_wake_and_prompt(self):
+        from runtime.orchestrator.task_prompt_headers import _build_prior_steps_from_db
+        from runtime.orchestrator.capabilities import build_capabilities_prompt
+        for change, expected in (("archive", "archived_key"), ("type", "expected_string"),
+                                  ("bounds", "above_max"), ("key", "unknown_key")):
+            with self.subTest(change=change):
+                d = await self.create("future_" + change)
+                key = d["key"]
+                owner = self.consume({"action": "delegate", "agent": "worker", "prompt": "First", "then": [
+                    {"agent": "sibling", "prompt": "Refused future", "attributes": {key: 4}}]})
+                first = self.org.db.get_children(owner)[0]
+                self.queue()
+                if change == "archive":
+                    self.org.db.archive_task_attribute_definition(d["definition_id"], expected_version=1)
+                else:
+                    changes = {"type": {"type": "string"}, "bounds": {"constraints": {"max": 2}}, "key": {"key": key + "_new"}}[change]
+                    self.org.db.update_task_attribute_definition(d["definition_id"], expected_version=1, **changes)
+                self.finish(first)
+                self.assertEqual(self.org.db.get_children(owner), [first])
+                self.assertIsNone(self.org.db.get_task(owner).active_chain)
+                self.assertEqual(self.queue(), [owner])
+                # Claim clears note; the actual prompt builder must still expose the durable reason.
+                self.org.db.update_task(owner, note=None)
+                prompt = build_capabilities_prompt([], 2, _build_prior_steps_from_db(self.org.orchestrator, owner))
+                for part in (f"then[0].attributes.{key}", expected, "no next leg created"):
+                    self.assertIn(part, prompt)
+                self.org.orchestrator._audit.log_orchestration_step(owner, 2, {"action": "done"})
+                self.assertFalse(any(s.action == "feedback" for s in _build_prior_steps_from_db(self.org.orchestrator, owner)))
+
+    async def test_d14_d23_atomic_carrier_refusal_and_outer_barrier(self):
+        from runtime.orchestrator.run_step import _enqueue_parent_if_waiting, _prepare_fanout_join_payload
+        d = await self.create()
+        owner = self.consume({"action": "fanout", "width_cap_ack": 2, "children": [
+            {"agent": "worker", "prompt": "Carrier", "then": [{"agent": "sibling", "prompt": "Future", "attributes": {"effort": 4}}]},
+            {"agent": "sibling", "prompt": "Live sibling"}]})
+        carrier, sibling = self.org.db.get_children(owner)
+        first = self.org.db.get_children(carrier)[0]
+        self.queue()
+        self.org.db.archive_task_attribute_definition(d["definition_id"], expected_version=1)
+        self.finish(first)
+        current = self.org.db.get_task(carrier)
+        self.assertEqual((current.status, current.block_kind, current.active_chain), (TaskStatus.FAILED, None, None))
+        self.assertIsNotNone(current.completed_at)
+        self.assertIn("children[0].then[0].attributes.effort", current.note)
+        self.assertIn("archived_key", current.note)
+        self.assertEqual(self.queue(), [])
+        before = self.inventory()
+        _enqueue_parent_if_waiting(self.org.orchestrator, first)
+        self.assertEqual(self.inventory(), before)
+        self.assertEqual(self.queue(), [])
+        self.finish(sibling)
+        self.assertEqual(self.queue(), [owner])
+        payload = _prepare_fanout_join_payload(self.org.orchestrator, owner, self.org.db.get_task(owner).active_fanout)
+        self.assertIn("archived_key", str(payload))
+        self.assertIn("no next leg created", str(payload))
+
+    async def test_d18_delegate_attachment_fault_rollback(self):
+        await self.create()
+        tables = ("task_attribute_admissions", "task_attribute_initial_values", "task_attribute_values", "task_attribute_value_events", "audit_log", "task_attachments")
+        for attached in (False, True):
+            for table in tables if attached else tables[:-1]:
+                with self.subTest(attachments=attached, table=table):
+                    ref = await self.attachment() if attached else None
+                    owner = self.owner()
+                    before = self.inventory()
+                    when = " WHEN NEW.action='task_attribute_set'" if table == "audit_log" else ""
+                    self.org.db.execute(f"CREATE TEMP TRIGGER pr4_fault BEFORE INSERT ON {table}{when} BEGIN SELECT RAISE(ABORT, 'synthetic pr4 fault'); END")
+                    try:
+                        with self.assertRaisesRegex(sqlite3.IntegrityError, "synthetic pr4 fault"):
+                            self.consume({"action": "delegate", "agent": "worker", "prompt": "Fault", "attributes": {"effort": 4},
+                                **({"attachments": [ref]} if ref else {})}, owner)
+                    finally:
+                        self.org.db.execute("DROP TRIGGER pr4_fault")
+                    after = self.inventory()
+                    for name in TABLES + ["tasks", "workflow_task_ownership", "task_attachments"]:
+                        self.assertEqual(after[name], before[name], name)
+                    self.assertEqual(self.queue(), [])
+
+    async def test_d20_lost_claim_beats_invalid_attributes(self):
+        from runtime.infrastructure.database import RetryClaim, LostClaim
+        db = self.org.db
+        owner = self.owner()
+        claim = RetryClaim.from_task(db.get_task(owner))
+        db.update_task(owner, status=TaskStatus.CANCELLED, cancelled_at=datetime.now(timezone.utc).isoformat())
+        before = self.inventory()
+        with patch.object(db, "next_task_id", wraps=db.next_task_id) as allocate:
+            outcome = db.try_delegate(owner, lambda: TaskRecord(id=db.next_task_id(), brief="Never"),
+                parent_note="Never", expected_claim=claim, attribute_targets=[("attributes", None)])
+        self.assertIsInstance(outcome, LostClaim)
+        allocate.assert_not_called()
+        self.assertEqual(self.inventory(), before)
+        self.assertEqual(self.queue(), [])
+
+    async def test_d21_legacy_and_missing_provenance(self):
+        from runtime.models import ChainLeg
+        from runtime.orchestrator.chain import ChainState
+        from runtime.orchestrator.run_step import _enqueue_parent_if_waiting
+        await self.create()
+        for explicit in (False, True):
+            with self.subTest(explicit=explicit):
+                owner = self.consume({"action": "delegate", "agent": "worker", "prompt": "First", "then": [
+                    {"agent": "sibling", "prompt": "Later", **({"attributes": {"effort": 4}} if explicit else {})}]})
+                first = self.org.db.get_children(owner)[0]
+                raw = json.loads(self.org.db.get_task(owner).active_chain)
+                raw.pop("attributes_actor_id")
+                self.org.db.update_task_active_chain(owner, json.dumps(raw))
+                self.queue()
+                self.finish(first)
+                children = self.org.db.get_children(owner)
+                if explicit:
+                    self.assertEqual(children, [first])
+                    self.assertIn("missing_provenance", self.org.db.get_task(owner).note)
+                else:
+                    self.assertEqual(len(children), 2)
+                    self.assertEqual(self.org.db.execute("SELECT COUNT(*) FROM task_attribute_admissions WHERE task_id=?", (children[-1],)).fetchone()[0], 0)
+                self.queue()
+
+    async def test_d22_model_presence_native_material_and_saved_roundtrip(self):
+        from runtime.models import ChainLeg, FanoutChild, NextStep
+        from runtime.orchestrator.chain import ChainState
+        for cls, base in ((ChainLeg, {"agent": "worker", "prompt": "Leg"}),
+                          (FanoutChild, {"agent": "worker", "prompt": "Child"}),
+                          (NextStep, {"action": "delegate", "agent": "worker", "prompt": "Decision"})):
+            for options in ({}, {"exclude_none": True}, {"exclude_unset": True}, {"exclude_defaults": True}):
+                with self.subTest(model=cls.__name__, options=options):
+                    self.assertNotIn("attributes", cls(**base).model_dump(**options))
+                    for raw in (None, {}, [], [["effort", 4]], False, 0, 1, 1.0, "", {"effort": False, "nested": [1.0, None]}):
+                        dumped = cls(**base, attributes=raw).model_dump(mode="json", **options)
+                        self.assertEqual(dumped["attributes"], raw)
+                        self.assertIs(type(dumped["attributes"]), type(raw))
+                        self.assertEqual(json.dumps(dumped["attributes"]), json.dumps(raw))
+                        self.assertNotIn("attributes", cls(**base, attributes=raw).model_dump(include={"model", "reasoning_effort"}, exclude_unset=True))
+                        self.assertNotIn("attributes", cls(**base, attributes=raw).model_dump(exclude={"attributes"}))
+        chain = ChainState(0, None, [ChainLeg(agent="worker", prompt="Explicit", attributes=None)], 1)
+        self.assertEqual(json.loads(chain.serialize())["legs"][0]["attributes"], None)
+        self.assertNotIn("attributes_actor_id", json.loads(chain.serialize()))
+
+    async def test_d16_linked_retry_never_carries_attributes(self):
+        await self.create()
+        for mode in ("delegate", "fanout"):
+            for own in ({}, {"effort": 6}):
+                with self.subTest(mode=mode, own=own):
+                    owner = self.consume({"action": "delegate", "agent": "worker", "prompt": "Predecessor",
+                        "attributes": {"effort": 4}, "model": "synthetic-model"})
+                    predecessor = self.org.db.get_children(owner)[0]
+                    self.queue()
+                    self.org.db.update_task(predecessor, status=TaskStatus.FAILED,
+                        completed_at=datetime.now(timezone.utc).isoformat(), note="Synthetic failed work")
+                    self.org.db.update_task(owner, status=TaskStatus.IN_PROGRESS, block_kind=None,
+                        current_session_id=owner + "-retry", orchestration_step_count=2)
+                    retry = {"agent": "worker", "prompt": "Retry", "revisit_of_task_id": predecessor,
+                             **({"attributes": own} if own else {})}
+                    decision = ({"action": "delegate", **retry} if mode == "delegate" else
+                        {"action": "fanout", "width_cap_ack": 2, "children": [retry,
+                            {"agent": "sibling", "prompt": "Fresh"}]})
+                    self.consume(decision, owner)
+                    fresh = self.org.db.get_children(owner)[1:]
+                    self.manifest(fresh[0], own)
+                    self.assertEqual(self.org.db.get_task(fresh[0]).model_override, "synthetic-model")
+                    self.assertEqual(self.org.db.get_task(predecessor).status, TaskStatus.FAILED)
+                    self.manifest(predecessor, {"effort": 4})
+                    self.queue()
+
+    async def test_d19_writer_race_uses_current_definition_before_allocation(self):
+        from runtime.infrastructure.database import RetryClaim
+        from runtime.orchestrator.run_step import _spawn_fanout_children
+        d = await self.create()
+        owner = self.owner()
+        db = self.org.db
+        claim = RetryClaim.from_task(db.get_task(owner))
+        path = db.execute("PRAGMA database_list").fetchone()[2]
+        observer = Database(Path(path))
+        connection = db._conn
+        gate = BeginGate(connection)
+        db._conn = gate
+        try:
+            pending = asyncio.create_task(asyncio.to_thread(lambda: _spawn_fanout_children(
+                self.org.orchestrator, db.get_task(owner), owner, 1, expected_claim=claim,
+                children=[{"agent": "worker", "prompt": "One", "attributes": {"effort": 4}},
+                          {"agent": "sibling", "prompt": "Last", "then": [
+                              {"agent": "worker", "prompt": "Future", "attributes": {"effort": 2}}]}],
+                width=2, manager_agent="manager", selections=[{}, {}])))
+            self.assertTrue(await asyncio.to_thread(gate.arrived.wait, 5))
+            observer.archive_task_attribute_definition(d["definition_id"], expected_version=1)
+            with patch.object(db, "next_task_id", wraps=db.next_task_id) as allocate:
+                gate.release.set()
+                with self.assertRaises(AttributeValidationError) as refused:
+                    await asyncio.wait_for(pending, 10)
+                allocate.assert_not_called()
+            self.assertIn("children[1].then[0].attributes.effort", refused.exception.errors)
+            self.assertEqual(db.get_children(owner), [])
+            self.assertTrue(observer.get_task_attribute_definition(d["definition_id"])["archived_at"])
+            self.assertEqual(self.queue(), [])
+        finally:
+            gate.release.set()
+            db._conn = connection
+            observer.close()
+
+    async def test_d23_refusal_rollback_and_postcommit_restart(self):
+        from runtime.models import BlockKind
+        from runtime.orchestrator.orchestrator import Orchestrator
+        from runtime.orchestrator.task_terminal_readers import _progress_passive_chain_owner
+        from runtime.orchestrator.run_step import _enqueue_parent_if_waiting, _prepare_fanout_join_payload
+        from runtime.daemon.queue import TaskQueue
+        from runtime.daemon.__main__ import _sweep_on_startup
+        for point in ("after_clear", "precommit", "postcommit"):
+            with self.subTest(point=point):
+                d = await self.create("future_" + point)
+                key = d["key"]
+                owner = self.consume({"action": "fanout", "width_cap_ack": 2, "children": [
+                    {"agent": "worker", "prompt": "Carrier", "then": [{"agent": "sibling", "prompt": "Later", "attributes": {key: 4}}]},
+                    {"agent": "sibling", "prompt": "Still live"}]})
+                carrier, sibling = self.org.db.get_children(owner)
+                first = self.org.db.get_children(carrier)[0]
+                self.queue()
+                self.org.db.archive_task_attribute_definition(d["definition_id"], expected_version=1)
+                snapshot = self.org.db.get_task(carrier).active_chain
+                connection = self.org.db._conn
+                db_path = connection.execute("PRAGMA database_list").fetchone()[2]
+                class RefusalFault:
+                    def __getattr__(self, name):
+                        return getattr(connection, name)
+                    def execute(fault, sql, params=()):
+                        cursor = connection.execute(sql, params)
+                        if point == "after_clear" and "UPDATE tasks SET active_chain = NULL" in sql:
+                            with closing(sqlite3.connect(db_path)) as observer:
+                                self.assertEqual(observer.execute("SELECT active_chain,status FROM tasks WHERE id=?", (carrier,)).fetchone(), (snapshot, "in_progress"))
+                            raise sqlite3.OperationalError("synthetic refusal after clear")
+                        return cursor
+                    def commit(fault):
+                        if point == "precommit" and connection.execute("SELECT status FROM tasks WHERE id=?", (carrier,)).fetchone()[0] == "failed":
+                            raise sqlite3.OperationalError("synthetic refusal precommit")
+                        return connection.commit()
+                if point == "postcommit":
+                    with patch("runtime.orchestrator.run_step._fail_terminal_tail", side_effect=RuntimeError("synthetic postcommit interruption")):
+                        with self.assertRaisesRegex(RuntimeError, "synthetic postcommit"):
+                            self.finish(first)
+                else:
+                    self.org.db._conn = RefusalFault()
+                    try:
+                        with self.assertRaisesRegex(sqlite3.OperationalError, "synthetic refusal"):
+                            self.finish(first)
+                    finally:
+                        self.org.db._conn = connection
+                    with closing(sqlite3.connect(db_path)) as observer:
+                        self.assertEqual(observer.execute("SELECT active_chain,status FROM tasks WHERE id=?", (carrier,)).fetchone(), (snapshot, "in_progress"))
+                        self.assertEqual(observer.execute("SELECT COUNT(*) FROM audit_log WHERE task_id=? AND action='orchestration_step'", (carrier,)).fetchone()[0], 0)
+                    self.assertTrue(_progress_passive_chain_owner(self.org.orchestrator, self.org.db.get_task(carrier)))
+                self.assertEqual(self.org.db.get_task(carrier).status, TaskStatus.FAILED)
+                self.assertEqual(self.org.db.get_children(carrier), [first])
+                self.assertEqual(self.queue(), [])
+                reopened = Database(Path(db_path))
+                from runtime.infrastructure.workflow_task_ownership import install_task_ownership
+                install_task_ownership(reopened, org_slug="alpha")
+                try:
+                    orch = Orchestrator(reopened, self.org.orchestrator._settings,
+                        self.org.orchestrator._paths, "alpha", self.org.teams)
+                    queue = TaskQueue()
+                    orch._queue = queue
+                    self.assertIsNone(reopened.get_task(carrier).active_chain)
+                    self.assertIn(f"children[0].then[0].attributes.{key}", reopened.get_task(carrier).note)
+                    self.org.db.update_task(sibling, status=TaskStatus.COMPLETED,
+                        completed_at=datetime.now(timezone.utc).isoformat())
+                    # Complete unrelated synthetic fixture callers before startup;
+                    # the scoped parent/carry state stays as persisted above.
+                    for row in reopened.execute("SELECT id FROM tasks WHERE status='in_progress' AND block_kind IS NULL").fetchall():
+                        reopened.update_task(row[0], status=TaskStatus.COMPLETED)
+                    before = len(reopened.get_audit_logs(carrier))
+                    _sweep_on_startup(reopened, queue, "alpha", orch)
+                    _sweep_on_startup(reopened, queue, "alpha", orch)
+                    _enqueue_parent_if_waiting(orch, first)
+                    queued = []
+                    while not queue._queue.empty():
+                        queued.append(queue._queue.get_nowait()[1])
+                    self.assertEqual(queued.count(owner), 1)
+                    self.assertEqual(len(reopened.get_audit_logs(carrier)), before)
+                    payload = _prepare_fanout_join_payload(orch, owner, reopened.get_task(owner).active_fanout)
+                    self.assertIn("archived_key", str(payload))
+                    self.assertIn("no next leg created", str(payload))
+                finally:
+                    reopened.close()
+
+    async def test_d24_served_completion_schema_and_prompt_contract(self):
+        from runtime.orchestrator.capabilities import build_capabilities_prompt
+        response = await self.client.get("/openapi.json")
+        self.assertEqual(response.status_code, 200)
+        schema = response.json()
+        completion = schema["components"]["schemas"]["CompletionBody"]["properties"]["decision"]
+        self.assertNotIn("NextStep", str(completion))
+        for self_only in (False, True):
+            prompt = build_capabilities_prompt([], 1, manager_name="manager", self_only=self_only)
+            for part in ("attributes", "implicit first", "empty", "original deciding agent", "linked-retry", "current definitions"):
+                self.assertIn(part, prompt)
+
+    def v2_bind(self, owner, session):
+        from runtime.models import (AuthorityPolicyV2SessionBinding, AUTHORITY_POLICY_V2_CONTRACT_ID,
+            AUTHORITY_POLICY_V2_CONTRACT_VERSION, authority_policy_v2_contract_digest)
+        db = self.org.db
+        selector = db.ensure_authority_selector("retiring")
+        if selector.v2_activation_id is None:
+            db.create_and_activate_authority_policy_v2(dict(team="retiring", policy_id="synthetic-attributes",
+                title="Synthetic attributes policy", create_request_id="pr4-create", activation_request_id="pr4-activate",
+                based_on_selector_id=selector.selector_id, expected_selector_id=selector.selector_id,
+                action="bootstrap", what_to_escalate="Synthetic uncertainty", what_not_to_escalate="Ordinary synthetic work"))
+            selector = db.get_authority_selector("retiring")
+        activation = db.get_authority_policy_v2_activation(selector.v2_activation_id)
+        release = db.get_authority_policy_v2_release(activation.release_id)
+        db.bind_authority_policy_v2_session(AuthorityPolicyV2SessionBinding(team="retiring", root_task_id=owner,
+            manager_agent="manager", manager_session_id=session, selector_id=selector.selector_id,
+            activation_epoch=selector.selector_epoch, release_id=release.release_id, policy_version=release.version,
+            policy_digest=release.policy_digest, activation_id=selector.v2_activation_id,
+            contract_id=AUTHORITY_POLICY_V2_CONTRACT_ID, contract_version=AUTHORITY_POLICY_V2_CONTRACT_VERSION,
+            contract_digest=authority_policy_v2_contract_digest(), provider_id="synthetic", executor_kind="synthetic", model_id="synthetic"))
+
+    def v2_admit(self, owner, decision, *, evaluation=False):
+        from runtime.daemon.routes.tasks import CompletionBody, _completion_v2_evidence
+        from runtime.orchestrator.active_authority_policy import load_session_policy_binding
+        db = self.org.db
+        sid = db.get_task(owner).current_session_id
+        body = CompletionBody(session_id=sid, agent="manager", status="completed", confidence=90,
+            output_summary="Synthetic PR4 v2 decision", decision=decision)
+        binding = load_session_policy_binding(db=db, task_id=owner, session_id=sid, agent_name="manager")
+        if evaluation:
+            fields = ("activation_id", "contract_digest", "contract_id", "contract_version", "executor_kind",
+                      "model_id", "policy_digest", "policy_version", "provider_id", "release_id")
+            body.manager_self_evaluation = {key: binding[key] for key in fields}
+            body.manager_self_evaluation.update(root_task_id=owner, manager_session_id=sid,
+                activation_epoch=binding["selector_epoch"], what_to_escalate=dict(applicability="does_not_apply", confidence=100, uncertainty_codes=[]),
+                what_not_to_escalate=dict(applicability="applies", confidence=100, uncertainty_codes=[]))
+        carrier, admission = _completion_v2_evidence(org=self.org, body=body, binding=binding, task_id=owner)
+        raw = json.dumps(dict(decision, _manager_self_evaluation=carrier))
+        self.assertTrue(db.admit_task_completion_callback(task_id=owner, agent="manager", session_id=sid,
+            output_summary=body.output_summary, confidence_score=90, status="completed", decision_json=raw,
+            risks_flagged=[], output_dir=None, waiting_on_job_ids=None, verdict=None, local_ci_json=None, v2_admission=admission))
+        row = db.get_latest_task_result(owner, "manager", sid)
+        self.assertEqual(row["decision_json"], raw)
+        return row
+
+    def v2_generation(self, owner):
+        db = self.org.db
+        sid = db.get_task(owner).current_session_id
+        self.v2_bind(owner, sid)
+        row = self.v2_admit(owner, {"action": "escalate", "reason": "Synthetic routine"}, evaluation=True)
+        attempt = db.get_authority_policy_v2_attempt_for_result(row["id"])
+        # Existing fixture's synthetic unchanged permission-surface reader;
+        # this models receipt identity, never permission-enforcement proof.
+        db.bind_authority_policy_v2_permission_surface_reader(lambda agent: "a" * 64)
+        stages = dict(root_task_id=owner, manager_agent="manager", manager_session_id=sid,
+            result_id=row["id"], origin_boot_id=attempt.origin_boot_id, owner_attempt_id=attempt.owner_attempt_id)
+        for method, expected in (("claim_authority_policy_v2_candidate", "claimed"),
+            ("audit_authority_policy_v2_candidate_claim", "claim_audited"),
+            ("evaluate_authority_policy_v2_candidate", "evaluated"),
+            ("audit_authority_policy_v2_candidate_evaluation", "evaluation_audited"),
+            ("consume_authority_policy_v2_candidate", "consumed"),
+            ("audit_authority_policy_v2_candidate_consumption", "consumed_audited"),
+            ("finalize_authority_policy_v2_continuation", "continued")):
+            result = getattr(db, method)(**stages)
+            self.assertEqual(result.status, expected, (method, result))
+        from runtime.orchestrator.orchestrator import completion_report_from_result_row
+        self.org.orchestrator._log_step_result(owner, None, completion_report_from_result_row(owner, row), result_row_id=row["id"])
+        db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
+        identity = dict(root_task_id=owner, manager_agent="manager", manager_session_id=sid, result_id=row["id"])
+        publication = db.claim_authority_policy_v2_notification_publication(**identity)
+        self.assertEqual(publication.status, "claimed", publication)
+        next_session = owner + "-generation"
+        generation = {**identity, "generation_id": publication.generation_id, "next_session_id": next_session}
+        self.assertEqual(db.try_claim_v2_continuation_generation(**generation).status, "claimed")
+        self.assertIn(db.settle_v2_continuation_generation_admission(**generation).status, {"settled", "already_settled_exact"})
+        self.v2_bind(owner, next_session)
+        return generation
+
+    async def test_d04_d22_v2_raw_material_binding_then_owned_feedback(self):
+        from runtime.models import NextStep
+        from runtime.orchestrator.orchestrator import completion_report_from_result_row
+        from runtime.orchestrator.run_step import _consume_completion_report
+        db = self.org.db
+        for mode in ("reserved", "ready", "later"):
+            for shape in ("delegate", "fanout"):
+                for raw in (None, [], [["effort", 4]], "raw", 1, True, 1.0):
+                    with self.subTest(mode=mode, shape=shape, attributes=raw):
+                        owner = self.owner()
+                        generation = self.v2_generation(owner)
+                        if mode == "later":
+                            control = self.v2_admit(owner, {"action": "delegate", "agent": "worker", "prompt": "Authentic terminal receipt"})
+                            _consume_completion_report(self.org.orchestrator, owner,
+                                completion_report_from_result_row(owner, control), result_row_id=control["id"], reclaim_terminal_worktree=False)
+                            children = db.get_children(owner)
+                            self.assertEqual(len(children), 1)
+                            self.manifest(children[0], {})
+                            self.queue()
+                            db.update_task(children[0], status=TaskStatus.COMPLETED)
+                            db.update_task(owner, status=TaskStatus.IN_PROGRESS, block_kind=None,
+                                current_session_id=owner + "-later", orchestration_step_count=2)
+                            self.v2_bind(owner, owner + "-later")
+                        decision = ({"action": "delegate", "agent": "worker", "prompt": "Raw", "attributes": raw}
+                            if shape == "delegate" else {"action": "parallel", "width_cap_ack": 2, "children": [
+                                {"agent": "worker", "prompt": "First"}, {"agent": "sibling", "prompt": "Pipeline", "then": [
+                                    {"agent": "worker", "prompt": "Raw nested", "attributes": raw}]}]})
+                        row = self.v2_admit(owner, decision)
+                        expected_kind = "later" if mode == "later" else "reserved"
+                        self.assertEqual(db.authority_policy_v2_completion_dispatch_context(root_task_id=owner, result_row_id=row["id"]).kind, expected_kind)
+                        report = completion_report_from_result_row(owner, row)
+                        self.assertTrue(db.authority_policy_v2_decision_result_report_binds(root_task_id=owner, spending_result_id=row["id"], report=report))
+                        if mode == "ready":
+                            spent = db.spend_authority_policy_v2_continue_envelope(**generation, spending_result_id=row["id"])
+                            self.assertEqual(spent.status, "spent", spent)
+                            self.assertEqual(spent.decision_state, "ready")
+                        # Same result ID with different raw material must be inert
+                        # before spend/claim, with the immutable row unchanged.
+                        drifts = [("attributes", {}), ("omitted", None), ("target_agent", "sibling"),
+                                  ("prompt", "Different instructions"), ("output_summary", "Different summary")]
+                        if type(raw) is int:
+                            drifts.extend((("attributes", True), ("attributes", 1.0)))
+                        elif type(raw) in (bool, float):
+                            drifts.append(("attributes", 1))
+                        for field, replacement in drifts:
+                            changed = report.model_copy(deep=True)
+                            if field == "output_summary":
+                                changed.output_summary = replacement
+                            else:
+                                material = changed.decision.model_dump()
+                                target = material if shape == "delegate" else material["children"][1]["then"][0]
+                                if field == "omitted":
+                                    target.pop("attributes")
+                                else:
+                                    target["agent" if field == "target_agent" else field] = replacement
+                                changed.decision = NextStep(**material)
+                            before = {name: [tuple(r) for r in db.execute(f"SELECT * FROM {name} ORDER BY rowid")] for name in TABLES + ["tasks", "task_results", "audit_log", "authority_policy_v2_continue_envelopes", "authority_policy_v2_root_dispatch"]}
+                            self.assertFalse(db.authority_policy_v2_decision_result_report_binds(root_task_id=owner, spending_result_id=row["id"], report=changed))
+                            _consume_completion_report(self.org.orchestrator, owner, changed, result_row_id=row["id"], reclaim_terminal_worktree=False)
+                            after = {name: [tuple(r) for r in db.execute(f"SELECT * FROM {name} ORDER BY rowid")] for name in before}
+                            self.assertEqual(after, before)
+                            self.assertEqual(self.queue(), [])
+                        # Foreign task/result and session controls belong to the
+                        # real persisted dispatch-context owner, not the material
+                        # projection (which deliberately omits outer report IDs).
+                        foreign = self.owner()
+                        db.insert_task_result(foreign, "manager", db.get_task(foreign).current_session_id,
+                            row["output_summary"], 90, decision_json=row["decision_json"])
+                        foreign_row = db.get_latest_task_result(foreign, "manager", db.get_task(foreign).current_session_id)
+                        db.insert_task_result(owner, "manager", "synthetic-foreign-session", row["output_summary"], 90,
+                            decision_json=row["decision_json"])
+                        foreign_session_row = db.get_latest_task_result(owner, "manager", "synthetic-foreign-session")
+                        for wrong_id in (foreign_row["id"], foreign_session_row["id"]):
+                            self.assertEqual(db.authority_policy_v2_completion_dispatch_context(root_task_id=owner, result_row_id=wrong_id).kind, "foreign")
+                            before = self.inventory()
+                            _consume_completion_report(self.org.orchestrator, owner, report, result_row_id=wrong_id, reclaim_terminal_worktree=False)
+                            self.assertEqual(self.inventory(), before)
+                            self.assertEqual(self.queue(), [])
+                        before_children = db.get_children(owner)
+                        _consume_completion_report(self.org.orchestrator, owner, report, result_row_id=row["id"], reclaim_terminal_worktree=False)
+                        self.assertEqual(db.get_children(owner), before_children)
+                        feedback = db.execute("SELECT output_summary FROM task_results WHERE task_id=? AND confidence_score=0", (owner,)).fetchall()
+                        self.assertEqual(len(feedback), 1)
+                        self.assertIn("expected_object", feedback[0][0])
+                        self.assertIn("children[1].then[0].attributes" if shape == "fanout" else "attributes", feedback[0][0])
+                        self.assertEqual(db.get_task(owner).status, TaskStatus.PENDING)
+                        self.assertEqual(self.queue(), [owner])
+                        self.assertEqual(db.execute("SELECT decision_json FROM task_results WHERE id=?", (row["id"],)).fetchone()[0], row["decision_json"])
+                        if mode != "later":
+                            before = self.inventory()
+                            _consume_completion_report(self.org.orchestrator, owner, report, result_row_id=row["id"], reclaim_terminal_worktree=False)
+                            self.assertEqual(self.inventory(), before)
+                            self.assertEqual(self.queue(), [])
+
+    async def test_d18_fanout_and_advance_fault_rollback(self):
+        await self.create()
+        db = self.org.db
+        for table in ("task_attribute_admissions", "task_attribute_value_events", "audit_log"):
+            with self.subTest(producer="fanout", table=table):
+                owner = self.owner()
+                before = self.inventory()
+                base_num = int(db.next_task_id().split("-")[-1])
+                # Fail the implicit first-leg admission or the SECOND child's
+                # event/audit after the earlier child already wrote everything.
+                fault_id = f"TASK-{base_num + (2 if table == 'task_attribute_admissions' else 1):03d}"
+                when = f" WHEN NEW.task_id='{fault_id}'" + (" AND NEW.action='task_attribute_set'" if table == "audit_log" else "")
+                db.execute(f"CREATE TEMP TRIGGER pr4_batch_fault BEFORE INSERT ON {table}{when} BEGIN SELECT RAISE(ABORT, 'synthetic batch fault'); END")
+                try:
+                    with self.assertRaisesRegex(sqlite3.IntegrityError, "synthetic batch fault"):
+                        self.consume({"action": "fanout", "width_cap_ack": 2, "children": [
+                            {"agent": "worker", "prompt": "Valid earlier", "attributes": {"effort": 4}},
+                            {"agent": "sibling", "prompt": "Carrier", "attributes": {"effort": 6}, "then": [
+                                {"agent": "worker", "prompt": "Later", "attributes": {"effort": 2}}]}]}, owner)
+                finally:
+                    db.execute("DROP TRIGGER pr4_batch_fault")
+                after = self.inventory()
+                for name in TABLES + ["tasks", "workflow_task_ownership", "task_attachments"]:
+                    self.assertEqual(after[name], before[name], name)
+                self.assertEqual(self.queue(), [])
+        for table in ("task_attribute_admissions", "task_attribute_value_events", "audit_log"):
+            with self.subTest(producer="advance", table=table):
+                owner = self.consume({"action": "delegate", "agent": "worker", "prompt": "First", "then": [
+                    {"agent": "sibling", "prompt": "Later", "attributes": {"effort": 4}}]})
+                first = db.get_children(owner)[0]
+                self.queue()
+                before = self.inventory()
+                when = " WHEN NEW.action='task_attribute_set'" if table == "audit_log" else ""
+                db.execute(f"CREATE TEMP TRIGGER pr4_leg_fault BEFORE INSERT ON {table}{when} BEGIN SELECT RAISE(ABORT, 'synthetic leg fault'); END")
+                try:
+                    self.finish(first)
+                finally:
+                    db.execute("DROP TRIGGER pr4_leg_fault")
+                after = self.inventory()
+                for name in TABLES + ["workflow_task_ownership", "task_attachments"]:
+                    self.assertEqual(after[name], before[name], name)
+                self.assertEqual(db.get_children(owner), [first])
+                self.assertIsNone(db.get_task(owner).active_chain)
+                self.assertFalse(any(a["action"] == "chain_auto_advance" for a in db.get_audit_logs(owner)))
+                self.assertEqual(self.queue(), [owner])
+
+    async def test_d20_stale_batch_advance_and_refusal_are_inert(self):
+        from runtime.infrastructure.database import RetryClaim, LostClaim
+        db = self.org.db
+        owner = self.owner()
+        claim = RetryClaim.from_task(db.get_task(owner))
+        db.update_task(owner, status=TaskStatus.CANCELLED, cancelled_at=datetime.now(timezone.utc).isoformat())
+        before = self.inventory()
+        with patch.object(db, "next_task_id", wraps=db.next_task_id) as allocate:
+            outcome = db.try_delegate_many(owner, lambda: {"children": []}, expected_claim=claim,
+                attribute_targets=[("children[0].attributes", None)])
+            self.assertIsInstance(outcome, LostClaim)
+            self.assertIsNone(db.try_advance_chain(owner, "changed", lambda: TaskRecord(id=db.next_task_id(), brief="Never"),
+                expected_active_chain_json="stale", attribute_targets=[("then[0].attributes", None)], attributes_actor_id="manager"))
+            allocate.assert_not_called()
+        self.assertEqual(self.inventory(), before)
+        owner = self.consume({"action": "delegate", "agent": "worker", "prompt": "First", "then": [
+            {"agent": "sibling", "prompt": "Later"}]})
+        snapshot = db.get_task(owner)
+        self.queue()
+        db.update_task(owner, note="Winning newer owner state")
+        before = self.inventory()
+        self.assertFalse(db.try_clear_chain(owner, snapshot.active_chain, attributes_refusal="Invalid task attributes: old",
+            expected_owner=snapshot))
+        self.assertEqual(self.inventory(), before)
+        self.assertEqual(self.queue(), [])

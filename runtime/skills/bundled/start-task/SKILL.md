@@ -49,7 +49,7 @@ description: Use this skill at the start of every task. Parses task_id, session_
 
    If nothing matches, proceed. If something matches, treat it as authoritative unless the brief explicitly contradicts it — in which case escalate rather than silently override.
 
-   **Optional task attributes (plain creation).** Discover the org's current
+   **Optional task attributes (creation and decisions).** Discover the org's current
    definitions and rubric before supplying values; attributes are optional and
    never automatically scored. Use your current session proof for agent reads
    and edits (task reads/edits also retain the CLI's existing bearer boundary):
@@ -69,9 +69,9 @@ description: Use this skill at the start of every task. Parses task_id, session_
    preserves the entire value, including empty text and `=`; quote shell values
    when needed. Repeat `--attr key=value` for distinct keys. Duplicate keys,
    unknown/archived keys and invalid values refuse the whole create. Missing
-   values stay unset; no parent values are inherited. This slice admits only
-   plain `run`/POST task creation, including attachments; delegate, fanout and
-   then-leg values are not supported yet. Editing later preserves the original
+   values stay unset; no parent values are inherited. Plain `run`/POST creation,
+   including attachments, and per-target delegate/fanout/then decisions support
+   initial values (see the decision contract below). Editing later preserves the original
    admission and appends history. Set/clear use the read definition version and
    current revision; conflict or uncertain transport exits nonzero, with no
    automatic retry. Read back before deliberately issuing another mutation.
@@ -361,6 +361,21 @@ description: Use this skill at the start of every task. Parses task_id, session_
    {"task_id":"<task_id>","session_id":"<session_id>","agent":"<your_agent_id>","status":"blocked","confidence":0,"summary":"Waiting for the submitted verification job's terminal receipt.","waiting_on_job_ids":["<actual_owned_job_id>"]}
    ```
 
+   **Optional per-task attributes (THR-390).** `delegate`, every
+   `fanout`/`parallel` child and every `then` leg accept an optional native JSON
+   object `attributes`, for example `"attributes":{"effort":4}`. Discover
+   current definitions/rubrics first with `happyranch attributes list/show`.
+   Each task gets only its own supplied values: no parent, sibling, carrier or
+   linked-retry inheritance. Re-supply retry values explicitly. Omission or `{}`
+   records empty admission; explicit null/non-objects refuse. The actor is the
+   original deciding agent's trusted permanent ID, never a caller-supplied actor.
+   All direct and saved-leg maps validate before any child allocation; a bad
+   map rejects the whole delegate/fanout with keyed authoring feedback. Saved
+   legs revalidate current definitions when created. A refusal creates no leg
+   and wakes the owner with its original path/key/reason. For a pipeline child,
+   `children[i].attributes` belongs to the carrier; its separate implicit first
+   executable leg has empty attributes. Each later leg has its own map.
+
    **Ordinary handoff selections (THR-356).** `delegate`, every `then` leg and
    every `fanout`/`parallel` child (including a carrier's nested legs) accept
    optional `model` and `reasoning_effort`. Choose for the TARGET agent's
@@ -441,7 +456,7 @@ description: Use this skill at the start of every task. Parses task_id, session_
      "status": "completed",
      "confidence": 90,
      "summary": "Triaged and staged implementation for the worker.",
-     "decision": {"action": "delegate", "agent": "<target_agent_id>", "prompt": "..."}
+     "decision": {"action": "delegate", "agent": "<target_agent_id>", "prompt": "...", "attributes": {"effort": 4}}
    }
    ```
 

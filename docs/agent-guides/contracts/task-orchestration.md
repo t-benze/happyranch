@@ -54,6 +54,42 @@ The helper retains ownership checks and wakes a delegated parent only when all
 its children are terminal; cancelled descendants are never individually notified.
 This does not add stale-parent detection or restart/replacement tooling.
 
+## Manager task attribute handoffs (THR-390 PR4)
+
+`delegate`, each `fanout`/`parallel` child and each direct/nested `then` leg
+accept an optional native JSON object `attributes`. Discover definitions first.
+Every created task gets its own values with initial actor = the trusted permanent
+ID of the deciding task owner, kind `agent`. Omission/{} records positive empty
+admission; explicit null/non-objects refuse. Nothing is inherited from parent,
+sibling, carrier or retry predecessor. Linked retries must re-supply values.
+Model/effort carry and attachment ancestry remain separate contracts.
+
+Raw JSON material and key presence survive decision parse/serialization, so an
+authentic authoring error reaches existing owned feedback after unchanged result
+binding/dispatch gates. All direct and saved future maps, plus each carrier's
+separate implicit-first empty map, validate inside the writer before any task ID
+allocation. One invalid map rejects the entire decision with original path/key/
+reason. Child/task ownership, initial history/current values/events/set audits,
+attachment links and parent state commit together through the shared PR3 adapter.
+No future task admission or definition freeze occurs at decision admission.
+
+`children[i].attributes` belongs to the direct task, including a pipeline carrier;
+its implicit first executable task has empty attributes. Each later leg uses its
+own saved map and the original deciding actor. Creation validates against current
+definitions. Invalid/archive/key/type/constraint drift creates no leg and wakes
+the owner with a durable reason. The normal owner's chain clear and feedback
+commit together; applicable feedback remains in the next prompt after note is
+cleared and is suppressed after the next decision. A carrier's chain clear,
+feedback/reason and FAILED terminal row commit in one guarded transaction;
+postcommit effects feed the outer barrier only after all siblings drain. No
+cleared-but-live carrier refusal state or synthetic carrier session/result exists.
+PR1880's manager-branch barrier and terminal readers remain in force.
+
+Old chains without the runtime `attributes_actor_id` marker and without explicit
+maps remain unsupported with no invented admission. Explicit saved maps without
+trusted provenance refuse. Generic/internal insertion and workflow-engine
+sequential nodes do not opt into this producer contract.
+
 ## Manager model and effort handoffs (THR-356)
 
 Ordinary manager handoffs accept optional `model` and `reasoning_effort` on

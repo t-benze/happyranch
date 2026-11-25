@@ -216,15 +216,23 @@ class ChainLeg(BaseModel):
     # Keys must have been pre-uploaded via `happyranch tasks attach-upload`.
     attachments: list[TaskAttachmentRef] | None = None
 
+    # Raw material must reach owned admission, including explicit null/non-objects.
+    attributes: Any = None
+
     @model_serializer(mode="wrap")
-    def _handoff_wire(self, handler: Any) -> dict:
+    def _handoff_wire(self, handler: Any, info: Any) -> dict:
         result = handler(self)
-        for key in ("model", "reasoning_effort"):
+        for key in ("model", "reasoning_effort", "attributes"):
+            # Preserve explicit raw material through omit-default options, while
+            # respecting projections such as the independent model/effort tuple.
+            if key == "attributes" and ((info.include is not None and key not in info.include)
+                                        or (info.exclude is not None and key in info.exclude)):
+                continue
             if key not in self.model_fields_set:
                 result.pop(key, None)
-            elif getattr(self, key) is None:
-                # Explicit clears must also survive exclude_none audit dumps.
-                result[key] = None
+            elif key == "attributes" or getattr(self, key) is None:
+                # Raw attributes and explicit selection clears survive omit-default dumps.
+                result[key] = getattr(self, key)
         return result
 
 
@@ -248,15 +256,23 @@ class FanoutChild(BaseModel):
     # FAILED sibling assigned to the same agent.
     revisit_of_task_id: str | None = None
 
+    # Raw material must reach owned admission, including explicit null/non-objects.
+    attributes: Any = None
+
     @model_serializer(mode="wrap")
-    def _handoff_wire(self, handler: Any) -> dict:
+    def _handoff_wire(self, handler: Any, info: Any) -> dict:
         result = handler(self)
-        for key in ("model", "reasoning_effort"):
+        for key in ("model", "reasoning_effort", "attributes"):
+            # Preserve explicit raw material through omit-default options, while
+            # respecting projections such as the independent model/effort tuple.
+            if key == "attributes" and ((info.include is not None and key not in info.include)
+                                        or (info.exclude is not None and key in info.exclude)):
+                continue
             if key not in self.model_fields_set:
                 result.pop(key, None)
-            elif getattr(self, key) is None:
-                # Explicit clears must also survive exclude_none audit dumps.
-                result[key] = None
+            elif key == "attributes" or getattr(self, key) is None:
+                # Raw attributes and explicit selection clears survive omit-default dumps.
+                result[key] = getattr(self, key)
         return result
 
 
@@ -317,6 +333,9 @@ class NextStep(BaseModel):
     # decision route exists.
     attachments: list[TaskAttachmentRef] | None = None
 
+    # Presence (model_fields_set) distinguishes omission from every JSON value.
+    attributes: Any = None
+
     @model_validator(mode="before")
     @classmethod
     def _coding_start_is_closed(cls, value: object) -> object:
@@ -360,7 +379,7 @@ class NextStep(BaseModel):
         return value
 
     @model_serializer(mode="wrap")
-    def _closed_workflow_wire(self, handler: Any) -> dict:
+    def _closed_workflow_wire(self, handler: Any, info: Any) -> dict:
         if self.action in ('workflow_control', 'workflow_wait') or (self.action == 'workflow_start' and self.workflows is not None):
             key = 'workflow' if self.action == 'workflow_control' else 'run_ids' if self.action == 'workflow_wait' else 'workflows'
             result = {'action': self.action, key: getattr(self, key)}
@@ -372,12 +391,17 @@ class NextStep(BaseModel):
         result = handler(self)
         for key in ('workflow', 'workflows', 'run_ids', 'consume_notifications'):
             result.pop(key, None)
-        for key in ("model", "reasoning_effort"):
+        for key in ("model", "reasoning_effort", "attributes"):
+            # Preserve explicit raw material through omit-default options, while
+            # respecting projections such as the independent model/effort tuple.
+            if key == "attributes" and ((info.include is not None and key not in info.include)
+                                        or (info.exclude is not None and key in info.exclude)):
+                continue
             if key not in self.model_fields_set:
                 result.pop(key, None)
-            elif getattr(self, key) is None:
-                # Explicit clears must also survive exclude_none audit dumps.
-                result[key] = None
+            elif key == "attributes" or getattr(self, key) is None:
+                # Raw attributes and explicit selection clears survive omit-default dumps.
+                result[key] = getattr(self, key)
         return result
 
     @field_validator('action')

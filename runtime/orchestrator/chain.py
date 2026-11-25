@@ -28,6 +28,8 @@ class ChainState:
     first_leg_expect_verdict: str | None
     legs: list[ChainLeg]
     step_audit_id: int
+    # Runtime-authored provenance; absent on legacy unsupported chains.
+    attributes_actor_id: str | None = None
 
     def serialize(self) -> str:
         return json.dumps({
@@ -35,6 +37,8 @@ class ChainState:
             "first_leg_expect_verdict": self.first_leg_expect_verdict,
             "legs": [leg.model_dump() for leg in self.legs],
             "step_audit_id": self.step_audit_id,
+            **({"attributes_actor_id": self.attributes_actor_id}
+               if self.attributes_actor_id is not None else {}),
         })
 
     @classmethod
@@ -45,6 +49,7 @@ class ChainState:
             first_leg_expect_verdict=data.get("first_leg_expect_verdict"),
             legs=[ChainLeg(**leg) for leg in data.get("legs", [])],
             step_audit_id=data["step_audit_id"],
+            attributes_actor_id=data.get("attributes_actor_id"),
         )
 
     def current_expect_verdict(self) -> str | None:

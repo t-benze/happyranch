@@ -309,6 +309,18 @@ def _build_prior_steps_from_db(orch: "Orchestrator", task_id: str):
             result_summary=chain_summary,
             success=True,
         ))
+    # Chain refusal has no nonexistent child to summarize. Its durable feedback
+    # survives the normal claim clearing note, and expires at the next decision.
+    audits = orch._db.get_audit_logs(task_id)
+    last_decision = max((row["id"] for row in audits if row["action"] == "orchestration_step"
+                         and row["payload"].get("decision", {}).get("action") != "feedback"), default=0)
+    for row in audits:
+        decision = row["payload"].get("decision", {}) if row["action"] == "orchestration_step" else {}
+        reason = decision.get("reason", "")
+        if (row["id"] > last_decision and decision.get("action") == "feedback"
+                and isinstance(reason, str) and reason.startswith("Invalid task attributes:")):
+            steps.append(StepRecord(step_number=len(steps) + 1, agent="orchestrator",
+                action="feedback", result_summary=reason, success=False))
     return steps
 
 def _summarize_recent_chain(orch: "Orchestrator", parent_task_id: str) -> str | None:
