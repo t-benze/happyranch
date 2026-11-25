@@ -1,5 +1,39 @@
 # Threads, routing and naming contracts
 
+## Guest seats (THR-362, slice 1)
+
+Founder-approved decisions 1–16 (msg56) add `thread_guests`, installed on fresh
+and existing org database opens. No existing table gains a column. Guests are
+never `thread_participants`, never agents and never invoked. The per-org
+`org_settings.thread_guest_counter` allocates never-reused `G-n` seats;
+message/audit speaker identity is `guest:G-n`. The colon lies outside the
+agent/name namespace; a guest ID cannot be renamed, mentioned or addressed.
+Labels are derived per app/thread, retaining ordinals across ended seats.
+
+Founder-only, master-bearer/human-gated, loopback seat routes create, replace an
+unused code and revoke. At most three non-ended seats per open thread; lifetime
+choices are 1h/24h(default)/7d. Read scope defaults to 0 (whole history), or the
+next sequence at invite time. Only SHA-256 invite digests persist; the 128-bit
+base32 `hrinv_` code and section-4.2 prompt return once, with no-store. Replacement
+invalidates the previous code and resets its ten-minute deadline. A lapsed invite
+ends rather than revives. The five-second thread-breaker tick sweeps lapse/expiry.
+
+Every ending (revoked/expired/invite_lapsed/thread_archived) atomically clears
+both hashes and appends exactly one system message and `thread_guest_ended`
+audit. Manual and automatic archive share this transaction; resume never revives
+a seat. Retained ended seats resolve historical labels in transcripts and CLI
+show/forward. GET detail exposes only id/label/app/state/expires_at/last_seen_at/
+last_read_seq, alongside the unchanged agent participants.
+
+Slice-1 audits `thread_guest_invited`, `thread_guest_code_replaced` and
+`thread_guest_ended` use `task_id=<thread ID>`, existing audit-row shape and
+transaction ordering; payloads carry guest_id/app_id and the spec's metadata,
+never a code, token or full digest. The existing internal arrival function accepts
+guest speakers using agent-speaker wakes (mentions, else roster; founder-only
+and frozen-exchange exceptions unchanged), with no guest invocation or usage.
+The send/reply routes retain their binding/membership gates; no public guest
+posting, join, MCP, setup or agent-prompt changes ship in slice 1.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked

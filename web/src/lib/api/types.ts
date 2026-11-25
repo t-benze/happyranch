@@ -418,9 +418,21 @@ export interface ThreadRecord {
   participants: string[];
 }
 
+export interface ThreadGuest {
+  id: string;
+  label: string;
+  app: 'codex_desktop' | 'claude_desktop';
+  state: 'invited' | 'joined' | 'ended';
+  expires_at: string;
+  last_seen_at: string | null;
+  last_read_seq: number;
+}
+
 export interface ThreadDetailResponse extends ThreadRecord {
   participants: string[];
   messages: ThreadMessage[];
+  /** Additive projection; optional for older daemon responses. Never contains credentials. */
+  guests?: ThreadGuest[];
   /** Pair-level reply-delivery projection (GH-688 Phase 1, Slice B wire).
    *  Present on both GET /threads/{id} and GET /threads/{id}/messages.
    *  Empty when every pair is fully settled — no live obligation exists. */

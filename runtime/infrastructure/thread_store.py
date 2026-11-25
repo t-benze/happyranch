@@ -83,20 +83,21 @@ def _render_attachments_for_transcript(m) -> list[str]:
     return lines
 
 
-def render_transcript_body(messages: list) -> str:
+def render_transcript_body(messages: list, *, guest_labels: dict[str, str] | None = None) -> str:
     """Render a chronological list of ThreadMessage into markdown."""
     lines: list[str] = ["# Transcript", ""]
     for m in messages:
+        speaker = (guest_labels or {}).get(m.speaker, m.speaker)
         ts = m.created_at.isoformat() if hasattr(m.created_at, "isoformat") else str(m.created_at)
         kind_name = m.kind.value if hasattr(m.kind, "value") else str(m.kind)
         if kind_name == "message":
-            header = f"## Message {m.seq} — {m.speaker} · {ts}"
+            header = f"## Message {m.seq} — {speaker} · {ts}"
             lines.append(header)
             lines.append(m.body_markdown or "")
             lines.extend(_render_attachments_for_transcript(m))
             lines.append("")
         elif kind_name == "decline":
-            lines.append(f"## Message {m.seq} — {m.speaker} · {ts}")
+            lines.append(f"## Message {m.seq} — {speaker} · {ts}")
             lines.append(f"> 👁 declined: {m.decline_reason or ''}")
             lines.append("")
         elif kind_name == "system":
@@ -159,9 +160,11 @@ def render_transcript_body(messages: list) -> str:
                 )
             elif tag == "archived":
                 rendered = "system: thread archived"
+            elif tag in ("thread_guest_invited", "thread_guest_ended"):
+                rendered = m.body_markdown or f"system: {tag}"
             else:
                 rendered = f"system: {tag}"
-            lines.append(f"## Message {m.seq} — {m.speaker} · {ts}")
+            lines.append(f"## Message {m.seq} — {speaker} · {ts}")
             lines.append(f"> {rendered}")
             lines.append("")
     return "\n".join(lines)

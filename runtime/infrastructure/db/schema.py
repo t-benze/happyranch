@@ -1796,6 +1796,30 @@ class SchemaMixin:
             CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(status);
             CREATE INDEX IF NOT EXISTS idx_threads_started ON threads(started_at);
 
+            CREATE TABLE IF NOT EXISTS thread_guests (
+                guest_id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL REFERENCES threads(id),
+                app_id TEXT NOT NULL CHECK (app_id IN ('codex_desktop', 'claude_desktop')),
+                label_ordinal INTEGER NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('invited', 'joined', 'ended')),
+                ended_cause TEXT CHECK (ended_cause IN ('revoked', 'expired', 'thread_archived', 'invite_lapsed')),
+                read_from_seq INTEGER NOT NULL DEFAULT 0,
+                invite_sha256 TEXT,
+                invite_expires_at TEXT,
+                invite_wrong_count INTEGER NOT NULL DEFAULT 0,
+                token_sha256 TEXT,
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                joined_at TEXT,
+                expires_at TEXT NOT NULL,
+                ended_at TEXT,
+                last_seen_at TEXT,
+                last_read_seq INTEGER NOT NULL DEFAULT 0,
+                client_info TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_thread_guests_thread_state ON thread_guests(thread_id, state);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_guests_token ON thread_guests(token_sha256);
+
             CREATE TABLE IF NOT EXISTS thread_participants (
                 thread_id TEXT NOT NULL,
                 agent_name TEXT NOT NULL,

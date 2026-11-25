@@ -1,5 +1,19 @@
 # Agent Executors And Permissions
 
+## Thread invite credentials (THR-362 slice 1)
+
+Founder-approved thread guest seats introduce the `hrinv_` invite-code class:
+128 random bits encoded as base32, SHA-256 only at rest, valid ten minutes and
+single-use for one future join. Founder loopback routes create/replace unused
+codes and revoke seats, using the existing master bearer and human-only gate.
+Codes return once in the invite prompt, never in detail reads or audit.
+Seat lifetime is fixed at invite (1h/24h(default)/7d); revoke, lapse, expiry and
+archive clear hashes. No existing route accepts an invite or guest credential.
+Slice 2 adds the exchange for a thread-scoped `hrguest_` credential and guest
+tools, after the required attended check. No executor or allow rule changes.
+Only the founder invites: this remains an instruction/audited action under
+decision 16, since possession of the shared local bearer does not prove a human.
+
 ## Retained preparation and launch admission
 
 `OrgState.load` retains the org-owned `team_move_operations` compatibility table.

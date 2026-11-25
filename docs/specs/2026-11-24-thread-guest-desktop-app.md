@@ -1,8 +1,8 @@
 # A desktop app joins a thread as a guest (THR-362)
 
-Status: **proposal, not approved, nothing built.** Design only (TASK-18956). No
-product code, daemon, schema, auth or app-config change is made by this document.
-Every item in "Founder decisions" (section 14) is open until the founder rules on it.
+Status: **Approved by the founder (THR-362 msg56, decisions 1–16); slice 1 built
+in this PR (TASK-19051).** Later slices remain unbuilt; attended app checks are
+still required before slice 2.
 
 This replaces the task hand-off design proposed in
 [PR #1555](https://github.com/t-benze/happyranch/pull/1555)
@@ -317,8 +317,8 @@ use before the build is approved (section 13.5).
 
 ## 7. Authentication [D]
 
-**This is a new credential class and a new authenticated surface. Auth-boundary
-changes are founder-gated; nothing here is approved.**
+**This is a new credential class and a new authenticated surface, approved by
+the founder in THR-362 msg56 under decisions 4–5 and 16.**
 
 ### 7.1 The two secrets
 

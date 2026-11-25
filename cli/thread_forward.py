@@ -29,17 +29,21 @@ def _truncate(s: str, *, limit: int = _MAX_QUOTED_BYTES) -> str:
     return _quote_source(source[:low] + marker)
 
 
-def build_forward_body_from_thread(*, source_id: str, messages: list[ThreadMessage], subject: str) -> str:
+def build_forward_body_from_thread(
+    *, source_id: str, messages: list[ThreadMessage], subject: str,
+    guest_labels: dict[str, str] | None = None,
+) -> str:
     quoted_lines: list[str] = [
         f"**Forwarded from {source_id}** (thread: {subject})",
         "",
     ]
     rendered = []
     for m in messages:
+        speaker = (guest_labels or {}).get(m.speaker, m.speaker)
         if m.kind is ThreadMessageKind.MESSAGE:
-            rendered.append(f"{m.speaker}: {m.body_markdown or ''}")
+            rendered.append(f"{speaker}: {m.body_markdown or ''}")
         elif m.kind is ThreadMessageKind.DECLINE:
-            rendered.append(f"({m.speaker} declined: {m.decline_reason})")
+            rendered.append(f"({speaker} declined: {m.decline_reason})")
         elif m.kind is ThreadMessageKind.SYSTEM:
             payload = m.system_payload or {}
             tag = payload.get("kind_tag", "system")
