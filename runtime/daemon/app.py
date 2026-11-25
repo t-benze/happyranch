@@ -35,6 +35,7 @@ from runtime.daemon.routes import (
     schedules,
     skills,
     tasks,
+    task_attributes,
     teams,
     threads,
     tokens,
@@ -526,6 +527,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(runtime.router, prefix="/api/v1")
     app.include_router(orgs.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1/orgs/{slug}")
+    app.include_router(task_attributes.router, prefix="/api/v1/orgs/{slug}", tags=["task-attributes"])
     app.include_router(agents.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(agents.founder_router, prefix="/api/v1/orgs/{slug}")
     app.include_router(identities.router, prefix="/api/v1/orgs/{slug}", tags=["identities"])

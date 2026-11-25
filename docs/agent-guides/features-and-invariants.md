@@ -2930,6 +2930,7 @@ Traps:
 - Agent access is CLI-only by design; sandboxed executors block direct writes outside the workspace.
 - `artifact_put` **and** `artifact_delete` audit rows use `task_id="artifact:<name>"`; the prefix is mandatory (artifact names are user-controlled and would otherwise collide with `TASK-`/`TALK-`/`SR-` scopes).
 - Org config writes (the web Settings PUT — e.g. working_hours under THR-035) emit an `org_config_write` audit row keyed `task_id="config:<section>"` (e.g. `config:working_hours`). Same mandatory scope-prefix convention for non-task actors as `artifact:<name>` above: the `config:` prefix is chosen so the value cannot collide with `TASK-`/`TALK-`/`SR-`/`JOB-` ids. Additive — no schema migration, no column change (`audit_log.task_id` already doubles as the generic scope id).
+- Custom attribute definition create/update/archive uses `config:task_attributes` and the existing section/tiers/before/after config envelope. Value set/clear uses the real task ID with `task_attribute_set`/`task_attribute_cleared`; state, events and audit commit atomically. Dedicated attribute tables own provenance/history; see the [attribute contract](../specs/2026-11-25-custom-task-attributes.md#pr2-http-routes).
 - Artifacts are blobs, not KB entries. Do not dump markdown that belongs in KB into `artifacts/`.
 
 ## Revisit
@@ -5057,12 +5058,15 @@ executor wait; the once-only dispatch and final native settlement report it.
 The stop limitation is captured for the original running generation before
 dispatch, and an ended attempt is not relabeled running during retry backoff.
 
-## Custom task attributes (THR-390, PR1 foundation)
+## Custom task attributes (THR-390, PR1 foundation and PR2 routes)
 
 The per-org Database has additive custom-attribute definitions/versions, reserved
 historical keys, revision-checked current values, immutable admission snapshots
 and append-only value events. Native-type validation, first-use structural
 freeze, archive write blocking and explicit provenance/history states are
-documented in [the PR1 spec](../specs/2026-11-25-custom-task-attributes.md).
-Store APIs are present; routes, creation wiring, CLI and UI remain later work.
-No effort/complexity definitions or defaults are configured by PR1.
+documented in [the attribute spec](../specs/2026-11-25-custom-task-attributes.md).
+PR2 adds eight org-local routes: definition list/create/get/update/archive and
+task-attribute read/save/history, with current server authority and editability,
+atomic audited saves, conflict readback and no-store success/error responses.
+Creation wiring, CLI, filter/export and UI remain later slices.
+No effort/complexity definitions or defaults are configured by PR1/PR2.

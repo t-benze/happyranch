@@ -6323,3 +6323,20 @@ error, and 1 requires exact-key readback after uncertain transport/COMMIT.
 Do not automatically reapply or create a new key. See
 `docs/operations/sequential-never-launched-close.md` for proof/refusal details
 and separate deployment/live-operation authority.
+
+## Custom task attribute HTTP API (THR-390 PR2)
+
+Under `/api/v1/orgs/{slug}`, GET/POST `/task-attributes/definitions`, GET/PATCH
+`/task-attributes/definitions/{definition_id}`, POST
+`/task-attributes/definitions/{definition_id}/archive`, GET/PUT
+`/tasks/{task_id}/attributes`, and GET `/tasks/{task_id}/attributes/history`
+provide discovery, Founder definition controls and audited atomic value edits.
+Task reads retain the existing bearer scope; definition discovery also accepts
+current org-bound agent sessions. The server reports current editability and
+stable refusal reasons, preserving finished-target edits for authorized callers.
+Stale writes return 409 with concrete current state for deliberate reload;
+archives retain stable-ID/historical reads and refuse writes. Native scalar,
+initial/provenance/history and authority details are in the
+[attribute contract](../specs/2026-11-25-custom-task-attributes.md#pr2-http-routes).
+`api/taskAttributes.ts` and `taskAttributeTypes.ts` are handwritten mirrors.
+CLI, creation producers, UI, filters/export and score seeds are later slices.
