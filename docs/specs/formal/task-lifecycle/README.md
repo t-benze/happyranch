@@ -255,3 +255,30 @@ Repair TLC logs, commands and hashes are in `output/TASK-18273/`.
 The original pilot audit script and full audit report remain in `output/TASK-18026/`. None belong in this
 folder. The shared audit artifact is
 `dev_agent-2026-11-20-tla-audit-conformance.md`.
+
+## Explicit never-launched cancellation business close
+
+`NeverLaunchedCancelClose.tla` models the human-only transition in
+`runtime/workflows/sequential_cancel_close.py`: `Cancel` is the existing fence;
+`HumanClose` checks cancelled task plus the conjunction of no durable admission
+or other launch evidence, commits one finish/CAS/audit/receipt, and `Replay`
+preserves that receipt. `EngineFinish` abstracts the unchanged positive original
+terminal+outer tail. `Admit` cannot run after the cancellation fence. Two keys
+model conflicting requests and exact-key replay. The 256 historical unknown
+entries stay unchanged; completion releases only computed business headroom.
+
+Run with the pinned jar/command above, substituting module
+`NeverLaunchedCancelClose` and configs `never-launched.cfg` and
+`never-launched-unsafe.cfg`. The unsafe config deliberately removes the proof
+conjunction and must violate `SafeHumanClose`. Results belong in task review
+evidence. This finite atomic-transaction abstraction does not verify Python,
+SQL parsers, individual proof sources, actual locks, crash storage, or native
+cleanup. Refusal/rollback stutters; no cleanup or liveness claim is made.
+
+TASK-19067 author run (TLC 2.19, official v1.7.4 jar SHA256
+`936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88`):
+`never-launched.cfg` exit 0, 14 generated/11 distinct states, depth 4, all five
+invariants pass; `never-launched-unsafe.cfg` exit 12, 12 generated/9 distinct,
+depth 3, expected `SafeHumanClose` violation with retained positive evidence.
+Both used one worker, fingerprint 0, seed 1 and task-scratch state directories.
+Small logs: `dev_agent/output/TASK-19067/tlc-{current,unsafe}.log`.

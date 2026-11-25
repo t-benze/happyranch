@@ -450,7 +450,13 @@ control row, actor result or RetryClaim. Result-owned control authentication,
 request/receipt bytes and S4a's finish writer are unchanged. Held/pristine
 members finish in one slot; launched or prepared members retain
 Running/cancelling and their outstanding visit. A prepared journal/control is
-not pristine merely because no SID/PID is bound. Native overlays retain a
+not pristine merely because no SID/PID is bound. The explicit human-only
+`sequential-cancel-close-never-launched` command is a narrow business-close
+exception: durable queued/null-SID visit, cancelled task and every independent
+no-admission/no-launch predicate must hold. It uses the existing finish owner,
+retains all journal/native uncertainty, and grants no native cleanup authority.
+[Operator contract](../../operations/sequential-never-launched-close.md).
+Native overlays retain a
 visit's completion timestamp until original terminal observation supplies it.
 No fresh callback acceptance, output selection, graph successor, recovery
 replacement or launch crosses the fence. A precommitted exact step callback may
@@ -774,7 +780,10 @@ on their resulting uncommitted state with unchanged budgets and the operation's
 original deadline; cancellation omits only the future headroom reservation.
 No-result holds create
 no synthetic result, output or successor. Running cancel fences progression;
-only positive closure permits its completion. S6b above supplies native cancellation delivery;
+positive original closure or the explicit human-only never-launched proof permits
+its business completion. The latter frees computed unfinished-run reservations,
+without altering any journal, native owner or cleanup requirement. S6b above
+supplies native cancellation delivery;
 S4b above supplies internal native producers/dispatch, and initiator wakes/inbox to
 S5. B2+B3 now mount public @2 admission/continuation; B1 supplies read-only
 discovery/compose above. Coding defaults require explicit Founder Save/Allow. @1 hold/cancel/result/settlement owners and bytes remain unchanged.

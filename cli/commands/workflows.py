@@ -551,6 +551,8 @@ def cmd_workflow_coding_roles(args: argparse.Namespace) -> None:
 
 
 def register(sub: argparse._SubParsersAction) -> None:
+    from cli.commands.workflow_sequential_cancel_close import register as register_cancel_close
+    register_cancel_close(sub)
     workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
     from cli.commands.workflow_sequential_transport import cmd_workflow_sequential
