@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// Set on each launch; used to guard stale exit callbacks by identity.
     /// Internal to allow tests to inject a handle for termination-path coverage.
     var currentHandle: (any ProcessHandle)?
+    /// Shorter values are injected only by fake-child fixtures.
+    var managedStopGrace = ManagedProcessStop.Grace()
 
     /// Selected native endpoint/owner identity, never the WebKit page URL.
     @Published var webViewURL: String?
@@ -52,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
 
     func bindMainScheme(_ scheme: AppScheme) {
         mainScheme = scheme
+        scheme.connectionApp = self
         scheme.candidateSnapshot = { [weak self] in self?.homeInvite.bridgeCandidate }
         if homeInvite.selectedFailure != nil, !homeInvite.hasActiveSession { scheme.selectedUnavailable() }
         scheme.switchCandidate = { [weak self] in
@@ -101,12 +104,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     func showConnection() {
-        connectionWindow?.invalidate(showNotice: false)
-        connectionWindow?.close()
-        let fresh = ConnectionWindow(app: self)
-        connectionWindow = fresh
-        fresh.showWindow(nil)
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        requestMainDialog("connection")
+    }
+
+    func showSettings() { requestMainDialog("settings") }
+
+    @discardableResult
+    func requestMainDialog(_ dialog: String) -> Bool {
+        mainScheme?.requestDialog(dialog) == true
     }
 
     // MARK: - A2 Remote connection state
@@ -117,7 +122,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// this preference takes priority over supervisor-state heuristics.
     @Published var connectionRolePreference: ConnectionRolePreference? {
         didSet {
-            if oldValue != connectionRolePreference { connectionWindow?.invalidate() }
+            if oldValue != connectionRolePreference {
+                connectionWindow?.invalidate()
+                mainScheme?.connectionRoleDidChange()
+            }
             if let pref = connectionRolePreference {
                 UserDefaults.standard.set(pref.rawValue, forKey: "connectionRolePreference")
             } else {
@@ -944,7 +952,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
 
         try? supervisor.stop()
         refreshDerivedState()
-        let outcome = ManagedProcessStop.stop(handle)
+        let outcome = ManagedProcessStop.stop(handle, grace: managedStopGrace)
         switch outcome {
         case .exited(let status, let signal):
             diagnostics.recordLaunchLog("Managed Stop: exited, status=\(status), signal=\(signal.map(String.init) ?? "none")")
@@ -1001,7 +1009,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
                         diagnostics.recordDaemonState(pid: pid, port: port, bindHost: "127.0.0.1", state: "running")
                         refreshDerivedState()
                         if connectionRole == .home && !homeInvite.hasActiveSession,
-                           mainScheme == nil || mainScheme?.hasLocalTarget == true {
+                           mainScheme == nil || mainScheme?.hasLocalTarget == true || webViewURL == nil {
                             if selectMainTransport(id: baseURL, transport: LocalAppAPITransport(port: port,
                                 credential: LocalTokenCredentialProvider(homeDir: Self.daemonHome())), remote: false, promptURL: baseURL + "/api/v1") == nil {
                                 webViewURL = baseURL
@@ -1404,6 +1412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// across all supervisor states.
     func refreshDerivedState() {
         connectionWindow?.invalidateIfRoleChanged(connectionRole)
+        mainScheme?.connectionRoleDidChange()
         stateText = supervisor.state.description
         let s = supervisor.state
         canStart = (s == .stopped || s == .crashed || s == .stalePid || s == .failed)

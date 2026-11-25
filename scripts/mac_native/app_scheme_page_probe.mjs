@@ -27,8 +27,10 @@ const window = {
   } } } },
 };
 const context = '11'.repeat(16);
+const pageEvents = new Map();
 const sandbox = { window, top: window, location: { origin: 'happyranch-app://app', protocol:'happyranch-app:', host:'app' },
-  crypto: { getRandomValues: bytes => bytes.fill(0x11) }, document: { readyState:'complete' }, Map, Object, Uint8Array };
+  crypto: { getRandomValues: bytes => bytes.fill(0x11) }, document: { readyState:'complete' }, Map, Object, Uint8Array,
+  addEventListener:(name, callback) => pageEvents.set(name, callback) };
 vm.runInNewContext(page, sandbox);
 assert.equal(window.__hrAppContext, context, 'shipping relay must create a document context');
 assert.equal(window.__hrAppBootstrap?.stage, 'complete', 'shipping relay must mark successful bootstrap');
@@ -113,7 +115,38 @@ await new Promise(resolve => setImmediate(resolve));
 assert.equal(posts.at(-1).context, context, 'outgoing relay cannot acquire a replacement context');
 receipt('{}');
 await late;
+const dialogs = [], states = [];
+const off = window.happyranchConnection.on('app.dialogRequested', raw => dialogs.push(JSON.parse(raw)));
+const offState = window.happyranchConnection.on('app.stateChanged', raw => states.push(raw));
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(posts.at(-1).command, 'subscribe');
+assert.equal(posts.at(-1).event, 'app.dialogRequested');
+assert.equal(posts.at(-1).active, '1');
+receipt('{}');
+await new Promise(resolve => setImmediate(resolve));
+receipt('{}');
+const dialog = JSON.stringify({schema:2, dialog:'settings'});
+window.__hrAppEvent('foreign-document', 'app.dialogRequested', dialog);
+assert.equal(dialogs.length, 0, 'retired document context cannot deliver');
+window.__hrAppEvent(context, 'app.dialogRequested', dialog);
+assert.deepEqual(dialogs, [{schema:2, dialog:'settings'}]);
+assert.equal(states.length, 0, 'dialog payload cannot enter status listeners');
+off(); off();
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(posts.at(-1).active, '0', 'final unsubscribe revokes native delivery');
+receipt('{}');
+window.__hrAppEvent(context, 'app.dialogRequested', dialog);
+assert.equal(dialogs.length, 1, 'unsubscribed events cannot replay');
+assert.throws(() => window.happyranchConnection.on('unknown', () => {}));
+offState();
+await new Promise(resolve => setImmediate(resolve));
+receipt('{}');
+pageEvents.get('pagehide')();
+const beforeRetiredCall = posts.length;
+await assert.rejects(window.happyranchConnection.call('client.retrySave', '{}'), /documentChanged/);
+assert.equal(posts.length, beforeRetiredCall, 'retired Main cannot issue a save retry');
 console.log('PASS: shipped bootstrap diagnostics distinguish missing/refused/throwing stages without tokens; document-bound owner push, admission and receipt gates');
+console.log('PASS: shipped named dialog subscription, context fence, event separation, idempotent unsubscribe and page retirement');
 
 // Execute the commissioned qualifier itself. Simulated upstream failures must
 // not prevent the later independent steps; this does not emulate WebKit EOF.
@@ -195,3 +228,44 @@ for (const [fault, mode] of [
   }
 }
 console.log('PASS: qualifier bounds EOF/parse/emit/abort/download failures, continues every step and emits closed failure facts');
+
+// Run the shipping dialog scripts in this existing portable page venue. A
+// minimized native window need not deliver animation frames. These assertions
+// cover JS state/termination, not WebKit rendering or the Swift watchdog.
+const dialogScript = name => qualifierSource.split(`private static let ${name} = #"""\n`)[1].split('"""#')[0];
+const dialogStorage = new Map(), attributes = new Map(), storageEvents = [];
+const dialogDocument = {documentElement:{style:{}, setAttribute:(key, value) => attributes.set(key, value)}};
+const dialogWindow = {dispatchEvent:event => { storageEvents.push(event); return true; }};
+const dialogEnvironment = {
+  window:dialogWindow, document:dialogDocument, theme:'dark', size:'200%',
+  localStorage:{setItem:(key, value) => dialogStorage.set(key, value)},
+  StorageEvent:class { constructor(type, fields) { this.type = type; Object.assign(this, fields); } },
+};
+assert.equal(vm.runInNewContext(`(() => {${dialogScript('dialogTheme')}})()`, dialogEnvironment), true);
+assert.equal(dialogStorage.get('happyranch.theme'), 'dark');
+assert.equal(attributes.get('data-theme'), 'dark');
+assert.equal(dialogDocument.documentElement.style.fontSize, '200%');
+assert.equal(storageEvents.length, 1);
+assert.equal(storageEvents[0].key, 'happyranch.theme');
+assert.equal(storageEvents[0].newValue, 'dark', 'mounted shipping hook receives the selected theme');
+for (const ignoredScroll of [false, true]) {
+  const pane = {scrollTop:0, clientHeight:400, scrollTo({top}) { if (!ignoredScroll) this.scrollTop = top; }};
+  const environment = {window:{__hrCaptureScrollers:[pane]}, index:0, page:2, step:300, maximum:550,
+    setTimeout, requestAnimationFrame:() => { /* deliberately never fires */ }};
+  let timer;
+  const operation = Promise.race([
+    vm.runInNewContext(`(async () => {${dialogScript('dialogScroll')}})()`, environment),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(Error('dialog scroll waited for suspended animation frames')), 300); }),
+  ]);
+  try {
+    if (ignoredScroll) await assert.rejects(operation, /capture scroll incomplete/);
+    else {
+      const receipt = await operation;
+      assert.equal(receipt.scrollTop, 550, 'last overlapping page reaches the actual pane bottom');
+      assert.equal(receipt.scrollMaximum, 550);
+      assert.equal(receipt.scrollPage, 2);
+      assert.equal(receipt.viewportHeight, 400);
+    }
+  } finally { clearTimeout(timer); }
+}
+console.log('PASS: dialog theme follows shipping storage/attribute/listener; scroll reaches bottom without animation frames and refuses ignored offsets');

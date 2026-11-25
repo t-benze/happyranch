@@ -13,6 +13,14 @@ from build, spec, Vite, originals preparation, archive and independent verificat
 They supply no shipping tokens, IPC, mandatory receipts or emitted-closure gates.
 Retained historical source is nonshipping; it is not invoked indirectly.
 
+`Package.swift` keeps testable app code in the `HappyRanchApp` library target.
+Both test targets depend only on libraries. The `HappyRanchLauncher` executable
+target contains the sole `@main` shim, which awaits the library's `AppEntry.main()`.
+The explicit executable product remains `HappyRanchApp`, preserving `swift run`,
+build-app/suite binary lookup, bundle identity and `Bundle.main` resource paths.
+Tests never link the executable entrypoint; no runtime test-environment detection
+is used. Every existing native test and parameter invocation remains enabled.
+
 ## Founder release command
 
 Use a clean reviewed checkout, the existing private signing configuration from
@@ -53,6 +61,127 @@ checks do not prove building, signing, notarization, Keychain, Gatekeeper,
 publishing or signed N→N+1 acceptance. Agents do not run these release operations.
 
 ## Development
+
+### MAC-2b: Settings/Connection in Main
+
+The application menu requests the existing shared web Settings and Connection
+dialogs in the retained Main document. Settings… keeps Cmd+,. ContentView
+creates Main on a cold client with no selected target; dialog subscription
+readiness is independent of transport readiness. API calls without a selected
+target return `503 no_target`. Dialog entry starts no daemon and makes no
+connection. The packager no longer builds/stages the obsolete `dist-connection`
+/ `Contents/Resources/Connection` auxiliary app. No second web app or listener
+is created. The shared dialog owner gate owns switching, unsaved edits, focus
+and close; opening a dialog never selects a candidate, reconnects or retries a
+save. Loading/recovery never replays a dropped click.
+
+Founder THR-387 seq146 removes the native window toolbar and its controls.
+Settings, Connection, target/status pill, persistent **Access wasn't saved /
+访问权限未保存** warning and named **… unavailable · Retry** action belong in
+the web header; Track B implements that header. The native app-menu entries
+remain and route directly through `app.dialogRequested`. A menu request without
+an admitted Main subscriber is dropped and requires a fresh explicit action.
+Native continues to supply `app.status` / `app.stateChanged`, including
+`access_unsaved`, and existing validated bridge commands/confirmations own
+native effects. This round does not implement the web header or change
+Stop/Quit/restart behavior.
+
+The web header's warning opens Connection, whose existing Retry action uses the
+existing native parser, mutation ledger, confirmation/Keychain and write/readback
+implementation. Main reuses that
+dispatcher without constructing its former auxiliary window or bundle. Named
+dialog/client subscriptions are document scoped; retirement revokes them and
+late replies cannot enter a replacement Main. A missing document never clears
+the warning as though access had been saved. A valid HOME/CLIENT role change
+retires the old command adapter and restores any active client subscription on
+a fresh adapter in the same Main document, continuing its client event sequence.
+Old-role work remains refused even after switching back; Main's owners, target
+and generation are preserved.
+Disconnect, Cancel, target changes and navigation retain failed-save outcomes,
+without retaining session credentials.
+The existing protected write/readback for the matching binding clears its
+warning. Confirmed removal also forgets only that binding's failed-save outcome,
+including revoked unsaved B while saved computer A remains selected. Failed or
+unknown removal retains the warning; saving another computer does not settle it.
+The legacy phase strip remains
+until MAC-3; local launchd controls, compatibility cutover and MAC-4 language/
+launch/close/Quit/Relaunch policy are outside this slice.
+
+After independent exact-head review, the existing Jenkins `SUITE=app-scheme`
+still runs the full unfiltered XCTest + Swift Testing workload and transport
+qualification. It additionally launches the same product's existing qualifier
+in `dialogs-en` and `dialogs-zh` modes (40 seconds each, within the existing
+2,100-second suite deadline). Each captures Settings, Connection and Main with
+the web viewport, in light/dark and 100%/200% web text: **24 top PNGs,
+each 760×560**, plus overlapping scroll captures at 200% for every visible
+vertical scrolling pane, through its bottom. The collapsed sidebar footer has
+no horizontal insets and centers the profile avatar so it fits its 56px rail at
+200% text; the wider sidebar keeps its existing insets. It drives the shipping
+`happyranch.theme` storage key, `data-theme` attribute and storage listener,
+and checks the applied theme before every snapshot. The qualifier checks the
+rendered destination, focused dialog and locale. WebKit's page snapshot is composited with AppKit's native window
+frame; no screen-recording permission is requested. Only the commissioned
+qualification process sets its isolated launch language/theme/text size.
+
+`probe.json.app_scheme.dialogs` retains each PNG's closed name, dimensions,
+locale/theme/text percentage, byte count, SHA256 and `base64` data through the
+existing JSON artifact collection. Decode `data` and verify `bytes`/`sha256`.
+The app-scheme dispatcher prints only a short status/counts/artifact-path/SHA256
+summary; it never duplicates the JSON/embedded PNGs into the capped console log.
+The full report, including failed/partial evidence, remains in that artifact.
+The collector refuses missing/aliased/oversized files, wrong PNG dimensions,
+missing/duplicate receipts, missing 200% completion records, wrong web theme or
+a nonzero process exit. Scroll names append `-scroll-N` before `.png`; completion
+records retain pane ranges/page counts, and image receipts retain actual offsets.
+Bounds are eight scrolling panes and sixteen additional captures per 200% view,
+2 MiB per PNG and 8 MiB per locale, within the unchanged 40-second process cap.
+Exhaustion fails qualification rather than claiming complete content.
+Before navigation/admission and each dialog/theme/locale/scroll/settle/snapshot/
+PNG step, the qualifier fsyncs `capture_progress` with its closed step name and
+capture coordinates. A background timer allocates navigation up to 10 seconds
+and each later step up to 2 seconds, independently of MainActor/WebKit callbacks,
+within the unchanged process watchdog and suite limits. `capture_step` records completion,
+error or timeout; timeout exits 124 with a short diagnostic line. Navigation
+still waits for `WKNavigation.didFinish` before admission, with fsynced
+`capture_navigation` checkpoints for provisional/committed/finished phases and
+monotonic elapsed time on completion/timeout. This redistributes startup time
+inside the existing 34s failure/35s hard watchdog (40s external process cap),
+leaving about 25s after navigation for admission/capture; no retry is added.
+Build 80 proves EN reached didFinish in 3.191s while ZH exceeded its old 4s
+allocation (timeout at 4.264s), before admission or capture. It does not prove
+why: first-launch localization, font fallback, wrapped layout, scheduling and
+EN-before-ZH ordering remain hypotheses. Its retained records do not identify
+the last navigation phase; the new checkpoints address that diagnostic gap.
+Native timing sufficiency remains unverified until independent exact-head QA.
+Scrolling uses instant offsets and a short timer settle rather than animation
+frames, which may stop in an occluded window.
+The collector retains these diagnostics, the last step and the closed validation
+reason even when no PNG/completion receipt exists or a final JSONL write is partial.
+Complete locale captures survive a failure in the other
+locale; an incomplete locale is FAIL. No Jenkins job/configuration changed.
+
+Maker native compilation, XCTest/Swift Testing, screenshot capture, native
+layout/focus/VoiceOver and managed/DIY live traffic are **NOT RUN on Linux**.
+PR #1863 earlier builds **72–80 remain used**. Founder THR-387 seq155 grants a
+fresh allowance of up to **8 builds per Mac piece**, **0/8 used** for #1863 at
+round-10 authorization (engineering_manager TASK-19210). Each QA build requires
+independent code_reviewer APPROVE of its exact head; final Mac code must be
+built at its exact final head before merge. Return to Founder if all eight are
+used without a mergeable result, the ~23 engineer-week cap would be exceeded,
+or a daemon security change appears.
+The maker runs no Mac/Jenkins build. The existing portable command below
+checks collector failures and the shipping JavaScript event/retirement seam;
+it does not establish native acceptance. `MainDialogTests` adds real WebKit
+drop/subscription/retirement coverage to the
+unfiltered native workload. The same product qualifier also runs a portless
+`cold-client` case through the real ContentView/AppDelegate composition, using
+the release assets at its normal bundle resource paths. It requires focused
+Settings/Connection from explicit menu actions, no native toolbar, no replay/selection,
+and explicit `503 no_target`; its receipt is required independently of captures.
+The native save-outcome cases exercise model → scheme Disconnect → `app.status.access_unsaved` and
+a matching production Keychain write/readback in the existing disposable login
+fixture. These added native cases and their regression proofs are **NOT RUN**
+on Linux.
 
 ### MAC-1 / MAC-2a: Main app scheme, transport and ownership
 
@@ -145,10 +274,10 @@ protection before replying `"{}"`. Voluntary document navigation refuses missing
 dirty/failed or unresolved owner evidence and native non-GET transfers. Document
 loss retains unresolved-save uncertainty; a replacement clean summary cannot
 clear it. Unsolicited lifecycle decisions are refused; lifecycle actions remain
-a later slice. The locale field reports the native launch language. Locale setters,
-Settings/Connection dialog hosting, toolbar/menu, local controls and launch policy
-remain later slices. The existing native Connection view remains for later slices.
-Those later Mac contracts are not qualified by this transport PR.
+a later slice. The locale field reports the native launch language. MAC-2b adds
+Settings/Connection hosting and app-menu entry as described above. Locale setters,
+local controls and launch policy remain later slices; the transport PR alone
+does not qualify those contracts.
 
 CLIENT→HOME uses the same Main disconnect gate: absent Main or pending/unknown
 owner evidence preserves CLIENT and its bridge. Successful admission retires
@@ -170,7 +299,7 @@ page read/parse/emit state or finish/stop facts. No speculative framing or
 buffering change is made. After independent review
 APPROVE at the exact head, the existing Jenkins job accepts `SUITE=app-scheme`.
 It compiles the product and runs **all tests in both app/mac test targets** in
-one unfiltered `swift test -c release` invocation, then launches that same
+two separate unfiltered `swift test -c release` commands, then launches that same
 product's explicit `--qualify-app-scheme` entry against a synthetic daemon, then
 uses the production loader/adapter and built SPA. The full tests reuse the
 supervisor suite's disposable, unlocked login Keychain inside scratch HOME for
@@ -184,16 +313,22 @@ SwiftPM development tsnet stubs; live managed/DIY traffic needs separate QA.
 The internal qualification entry is explicitly commissioned by MAC-1 and is the
 only test-only app entry added; ordinary app startup never selects it.
 
-The test invocation explicitly enables testable imports, XCTest and Swift
-Testing, and uses `--no-parallel` for per-invocation attribution. Release testing
+Both commands enable testable imports and use `--no-parallel` for invocation
+attribution. XCTest uses `--enable-xctest --disable-swift-testing`; Swift Testing
+uses `--disable-xctest --enable-swift-testing`. Both run the entire package
+without case filters, sharing the same build scratch. XCTest failure/timeout
+does not suppress the separate Swift Testing command. Release testing
 with `--enable-testable-imports` is supported by SwiftPM; this harness does not
 substitute a debug product. Native compatibility and elapsed time at the revised
 head are **NOT RUN on Linux**. Unsupported options or output fail closed.
-The full workload includes MAC-1's 14 XCTests, all MAC-2a ownership cases and
-Swift Testing cases such as HomeInviteModelTests. The source census at this
-revision is 54 XCTest methods plus 557 `@Test` functions across 47 files;
-parameterized functions can execute more than one case. The census is recomputed
-from both test directories at the checked-out source, not a fixed pass count.
+The full workload includes MAC-1 transport tests, MAC-2a ownership cases,
+MAC-2b dialog and save-outcome cases, and Swift Testing cases such as
+HomeInviteModelTests. The census is recomputed from both test directories at
+the checked-out source by
+[`source_inventory()`](../../scripts/mac_native/app_scheme_test_evidence.py).
+`probe.json.app_scheme.native_tests.inventory` retains that run's expected
+XCTest methods and Swift Testing functions. Parameterized functions can execute
+more than one case; the source census is not a fixed pass count.
 
 `app_scheme.native_tests` records each XCTest method and each Swift Testing
 invocation separately with PASS/FAIL (or INCOMPLETE), using function ID plus a
@@ -217,17 +352,40 @@ and verify `sha256` to reconstruct issues and lifecycle events. The existing
 JSON artifact collection needs no Jenkins configuration change. Raw events may
 contain synthetic test argument/issue details; verdict rows remain closed.
 
-The native compile/test step is bounded to 1,200 seconds within a shared
-2,100-second suite deadline. The old 600-second filtered-test budget has no
-full-suite timing evidence: this larger bound accommodates the 611 source
-functions and existing network tests with 30-second request bounds, but is not
-a measured sufficiency claim. Node transfer (90s), npm install (240s), SPA build
-(180s), and three qualification processes (40s each) retain their budgets,
-leaving 270s for fixture/metadata/overhead. Existing fixture cleanup retains its
-bounded 30-second grace after the command deadline. Each command records its limit and elapsed
-time. Timeout/output overflow records an incomplete capture and fails; it is
-never reported as test success. The existing Jenkins job envelope/configuration
-is unchanged; reviewed SOURCE_SHA dispatch selects this in-repo workload.
+The native compile/test commands each have a 570-second execution deadline plus
+up to 30 seconds for timeout diagnostics (1,200 seconds combined) within the
+unchanged 2,100-second suite deadline. At timeout, before the existing group
+kill/reap, a bounded `ps` census selects the command group and its descendants;
+`sample <pid> 1 1 -file <scratch-path>` captures stacks, prioritizing test runners.
+The diagnostic budget covers at most 32 processes, five seconds per sample and
+30 seconds total including census. Missing/failed/oversized samples and omitted
+processes are explicit, never stack evidence. Timing sufficiency and native
+`sample`/SwiftPM compatibility remain **NOT RUN on Linux**.
+
+`--output /absolute/evidence/probe.json` is required for app-scheme. Before
+scratch cleanup, the same directory receives `mac-native-xctest.json` and
+`mac-native-swift_testing.json`, covered by the existing `evidence/*.json` glob.
+Each includes source/build identity, command/exit metadata, complete captured
+stdout/stderr and (for Swift Testing) JSONL events, plus timeout process/sample
+records. Byte-exact streams use `gzip+base64` with raw/compressed byte counts and
+SHA256; an empty stream is represented explicitly. XCTest start/end lines are
+in its stdout, Swift Testing function/parameter start/end events in its JSONL;
+`native_tests.lifecycle` records each start/end;
+`native_tests.unfinished_cases` names started cases without completion. A partial
+final JSONL line retains its completed prefix for diagnosis while verdict FAIL
+and the raw archive preserve the incomplete evidence.
+Each command's combined stream input remains capped at 16 MiB, each sample at
+1 MiB, and each JSON artifact at 8 MiB (below the existing 10 MB transfer cap).
+Overflow/missing capture fails closed, without silently truncating a passing
+archive. The report links artifact filename/bytes/SHA256. Files are initialized
+for the current source/build before tests; old diagnostic artifacts cannot
+satisfy current evidence. Full streams stay outside the capped console/probe
+log. The existing `native_tests.event_archive` is retained for compatibility.
+
+Node transfer (90s), npm install (240s), SPA build (180s), and qualification
+process budgets remain unchanged, as do the bounded Keychain cleanup grace,
+reviewed Jenkins shell, SUITE parameter, credentials and 90-minute envelope.
+Neither this source change nor portable tests authorize a Mac/Jenkins run.
 
 Each suite command retains its byte count, SHA-256 and 2 KiB head/tail, plus
 `error_context`: lines containing `: error:` or beginning `error:`, with two
@@ -310,6 +468,19 @@ navigation path/decision and final pathname as closed classes (`/`,
 A timeout/failure is FAIL with partial evidence, not proof
 of WebKit buffering. If actual timing establishes buffering, the manager must
 commission native-message streaming fallback and renewed review/build.
+
+Build/test command timeouts retain captured stdout and stderr separately in
+`app_scheme.commands`: each stream has byte count, SHA256, 2 KiB head/tail and
+an explicit excerpt-truncation flag. Counts/hashes cover bytes drained before
+the deadline, not output the killed process might have produced afterward.
+Existing combined fields and named XCTest/compiler/loader diagnostics use
+stdout followed by stderr; cross-stream ordering is not inferred. Partial
+XCTest outcomes and the byte-exact Swift event archive are assessed before
+scratch cleanup, retaining the last started/incomplete Swift invocation.
+Timeout keeps `exit_code:null` and `swift test exit unobserved`, and always
+fails even if every captured test outcome passed. Process-group kill/reap,
+output caps and the 2,100s suite deadline remain. Each library gets 570s plus
+up to 30s of sampling, retaining the 1,200s combined allowance above.
 
 Linux maker commands (no Mac build):
 
@@ -522,7 +693,7 @@ for the same endpoint is a no-op and cannot reselect a disconnected target.
 No shared-web/protocol/schema, daemon credential, remote-allowlist, dependency
 or auth change is included.
 
-Dialog/toolbar/menu/screenshot work is MAC-2b. Quit/close/Relaunch gating and
+Dialog/menu/screenshot work is MAC-2b; Track B owns the web header. Quit/close/Relaunch gating and
 language remain MAC-4. Native tests use the existing SwiftPM targets; on an
 authorized Mac after review: `swift test --package-path app/mac --filter 'HomeCandidateOwnershipTests|AppSchemeSwitchTests|ManagedOwnerFenceTests|ConnectionOwnershipStateTests|ManagedCandidateMembershipTests|HomeInviteModelTests'`.
 No native execution or Mac/Jenkins build is authorized for the maker.
@@ -914,6 +1085,17 @@ child survives again, the outcome remains
 Stop incomplete and ownership is retained; Quit never fabricates an exit.
 External daemons remain untouched.
 
+The Stop/Quit/Restart Swift Testing suites apply a two-minute limit per test
+case (including each dev/bundled invocation). Fake children which deliberately
+survive TERM/KILL use injected 0.01s/0.01s grace; shipping defaults remain 60s/2s,
+and the real TERM-ignoring-child test retains the production grace and SIGKILL
+assertions. The Quit-during-Restart test proves synchronous Quit settlement,
+then awaits an actor job instead of pumping a nested run loop for a queued
+MainActor settlement. Swift Testing cancellation is cooperative: these traits
+name overruns but cannot preempt an unreturning native synchronous call.
+The CLI entry point likewise awaits its MainActor operation and keeps the
+existing signal cancellation sources alive until that operation finishes.
+
 Switching from HOME to CLIENT stops the managed child before changing the role.
 If it survives, the switch is refused: the effective and saved role stay HOME,
 the live handle stays owned, the state stays stopping, Start stays disabled,
@@ -992,7 +1174,8 @@ uses invocation-local Go/npm/Swift/temp caches, and builds Go c-archive, frozen
 daemon+CLI, Vite web and Swift app with ordinary tools. Iconutil produces the
 app icon. Runtime skill/catalog resources and their originals remain bundled.
 
-Sparkle **2.10.1** is a direct binary target used only by HappyRanchApp. The
+Sparkle **2.10.1** is a direct binary dependency of the HappyRanchApp library,
+linked into the HappyRanchApp executable product through HappyRanchLauncher. The
 official `Sparkle-for-Swift-Package-Manager.zip` is pinned in `Package.swift`
 with SHA256 `4c2e48a3e50ebcc2c88a58a4c7264a1a99c3c31857ce754357afb9cdb323022a`;
 SwiftPM checks the download. No git package dependency or `Package.resolved`

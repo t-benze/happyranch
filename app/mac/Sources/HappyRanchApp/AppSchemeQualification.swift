@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import CoreFoundation
 import WebKit
 import HappyRanchSupervisor
@@ -27,6 +28,49 @@ private final class AppSchemeEventLog: @unchecked Sendable {
                 }
             }
             fsync(descriptor)
+        }
+    }
+}
+
+/// The timer runs off MainActor, so a missing WebKit callback cannot hide
+/// behind cancellation of a suspended async operation or a stalled UI thread.
+private final class AppSchemeCaptureStep: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+    private let log: AppSchemeEventLog
+    private var fields: [String: Any]
+    private let startedAt = DispatchTime.now().uptimeNanoseconds
+    init(_ log: AppSchemeEventLog, name: String, fields: [String: Any], timeout: TimeInterval) {
+        self.log = log; self.fields = fields.merging(["step": name]) { _, new in new }
+        log.write("capture_progress", self.fields.merging(["timeoutMs": Int(timeout * 1000)]) { _, new in new })
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+            if self.finish("timeout") { _exit(124) }
+        }
+    }
+    func navigationCheckpoint(_ phase: String) {
+        lock.withLock {
+            guard !finished else { return }
+            fields["navigationPhase"] = phase
+            log.write("capture_navigation", fields)
+        }
+    }
+    @discardableResult
+    func finish(_ result: String) -> Bool {
+        lock.withLock {
+            guard !finished else { return false }
+            finished = true
+            // Successful steps are sequential; coordinates are already in the
+            // preceding progress row. Keep worst-case evidence under EVENT_CAP.
+            var resultFields = result == "complete" ? ["step": fields["step"]!] : fields
+            if result != "complete" || fields["step"] as? String == "navigation" {
+                resultFields["elapsedMs"] = (DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+            }
+            log.write("capture_step", resultFields.merging(["result": result]) { _, new in new })
+            if result == "timeout" {
+                let message = "Dialog capture timeout: step=\(fields["step"] ?? "unknown") phase=\(fields["navigationPhase"] ?? "not-navigation") waitingFor=\(fields["waitingFor"] ?? "step-completion") elapsedMs=\(resultFields["elapsedMs"] ?? 0)\n"
+                FileHandle.standardError.write(Data(message.utf8))
+            }
+            return true
         }
     }
 }
@@ -119,6 +163,9 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     private var reloadNavigationPath = "not-observed"
     private var reloadNavigationDecision = "not-observed"
     private var awaitingReload = false
+    private var dialogApp: AppDelegate?
+    private var capturingDialogs = false
+    private var dialogNavigationStep: AppSchemeCaptureStep?
     private static let reloadPath = "/onboarding"
 
     private static func closedPath(_ path: String?) -> String {
@@ -131,6 +178,12 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         scheme = try AppScheme(root: root, transport: LocalAppAPITransport(port: port, credential: AppSchemeSyntheticCredential()),
             remote: false, policyURL: policy)
         super.init()
+        if mode.hasPrefix("dialogs-") {
+            let app = AppDelegate(); dialogApp = app; app.bindMainScheme(scheme)
+            scheme.candidateSnapshot = nil // Synthetic capture input, no live candidate/session.
+            scheme.updateCandidate(["kind": "remote", "id": "candidate", "name": "Studio Host — Long computer name / 工作室主机",
+                "phase": "ready_to_switch", "deadline": NSNull()], accessUnsaved: true)
+        }
         scheme.observe = { [weak self] event, value in
             guard let self else { return }
             if event == "native_document_served" {
@@ -159,7 +212,9 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         scheme.configure(configuration)
         configuration.userContentController.add(self, name: "macQualification")
         let script = "window.__hrQualificationMode = '\(mode)';\n" + Self.page
-        configuration.userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        if dialogApp == nil {
+            configuration.userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        }
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), configuration: configuration)
         self.view = view; view.navigationDelegate = self
         let liveness = AppSchemeLivenessProbe(log); self.liveness = liveness
@@ -179,6 +234,20 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         }
         let window = NSWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = view; self.window = window
+        if dialogApp != nil {
+            view.autoresizingMask = [.width, .height]
+            window.setFrame(NSRect(x: 100, y: 100, width: 760, height: 560), display: true)
+            window.makeKeyAndOrderFront(nil)
+        }
+        if dialogApp != nil {
+            // Build 80 needed 3.191s for EN didFinish; ZH exceeded 4s before
+            // admission/capture. Reserve up to 10s for actual navigation
+            // readiness, leaving about 25s in the unchanged 35s hard watchdog.
+            // This is an allocation within that watchdog, not a retry/sleep.
+            dialogNavigationStep = AppSchemeCaptureStep(log, name: "navigation", fields: [
+                "mode": mode, "navigationPhase": "load-requested", "waitingFor": "WKNavigation.didFinish"
+            ], timeout: 10)
+        }
         scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
     }
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -259,17 +328,199 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     }
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         self.navigation = navigation; scheme.documentDidStart()
+        dialogNavigationStep?.navigationCheckpoint("provisional")
+    }
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        guard let navigation, self.navigation === navigation else { return }
+        dialogNavigationStep?.navigationCheckpoint("committed")
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let navigation, self.navigation === navigation else { return }
+        dialogNavigationStep?.navigationCheckpoint("finished")
+        dialogNavigationStep?.finish("complete"); dialogNavigationStep = nil
         Task {
-            do { try await scheme.admitDocument() }
+            do {
+                if dialogApp != nil {
+                    try await dialogStep("admission", fields: ["mode": mode]) { try await self.scheme.admitDocument() }
+                } else { try await scheme.admitDocument() }
+                if dialogApp != nil, !capturingDialogs {
+                    capturingDialogs = true
+                    try await captureDialogs(webView)
+                    scheme.close(); log.write("exit"); exit(0)
+                }
+            }
             catch {
                 guard self.navigation === navigation else { return }
                 if awaitingReload { logReloadFailure(finalPath: webView.url?.path) }
                 log.write("admission_failure"); scheme.close(); exit(1)
             }
         }
+    }
+
+    private func dialogStep<T>(_ name: String, fields: [String: Any],
+                               operation: () async throws -> T) async throws -> T {
+        let step = AppSchemeCaptureStep(log, name: name, fields: fields, timeout: 2)
+        do {
+            let value = try await operation()
+            step.finish("complete"); return value
+        } catch { step.finish("error"); throw error }
+    }
+
+    /// WebKit supplies the composited dialogs/header; AppKit draws the frame.
+    /// No screen recording permission is needed.
+    private func captureDialogs(_ view: WKWebView) async throws {
+        guard let window, let frame = window.contentView?.superview, let app = dialogApp else { throw AppAPIError.unavailable }
+        let locale = mode == "dialogs-zh" ? "zh" : "en"
+        for theme in ["light", "dark"] {
+            window.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
+            for scale in [100, 200] {
+                let common: [String: Any] = ["locale": locale, "theme": theme, "textPercent": scale]
+                _ = try await dialogStep("apply-theme", fields: common) {
+                    try await view.callAsyncJavaScript(Self.dialogTheme,
+                        arguments: ["size": "\(scale)%", "theme": theme], in: nil, contentWorld: .page)
+                }
+                for dialog in ["settings", "connection", "main"] {
+                    let fields = common.merging(["dialog": dialog]) { _, new in new }
+                    try await dialogStep("request-dialog", fields: fields) {
+                        if dialog == "main" {
+                            _ = try await view.callAsyncJavaScript("document.querySelector('[data-desktop-dialog] > button[aria-label]')?.click(); return true;",
+                                arguments: [:], in: nil, contentWorld: .page)
+                        } else {
+                            for _ in 0..<60 {
+                                if app.requestMainDialog(dialog) { return }
+                                try await Task.sleep(for: .milliseconds(25))
+                            }
+                            throw AppAPIError.unavailable
+                        }
+                    }
+                    try await dialogStep("dialog-ready", fields: fields) {
+                        for _ in 0..<60 {
+                            let value = try await view.callAsyncJavaScript("const pane = document.querySelector('[data-desktop-dialog]'); return expected === 'main' ? !pane : pane?.getAttribute('data-desktop-dialog') === expected && pane.contains(document.activeElement);",
+                                arguments: ["expected": dialog], in: nil, contentWorld: .page)
+                            if value as? Bool == true { return }
+                            try await Task.sleep(for: .milliseconds(25))
+                        }
+                        throw AppAPIError.unavailable
+                    }
+                    try await dialogStep("locale-ready", fields: fields) {
+                        let value = try await view.callAsyncJavaScript("return document.documentElement.lang.toLowerCase().startsWith(expected);",
+                            arguments: ["expected": locale], in: nil, contentWorld: .page)
+                        guard value as? Bool == true else { throw AppAPIError.unavailable }
+                    }
+                    // Reset each real scrolling pane before the original top capture.
+                    let plan = try await dialogStep("scroll-plan", fields: fields) {
+                        let value = try await view.callAsyncJavaScript(#"""
+                            const root = document.scrollingElement;
+                            const candidates = [...new Set([root, ...document.querySelectorAll('*')])].filter(Boolean);
+                            for (const e of candidates) {
+                                if (e.scrollHeight > e.clientHeight) e.scrollTop = 0;
+                            }
+                            window.__hrCaptureScrollers = candidates.filter(e => {
+                                const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+                                return e.clientHeight > 0 && e.scrollHeight > e.clientHeight + 1 &&
+                                    (e === root || /auto|scroll/.test(s.overflowY)) && s.visibility !== 'hidden' &&
+                                    r.width > 0 && r.bottom > 0 && r.top < innerHeight;
+                            });
+                            return window.__hrCaptureScrollers.map((e, index) => {
+                                const r = e.getBoundingClientRect();
+                                const viewport = Math.min(e.clientHeight, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+                                const step = Math.max(1, Math.floor(viewport * .75));
+                                const maximum = e.scrollHeight - e.clientHeight;
+                                return {index, step, maximum, pages: Math.ceil(maximum / step)};
+                            });
+                            """#, arguments: [:], in: nil, contentWorld: .page)
+                        guard let plan = value as? [[String: Any]], plan.count <= 8 else { throw AppAPIError.unavailable }
+                        if scale == 200 {
+                            var pages = 0
+                            for pane in plan {
+                                guard let count = pane["pages"] as? Int, count > 0 else { throw AppAPIError.unavailable }
+                                pages += count
+                            }
+                            guard pages <= 16 else { throw AppAPIError.unavailable }
+                        }
+                        return plan
+                    }
+                    try await dialogStep("settle-dialog", fields: fields) {
+                        try await Task.sleep(for: .milliseconds(200))
+                    }
+                    let prefix = "\(locale)-\(theme)-\(scale)-\(dialog)"
+                    try await captureDialogPage(view, frame: frame, name: "\(prefix).png", locale: locale,
+                        theme: theme, scale: scale, dialog: dialog, scroll: [:])
+                    var count = 0
+                    if scale == 200 {
+                        for pane in plan {
+                            guard let index = pane["index"] as? Int, let pages = pane["pages"] as? Int,
+                                  let step = pane["step"] as? Int, let maximum = pane["maximum"] as? Int,
+                                  pages > 0, count + pages <= 16 else { throw AppAPIError.unavailable }
+                            for page in 1...pages {
+                                let scrollFields = fields.merging(["scrollIndex": index, "scrollPage": page]) { _, new in new }
+                                let scroll = try await dialogStep("scroll-offset", fields: scrollFields) {
+                                    try await view.callAsyncJavaScript(Self.dialogScroll,
+                                        arguments: ["index": index, "page": page, "step": step,
+                                            "maximum": maximum], in: nil, contentWorld: .page)
+                                }
+                                guard let scroll = scroll as? [String: Any] else { throw AppAPIError.unavailable }
+                                count += 1
+                                try await captureDialogPage(view, frame: frame, name: "\(prefix)-scroll-\(count).png",
+                                    locale: locale, theme: theme, scale: scale, dialog: dialog, scroll: scroll)
+                            }
+                        }
+                        log.write("capture_complete", ["locale": locale, "theme": theme, "textPercent": scale,
+                            "dialog": dialog, "scrollCaptures": count, "scrollers": plan])
+                    }
+                }
+            }
+        }
+    }
+
+    private static let dialogTheme = #"""
+        document.documentElement.style.fontSize = size;
+        localStorage.setItem('happyranch.theme', theme);
+        document.documentElement.setAttribute('data-theme', theme);
+        window.dispatchEvent(new StorageEvent('storage', {key: 'happyranch.theme', newValue: theme, storageArea: localStorage}));
+        return true;
+        """#
+
+    private static let dialogScroll = #"""
+        const panes = window.__hrCaptureScrollers;
+        for (const e of panes) e.scrollTo({top: 0, behavior: 'instant'});
+        const e = panes[index], requested = Math.min(page * step, maximum);
+        e.scrollTo({top: requested, behavior: 'instant'});
+        // Animation frames may be suspended for an occluded/offscreen window.
+        // Native also bounds this whole operation independently of the page.
+        await new Promise(resolve => setTimeout(resolve, 25));
+        if (Math.abs(e.scrollTop - requested) > 1) throw Error('capture scroll incomplete');
+        return {scrollIndex: index, scrollPage: page, scrollTop: e.scrollTop,
+            scrollMaximum: maximum, viewportHeight: e.clientHeight};
+        """#
+
+    private func captureDialogPage(_ view: WKWebView, frame: NSView, name: String, locale: String,
+                                   theme: String, scale: Int, dialog: String, scroll: [String: Any]) async throws {
+        let fields: [String: Any] = ["name": name, "width": 760, "height": 560, "textPercent": scale,
+            "locale": locale, "theme": theme, "dialog": dialog]
+        try await dialogStep("applied-theme", fields: fields) {
+            let value = try await view.callAsyncJavaScript("return localStorage.getItem('happyranch.theme') === expected && document.documentElement.getAttribute('data-theme') === expected;",
+                arguments: ["expected": theme], in: nil, contentWorld: .page)
+            guard value as? Bool == true else { throw AppAPIError.unavailable }
+        }
+        let page = try await dialogStep("snapshot", fields: fields) { try await view.takeSnapshot(configuration: nil) }
+        try await dialogStep("write-png", fields: fields) {
+            frame.layoutSubtreeIfNeeded()
+            guard let native = frame.bitmapImageRepForCachingDisplay(in: frame.bounds),
+                  let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 760, pixelsHigh: 560,
+                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+                  let graphics = NSGraphicsContext(bitmapImageRep: bitmap) else { throw AppAPIError.unavailable }
+            frame.cacheDisplay(in: frame.bounds, to: native)
+            NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = graphics
+            native.draw(in: NSRect(x: 0, y: 0, width: 760, height: 560))
+            page.draw(in: view.convert(view.bounds, to: frame))
+            NSGraphicsContext.restoreGraphicsState()
+            guard let png = bitmap.representation(using: .png, properties: [:]), png.count <= 2 * 1024 * 1024 else { throw AppAPIError.unavailable }
+            try png.write(to: downloads.appendingPathComponent(name), options: .withoutOverwriting)
+        }
+        var evidence = fields; evidence["webTheme"] = theme
+        log.write("screenshot", evidence.merging(scroll) { _, new in new })
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         navigationFailed(webView, stage: "provisional")
@@ -436,15 +687,104 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
 })();
 """#
 
+    /// Existing product qualification venue, using the actual ContentView and
+    /// AppDelegate composition with resources staged beside this scratch binary.
+    private static func qualifyColdClient(events: String) -> Never {
+        do {
+            let log = try AppSchemeEventLog(events)
+            let application = NSApplication.shared
+            application.setActivationPolicy(.regular)
+            let app = AppDelegate()
+            app.connectionRolePreference = .client
+            app.showSettings() // Unavailable menu entry is dropped; a later click is explicit.
+            let host = NSHostingView(rootView: ContentView().environmentObject(app))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.contentView = host; window.makeKeyAndOrderFront(nil)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 35) { log.write("watchdog"); _exit(124) }
+            Task { @MainActor in
+                var checkpoint = "composition"
+                @MainActor func findWebView(_ parent: NSView) -> WKWebView? {
+                    if let view = parent as? WKWebView { return view }
+                    return parent.subviews.lazy.compactMap { findWebView($0) }.first
+                }
+                do {
+                    let deadline = Date().addingTimeInterval(25)
+                    while findWebView(host) == nil, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+                    guard let view = findWebView(host),
+                          let scheme = view.configuration.urlSchemeHandler(forURLScheme: "happyranch-app") as? AppScheme else { throw AppAPIError.unavailable }
+                    defer { scheme.close() }
+                    checkpoint = "document-admission"
+                    while scheme.documentAdmission.readiness != "no_target", Date() < deadline {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    guard scheme.documentAdmission.bind == "true", scheme.documentAdmission.readiness == "no_target" else { throw AppAPIError.unavailable }
+                    let generation = scheme.generation
+                    checkpoint = "subscription"
+                    _ = try await view.callAsyncJavaScript("window.coldDialogs = []; window.happyranchConnection.on('app.dialogRequested', raw => coldDialogs.push(JSON.parse(raw).dialog)); await window.happyranchConnection.call('app.status', '{}');", arguments: [:], in: nil, contentWorld: .page)
+                    try await Task.sleep(for: .milliseconds(100))
+                    let queued = try await view.callAsyncJavaScript("return coldDialogs.length;", arguments: [:], in: nil, contentWorld: .page) as? Int
+                    guard queued == 0, window.toolbar == nil else { throw AppAPIError.unavailable }
+                    @MainActor func requireDialog(_ expected: String) async throws {
+                        while Date() < deadline {
+                            let ready = try await view.callAsyncJavaScript("const pane = document.querySelector('[data-desktop-dialog]'); return pane?.getAttribute('data-desktop-dialog') === expected && pane.contains(document.activeElement);", arguments: ["expected": expected], in: nil, contentWorld: .page) as? Bool
+                            if ready == true { return }
+                            try await Task.sleep(for: .milliseconds(25))
+                        }
+                        throw AppAPIError.unavailable
+                    }
+                    checkpoint = "menu-settings-after-admission"
+                    app.showSettings(); try await requireDialog("settings")
+                    checkpoint = "menu-connection"
+                    app.showConnection(); try await requireDialog("connection")
+                    checkpoint = "menu-settings"
+                    app.showSettings(); try await requireDialog("settings") // Cmd+, action.
+                    let expected = #"["settings","connection","settings"]"#
+                    var received: String?
+                    repeat {
+                        received = try await view.callAsyncJavaScript("return JSON.stringify(coldDialogs);", arguments: [:], in: nil, contentWorld: .page) as? String
+                        if received != expected { try await Task.sleep(for: .milliseconds(10)) }
+                    } while received != expected && Date() < deadline
+                    guard received == expected else { throw AppAPIError.unavailable }
+                    checkpoint = "api-no-target"
+                    let raw = try await view.callAsyncJavaScript("const r = await fetch('happyranch-app://app/api/v1/auth/bootstrap'); return JSON.stringify({status:r.status,body:await r.json()});", arguments: [:], in: nil, contentWorld: .page) as? String
+                    guard let raw, let response = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                          response["status"] as? Int == 503, let body = response["body"] as? [String: Any],
+                          (body["detail"] as? [String: String])?["code"] == "no_target",
+                          scheme.generation == generation, app.webViewURL == nil, app.appAPITransport == nil,
+                          app.clientBridge == nil, !app.homeInvite.hasActiveSession, app.homeInvite.candidateID == nil,
+                          !app.isConnecting, app.currentHandle == nil, app.supervisor.state == .notConfigured else { throw AppAPIError.unavailable }
+                    log.write("cold_client", ["status": "PASS", "entries": 3, "dialogs": true, "no_target": true, "unchanged_target": true])
+                    scheme.close()
+                    window.orderOut(nil); window.contentView = nil
+                    exit(0)
+                } catch {
+                    log.write("cold_client", ["status": "FAIL", "checkpoint": checkpoint])
+                    exit(1)
+                }
+            }
+            application.run()
+            exit(1)
+        } catch { exit(2) }
+    }
+
     static func run(_ arguments: [String]) -> Never {
-        guard [6, 7].contains(arguments.count), let port = UInt16(arguments[3]), port > 0 else { exit(2) }
+        guard [6, 7].contains(arguments.count), let port = UInt16(arguments[3]) else { exit(2) }
         let mode = arguments.count == 7 ? arguments[6] : "all"
-        guard ["all", "stream", "abort", "download"].contains(mode) else { exit(2) }
+        guard ["all", "stream", "abort", "download", "dialogs-en", "dialogs-zh", "cold-client"].contains(mode) else { exit(2) }
+        if mode == "cold-client" {
+            guard port == 0 else { exit(2) } // Portless: no transport is constructed.
+            qualifyColdClient(events: arguments[4])
+        }
+        guard port > 0 else { exit(2) }
+        if mode.hasPrefix("dialogs-") {
+            UserDefaults.standard.setVolatileDomain(["AppleLanguages": [mode == "dialogs-zh" ? "zh-Hans" : "en"]], forName: UserDefaults.argumentDomain)
+        }
         do {
             let probe = try AppSchemeQualification(root: URL(fileURLWithPath: arguments[1]), policy: URL(fileURLWithPath: arguments[2]),
                 port: port, events: arguments[4], downloads: URL(fileURLWithPath: arguments[5]), mode: mode)
             let application = NSApplication.shared
-            application.setActivationPolicy(.prohibited)
+            application.setActivationPolicy(mode.hasPrefix("dialogs-") ? .regular : .prohibited)
             probe.start()
             withExtendedLifetime(probe) { application.run() }
             exit(1)

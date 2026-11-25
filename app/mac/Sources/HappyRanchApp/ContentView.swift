@@ -173,7 +173,7 @@ struct WebView: NSViewRepresentable {
         do {
             guard let root = Bundle.main.resourceURL?.appendingPathComponent("web/dist", isDirectory: true) else { throw AppAPIError.unavailable }
             let scheme = try AppScheme(root: root, transport: transport, remote: remote,
-                promptURL: remote ? nil : url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/api/v1", accessUnsaved: accessUnsaved)
+                promptURL: remote || transport == nil ? nil : url.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/api/v1", accessUnsaved: accessUnsaved)
             scheme.configure(config); context.coordinator.scheme = scheme
             onScheme?(scheme)
             scheme.updateCandidate(candidate, accessUnsaved: accessUnsaved)
@@ -202,39 +202,39 @@ struct WebView: NSViewRepresentable {
     }
 }
 
-/// Main content view: full-window WebView (no in-window toolbar).
+/// Main content view: full-window WebView; its header owns window controls.
 /// Daemon controls live in the Daemon menu bar menu.
 struct ContentView: View {
     @EnvironmentObject var appDelegate: AppDelegate
 
     var body: some View {
         ZStack {
-            if let urlString = appDelegate.webViewURL, let url = URL(string: urlString) {
-                ZStack(alignment: .top) {
-                    let lifetime = appDelegate.homeInvite.lifetime
-                    WebView(url: url, transport: appDelegate.appAPITransport,
-                        remote: appDelegate.homeInvite.hasActiveSession || appDelegate.connectionRole == .client,
-                        accessUnsaved: appDelegate.homeInvite.activeHasUnsavedAccess,
-                        readiness: appDelegate.clientLane == .managed ? appDelegate.homeInvite.appReadiness : nil,
-                        candidate: appDelegate.homeInvite.bridgeCandidate,
-                        onScheme: { appDelegate.bindMainScheme($0) },
-                        onLoaded: {
-                            appDelegate.homeInvite.mainDocumentAdmitted()
-                            appDelegate.homeInvite.webLoaded(url: $0, lifetime: lifetime)
-                        },
-                        onFailed: { selected, _ in appDelegate.homeInvite.webFailed(url: selected, lifetime: lifetime) })
-                        .id("happyranch-main-document")
-                    if appDelegate.connectionRole == .client && appDelegate.clientLane == .managed {
-                        HomeSessionStatus(model: appDelegate.homeInvite)
-                            .environmentObject(appDelegate)
-                    }
-                    if appDelegate.supervisor.state == .unhealthy ||
-                       appDelegate.supervisor.state == .failed {
-                        unhealthyBanner
-                    }
+            // The packaged document hosts dialogs even before a target exists.
+            // This URL is callback identity only; WebKit always loads app origin.
+            let url = appDelegate.webViewURL.flatMap { URL(string: $0) }
+                ?? URL(string: AppSchemeRoute.origin + "/")!
+            ZStack(alignment: .top) {
+                let lifetime = appDelegate.homeInvite.lifetime
+                WebView(url: url, transport: appDelegate.appAPITransport,
+                    remote: appDelegate.homeInvite.hasActiveSession || appDelegate.connectionRole == .client,
+                    accessUnsaved: appDelegate.homeInvite.hasUnsavedAccessWarning,
+                    readiness: appDelegate.clientLane == .managed ? appDelegate.homeInvite.appReadiness : nil,
+                    candidate: appDelegate.homeInvite.bridgeCandidate,
+                    onScheme: { appDelegate.bindMainScheme($0) },
+                    onLoaded: {
+                        appDelegate.homeInvite.mainDocumentAdmitted()
+                        appDelegate.homeInvite.webLoaded(url: $0, lifetime: lifetime)
+                    },
+                    onFailed: { selected, _ in appDelegate.homeInvite.webFailed(url: selected, lifetime: lifetime) })
+                    .id("happyranch-main-document")
+                if appDelegate.connectionRole == .client && appDelegate.clientLane == .managed {
+                    HomeSessionStatus(model: appDelegate.homeInvite)
+                        .environmentObject(appDelegate)
                 }
-            } else {
-                placeholderView
+                if appDelegate.supervisor.state == .unhealthy ||
+                   appDelegate.supervisor.state == .failed {
+                    unhealthyBanner
+                }
             }
         }
         .sheet(isPresented: $appDelegate.showDiagnostics) {
@@ -421,27 +421,13 @@ struct ContentView: View {
     }
 }
 
-/// Saving failure remains visible even after the web UI replaces the form.
+/// Retained legacy phase strip; its MAC-3 cutover is separate from the web header.
 private struct HomeSessionStatus: View {
-    @EnvironmentObject var appDelegate: AppDelegate
     @ObservedObject var model: HomeInviteModel
-    private func copy(_ en: String, _ zh: String) -> String {
-        Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en
-    }
     var body: some View {
-        if model.phase != .connected || model.saveFailure != nil {
+        if model.phase != .connected {
             HStack {
                 if model.phase != .connected { Text(model.phase.message) }
-                if model.saveFailure != nil {
-                    VStack(alignment: .leading) {
-                        Text(copy("Access was not saved", "访问权限未保存")).foregroundStyle(.red)
-                        Text(copy("Reopening may need a new invite. Review saved access in Connection.",
-                                  "重新打开可能需要新邀请。请在“连接”中查看已保存的访问权限。"))
-                            .font(.caption)
-                    }
-                    Button(copy("Retry save…", "重试保存…")) { appDelegate.showConnection() }
-                        .accessibilityHint(copy("Opens the packaged Connection controls", "打开应用内置的连接控制页"))
-                }
             }
             .padding(10)
             .background(.regularMaterial)

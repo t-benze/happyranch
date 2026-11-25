@@ -73,7 +73,7 @@ private final class QuitRetryHandle: ProcessHandle, @unchecked Sendable {
     }
 }
 
-@Suite("AppDelegate Stop honesty", .serialized)
+@Suite("AppDelegate Stop honesty", .serialized, .timeLimit(.minutes(2)))
 @MainActor
 struct AppDelegateStopHonestyTests {
     @Test("TERM outcome is observed without KILL", arguments: [Int32(0), Int32(15)])
@@ -110,6 +110,7 @@ struct AppDelegateStopHonestyTests {
     @Test("failed KILL retains ownership, honest diagnostics and Start disabled")
     func failedKillKeepsStartDisabled() throws {
         let delegate = AppDelegate()
+        delegate.managedStopGrace = .init(term: 0.01, kill: 0.01)
         let factory = FakeProcessController()
         delegate.processController = factory
         delegate.supervisor.configure(homeDir: "/unused")
@@ -132,7 +133,7 @@ struct AppDelegateStopHonestyTests {
     }
 
     @Test("Quit cancels an incomplete Restart before either launch callback", arguments: ["dev", "bundled"])
-    func quitCancelsIncompleteRestart(mode: String) throws {
+    func quitCancelsIncompleteRestart(mode: String) async throws {
         AppDelegate._testPackagingMode = mode
         AppDelegate._testSkipBundledDaemonPreflight = true
         defer {
@@ -140,12 +141,14 @@ struct AppDelegateStopHonestyTests {
             AppDelegate._testSkipBundledDaemonPreflight = false
         }
         let delegate = AppDelegate()
+        delegate.managedStopGrace = .init(term: 0.01, kill: 0.01)
         let controller = QuitRetryController()
         delegate.processController = controller
         delegate.supervisor.configure(homeDir: "/unused")
         delegate.startDaemon()
         let handle = try #require(delegate.currentHandle as? QuitRetryHandle)
         let child = try #require(controller.factory.activeHandle)
+        defer { handle.onRetryTerm = nil; if child.isRunning { child.terminate() } }
         try #require(controller.factory.launchCallCount == 1)
         delegate.supervisor.onHealthCheckPassed(pid: handle.processIdentifier, port: 9876)
         delegate.refreshDerivedState()
@@ -161,18 +164,9 @@ struct AppDelegateStopHonestyTests {
         try #require(controller.factory.launchCallCount == 1)
 
         handle.onRetryTerm = {
-            // Deliver the registered launch callback from Quit's pumped wait,
-            // then let its real MainActor continuation settle before returning.
-            RunLoop.main.perform {
-                child.terminate()
-                MainActor.assumeIsolated {
-                    let end = ProcessInfo.processInfo.systemUptime + 1
-                    while delegate.supervisor.state == .stopping
-                            && ProcessInfo.processInfo.systemUptime < end {
-                        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
-                    }
-                }
-            }
+            // Queue the registered launch callback during Quit. Never wait
+            // inside this actor job for the queued MainActor settlement.
+            child.terminate()
         }
         delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
 
@@ -187,6 +181,13 @@ struct AppDelegateStopHonestyTests {
         #expect(delegate.currentHandle?.isRunning == false)
         #expect(delegate.supervisor.state == .stopped)
         #expect(delegate.supervisor.lastExitCode == 0)
+        // Yield the actor after proving synchronous Quit settlement, then
+        // check that queued work cannot resurrect the cancelled Restart.
+        await Task { @MainActor in
+            #expect(controller.factory.launchCallCount == 1)
+            #expect(delegate.supervisor.state == .stopped)
+            #expect(delegate.supervisor.lastExitCode == 0)
+        }.value
     }
 
     @Test("HOME to CLIENT refuses a surviving managed child, and Quit retries Stop", arguments: [false, true])
@@ -200,6 +201,7 @@ struct AppDelegateStopHonestyTests {
             }
         }
         let delegate = AppDelegate()
+        delegate.managedStopGrace = .init(term: 0.01, kill: 0.01)
         delegate.processController = FakeProcessController()
         delegate.connectionRolePreference = .home
         delegate.supervisor.configure(homeDir: "/unused")

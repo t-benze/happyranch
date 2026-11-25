@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manual, stdlib-only Darwin observations; JSON stdout, human summary stderr."""
+"""Manual Darwin observations; app-scheme archives JSON and emits a bounded summary."""
 
 from __future__ import annotations
 
@@ -1444,7 +1444,9 @@ def main() -> int:
                 sys.path.insert(0, str(ROOT))
                 from scripts.mac_native.suite_app_scheme import run as app_scheme
 
-                app_scheme(report)
+                if args.output is None:
+                    raise ValueError('app-scheme requires --output for native diagnostic artifacts')
+                app_scheme(report, args.output.resolve().parent)
             elif args.suite == 'toolchain':
                 sys.path.insert(0, str(ROOT))
                 from scripts.mac_native.suite_toolchain import run as toolchain
@@ -1495,17 +1497,18 @@ def main() -> int:
                 completed=False, internal_error=f"{type(exc).__name__}: {exc}"
             )
             code = 1
-        print(f"Native {args.suite}: completed={report['completed']}", file=sys.stderr)
-        print(f"Platform facts: {report.get('facts', {})}", file=sys.stderr)
-        for row in report.get("process", {}).get("observations", []):
-            print(
-                f"{row['role']}: ground={row['ground_truth']} repo={row['repo']} corrected={row['corrected']}",
-                file=sys.stderr,
-            )
-        if "filesystem" in report:
-            print(f"Filesystem: {report['filesystem']}", file=sys.stderr)
-        if "internal_error" in report:
-            print(report["internal_error"], file=sys.stderr)
+        if args.suite != 'app-scheme':
+            print(f"Native {args.suite}: completed={report['completed']}", file=sys.stderr)
+            print(f"Platform facts: {report.get('facts', {})}", file=sys.stderr)
+            for row in report.get("process", {}).get("observations", []):
+                print(
+                    f"{row['role']}: ground={row['ground_truth']} repo={row['repo']} corrected={row['corrected']}",
+                    file=sys.stderr,
+                )
+            if "filesystem" in report:
+                print(f"Filesystem: {report['filesystem']}", file=sys.stderr)
+            if "internal_error" in report:
+                print(report["internal_error"], file=sys.stderr)
     encoded = json.dumps(report, indent=None if args.suite in ('cleanup-process-use', 'packaged') else 2,
                          separators=(',', ':') if args.suite in ('cleanup-process-use', 'packaged') else None,
                          sort_keys=True) + "\n"
@@ -1513,7 +1516,20 @@ def main() -> int:
         raise RuntimeError("disk-sweep report exceeds 64KiB")
     if args.output:
         args.output.write_text(encoded, encoding="utf-8")
-    print(encoded, end="")
+    if args.suite == 'app-scheme' and args.output:
+        # PNG data and native event archives belong only in the existing JSON
+        # artifact. Even a complete bilingual matrix must fit the unchanged
+        # console cap; never duplicate the report into stdout.
+        dialogs = report.get('app_scheme', {}).get('dialogs', {})
+        locales = dialogs.get('processes', [])
+        print(json.dumps(dict(
+            status='SKIPPED' if report.get('skipped') else 'PASS' if code == 0 else 'FAIL',
+            counts=dict(screenshots=len(dialogs.get('screenshots', [])), locales=len(locales),
+                        passed_locales=sum(row.get('status') == 'PASS' for row in locales)),
+            artifact=str(args.output), sha256=hashlib.sha256(encoded.encode('utf-8')).hexdigest(),
+        ), sort_keys=True))
+    else:
+        print(encoded, end="")
     return code
 
 

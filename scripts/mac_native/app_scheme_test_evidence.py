@@ -54,14 +54,14 @@ def terminal_results(output: str) -> dict[str, Any]:
             'json_bytes': sum(len(json.dumps(line).encode()) + 2 for line in lines)}
 
 
-def assess_native(raw: bytes, events: bytes, inventory: dict[str, Any], code: int) -> dict[str, Any]:
+def assess_native(raw: bytes, events: bytes, inventory: dict[str, Any], code: int | None) -> dict[str, Any]:
     """Require every source test and every started invocation to finish cleanly.
 
     Swift Testing ABI v0 has no stable parameter-case IDs. --no-parallel lets
     us assign an ordinal within each function without retaining argument values.
     Unknown/malformed/missing evidence fails, never falls back to aggregate text.
     """
-    result: dict[str, Any] = {'status': 'FAIL', 'cases': [], 'errors': [], 'truncated': False}
+    result: dict[str, Any] = {'status': 'FAIL', 'cases': [], 'lifecycle': [], 'errors': [], 'truncated': False}
     errors, cases = result['errors'], result['cases']
     starts: Counter[str] = Counter()
     ends: dict[str, list[str]] = {}
@@ -69,6 +69,7 @@ def assess_native(raw: bytes, events: bytes, inventory: dict[str, Any], code: in
         r"Test Case '-\[([\w.]+) (\w+)\]' (started|passed|failed|skipped)", raw.decode(errors='replace')
     ):
         key = f'{owner}/{method}'
+        result['lifecycle'].append(dict(library='XCTest', id=key, event=state))
         if state == 'started':
             starts[key] += 1
         else:
@@ -81,9 +82,15 @@ def assess_native(raw: bytes, events: bytes, inventory: dict[str, Any], code: in
     suites: set[str] = set()
     records = []
     try:
-        if not events or not events.endswith(b'\n') or len(events) > TEST_OUTPUT_CAP:
+        if not events or len(events) > TEST_OUTPUT_CAP:
             raise ValueError('missing, partial or oversized Swift Testing events')
-        for line in events.splitlines():
+        complete = events
+        if not events.endswith(b'\n'):
+            errors.append('partial Swift Testing final record')
+            # Keep completed start/end records for diagnosis of a killed writer.
+            # The byte-exact archive retains the final partial line; verdict FAIL.
+            complete = events.rpartition(b'\n')[0]
+        for line in complete.splitlines():
             record = json.loads(line)
             if record['version'] != 0 or not isinstance(record['payload'], dict):
                 raise ValueError('unsupported Swift Testing schema')
@@ -114,6 +121,8 @@ def assess_native(raw: bytes, events: bytes, inventory: dict[str, Any], code: in
         run = Counter()
         for event in records:
             kind, key = event['kind'], event.get('testID')
+            if kind in ('testStarted', 'testEnded', 'testCaseStarted', 'testCaseEnded'):
+                result['lifecycle'].append(dict(library='Swift Testing', id=key, event=kind))
             if kind in ('runStarted', 'runEnded'):
                 run[kind] += 1
             elif run != Counter(runStarted=1):
@@ -180,10 +189,13 @@ def assess_native(raw: bytes, events: bytes, inventory: dict[str, Any], code: in
             if row['starts'] != 1 or row['ends'] != 1 or not row['cases'] or row['active'] is not None or row['failed']:
                 errors.append(f'incomplete or failed Swift Testing function: {key}')
                 if not row['cases']:
-                    cases.append({'library': 'Swift Testing', 'id': key, 'status': 'FAIL', 'reason': 'no invocation'})
+                    cases.append({'library': 'Swift Testing', 'id': key, 'status': 'FAIL', 'reason': 'no invocation',
+                                  'starts': row['starts'], 'ends': row['ends']})
     except (ValueError, KeyError, TypeError, AttributeError) as error:
         errors.append('invalid Swift Testing capture: ' + type(error).__name__)
-    if code:
+    if code is None:
+        errors.append('swift test exit unobserved')
+    elif code:
         errors.append(f'swift test exit {code}')
     if not errors and cases and all(row['status'] == 'PASS' for row in cases):
         result['status'] = 'PASS'

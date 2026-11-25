@@ -6,8 +6,11 @@ Every page receipt is emitted immediately and fsynced when native receives it.
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import os
+import stat
+import struct
 import shutil
 import subprocess
 import tarfile
@@ -19,13 +22,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator
 
+from scripts.mac_native.app_scheme_diagnostics import archive_stream, sample_stalled_processes, write_diagnostics
 from scripts.mac_native.app_scheme_test_evidence import TEST_OUTPUT_CAP, archive_events, assess_native, source_inventory, terminal_results
-from scripts.mac_native.suite_supervisor import ROOT, _build_environment, _command, _prepare_keychain
+from scripts.mac_native.suite_supervisor import CommandTimeout, ROOT, _build_environment, _command, _prepare_keychain
 from scripts.mac_native.toolchain import curl_attempt, parse_pins, verify_checksum
 
 LATENCY_MS = 500  # Half of the 1s send interval: batching one interval cannot pass.
 ABORT_MS = 500
 EVENT_CAP = 256 * 1024
+PNG_CAP = 2 * 1024 * 1024
 UPLOAD_DIGEST = hashlib.sha256(b's' * (10 * 1024 * 1024)).hexdigest()
 
 
@@ -160,6 +165,122 @@ def qualify_steps(argv: list[str], env: dict[str, str], scratch: Path, deadline:
             codes[-1] = 1
         section['events'].append({'event': 'process_exit', 'step': step, 'exit_code': code})
     return 0 if all(code == 0 for code in codes) else 1
+
+
+def qualify_cold_client(argv: list[str], env: dict[str, str], scratch: Path, deadline: float,
+                        section: dict[str, Any], downloads: Path) -> None:
+    """Require the product's cold ContentView/AppDelegate composition receipt."""
+    events = scratch / 'cold-client.jsonl'
+    command = [*argv, str(events), str(downloads), 'cold-client']
+    result: dict[str, Any] = {'status': 'FAIL', 'argv': command, 'exit_code': None}
+    section['cold_client'] = result
+    try:
+        code, raw = _command(command, env, scratch, min(deadline, time.monotonic() + 40), output_cap=65536)
+        result.update(exit_code=code, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
+                      head=raw[:1024].decode(errors='replace'), tail=raw[-1024:].decode(errors='replace'))
+        receipts = [row for row in read_events(events) if row.get('event') == 'cold_client']
+        result['events'] = receipts
+        if (code == 0 and len(receipts) == 1 and receipts[0].get('status') == 'PASS'
+                and receipts[0].get('entries') == 3 and receipts[0].get('dialogs') is True
+                and receipts[0].get('no_target') is True
+                and receipts[0].get('unchanged_target') is True):
+            result['status'] = 'PASS'
+    except (OSError, ValueError, TimeoutError, RuntimeError, subprocess.TimeoutExpired) as error:
+        result['command_error'] = type(error).__name__
+
+
+def screenshot_archive(folder: Path, locale: str,
+                       scroll_counts: dict[tuple[str, str], int] | None = None) -> list[dict[str, Any]]:
+    """Closed names, bounded top/scroll PNGs in the existing probe JSON."""
+    if locale not in ('en', 'zh'):
+        raise ValueError('unsupported capture locale')
+    rows = []
+    scroll_counts = scroll_counts or {}
+    for theme in ('light', 'dark'):
+        for scale in (100, 200):
+            for dialog in ('settings', 'connection', 'main'):
+                count = scroll_counts.get((theme, dialog), 0) if scale == 200 else 0
+                if type(count) is not int or not 0 <= count <= 16:
+                    raise ValueError('screenshot scroll count')
+                for number in range(count + 1):
+                    suffix = f'-scroll-{number}' if number else ''
+                    name = f'{locale}-{theme}-{scale}-{dialog}{suffix}.png'
+                    descriptor = os.open(folder / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    with os.fdopen(descriptor, 'rb') as source:
+                        info = os.fstat(source.fileno())
+                        if not stat.S_ISREG(info.st_mode) or not 33 <= info.st_size <= PNG_CAP:
+                            raise ValueError('screenshot size/type')
+                        raw = source.read(PNG_CAP + 1)
+                    if (len(raw) != info.st_size or len(raw) > PNG_CAP
+                            or raw[:16] != b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
+                            or struct.unpack('>II', raw[16:24]) != (760, 560)):
+                        raise ValueError('screenshot PNG dimensions/header')
+                    rows.append(dict(name=name, locale=locale, theme=theme, text_percent=scale, dialog=dialog,
+                        scroll_capture=number, width=760, height=560, encoding='base64', bytes=len(raw),
+                        sha256=hashlib.sha256(raw).hexdigest(), data=base64.b64encode(raw).decode('ascii')))
+    if sum(row['bytes'] for row in rows) > 8 * 1024 * 1024:
+        raise ValueError('screenshot archive size')
+    return rows
+
+
+def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadline: float,
+                    section: dict[str, Any], downloads: Path) -> None:
+    capture: dict[str, Any] = {'status': 'FAIL', 'processes': [], 'screenshots': []}
+    section['dialogs'] = capture
+    for locale in ('en', 'zh'):
+        events = scratch / f'dialogs-{locale}.jsonl'
+        command = [*argv, str(events), str(downloads), f'dialogs-{locale}']
+        row: dict[str, Any] = {'locale': locale, 'argv': command, 'exit_code': None, 'status': 'FAIL'}
+        capture['processes'].append(row)
+        try:
+            code, raw = _command(command, env, scratch, min(deadline, time.monotonic() + 40), output_cap=65536)
+            row.update(exit_code=code, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
+                       head=raw[:1024].decode(errors='replace'), tail=raw[-1024:].decode(errors='replace'))
+        except (TimeoutError, RuntimeError, subprocess.TimeoutExpired) as error:
+            row['command_error'] = type(error).__name__
+        # Keep completed files even if a later capture/process fails. A partial
+        # locale is never accepted as complete or silently truncated.
+        try:
+            evidence = read_events(events)
+            row['diagnostic_events'] = [event for event in evidence if event.get('event') in (
+                'startup', 'capture_progress', 'capture_step', 'capture_navigation', 'admission_failure', 'failure',
+                'watchdog', 'navigation_failure', 'content_process_terminated')]
+            progress = [event for event in evidence if event.get('event') == 'capture_progress']
+            row['last_step'] = progress[-1] if progress else None
+            receipts = [event for event in evidence if event.get('event') == 'screenshot']
+            row['events'] = receipts
+            completions = [event for event in evidence if event.get('event') == 'capture_complete']
+            row['completion_events'] = completions
+            counts = {}
+            for event in completions:
+                key = (event.get('theme'), event.get('dialog'))
+                count = event.get('scrollCaptures')
+                panes = event.get('scrollers')
+                if (key in counts or key[0] not in ('light', 'dark') or key[1] not in ('settings', 'connection', 'main')
+                        or event.get('locale') != locale or event.get('textPercent') != 200
+                        or type(count) is not int or not 0 <= count <= 16 or not isinstance(panes, list)
+                        or len(panes) > 8 or any(not isinstance(pane, dict) or pane.get('index') != index
+                            or type(pane.get('pages')) is not int or pane['pages'] <= 0
+                            for index, pane in enumerate(panes))
+                        or sum(pane['pages'] for pane in panes) != count):
+                    raise ValueError('incomplete scroll capture receipt')
+                counts[key] = count
+            if len(counts) != 6:
+                raise ValueError('missing scroll capture completion')
+            images = screenshot_archive(downloads, locale, counts)
+            capture['screenshots'].extend(images)
+            expected = {image['name']: image for image in images}
+            if (row['exit_code'] == 0 and len(receipts) == len(expected)
+                    and {event.get('name') for event in receipts} == set(expected)
+                    and all(event.get('webTheme') == event.get('theme') == expected[event['name']]['theme']
+                        for event in receipts)):
+                row['status'] = 'PASS'
+        except (OSError, ValueError, RuntimeError) as error:
+            row['capture_error'] = type(error).__name__
+            if isinstance(error, ValueError):
+                row['capture_error_reason'] = str(error)
+    if all(row['status'] == 'PASS' for row in capture['processes']):
+        capture['status'] = 'PASS'
 
 
 def _error_context(raw: bytes) -> dict[str, Any]:
@@ -320,7 +441,7 @@ def assess(events: list[dict[str, Any]], sends: list[dict[str, Any]], exit_code:
             'complete': complete, 'partial': not complete}
 
 
-def run(report: dict[str, Any]) -> None:
+def run(report: dict[str, Any], artifact_dir: Path) -> None:
     section: dict[str, Any] = {'commands': [], 'events': [], 'qualification': {'status': 'NOT RUN'}}
     report['app_scheme'] = section
     tmp = Path(os.environ.get('TMPDIR', ''))
@@ -332,21 +453,41 @@ def run(report: dict[str, Any]) -> None:
         env = _build_environment(scratch)
 
         def command(name: str, argv: list[str], cwd: Path = ROOT, seconds: float = 60,
-                    allow_failure: bool = False) -> bytes:
+                    allow_failure: bool = False, capture: dict[str, Any] | None = None) -> bytes:
             row: dict[str, Any] = {'name': name, 'argv': argv, 'exit_code': None, 'timeout_seconds': seconds}
             section['commands'].append(row)
             started = time.monotonic()
+            code, raw, stderr = None, b'', bytearray()
             try:
+                options = {}
+                if capture is not None:
+                    row['diagnostic_timeout_seconds'] = 30
+                    capture['timeout_diagnostics'] = {}
+                    options['timeout_observer'] = lambda pid: sample_stalled_processes(
+                        pid, env, scratch, min(deadline, started + seconds + 30), capture['timeout_diagnostics'])
                 code, raw = _command(argv, env, cwd, min(deadline, started + seconds),
-                                     output_cap=TEST_OUTPUT_CAP if name == 'product_build_and_all_tests' else 1024 * 1024)
+                                     output_cap=TEST_OUTPUT_CAP if capture is not None else 1024 * 1024,
+                                     stderr_data=stderr, **options)
             except (TimeoutError, RuntimeError, subprocess.TimeoutExpired) as error:
-                row.update(command_error=type(error).__name__, elapsed_seconds=time.monotonic() - started)
+                if isinstance(error, CommandTimeout):
+                    raw = error.stdout
+                    stderr[:] = error.stderr
+                row['command_error'] = type(error).__name__
                 raise
-            row.update(exit_code=code, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
-                       elapsed_seconds=time.monotonic() - started,
-                       head=raw[:2048].decode(errors='replace'), tail=raw[-2048:].decode(errors='replace'),
-                       error_context=_error_context(raw), test_results=terminal_results(raw.decode(errors='replace')),
-                       loader_diagnostics=_loader_diagnostics(raw))
+            finally:
+                if capture is not None:
+                    capture.update(stdout=archive_stream(raw), stderr=archive_stream(bytes(stderr)),
+                                   exit_code=code, command_error=row.get('command_error'))
+                for stream, data in (('stdout', raw), ('stderr', bytes(stderr))):
+                    row[stream] = dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                        head=data[:2048].decode(errors='replace'), tail=data[-2048:].decode(errors='replace'),
+                        excerpts_truncated=len(data) > 4096)
+                raw += bytes(stderr)
+                row.update(exit_code=code, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
+                           elapsed_seconds=time.monotonic() - started,
+                           head=raw[:2048].decode(errors='replace'), tail=raw[-2048:].decode(errors='replace'),
+                           error_context=_error_context(raw), test_results=terminal_results(raw.decode(errors='replace')),
+                           loader_diagnostics=_loader_diagnostics(raw))
             if code and not allow_failure:
                 raise RuntimeError(name + ' failed')
             return raw
@@ -387,24 +528,61 @@ def run(report: dict[str, Any]) -> None:
             section['keychain_fixture'].append(dict(name=name, status=status, expected=expected, actual=actual))
         with ExitStack() as cleanup:
             _prepare_keychain(cleanup, env, scratch, deadline, keychain_row, section['keychain_fixture'])
-            raw = b''
-            try:
-                raw = command('product_build_and_all_tests', swift + [
-                    '--enable-testable-imports', '--enable-xctest', '--enable-swift-testing', '--no-parallel',
-                    '--event-stream-output-path', str(swift_events), '--event-stream-version', '0'],
-                    seconds=1200, allow_failure=True)
-            finally:
-                code = section['commands'][-1]['exit_code']
-                # Retain even partial/failed captures before scratch/Keychain cleanup.
-                events = swift_events.read_bytes() if swift_events.is_file() and swift_events.stat().st_size <= TEST_OUTPUT_CAP else b''
-                native = section['native_tests']
-                native.update(assess_native(raw, events, inventory, code if code is not None else 1), capture='assessed',
-                    event_bytes=len(events), event_sha256=hashlib.sha256(events).hexdigest())
+            captures = {}
+            native = section['native_tests']
+            native['diagnostic_artifacts'] = {}
+            for library in ('xctest', 'swift_testing'):
+                captures[library] = dict(library=library, source_sha=os.environ.get('SOURCE_SHA'),
+                                         build_number=os.environ.get('BUILD_NUMBER'), status='NOT RUN')
+                native['diagnostic_artifacts'][library] = write_diagnostics(artifact_dir, library, captures[library])
+            outputs, codes = [], []
+            events = b''
+            archive_errors = []
+            for library, options in (
+                ('xctest', ['--enable-xctest', '--disable-swift-testing']),
+                ('swift_testing', ['--disable-xctest', '--enable-swift-testing',
+                                   '--event-stream-output-path', str(swift_events), '--event-stream-version', '0']),
+            ):
+                capture = captures[library]
+                capture['status'] = 'running'
+                raw = b''
                 try:
-                    native['event_archive'] = archive_events(events)
-                except ValueError as error:
-                    native['status'] = 'FAIL'
-                    native['errors'].append(str(error))
+                    # Each library gets 570s plus at most 30s of diagnostics.
+                    # Failure/timeout in XCTest cannot suppress Swift Testing.
+                    raw = command('product_' + library, swift + [
+                        '--enable-testable-imports', '--no-parallel', *options],
+                        seconds=570, allow_failure=True, capture=capture)
+                except CommandTimeout as error:
+                    raw = error.output
+                except (TimeoutError, RuntimeError, subprocess.TimeoutExpired):
+                    pass  # Command metadata retains the failure, never PASS.
+                finally:
+                    row = section['commands'][-1]
+                    codes.append(row['exit_code'])
+                    outputs.append(raw)
+                    capture.update(status='captured', command=row)
+                    if library == 'swift_testing':
+                        if swift_events.is_file() and swift_events.stat().st_size <= TEST_OUTPUT_CAP:
+                            events = swift_events.read_bytes()
+                        capture['events'] = archive_stream(events)
+                    try:
+                        native['diagnostic_artifacts'][library] = write_diagnostics(artifact_dir, library, capture)
+                    except (OSError, ValueError) as error:
+                        archive_errors.append(library + ' archive: ' + type(error).__name__)
+            code = None if None in codes else next((code for code in codes if code), 0)
+            native.update(assess_native(b'\n'.join(outputs), events, inventory, code), capture='assessed',
+                event_bytes=len(events), event_sha256=hashlib.sha256(events).hexdigest(), library_exits=codes)
+            native['errors'].extend(archive_errors)
+            if any(row.get('command_error') for row in section['commands'] if row['name'] in ('product_xctest', 'product_swift_testing')):
+                native['errors'].append('native library command failed or timed out')
+            native['unfinished_cases'] = [row for row in native['cases']
+                if row['status'] == 'INCOMPLETE' or (row.get('starts') and not row.get('ends') and not row.get('outcomes'))]
+            try:
+                native['event_archive'] = archive_events(events)
+            except ValueError as error:
+                native['errors'].append(str(error))
+            if native['errors']:
+                native['status'] = 'FAIL'
         bin_command = list(swift); bin_command[2] = 'build'
         binary = Path(command('bin_path', bin_command + ['--show-bin-path']).decode().strip()) / 'HappyRanchApp'
         if not binary.is_file() or not binary.resolve().is_relative_to(scratch):
@@ -423,7 +601,14 @@ def run(report: dict[str, Any]) -> None:
         manifest = json.loads(manifest_path.read_text())
         manifest['resources'] = [row for row in manifest['resources'] if not row['path'].endswith('.map')]
         manifest_path.write_text(json.dumps(manifest) + '\n')
+        # Give the scratch product binary its normal Bundle.main resource paths;
+        # XCTest's main bundle can belong to the system runner and is never edited.
+        shutil.copytree(dist, binary.parent / 'web/dist')
+        shutil.copy2(assets / 'protocol/remote-client-config-policy.v1.json', binary.parent / 'remote-client-config-policy.v1.json')
         downloads = scratch / 'downloads'; downloads.mkdir()
+        qualify_cold_client([str(binary), '--qualify-app-scheme', str(dist),
+            str(assets / 'protocol/remote-client-config-policy.v1.json'), '0'],
+            env, scratch, deadline, section, downloads)
         code = None
         with synthetic_daemon() as (port, sends):
             try:
@@ -438,6 +623,13 @@ def run(report: dict[str, Any]) -> None:
                 downloaded = downloads / 'mac1.txt'
                 data = downloaded.read_bytes() if downloaded.is_file() and downloaded.stat().st_size <= 1024 else None
                 section['qualification'] = assess(section['events'], section['sends'], code, data)
+            qualify_dialogs([str(binary), '--qualify-app-scheme', str(assets / 'web/dist'),
+                str(assets / 'protocol/remote-client-config-policy.v1.json'), str(port)],
+                env, scratch, deadline, section, downloads)
+        if section['cold_client']['status'] != 'PASS':
+            raise RuntimeError('cold-client production composition failed; retain receipt')
+        if section['dialogs']['status'] != 'PASS':
+            raise RuntimeError('dialog screenshot qualification failed; retain capture evidence')
         if section['qualification']['status'] != 'PASS':
             raise RuntimeError('app-scheme qualification failed; retain partial event evidence')
         if section['native_tests']['status'] != 'PASS':

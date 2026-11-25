@@ -29,7 +29,7 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
     private var eventScheduled = false
     private var eventInFlight = false
     private var eventDirty = false
-    private var eventSequence = 0
+    private(set) var eventSequence = 0
     private var reads = 0
     private var mutations = 0
     private var cancellations = 0
@@ -38,6 +38,54 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
     private var mutationLifetime: HomeInviteModel.Lifetime?
     private var pendingMutations: [String: CheckedContinuation<String, Never>] = [:]
     private var activeSheet: NSAlert?
+    private weak var mainHost: WKWebView?
+    private var mainDocumentCurrent: (() -> Bool)?
+    private var mainEvent: ((String) -> Void)?
+    private var mainSequence = 0
+
+    /// Reuse the existing parser, ledger, confirmations and actions for admitted
+    /// Main. This creates neither an auxiliary window nor another web app.
+    init(app: AppDelegate, mainHost: WKWebView, eventSequence: Int = 0, currentDocument: @escaping () -> Bool,
+         event: @escaping (String) -> Void) {
+        self.app = app; openingRole = app.connectionRole
+        self.eventSequence = eventSequence
+        self.mainHost = mainHost; mainDocumentCurrent = currentDocument; mainEvent = event
+        super.init(window: nil)
+        admitted = true
+    }
+
+    func mainCall(command: String, data: String,
+                  reply: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+        guard live, admitted, mainDocumentCurrent?() == true, app?.connectionRole == openingRole,
+              data.utf8.count <= 4096, mainSequence < 9007199254740991 else {
+            reply(nil, #"{"code":"documentChanged","effect":"none","recovery":"refresh"}"#); return
+        }
+        mainSequence += 1
+        let fields: [String: Any] = ["protocol": "happyranch.connection", "version": 1,
+            "requestId": "m\(mainSequence)", "command": command]
+        guard let prefix = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]),
+              let request = try? ConnectionRequest(String(decoding: prefix.dropLast(), as: UTF8.self) + ",\"args\":" + data + "}") else {
+            reply(nil, #"{"code":"invalidRequest","effect":"none","recovery":"refresh"}"#); return
+        }
+        respond(request, current: { [weak self] in
+            guard let self else { return false }
+            return self.live && self.mainDocumentCurrent?() == true && self.app?.connectionRole == self.openingRole
+        }) { raw, _ in
+            guard let raw = raw as? String, let bytes = raw.data(using: .utf8),
+                  let envelope = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                  let value = envelope[envelope["ok"] as? Bool == true ? "result" : "error"],
+                  let encoded = try? JSONSerialization.data(withJSONObject: value) else {
+                reply(nil, #"{"code":"outcomeUnknown","effect":"unknown","recovery":"refresh"}"#); return
+            }
+            let text = String(decoding: encoded, as: UTF8.self)
+            if envelope["ok"] as? Bool == true { reply(text, nil) } else { reply(nil, text) }
+        }
+    }
+
+    func subscribeMain(_ active: Bool) {
+        guard mainDocumentCurrent?() == true else { return }
+        wantsEvents = active; setEventSubscription()
+    }
 
     init(app: AppDelegate) {
         self.app = app
@@ -147,8 +195,11 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
 
     func windowWillClose(_ notification: Notification) { invalidate(showNotice: false) }
 
-    func invalidateIfRoleChanged(_ role: ConnectionRole) {
-        if role != openingRole { invalidate() }
+    @discardableResult
+    func invalidateIfRoleChanged(_ role: ConnectionRole, showNotice: Bool = true) -> Bool {
+        guard role != openingRole else { return false }
+        invalidate(showNotice: showNotice)
+        return true
     }
 
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
@@ -268,6 +319,14 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
     private func respond(_ request: ConnectionRequest, message: WKScriptMessage,
                          controller: WKUserContentController, token: UUID,
                          replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+        respond(request, current: { [weak self] in
+            self?.valid(message, controller: controller, token: token) == true
+        }, replyHandler: replyHandler)
+    }
+
+    private func respond(_ request: ConnectionRequest, current: @escaping @MainActor () -> Bool,
+                         replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+        let token = generation
         if let outcome = ledger.recorded(request) { replyHandler(outcome.reply(id: request.id), nil); return }
         let cancelling = request.command == "client.cancelAttempt"
         guard request.isMutation ? (cancelling || mutations < 1) : reads < 8 else {
@@ -283,18 +342,18 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
                 else if cancelling { self.cancellations -= 1 }
                 else { self.mutations -= 1 }
             }
-            guard self.valid(message, controller: controller, token: token) else {
+            guard current() else {
                 replyHandler(ConnectionRequest.reply(id: request.id, error: .init(.documentChanged)), nil); return
             }
             let reply = await self.dispatch(request, token: token)
             // Never send a stale completion into a replacement document.
-            guard self.valid(message, controller: controller, token: token) else { return }
+            guard current() else { return }
             replyHandler(reply, nil)
         }
     }
 
     private func dispatch(_ request: ConnectionRequest, token: UUID) async -> String {
-        guard live, admitted, generation == token, let app else {
+        guard live, admitted, generation == token, mainDocumentCurrent?() != false, let app else {
             return ConnectionRequest.reply(id: request.id, error: .init(.documentChanged))
         }
         switch request.command {
@@ -355,7 +414,7 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
     }
 
     private func current(_ token: UUID, _ context: HomeInviteModel.Lifetime, _ model: HomeInviteModel) -> Bool {
-        live && admitted && generation == token && app?.connectionRole == openingRole
+        live && admitted && generation == token && mainDocumentCurrent?() != false && app?.connectionRole == openingRole
             && app?.clientLane == .managed && model.lifetime == context
     }
 
@@ -363,7 +422,7 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
     /// this slot: SecItem exposes only its eventual result, not prompt state.
     private func sheet(_ request: ConnectionRequest, title: String, detail: String, action: String,
                        input: NSSecureTextField? = nil) async -> Bool {
-        guard activeSheet == nil, let window, window.attachedSheet == nil,
+        guard activeSheet == nil, let window = mainHost?.window ?? self.window, window.attachedSheet == nil,
               ledger.reservePrompt(for: request.id) else { return false }
         defer { ledger.releasePrompt(request.id) }
         let alert = NSAlert()
@@ -635,6 +694,16 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
         }
     }
     private func deliverEvent(token: UUID) {
+        if mainHost != nil {
+            guard live, admitted, generation == token, wantsEvents, mainDocumentCurrent?() == true,
+                  let app, app.connectionRole == openingRole, eventSequence < 9007199254740991 else { return }
+            eventDirty = false; eventSequence += 1
+            let event: [String: Any] = ["version": 1, "sequence": eventSequence,
+                "observedAt": ConnectionClientProjection.timestamp(Date()),
+                "snapshot": ConnectionClientProjection.snapshot(app: app, catalog: catalog)]
+            guard let data = try? JSONSerialization.data(withJSONObject: event), data.count <= 32768 else { return }
+            mainEvent?(String(decoding: data, as: UTF8.self)); return
+        }
         guard live, admitted, generation == token, wantsEvents, let app, let view, let frame = admittedFrame,
               app.connectionRole == openingRole, view.url?.absoluteString == ConnectionAssets.entry,
               frame.isMainFrame, frame.request.url?.absoluteString == ConnectionAssets.entry,

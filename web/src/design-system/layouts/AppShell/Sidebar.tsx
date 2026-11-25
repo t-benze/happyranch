@@ -245,8 +245,9 @@ export function Sidebar(): JSX.Element {
       </nav>
 
       {/* Footer — Settings + account row (BUG-07). */}
-      {/* Pasture `.side-foot`: padding 10px 12px, gap 4px. */}
-      <div className="border-border-default mt-auto flex shrink-0 flex-col gap-1 border-t px-3 py-2.5">
+      {/* Keep the collapsed rail wide enough for the avatar at 200% text.
+          Pasture `.side-foot`: 10px 12px padding from md up, gap 4px. */}
+      <div className="border-border-default mt-auto flex shrink-0 flex-col gap-1 border-t px-0 py-2.5 md:px-3">
         <SidebarNavItem
           {...(!activeSlug && recovery
             ? { to: '/settings', enabled: !isPrototype }
@@ -279,8 +280,8 @@ function AccountRowView({ name }: { name: string }): JSX.Element {
     <div
       tabIndex={0}
       aria-label={t('shell.account.label', { name, role: t('shell.account.founder') })}
-      // Pasture `.founder`: padding 6px 8px, radius-sm, hover --surface.
-      className="hover:bg-surface-raised focus-visible:ring-accent-default flex items-center gap-2.5 rounded-sm px-2 py-1.5 transition-colors focus-visible:ring-2 focus-visible:outline-none"
+      // Pasture `.founder`: padding 6px 8px from md up, radius-sm, hover --surface.
+      className="hover:bg-surface-raised focus-visible:ring-accent-default flex items-center justify-center gap-2.5 rounded-sm px-0 py-1.5 transition-colors focus-visible:ring-2 focus-visible:outline-none md:justify-start md:px-2"
     >
       {/* Pasture `.avatar` is 26px; the primitive's md step is 30px. `!`
           wins over the primitive's own size class without changing it. */}

@@ -304,10 +304,6 @@ STAGE=web
 cd "$SOURCE/web"
 (umask 022; npm ci)
 npm run build
-npm run build:connection
-# Keep generated connection files outside the exported web source census used
-# by the existing release provenance reader. Preserve the complete output.
-mv "$SOURCE/web/dist-connection" "$OUTPUT/scratch/connection"
 STAGE=swift
 cd "$PROJECT"
 LINK_MAP="$OUTPUT/diagnostics/swift-link.map"
@@ -355,16 +351,6 @@ manifest = json.loads(manifest_path.read_text())
 manifest["resources"] = [row for row in manifest["resources"] if not row["path"].endswith(".map")]
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 APP_MANIFEST
-# Keep the independent connection inventory byte-for-byte, including licenses.
-cp -R "$OUTPUT/scratch/connection" "$APP/Contents/Resources/Connection"
-python3 -I - "$SOURCE/packaging/linux/desktop/connection_contract.py" \
-    "$APP/Contents/Resources/Connection" <<'CONNECTION'
-import runpy, sys
-from pathlib import Path
-# Trusted exported source, never a validator supplied by the input resources.
-assets = runpy.run_path(sys.argv[1])['Assets'](Path(sys.argv[2]))
-print(f'CONNECTION_MANIFEST_VERIFIED resources={len(assets.resources)}')
-CONNECTION
 cp "$SOURCE/LICENSE" "$APP/Contents/Resources/licenses/LICENSE"
 chmod 644 "$APP/Contents/Resources/licenses/LICENSE"
 for executable in happyranch-daemon happyranch; do

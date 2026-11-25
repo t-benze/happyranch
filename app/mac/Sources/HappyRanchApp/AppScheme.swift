@@ -190,6 +190,10 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     var switchCandidate: (() throws -> Target)?
     var disconnectSelected: (() -> Bool)?
     var actionResult: (() -> [String: Any])?
+    weak var connectionApp: AppDelegate?
+    private var connectionCommands: ConnectionWindow?
+    private var connectionEventSequence = 0
+    private var subscriptions: Set<String> = []
     private var targetID: String?
     private var candidate: [String: Any]?
     var candidateSnapshot: (() -> [String: Any]?)?
@@ -342,7 +346,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         if let reason = switchRefusal { return reason }
         self.transport = transport; self.remote = remote; targetID = id
         self.promptURL = remote ? nil : promptURL
-        accessUnsaved = false; hostContract = nil; state = "target_starting"
+        hostContract = nil; state = "target_starting"
         advanceGeneration()
         return nil
     }
@@ -351,7 +355,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     func disconnect() -> String? {
         if let reason = switchRefusal { return reason }
         guard disconnectSelected?() == true else { return "busy" }
-        transport = nil; targetID = nil; accessUnsaved = false
+        transport = nil; targetID = nil
         state = "no_target"; hostContract = nil
         advanceGeneration()
         return nil
@@ -382,6 +386,9 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     }
     func receiveOwnerSummary(_ raw: String) throws { try documentOwners.accept(raw) }
     func documentDidStart(url: URL? = nil) {
+        subscriptions.removeAll()
+        connectionCommands?.invalidate(showNotice: false); connectionCommands = nil
+        connectionEventSequence = 0
         documentURL = url; documentResponse = nil
         documentContext = nil
         document = UUID(); hasDocument = true
@@ -519,6 +526,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             if !["GET", "HEAD"].contains(method) && owners.values.filter({ !["GET", "HEAD"].contains($0.task.request.httpMethod ?? "GET") }).count >= 2 {
                 reply(urlSchemeTask, status: 429, code: "too_many_requests"); return
             }
+            guard transport != nil else { reply(urlSchemeTask, status: 503, code: "no_target"); return }
             owners[key] = Owner(requestID: id, generation: generation, task: urlSchemeTask)
             lifecycle(key, "start")
             owners[key]?.worker = Task { [weak self] in
@@ -731,6 +739,13 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         }
         guard let item = message.body as? [String: String] else { replyHandler(nil, "unavailable"); return }
         if item == ["context": context, "command": "app.status"] { replyHandler(statusJSON(), nil); return }
+        if item["command"] == "subscribe", Set(item.keys) == ["context", "command", "event", "active"],
+           let event = item["event"], ["app.stateChanged", "app.dialogRequested", "client.stateChanged"].contains(event),
+           let active = item["active"], ["0", "1"].contains(active) {
+            if active == "1" { subscriptions.insert(event) } else { subscriptions.remove(event) }
+            if event == "client.stateChanged" { mainConnectionCommands()?.subscribeMain(active == "1") }
+            replyHandler("{}", nil); return
+        }
         if let command = item["command"], ["client.commitSwitch", "client.disconnect"].contains(command) {
             guard Set(item.keys) == ["context", "command", "data"], item["data"] == "{}" else {
                 replyHandler(nil, #"{"code":"invalidRequest","effect":"none","recovery":"refresh"}"#); return
@@ -744,6 +759,11 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             } else { replyHandler(nil, #"{"code":"outcomeUnknown","effect":"unknown","recovery":"refresh"}"#) }
             return
         }
+        if let command = item["command"], ConnectionRequest.commands.contains(command), command != "client.disconnect",
+           Set(item.keys) == ["context", "command", "data"], let data = item["data"],
+           let commands = mainConnectionCommands() {
+            commands.mainCall(command: command, data: data, reply: replyHandler); return
+        }
         if item["command"] == "cancel", item.count == 3, let id = item["id"], UUID(uuidString: id) != nil {
             if let key = owners.first(where: { $0.value.requestID == id })?.key { stop(key) }
             else if cancelled.count < 256 { cancelled.insert(id) }
@@ -754,6 +774,49 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private func emitStatus() {
         view?.callAsyncJavaScript("window.__hrAppState?.(data);", arguments: ["data": statusJSON()], in: nil, in: .page, completionHandler: nil)
         observe?("native_state_changed", generation)
+    }
+
+    /// Role changes retire only the command adapter, not Main's document,
+    /// owners or target. Old operations retain their invalidated dispatcher.
+    func connectionRoleDidChange() {
+        guard let app = connectionApp, let commands = connectionCommands,
+              commands.invalidateIfRoleChanged(app.connectionRole, showNotice: false) else { return }
+        connectionEventSequence = commands.eventSequence
+        connectionCommands = nil
+        if subscriptions.contains("client.stateChanged") {
+            mainConnectionCommands()?.subscribeMain(true)
+        }
+    }
+
+    private func mainConnectionCommands() -> ConnectionWindow? {
+        if let connectionCommands { return connectionCommands }
+        guard let app = connectionApp, let view, let context = documentContext else { return nil }
+        let identity = document
+        let commands = ConnectionWindow(app: app, mainHost: view, eventSequence: connectionEventSequence, currentDocument: { [weak self, weak view] in
+            guard let self, let view else { return false }
+            return self.document == identity && self.documentContext == context && self.view === view
+        }, event: { [weak self] raw in
+            guard let self, self.document == identity, self.documentContext == context else { return }
+            self.emitEvent("client.stateChanged", raw: raw)
+        })
+        connectionCommands = commands
+        return commands
+    }
+
+    /// Entry only: no queue, acknowledgement, target selection or effect.
+    @discardableResult
+    func requestDialog(_ dialog: String) -> Bool {
+        guard ["settings", "connection"].contains(dialog), documentContext != nil,
+              view != nil, subscriptions.contains("app.dialogRequested") else { return false }
+        let raw = String(decoding: (try? JSONSerialization.data(withJSONObject: ["schema": 2, "dialog": dialog])) ?? Data(), as: UTF8.self)
+        emitEvent("app.dialogRequested", raw: raw)
+        return true
+    }
+
+    private func emitEvent(_ name: String, raw: String) {
+        guard let context = documentContext, subscriptions.contains(name) else { return }
+        view?.callAsyncJavaScript("window.__hrAppEvent?.(context, name, data);",
+            arguments: ["context": context, "name": name, "data": raw], in: nil, in: .page, completionHandler: nil)
     }
     func statusJSON() -> String {
         let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true

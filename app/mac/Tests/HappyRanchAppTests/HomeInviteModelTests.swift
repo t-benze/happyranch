@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Combine
 import CryptoKit
 import Testing
@@ -89,6 +90,28 @@ private final class HomeReadinessFixture: AppAPITransport, @unchecked Sendable {
         transfer.emit(.bytes(Data("{\"api_contract\":{\"current\":1,\"min_client\":1},\"update_busy\":{\"busy\":\(busy),\"unknown\":\(busy)}}".utf8)))
         transfer.finish(); return transfer
     }
+}
+
+/// Uses the suite's existing disposable login Keychain. Only the initial
+/// synthetic refusal is injected; successful writes/readbacks use production.
+private actor HomeProtectedStoreFixture: SavedHomeCredentialStore {
+    let protected = LoginKeychainDeviceStore()
+    let gate = HomeAwaitGate()
+    private var refuseSave = true
+    func allowSave() { refuseSave = false }
+    func savedHomes() async throws -> SavedHomeDiscovery { try await protected.savedHomes() }
+    func load(binding: SavedDeviceBinding, trust: SavedHomeTrust) async throws -> SavedDeviceCredential {
+        try await protected.load(binding: binding, trust: trust)
+    }
+    func save(_ credential: SavedDeviceCredential) async throws {
+        if refuseSave { throw SavedAccessFailure.saveFailed }
+        try await protected.save(credential) // Includes real protected readback.
+        await gate.pause("save-return")
+    }
+    func refreshAddress(from credential: SavedDeviceCredential, to trust: SavedHomeTrust) async throws -> SavedDeviceCredential {
+        try await protected.refreshAddress(from: credential, to: trust)
+    }
+    func delete(binding: SavedDeviceBinding) async throws { try await protected.delete(binding: binding) }
 }
 
 private actor HomeSessionFixture: HomeInviteSession {
@@ -200,6 +223,17 @@ struct HomeInviteModelTests {
         let store = HomeStoreFixture(), session = HomeSessionFixture()
         await session.approve()
         let model = HomeInviteModel(store: store, makeSession: { session })
+        // Phase polls need execution time, not calendar time or host sleep.
+        // Keep the seven-second bound even if the Mac sleeps between polls.
+        @MainActor
+        func waitForPhase(_ expected: HomeInviteModel.Phase) async -> Bool {
+            let clock = SuspendingClock()
+            let deadline = clock.now.advanced(by: .seconds(7))
+            while model.phase != expected, clock.now < deadline {
+                try? await clock.sleep(until: min(deadline, clock.now.advanced(by: .milliseconds(10))))
+            }
+            return model.phase == expected
+        }
         model.accept(try invite())
         try #require(await eventually { model.webURL != nil })
         let url = try #require(model.webURL), context = model.lifetime
@@ -211,14 +245,14 @@ struct HomeInviteModelTests {
         let observation = model.$webURL.sink { published.append($0) }
         defer { observation.cancel(); model.disconnectActive() }
         session.readiness.setBusy(true)
-        try #require(await eventually(timeout: 7) { model.phase == .runtimeBusy })
+        try #require(await waitForPhase(.runtimeBusy))
         #expect(model.phase != .connected && model.appReadiness?.state == "busy")
         #expect(model.lifetime == context && model.webURL == url)
         #expect(ConnectionClientProjection.health(model, now: Date())["runtime"] as? String == "unknown")
         #expect(await session.stops == 0)
         #expect(await session.opens == 1)
         session.readiness.setBusy(false)
-        try #require(await eventually(timeout: 7) { model.phase == .connected })
+        try #require(await waitForPhase(.connected))
         #expect(model.lifetime == context && model.webURL == url)
         #expect(published.allSatisfy { $0 == url }, "No nil publication can dismantle Main")
         #expect(await session.stops == 0)
@@ -227,7 +261,7 @@ struct HomeInviteModelTests {
         #expect(ConnectionClientProjection.health(model, now: Date())["runtime"] as? String == "available")
         // Genuine access loss still takes the existing teardown path.
         await session.configure(access: .revoked)
-        try #require(await eventually(timeout: 7) { model.phase == .failed(.revoked) })
+        try #require(await waitForPhase(.failed(.revoked)))
         #expect(model.webURL == nil && model.lifetime != context)
         #expect(model.accessObservation?.access == .revokedConfirmed)
     }
@@ -1040,6 +1074,98 @@ final class HomeCandidateOwnershipTests: XCTestCase {
         XCTAssertEqual(model.phase, .readyToSwitch)
         XCTAssertNil(model.appTransport, "Readiness alone does not select a transport")
         try model.commitCandidate()
+    }
+
+    @MainActor
+    func testUnsavedSessionDisconnectAndNonSaveTransitionsRetainWarning() async throws {
+        let a = HomeSessionFixture(), b = HomeSessionFixture(), store = HomeStoreFixture()
+        await a.approve(); await b.approve(); await store.configure(saveFails: true)
+        let factory = HomeSessionFactory([a, b])
+        let model = HomeInviteModel(store: store, makeSession: { factory.next() })
+        try await firstSelection(model)
+        let selected = try XCTUnwrap(model.activeID)
+        let (root, scheme, _, transport) = try AppSchemeSwitchTests().fixture()
+        defer { scheme.close(); try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: root.appendingPathExtension("json")) }
+        func warningPresent() throws -> Bool {
+            let status = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(scheme.statusJSON().utf8)) as? [String: Any])
+            return try XCTUnwrap(status["access_unsaved"] as? Bool)
+        }
+        scheme.disconnectSelected = { model.disconnectActive(); return true }
+        try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#)
+        XCTAssertNil(scheme.selectTransport(id: selected.uuidString, transport: try XCTUnwrap(model.appTransport), remote: true))
+        scheme.updateCandidate(nil, accessUnsaved: model.hasUnsavedAccessWarning)
+        XCTAssertTrue(try warningPresent()); XCTAssertEqual(model.saveFailure, .saveFailed)
+        let disconnected = await model.disconnectSelected(using: scheme)
+        XCTAssertNil(disconnected)
+        XCTAssertTrue(model.cleanupOutcomes[selected] == "confirmed")
+        XCTAssertFalse(model.hasActiveSession); XCTAssertNil(model.appTransport)
+        XCTAssertFalse(model.bridgeHasUnsavedAccess, "Disconnect releases credential retry custody")
+        XCTAssertEqual(model.saveFailure, .saveFailed, "No active target is not a save confirmation")
+        XCTAssertTrue(try warningPresent(), "Disconnect's immediate status must retain the warning")
+        scheme.updateCandidate(nil, accessUnsaved: model.hasUnsavedAccessWarning)
+        XCTAssertTrue(try warningPresent(), "SwiftUI's subsequent projection must also retain it")
+        let status = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(scheme.statusJSON().utf8)) as? [String: Any])
+        XCTAssertEqual(status["state"] as? String, "no_target")
+        XCTAssertEqual(status["access_unsaved"] as? Bool, true)
+        XCTAssertTrue(model.retryGuidance.contains("new invite"))
+        // Direct transport selection and document loss cannot confirm a save.
+        XCTAssertNil(scheme.selectTransport(id: "other", transport: transport, remote: true))
+        XCTAssertTrue(try warningPresent())
+        scheme.documentDidStart(); XCTAssertTrue(try warningPresent())
+        await store.configure()
+        model.accept(try HomeInviteModelTests().invite(home: "B"))
+        let ready = await HomeInviteModelTests().eventually { model.phase == .readyToSwitch && !model.busy }
+        XCTAssertTrue(ready); XCTAssertFalse(model.savedHomes.isEmpty)
+        XCTAssertTrue(model.hasUnsavedAccessWarning, "Saving B does not confirm A's failed save")
+        model.cancel(); await model.bridgeSettle()
+        scheme.updateCandidate(model.bridgeCandidate, accessUnsaved: model.hasUnsavedAccessWarning)
+        XCTAssertTrue(try warningPresent(), "Cancel and an unrelated save retain the original failure")
+    }
+
+    @MainActor
+    func testConfirmedProtectedWriteReadbackClearsMatchingDisconnectedWarning() async throws {
+        let a = HomeSessionFixture(), b = HomeSessionFixture(), store = HomeProtectedStoreFixture()
+        await a.approve(); await b.approve()
+        let factory = HomeSessionFactory([a, b])
+        let model = HomeInviteModel(store: store, makeSession: { factory.next() })
+        let home = "save-warning-" + UUID().uuidString
+        try await firstSelection(model, home: home)
+        let target = try XCTUnwrap(model.bridgeReplacementTarget)
+        let selected = try XCTUnwrap(model.activeID)
+        model.disconnectActive()
+        let stopped = await model.waitForCleanup(id: selected)
+        XCTAssertTrue(stopped); XCTAssertTrue(model.hasUnsavedAccessWarning)
+        let (root, scheme, _, _) = try AppSchemeSwitchTests().fixture()
+        defer { scheme.close(); try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: root.appendingPathExtension("json")) }
+        scheme.updateCandidate(nil, accessUnsaved: model.hasUnsavedAccessWarning)
+        func warningPresent() throws -> Bool {
+            let status = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(scheme.statusJSON().utf8)) as? [String: Any])
+            return try XCTUnwrap(status["access_unsaved"] as? Bool)
+        }
+        XCTAssertTrue(try warningPresent())
+        await store.allowSave(); await store.gate.arm("save-return")
+        do {
+            model.accept(try HomeInviteModelTests().invite(home: home))
+            let written = await store.gate.waitFor("save-return")
+            XCTAssertTrue(written, "Reach the production Keychain write/readback before checking its outcome")
+            let readback = try await store.load(binding: target.binding, trust: target.trust)
+            XCTAssertEqual(readback.binding, target.binding)
+            XCTAssertNotNil(readback.networkProfileID)
+            XCTAssertTrue(model.hasUnsavedAccessWarning, "Model has not received the protected result yet")
+            scheme.updateCandidate(model.bridgeCandidate, accessUnsaved: model.hasUnsavedAccessWarning)
+            XCTAssertTrue(try warningPresent())
+            await store.gate.release(); await model.bridgeSettle()
+            XCTAssertFalse(model.hasUnsavedAccessWarning)
+            XCTAssertNil(model.saveFailure)
+            scheme.updateCandidate(model.bridgeCandidate, accessUnsaved: model.hasUnsavedAccessWarning)
+            XCTAssertFalse(try warningPresent(), "Matching confirmed write/readback clears the Main status warning")
+        } catch {
+            await store.gate.release(); model.cancel(); await model.bridgeSettle()
+            try await store.delete(binding: target.binding)
+            throw error
+        }
+        model.cancel(); await model.bridgeSettle()
+        try await store.delete(binding: target.binding)
     }
 
     @MainActor

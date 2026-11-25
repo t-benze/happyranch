@@ -23,6 +23,9 @@ let hasRealLib = FileManager.default.fileExists(atPath: libtsnetPath)
 let package = Package(
     name: "HappyRanchApp",
     platforms: [.macOS(.v14)],
+    products: [
+        .executable(name: "HappyRanchApp", targets: ["HappyRanchLauncher"]),
+    ],
     targets: [
         .binaryTarget(
             name: "Sparkle",
@@ -50,10 +53,15 @@ let package = Package(
                 ].flatMap { ["-Xlinker", "-u", "-Xlinker", $0] })
             ] : []
         ),
-        .executableTarget(
+        .target(
             name: "HappyRanchApp",
             dependencies: ["HappyRanchSupervisor", "Sparkle"],
             path: "Sources/HappyRanchApp"
+        ),
+        .executableTarget(
+            name: "HappyRanchLauncher",
+            dependencies: ["HappyRanchApp"],
+            path: "Sources/HappyRanchLauncher"
         ),
         .testTarget(
             name: "HappyRanchSupervisorTests",

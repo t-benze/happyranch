@@ -108,7 +108,7 @@ struct MenuCommandDerivationTests {
 
 // MARK: - Suite (b): restart is two-phase (red→green test)
 
-@Suite("Restart two-phase (FIX 1 verification)")
+@Suite("Restart two-phase (FIX 1 verification)", .timeLimit(.minutes(2)))
 @MainActor
 struct RestartTwoPhaseTests {
 
@@ -185,7 +185,7 @@ struct RestartTwoPhaseTests {
 
 // MARK: - Suite (c): external-daemon guard
 
-@Suite("External daemon guard")
+@Suite("External daemon guard", .timeLimit(.minutes(2)))
 @MainActor
 struct ExternalDaemonGuardTests {
 

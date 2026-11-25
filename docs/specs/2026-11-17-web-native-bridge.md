@@ -587,7 +587,7 @@ credential or fingerprint field is exposed. Names are presentation only.
 | `incompatible` | `null` except in state `incompatible`, when it is exactly `{side, host_contract, client_contract, min_daemon}`. Side is `host`, `app` or `unknown`; contract constants are `1`/`1`. `host_contract` is exactly integer `{current, min_client}`, or `null` for missing/invalid metadata; null requires side `host`. |
 | `local` | Exactly `{supported, mode, running, prompt_base_url}`: Boolean supported; mode `service`, `foreground` or `unsupported`; running `running`, `starting`, `stopped` or `unknown`. Unsupported foreground fallback reports supported false. The base URL is the verified local daemon URL, or null; it must be null for a remote target and never disclose a remote address. |
 | `candidate` | `null` or exactly `{kind, id, name, phase, deadline}`. Kind is `local`/`remote`; phase is `signing_in`, `awaiting_approval`, `ready_to_switch`, `failed` or `cancelled`; deadline is an ISO8601/RFC3339 date-time or null. Candidate identity is sanitized and separate from the active target. |
-| `access_unsaved` | Boolean for the persistent native badge and Connection detail; only confirmed protected save clears it. |
+| `access_unsaved` | Boolean for the persistent native badge and Connection detail; confirmed protected save settles the matching binding's warning. Mac also settles confirmed removal of that exact binding (MAC-2b). |
 | `locale` | Exactly `{current, persisted}`: locale identifier and Boolean; false means session-only. Desktop web (S8-1-W, PR #1812) treats it as the native locale authority: first `app.status` seeds the first frame, later `app.status`/`app.stateChanged` reports apply only when no local choice is pending; see "v2 app locale setter". |
 
 ### v2 native errors and HTTP mapping
@@ -970,8 +970,8 @@ retired by S7-L1 (#1813).
 Main subscribes (including recovery), validates `dialogRequested`, routes valid
 events through the single-dialog owner gate, ignores invalid payloads and
 unsubscribes on document teardown. Connection contents are implemented by S6-W3 (#1811). Mac menu
-emission remains pending separate authorization; no Mac build/work is claimed
-here. No open/closed notice or target/generation authority is added.
+emission is source implemented by MAC-2b below; native execution remains NOT RUN
+on the Linux maker host. No open/closed notice or target/generation authority is added.
 
 #### Valid: request Settings
 
@@ -1810,10 +1810,110 @@ including browser adapter list/status and operator-only bind/reject; the daemon
 allowlist and contract semantics are unchanged.
 
 This is source delivery, not executed Mac acceptance. MAC-2b owns dialogs,
-toolbar/menu and screenshot qualification; MAC-4 owns Quit/close/Relaunch gating
+app-menu and screenshot qualification; Track B owns the web header; MAC-4 owns Quit/close/Relaunch gating
 and language. The PR body carries the current per-PR build ledger, including
 failed attempts. A build requires independent exact-head review APPROVE and is
 submitted by QA, never the maker.
+
+### MAC-2b Main dialog/chrome source delivery
+
+Mac requests Settings… (Cmd+,) and Connection… from the application menu
+through the existing `app.dialogRequested` event. ContentView hosts the bundled Main before any target is selected, so a
+cold/no-target client can subscribe and use these entries. API calls still
+refuse with `503 no_target`; dialog entry never starts or connects a target.
+Native emits only to the current Main's admitted subscriber, including
+target recovery. Requests without that subscriber are dropped; another explicit
+action is required. Opening, switching and closing remain the
+existing shared web dialog/owner gate's responsibility. There is no auxiliary
+web app, network port, queued event or new visibility/acknowledgement protocol.
+Founder THR-387 seq146 removes Main's native window toolbar. Controls live in
+the web header: Settings/Connection, target/status pill, labelled persistent
+Access wasn't saved warning and named unavailable/Retry action. Track B builds
+that header. The native app menu remains; status/events and fixed validated
+bridge commands with existing native confirmations remain the native boundary.
+This round does not change Stop/Quit deadlines, restart cancellation, ownership
+or observed-exit settlement.
+
+The Main facade admits the already supported client reads/actions via the
+existing bounded duplicate-free Connection parser, ledger, native confirmations
+and Keychain operations. It unwraps their existing v1 results/errors for the
+shared Main facade, and routes `client.stateChanged` separately from
+`app.stateChanged` and `app.dialogRequested`. The legacy auxiliary loader is
+not constructed. Current Main context/view/role fences guard entry and replies;
+document retirement invalidates dispatcher/subscriptions. Effective HOME/CLIENT
+role changes retire the captured-role dispatcher and restore an active client
+subscription on a fresh adapter with the continuing document event sequence,
+without replacing Main or clearing its owners, target or generation. Old-role
+operations keep their retired adapter and cannot
+resume in the new role or after a role round trip. MAC-2a target/owner
+admission still owns commit/disconnect. No daemon auth, remote allowlist,
+dependency, schema or credential-custody rule changes.
+
+The web header status/candidate pill and persistent access-unsaved warning use
+`app.status` projections. Clicking the warning opens Connection's existing
+save-specific Retry presentation. Unavailable document evidence preserves the
+warning across Disconnect, Cancel, target changes and navigation. Native retains
+nonsecret failed-save binding evidence independently of session custody. A
+matching protected write/readback success or confirmed removal settles only
+that binding's warning. Revoked unsaved B's confirmed removal preserves saved A;
+failed/unknown removal retains the warning. No active target and
+an unrelated computer's successful save are not confirmation. Native labels follow
+the launch locale; live locale setters remain MAC-4. MAC-3 local controls and
+legacy phase-strip/compatibility cutover remain separate.
+
+The existing `SUITE=app-scheme` collector additionally captures native 760×560
+Settings, Connection and Main web-viewport PNGs at 100%/200% text,
+EN/ZH and light/dark (24 top views plus overlapping 200% scroll views through
+each scrolling pane's bottom). Same-product qualifier processes drive the shipping
+`happyranch.theme`/`data-theme` mechanism and storage listener, check the applied
+theme, visible/focused dialog and locale, then combine WebKit snapshots with the native
+AppKit frame. Bounded PNG base64/digests and exact capture receipts are embedded
+in `probe.json.app_scheme.dialogs`, including contiguous scroll images, pane/offset
+and completion receipts. The app-scheme dispatcher emits only a bounded console
+summary (status, counts, artifact path, SHA256); complete JSON/embedded PNG data
+and partial failure evidence stay in the existing archived artifact. Eight panes/
+sixteen extra images per 200% view, 2 MiB
+per image, 8 MiB per locale and the existing 40-second process cap bound capture;
+incomplete/over-budget capture fails. Below the desktop breakpoint, the sidebar
+footer centers the profile avatar without horizontal insets so it fits the
+56px rail at 200% text in the supported narrow Mac window. The wider sidebar
+keeps its existing insets. No Jenkins job/config change is included.
+Every navigation/admission and dialog/theme/locale/scroll/settle/snapshot/PNG
+step fsyncs a `capture_progress` record before starting. Native background timers
+allocate up to 10 seconds for navigation and 2 seconds for later steps, even if
+MainActor or
+a WebKit callback stalls; `capture_step` records complete/error/timeout, with
+timeout exit124 and a short diagnostic line. Navigation still requires
+`WKNavigation.didFinish` before admission. Provisional/committed/finished
+`capture_navigation` checkpoints and monotonic elapsed completion/timeout facts
+identify the wait. The startup allocation leaves about 25s in the unchanged 35s
+hard watchdog (34s failure dump, 40s external process, 2100s suite); no retry or
+outer deadline extension. Build 80's EN didFinish took 3.191s; ZH timed out at 4.264s
+under the former 4s allocation before admission/capture. A localization/font/
+layout/scheduling/order cause is unproven; its records omit navigation phases.
+Native completion within the redistributed budget requires independent QA.
+Instant scrolling and a short timer settle replace unbounded animation-frame waits. The collector
+retains the last step, diagnostic events and closed validation reason on partial
+or failed runs, without accepting incomplete/duplicate/wrong-theme evidence.
+The Mac Package keeps testable `HappyRanchApp` code in a library target; native
+tests depend on libraries, and only the `HappyRanchLauncher` executable target
+owns `@main`. Its explicit product remains `HappyRanchApp`. The split unfiltered
+XCTest/Swift Testing runs and timeout diagnostics remain unchanged; no runtime
+test-environment sniff or test removal/filter/skip is introduced.
+A required portless cold-client qualification uses the real ContentView/
+AppDelegate composition and production resource lookup; it checks focused
+Settings/Connection from explicit menu actions, absence of a native toolbar, no
+replay or target selection, and explicit `503 no_target`. The full unfiltered XCTest + Swift
+Testing and transport qualification remain in the same workload. Native
+compile/tests/captures/layout/accessibility are
+NOT RUN on the Linux maker. A Mac build requires independent APPROVE at the
+exact head and consumes this PR's allowance. Earlier PR #1863 builds 72–80 remain
+recorded as used. Founder THR-387 seq155 grants up to 8 fresh builds per Mac
+piece; #1863 has 0/8 used at round 10 authorization (engineering_manager TASK-19210).
+Every QA build needs independent exact-head code_reviewer APPROVE; final Mac
+code must be built at its exact final head before merge. Return to Founder if
+all 8 are used without a mergeable result, the ~23 engineer-week cap would be
+exceeded, or daemon security changes appear. The maker runs none.
 
 ### MAC-1 transport implementation and qualification status
 
@@ -1869,7 +1969,10 @@ PASS at the revised head is claimed by the Linux maker. `scripts/mac_native/prob
 app-scheme` builds the actual product at the approved head, executes the full
 unfiltered app/mac package (both XCTest and Swift Testing targets), and qualifies the
 shipping scheme/adapter against a synthetic local daemon using the built SPA.
-Release tests explicitly enable testable imports and both libraries. The report
+Release tests enable testable imports and run both libraries separately:
+`--enable-xctest --disable-swift-testing`, then
+`--disable-xctest --enable-swift-testing`, without filters. An XCTest timeout or
+failure cannot suppress the second command. The report
 retains every XCTest outcome and every serial Swift Testing invocation, including
 parameter ordinals, using version-0 JSON events and an independent source census.
 Missing source cases, skips, failures, incomplete/unsupported capture or nonzero
@@ -1880,9 +1983,32 @@ The collected `probe.json` includes `native_tests.event_archive`, a byte-exact
 4 MiB gzip); archive overflow/missing capture refuses PASS. Capture survives
 command failure/timeout before scratch cleanup. This uses the existing JSON
 artifact collector without changing Jenkins configuration.
+Build/test timeout records also retain separate captured stdout/stderr byte
+counts and SHA256, 2 KiB head/tail excerpts per stream and explicit excerpt
+truncation. These describe bytes drained before the deadline. Combined command
+fields and named XCTest/compiler/loader evidence concatenate stdout then stderr
+without claiming cross-stream ordering. Partial XCTest outcomes reach the native
+assessment alongside the Swift archive, including an incomplete running test.
+The command exit stays null/unobserved and the native verdict stays FAIL even
+when all captured outcomes passed; timeout is never substituted with exit 1
+or success. The existing process-group kill/reap remains mandatory, after a bounded stack
+sample of stalled test processes. The source-owned `--output` directory receives
+`mac-native-xctest.json` and `mac-native-swift_testing.json`, using the existing
+`evidence/*.json` artifact glob. They retain full stdout/stderr and Swift JSONL
+as byte-exact gzip/base64 with raw/compressed digests, plus command/build/source
+identity and process/stack records. XCTest start/end lines and Swift function/
+parameter events identify started cases; `native_tests.lifecycle` records their
+starts/ends and `native_tests.unfinished_cases` names those without completion.
+A partial final JSONL record retains completed prefix records for diagnosis,
+while its exact raw archive and verdict FAIL retain that failure. Files are initialized for this build before tests;
+archive failure refuses native PASS. Each file is bounded to 8 MiB, each sample
+to 1 MiB. Full diagnostics are kept outside the capped console/probe log.
 Results are not truncated; command/event overflow at 16 MiB
-fails. Native tests have 1,200s inside a shared 2,100s deadline, with elapsed times
-recorded; sufficiency and native output compatibility remain NOT RUN on Linux.
+fails. Each library has 570s plus up to 30s of timeout diagnostics (1,200s combined)
+inside the unchanged shared 2,100s deadline. Before killing the group, a bounded
+`ps` census selects only that group/descendants; `sample <pid> 1 1 -file` samples
+test runners first (32-process cap, five seconds each, 30s total with census).
+Errors, missing stacks and omissions stay explicit. Elapsed times are recorded; sufficiency and native output compatibility remain NOT RUN on Linux.
 The existing app-scheme qualification budgets/steps and Jenkins configuration
 remain unchanged. See the full workload and bounds in `app/mac/README.md`.
 The full run reuses the supervisor's scratch login-Keychain fixture for the
