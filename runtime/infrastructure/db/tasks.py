@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterator
 
 from runtime.infrastructure.db._shared import _task_move_admission, _late_database_now as _now, _synchronized
+from runtime.task_attribute_admission import validate_initial_attributes, write_initial_attributes_uncommitted
 from runtime.infrastructure.db.task_reconciliation import (
     ReconciliationError, TaskReconciliation, strict_json,
 )
@@ -4951,11 +4952,18 @@ class TasksMixin:
     @_synchronized
     def insert_task_with_attachments(
         self,
-        task: "TaskRecord",
+        task: TaskRecord | Callable[[], TaskRecord],
         attachments: list[dict],
         uploaded_by: str,
-    ) -> None:
+        *, attributes: dict | None = None,
+    ) -> TaskRecord:
         """Atomically insert a task + its private attachment links + audit rows.
+
+        A lazy task factory permits plain HTTP attribute validation before ID
+        allocation in this writer. Existing task-record callers retain their
+        behavior; attributes=None means an unsupported/legacy producer. The
+        plain HTTP caller always supplies a map, including {}. Trusted initial
+        actor remains Founder, independent of the attachment uploader label.
 
         Everything within one BEGIN IMMEDIATE / COMMIT transaction so a
         duplicate-storage-key UNIQUE violation, a link-write error, or an
@@ -4968,9 +4976,14 @@ class TasksMixin:
         been claimed by another task — the caller must translate this to a
         conflict response.
         """
+        if self._conn.in_transaction:
+            raise RuntimeError("attachment submission requires its own transaction")
         now = _now().isoformat()
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            if attributes is not None:
+                validate_initial_attributes(self, attributes)
+            task = task() if callable(task) else task
             self._conn.execute(
                 """INSERT INTO tasks (id, status, assigned_agent, team, brief,
                    revision_count, created_at, updated_at, completed_at, parent_task_id,
@@ -5047,8 +5060,11 @@ class TasksMixin:
                     "VALUES (?, ?, ?, ?, ?)",
                     (task.id, uploaded_by, "task_attachment_added", audit_payload, audit_ts),
                 )
+            if attributes is not None:
+                write_initial_attributes_uncommitted(self, task.id, attributes, actor_id="founder", actor_kind="founder")
             self._conn.commit()
-        except Exception:
+            return task
+        except BaseException:
             self._conn.rollback()
             raise
 

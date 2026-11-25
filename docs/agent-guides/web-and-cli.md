@@ -6365,4 +6365,51 @@ archives retain stable-ID/historical reads and refuse writes. Native scalar,
 initial/provenance/history and authority details are in the
 [attribute contract](../specs/2026-11-25-custom-task-attributes.md#pr2-http-routes).
 `api/taskAttributes.ts` and `taskAttributeTypes.ts` are handwritten mirrors.
-CLI, creation producers, UI, filters/export and score seeds are later slices.
+Plain creation and CLI ship in PR3 below; other creation producers, UI,
+filters/export and score seeds remain later slices.
+
+
+## Optional task attributes in the CLI (THR-390 PR3)
+
+`happyranch attributes list|show` discovers definitions with current key, type,
+constraints and description. `list --include-archived` includes retained
+archives; `show KEY_OR_ID` resolves a current key or stable ID. Historical keys
+are not aliases. Every verb supports `--org`, `--session-id` and `--json`.
+Text output is an indented complete API response; JSON output preserves native
+values, typed presence, initial state, history and editability.
+
+```bash
+happyranch attributes list --org example --session-id SID
+happyranch attributes show effort --org example --session-id SID
+happyranch run --org example --owner worker --brief "Work" --session-id SID --attr effort=4 --attr ready=false
+happyranch attributes get TASK-123 --org example --session-id SID --json
+happyranch attributes set TASK-123 effort 6 --org example --session-id SID --note "Updated estimate"
+happyranch attributes clear TASK-123 effort --org example --session-id SID
+happyranch attributes history TASK-123 --org example --session-id SID --key effort --json
+```
+
+Keys above are illustrative; no definitions or required scores are seeded.
+Plain `run` (POST `/tasks`) accepts repeated distinct `--attr KEY=VALUE`, also
+with `--attach`. It splits on the first `=`. Numeric tokens follow finite JSON
+number syntax, preserving integer precision; Boolean tokens are exactly `true`
+and `false`; string RHS is literal, including empty text, whitespace, quotes,
+Unicode, `null` and additional `=`. Duplicate/malformed pairs refuse before a
+mutation. Current server definitions remain authoritative. Absent attributes
+and `{}` record positive empty admission; explicit null/non-object input
+refuses. Any invalid field refuses the whole create with field-keyed reasons
+and no task row. There is no inheritance, automatic scoring or default value.
+Delegate/fanout/then and other producers remain outside PR3.
+
+Task, ownership, attachment links, initial values, admission/history and success
+audits commit jointly before enqueue. Original estimates remain immutable when
+later set/clear commands append events. Set/clear use a fresh read's definition
+version and value revision, send once and exit nonzero on refusal or uncertainty.
+No conflict or lost reply is automatically replayed. Read back before issuing a
+new command. Session proof is forwarded unchanged to PR2 routes and never
+retried as Founder. Definition writes remain Founder-only; task edit authority
+is unchanged. A plain create retains its existing trusted Founder attribution;
+its optional SID is for discovery and introduces no new create authority.
+
+The reusable creation adapter is `runtime/task_attribute_admission.py`; its
+caller-owned writer contract is recorded in the PR3 spec. Internal knowledge
+distillation retains its prior binding transaction and legacy provenance.

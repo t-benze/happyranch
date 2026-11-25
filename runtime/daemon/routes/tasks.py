@@ -17,7 +17,7 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Depends, APIRouter, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -28,6 +28,7 @@ from runtime.daemon.auth import _require_human, require_token
 from runtime.daemon.content_disposition import attachment_content_disposition
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep, OrgStreamDep, _stream_org_events
+from runtime.daemon.routes.task_attribute_models import AttributeErrorResponse
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.daemon.work_status import derive_work_status
@@ -41,6 +42,9 @@ from runtime.infrastructure.db.task_reconciliation import (
     identifier, request_body, require,
 )
 from runtime.infrastructure.task_pause_controls import PauseControlError
+from runtime.infrastructure.db.task_attributes import AttributeStoreError
+from runtime.task_attributes import AttributeValidationError
+from runtime.task_attribute_admission import validate_initial_attributes, write_initial_attributes_uncommitted
 from runtime.infrastructure.task_attachment_store import (
     MAX_TASK_ATTACHMENTS_PER_TASK,
     MAX_TASK_ATTACHMENT_BYTES,
@@ -563,6 +567,18 @@ class SubmitTask(BaseModel):
     brief: str
     owner: str | None = None  # assign a specific agent (default: team manager)
     attachments: list[TaskAttachmentRef] | None = None
+    attributes: dict[str, Any] = Field(
+        default_factory=dict,
+        description="This task's explicit initial values by current attribute key; omitted means empty admission",
+    )
+
+    @field_validator("attributes", mode="before")
+    @classmethod
+    def attribute_object(cls, value: Any) -> dict:
+        if not isinstance(value, dict):
+            raise HTTPException(422, detail={"code": "attribute_validation_failed",
+                                             "errors": {"attributes": ["expected_object"]}})
+        return value
 
 
 def resolve_task_owner(
@@ -635,12 +651,15 @@ def resolve_task_owner(
 
 def persist_root_task(
     org: OrgState, body: SubmitTask, *, bind: Callable[[TaskRecord], None] | None = None,
+    admit_attributes: bool = False,
 ) -> TaskRecord:
     """Ordinary root allocation with an optional atomic feature binding.
 
     Caller holds org.db_lock. Keep the ordinary move-gate/DB lock order and
     admission, task row and ownership insertion; never await before commit.
     A failed binding rolls back the task too. Queue delivery follows commit.
+    Only the plain HTTP producer opts into attributes; internal distillation
+    preserves its existing provenance and atomic binding without new admission.
     """
     db = org.db
     # Preserve the own-transaction refusal before any canonical roster read,
@@ -676,8 +695,12 @@ def persist_root_task(
             )
             db._conn.execute('BEGIN IMMEDIATE')
             try:
+                if admit_attributes:
+                    validate_initial_attributes(db, body.attributes)
                 task = TaskRecord(id=db.next_task_id(), brief=body.brief, team=team, assigned_agent=assigned, **selection)
                 db._insert_task_uncommitted(task)
+                if admit_attributes:
+                    write_initial_attributes_uncommitted(db, task.id, body.attributes, actor_id="founder", actor_kind="founder")
                 if bind is not None:
                     bind(task)
                 db._conn.commit()
@@ -687,7 +710,11 @@ def persist_root_task(
     return task
 
 
-@router.post("/tasks")
+@router.post("/tasks", responses={
+    422: {"model": AttributeErrorResponse | dict[str, Any],
+          "description": "Field-keyed attribute refusals or existing task validation errors"},
+    503: {"model": AttributeErrorResponse, "description": "Attribute storage unavailable"},
+})
 async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
     state: DaemonState = request.app.state.daemon
     team, assigned = resolve_task_owner(body, org)
@@ -763,68 +790,76 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
                 "content_type": content_type,
             })
 
-    async with org.db_lock:
-        # The lock acquisition may yield to a roster writer. Validate the
-        # current executable identity again before allocation or attachment claims.
-        team, assigned = resolve_task_owner(body, org)
-        selection = _validated_task_overrides(org, assigned, body.model, body.reasoning_effort, "founder")
-        task_id = org.db.next_task_id() if prevalidated_attachments else None
+    try:
+        async with org.db_lock:
+            # The lock acquisition may yield to a roster writer. Validate the
+            # current executable identity again before allocation or attachment claims.
+            team, assigned = resolve_task_owner(body, org)
+            selection = _validated_task_overrides(org, assigned, body.model, body.reasoning_effort, "founder")
 
-        # Re-check claimability INSIDE the lock — the pre-validation outside
-        # is a fast-path hint; the authoritative claim gate is the
-        # UNIQUE(storage_key) constraint enforced during the single
-        # transaction below.
-        if prevalidated_attachments:
-            store = _task_attachment_store(org)
-            attachment_params: list[dict] = []
-            for idx, pva in enumerate(prevalidated_attachments):
-                ref = pva["ref"]
-                path = store.path_for(ref.storage_key)
-                if not path.exists():
-                    # File disappeared between upload and link — reject.
+            # Re-check claimability INSIDE the lock — the pre-validation outside
+            # is a fast-path hint; the authoritative claim gate is the
+            # UNIQUE(storage_key) constraint enforced during the single
+            # transaction below.
+            if prevalidated_attachments:
+                store = _task_attachment_store(org)
+                attachment_params: list[dict] = []
+                for idx, pva in enumerate(prevalidated_attachments):
+                    ref = pva["ref"]
+                    path = store.path_for(ref.storage_key)
+                    if not path.exists():
+                        # File disappeared between upload and link — reject.
+                        raise HTTPException(
+                            status_code=404,
+                            detail={
+                                "code": "task_attachment_not_found",
+                                "storage_key": ref.storage_key,
+                            },
+                        )
+                    size_bytes = path.stat().st_size
+                    attachment_params.append({
+                        "ordinal": idx,
+                        "storage_key": ref.storage_key,
+                        "display_name": pva["display_name"],
+                        "size_bytes": size_bytes,
+                        "content_type": pva["content_type"],
+                    })
+
+                try:
+                    task = org.db.insert_task_with_attachments(
+                        lambda: TaskRecord(
+                            id=org.db.next_task_id(),
+                            brief=body.brief,
+                            team=team,
+                            assigned_agent=assigned, **selection,
+                        ),
+                        attachments=attachment_params,
+                        uploaded_by=uploaded_by,
+                        attributes=body.attributes,
+                    )
+                    task_id = task.id
+                except sqlite3.IntegrityError as exc:
+                    if "task_attachments.storage_key" not in str(exc):
+                        raise
+                    # UNIQUE(storage_key) violation — another concurrent request
+                    # claimed this key within the serialized boundary.
                     raise HTTPException(
-                        status_code=404,
+                        status_code=409,
                         detail={
-                            "code": "task_attachment_not_found",
-                            "storage_key": ref.storage_key,
+                            "code": "attachment_already_claimed",
+                            "message": (
+                                "One or more attachments were claimed by another "
+                                "task after validation. Retry with a fresh upload."
+                            ),
                         },
                     )
-                size_bytes = path.stat().st_size
-                attachment_params.append({
-                    "ordinal": idx,
-                    "storage_key": ref.storage_key,
-                    "display_name": pva["display_name"],
-                    "size_bytes": size_bytes,
-                    "content_type": pva["content_type"],
-                })
-
-            try:
-                org.db.insert_task_with_attachments(
-                    TaskRecord(
-                        id=task_id,
-                        brief=body.brief,
-                        team=team,
-                        assigned_agent=assigned, **selection,
-                    ),
-                    attachments=attachment_params,
-                    uploaded_by=uploaded_by,
-                )
-            except sqlite3.IntegrityError:
-                # UNIQUE(storage_key) violation — another concurrent request
-                # claimed this key within the serialized boundary.
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": "attachment_already_claimed",
-                        "message": (
-                            "One or more attachments were claimed by another "
-                            "task after validation. Retry with a fresh upload."
-                        ),
-                    },
-                )
-        else:
-            task = persist_root_task(org, body)
-            task_id = task.id
+            else:
+                task = persist_root_task(org, body, admit_attributes=True)
+                task_id = task.id
+    except AttributeValidationError as exc:
+        raise HTTPException(422, detail={"code": "attribute_validation_failed", "errors": exc.errors}) from exc
+    except (AttributeStoreError, sqlite3.Error) as exc:
+        raise HTTPException(503, detail={"code": "attribute_storage_unavailable"}) from exc
 
     enqueue_task(state, org.slug, task_id)
     return {"task_id": task_id, "team": team, "assigned_agent": assigned}
