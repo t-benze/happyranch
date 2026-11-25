@@ -105,6 +105,7 @@ from runtime.infrastructure.db.tasks import (
 )
 from runtime.infrastructure.db.shared_artifacts import SharedArtifactsMixin
 from runtime.infrastructure.db.threads import ThreadsMixin
+from runtime.infrastructure.db.thread_guests import ThreadGuestsMixin
 from runtime.infrastructure.db.reply_delivery import ReplyDeliveryMixin
 from runtime.infrastructure.db.reply_exchange import (
     EXCHANGE_GRACE_SECONDS,
@@ -472,6 +473,7 @@ class Database(
     SessionsMixin,
     WorkspaceCleanupMixin,
     ThreadsMixin,
+    ThreadGuestsMixin,
     ReplyDeliveryMixin,
     ReplyExchangeMixin,
     SchemaMixin,

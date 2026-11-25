@@ -17,6 +17,16 @@ async def thread_breaker_scheduler_loop(state, *, interval_seconds: float = 5.0)
     while True:
         for org in list(state.orgs_snapshot().values()):
             try:
+                from runtime.infrastructure.thread_archive import publish_thread_event
+
+                async with org.db_lock:
+                    guest_events = org.db.sweep_thread_guests()
+                for event in guest_events:
+                    await publish_thread_event(org, org.slug, **event, speaker="daemon",
+                                               kind="system", preview="guest ended")
+            except Exception:
+                logger.exception("thread guest expiry sweep failed for org %s", org.slug)
+            try:
                 move = getattr(org.db, "_team_move_coordinator", None)
                 if move is not None:
                     for token in await asyncio.to_thread(move.threads.runnable_tokens):

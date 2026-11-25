@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from runtime.daemon.auth import require_token
+from runtime.daemon.auth import require_token, _require_human
 from runtime.daemon.content_disposition import attachment_content_disposition
 from runtime.daemon.routes._doctrine import SELF_DISPATCH_HINT
 from runtime.daemon.routes._org_dep import OrgDep, OrgStreamDep, _stream_org_events, _stream_org_reader
@@ -22,6 +22,7 @@ from runtime.daemon.state import DaemonState
 from runtime.daemon.thread_queue import ThreadJob
 from runtime.infrastructure.db.tasks import TaskThreadOriginUnavailable
 from runtime.infrastructure.db.threads import ThreadResolutionError
+from runtime.infrastructure.db.thread_guests import ThreadGuestError
 from runtime.infrastructure.memory_collection import CensusReadUnavailable
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.artifact_store import ArtifactStore, InvalidArtifactName
@@ -1507,6 +1508,7 @@ async def get_thread_endpoint(
     responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
     d = _thread_row_to_dict(t)
     d["participants"] = participants
+    d["guests"] = org.db.list_thread_guests(thread_id)
     # Pass responders unconditionally: the grouped query returns reply and
     # task_followup invocations keyed by their OWN triggering_seq (every
     # invocation carries its authoritative purpose on the wire — TASK-5553 —
@@ -1522,6 +1524,81 @@ async def get_thread_endpoint(
         for p in org.db.list_reply_delivery_projections(thread_id)
     ]
     return d
+
+
+class ThreadGuestView(BaseModel):
+    id: str
+    label: str
+    app: Literal["codex_desktop", "claude_desktop"]
+    state: Literal["invited", "joined", "ended"]
+    expires_at: str
+    last_seen_at: str | None
+    last_read_seq: int
+
+
+class InviteThreadGuestBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    app_id: Literal["codex_desktop", "claude_desktop"]
+    expires: Literal["1h", "24h", "7d"] = "24h"
+    from_now: bool = False
+
+
+class ThreadGuestInviteResponse(BaseModel):
+    guest: ThreadGuestView
+    invite_code: str
+    prompt: str
+
+
+def _require_guest_loopback(request: Request) -> None:
+    if request.client is None or request.client.host not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(status_code=403, detail={"code": "not_localhost"})
+
+
+_guest_write_dependencies = [Depends(_require_human), Depends(_require_guest_loopback)]
+
+
+@router.post("/threads/{thread_id}/guests", dependencies=_guest_write_dependencies,
+             response_model=ThreadGuestInviteResponse)
+async def invite_thread_guest_endpoint(
+    slug: str, thread_id: str, body: InviteThreadGuestBody, org: OrgDep, response: Response,
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        async with org.db_lock:
+            result = org.db.invite_thread_guest(thread_id, **body.model_dump())
+    except ThreadGuestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code}) from exc
+    await _publish_thread_event(org, slug, thread_id=thread_id, seq=None, speaker="founder",
+                                kind="system", preview="guest invited")
+    return result
+
+
+@router.post("/threads/{thread_id}/guests/{guest_id}/new-code", dependencies=_guest_write_dependencies,
+             response_model=ThreadGuestInviteResponse)
+async def replace_thread_guest_code_endpoint(
+    slug: str, thread_id: str, guest_id: str, org: OrgDep, response: Response,
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        async with org.db_lock:
+            return org.db.replace_thread_guest_code(thread_id, guest_id)
+    except ThreadGuestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code}) from exc
+
+
+@router.post("/threads/{thread_id}/guests/{guest_id}/revoke", dependencies=_guest_write_dependencies,
+             response_model=ThreadGuestView)
+async def revoke_thread_guest_endpoint(
+    slug: str, thread_id: str, guest_id: str, org: OrgDep,
+) -> dict:
+    try:
+        async with org.db_lock:
+            result = org.db.revoke_thread_guest(thread_id, guest_id)
+    except ThreadGuestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code}) from exc
+    await _publish_thread_event(org, slug, thread_id=thread_id, seq=None, speaker="founder",
+                                kind="system", preview="guest ended")
+    return result
 
 
 @router.get("/threads/{thread_id}/messages")

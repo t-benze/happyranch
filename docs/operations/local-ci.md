@@ -1,5 +1,18 @@
 # Local CI
 
+## Focused thread guest seats (THR-362 slice 1)
+
+```bash
+uv run --frozen python -B -m unittest scripts.test_thread_guests -v
+```
+
+Uses the existing synthetic-org ASGI/SQLite venue without lifespan, listeners,
+providers or live orgs. Covers actual database-open upgrade/rerun with retained
+tables/data, the per-org counter, non-roster guest wake routing, seat routes and
+credential projections, expiry/lapse/archive endings, CLI/transcript labels,
+and bearer/human/loopback and remote default-deny boundaries. This is outside
+the retired Python suite and skipped integration suite; it adds no CI check.
+
 ## Focused job receipt diagnostics
 
 ```bash

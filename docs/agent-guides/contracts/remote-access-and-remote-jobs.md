@@ -1,5 +1,16 @@
 # Remote access and remote jobs contracts
 
+## Thread guests remain local (THR-362 slice 1)
+
+The three POST seat routes (`/threads/{id}/guests`,
+`/threads/{id}/guests/{guest_id}/new-code`, and
+`/threads/{id}/guests/{guest_id}/revoke`) remain absent from
+`runtime/remote_access/route_policy.json` and are denied by default.
+Each additionally requires a loopback peer, the master bearer and the existing
+human-only gate. Remote GET thread detail can display safe seat metadata,
+never codes/tokens/hashes. Founder decision 13 denies even remote Revoke.
+No remote authority or policy entry is added; guest MCP/setup are later slices.
+
 > Extracted from the repository-root `AGENTS.md` on 2026-10-30 and maintained
 > here. The THR-327 shipped Linux lifecycle and bounded M1 receipt below extend
 > the original phase-specific implementation records; those earlier slice limits

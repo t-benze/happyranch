@@ -355,6 +355,7 @@ def cmd_threads_show(args: argparse.Namespace) -> None:
         print(_json.dumps(data, indent=2))
         return
     names = identities.labels(client, slug)
+    names.update({guest["id"]: guest["label"] for guest in data.get("guests", [])})
     print(f"Thread: {data['thread_id']} — {data['subject']}")
     print(f"  status: {data['status']}  turns: {data['turns_used']}/{data['turn_cap']}")
     print(f"  participants: {', '.join(identities.display(names, p) for p in data.get('participants', []))}")
@@ -708,6 +709,7 @@ def cmd_threads_forward(args: argparse.Namespace) -> None:
         ]
         quoted = build_forward_body_from_thread(
             source_id=source, messages=msgs, subject=thr["subject"],
+            guest_labels={guest["id"]: guest["label"] for guest in thr.get("guests", [])},
         )
         kind = "thread"
         default_subject = f"Fwd: {thr['subject']}"
@@ -732,11 +734,50 @@ def cmd_threads_forward(args: argparse.Namespace) -> None:
 
 
 
+def cmd_threads_guests(args: argparse.Namespace) -> None:
+    """Founder seat commands; codes are printed once and never written to files."""
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+    path = f"/api/v1/orgs/{slug}/threads/{args.thread_id}"
+    if args.guest_command == "list":
+        response = client.get(path)
+        if _ok(response):
+            for guest in response.json().get("guests", []):
+                print(f"{guest['id']}  {guest['label']}  {guest['state']}  expires={guest['expires_at']}  "
+                      f"last_seen={guest['last_seen_at'] or '—'}  read_to={guest['last_read_seq']}")
+        return
+    if args.guest_command == "invite":
+        response = client.post(path + "/guests", json={
+            "app_id": args.app, "expires": args.expires, "from_now": args.from_now,
+        })
+    else:
+        response = client.post(path + f"/guests/{args.guest_id}/{args.guest_command}")
+    if _ok(response):
+        data = response.json()
+        if args.guest_command in ("invite", "new-code"):
+            print(data["prompt"])
+        else:
+            print(f"{data['id']}  {data['label']}  {data['state']}")
+
+
 def register(sub) -> None:
     p_threads = sub.add_parser("threads", help="Thread operations (compose, reply, decline, dispatch)")
     p_threads.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_threads.set_defaults(func=cmd_threads_tui)
     threads_sub = p_threads.add_subparsers(dest="threads_command", required=False)
+    guests = threads_sub.add_parser("guests", help="Founder: manage desktop guest seats")
+    guest_sub = guests.add_subparsers(dest="guest_command", required=True)
+    for action in ("invite", "list", "new-code", "revoke"):
+        command = guest_sub.add_parser(action)
+        command.add_argument("thread_id")
+        command.add_argument("--org", default=None, help="Org slug")
+        if action == "invite":
+            command.add_argument("--app", required=True, choices=("codex_desktop", "claude_desktop"))
+            command.add_argument("--expires", default="24h", choices=("1h", "24h", "7d"))
+            command.add_argument("--from-now", action="store_true")
+        elif action != "list":
+            command.add_argument("guest_id", help="Seat ID, G-n")
+        command.set_defaults(func=cmd_threads_guests)
 
     p_threads_compose = threads_sub.add_parser(
         "compose", help="Compose a new thread (founder direct or agent-initiated)",

@@ -12,7 +12,37 @@ import type {
   ThreadMessagesPage,
   ThreadRecord,
   ThreadListPage,
+  ThreadGuest,
 } from './types';
+
+export type { ThreadGuest } from './types';
+
+export interface InviteThreadGuestBody {
+  app_id: 'codex_desktop' | 'claude_desktop';
+  expires?: '1h' | '24h' | '7d';
+  from_now?: boolean;
+}
+
+export interface ThreadGuestInviteResponse {
+  guest: ThreadGuest;
+  invite_code: string;
+  prompt: string;
+}
+
+export const inviteThreadGuest = (
+  slug: string, threadId: string, body: InviteThreadGuestBody,
+): Promise<ThreadGuestInviteResponse> =>
+  request(`/orgs/${slug}/threads/${threadId}/guests`, { method: 'POST', body });
+
+export const replaceThreadGuestCode = (
+  slug: string, threadId: string, guestId: string,
+): Promise<ThreadGuestInviteResponse> =>
+  request(`/orgs/${slug}/threads/${threadId}/guests/${guestId}/new-code`, { method: 'POST' });
+
+export const revokeThreadGuest = (
+  slug: string, threadId: string, guestId: string,
+): Promise<ThreadGuest> =>
+  request(`/orgs/${slug}/threads/${threadId}/guests/${guestId}/revoke`, { method: 'POST' });
 
 /**
  * A direct dispatch or associated root revisit. Mirrors the summary dict the

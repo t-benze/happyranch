@@ -42,7 +42,9 @@ async def finish_thread_archive(
         thread_id=thread.id, subject=thread.subject, started_at=thread.started_at,
         archived_at=archived_at, participants=participants,
         turns_used=thread.turns_used, forwarded_from_id=thread.forwarded_from_id,
-        summary=summary, rendered_transcript=render_transcript_body(msgs),
+        summary=summary, rendered_transcript=render_transcript_body(msgs, guest_labels={
+            guest["id"]: guest["label"] for guest in org.db.list_thread_guests(thread.id)
+        }),
     )
     async with org.db_lock:
         org.db.set_thread_transcript_path(thread.id, str(transcript_path))

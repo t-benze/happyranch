@@ -665,6 +665,7 @@ class ThreadsMixin:
                 decline_reason="archive_started",
             )
             self._set_thread_status_archived_uncommitted(thread_id, summary=summary)
+            self._end_thread_guests_for_archive_uncommitted(thread_id)
             rows = self._reset_thread_sessions_for_thread_uncommitted(thread_id)
             if rows:
                 self.insert_audit_log_uncommitted(

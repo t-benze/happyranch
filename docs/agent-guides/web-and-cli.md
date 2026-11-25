@@ -1,5 +1,21 @@
 # Web And CLI
 
+## Thread guest seat CLI (THR-362 slice 1)
+
+Founder commands, under `happyranch threads guests` (each accepts `--org SLUG`):
+
+- `invite THR-n --app codex_desktop|claude_desktop [--expires 1h|24h|7d] [--from-now]`
+  prints the one-time invite prompt. Default scope is the whole thread and
+  lifetime is 24h. Claude desktop remains untested.
+- `list THR-n` prints safe seat labels/state/expiry/read position.
+- `new-code THR-n G-n` prints a replacement prompt for an unused, unexpired code.
+- `revoke THR-n G-n` ends the seat permanently.
+
+Agents must not run these founder commands. `threads show`, forwarding and archive
+transcripts render guest labels; the old TUI is removed. Thread detail gains a
+safe `guests` list and the three seat routes have TS mirrors. No UI, setup or
+MCP tools ship in slice 1. Invite codes never appear on ordinary reads.
+
 Start@2 B2+B3 uses genuine atomic first/later completion admission, original source
 settlement, initiator-owned hold recovery and source-never-auto-completes semantics;
 [the current contract](contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation) owns details.
