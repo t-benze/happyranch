@@ -196,7 +196,7 @@ export function ExportDialog({ selection, onClose }: { selection: ExportSelectio
           {busy && <p role="status" className="text-text-secondary text-sm">{t('tasks.export.generating')}</p>}
           {ready && (
             <div role="status" className="border-accent-default bg-accent-soft text-text-primary rounded-sm border px-3.5 py-3 text-sm font-semibold" data-testid="tasks-export-receipt">
-              {ready.rows !== null && <p>{t('tasks.export.receipt', { n: ready.rows })}</p>}
+              {ready.rows !== null && <p>{t('tasks.export.receipt', { count: ready.rows, fmt: format === 'csv' ? 'CSV' : 'JSON' })}</p>}
               {ready.result.pageFull && <p className="text-text-secondary mt-1 text-xs font-normal">{t('tasks.export.moreMayMatch')}</p>}
             </div>
           )}

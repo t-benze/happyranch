@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs';
 
 export const FF_PROFILES = {
-  production: { profile: 'production', work_hours_ui: false, kb_compose_ui: false, task_attributes_ui: false },
+  production: { profile: 'production', work_hours_ui: false, kb_compose_ui: false, task_attributes_ui: true },
   local: { profile: 'local', work_hours_ui: true, kb_compose_ui: false, task_attributes_ui: true },
   'local-wh-off': { profile: 'local', work_hours_ui: false, kb_compose_ui: false, task_attributes_ui: true },
 };
@@ -374,18 +374,20 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
       endCase();
     }
 
-    // -------------------------------------------------------------- FF-OFF-TASKATTR (THR-390 PR7)
+    // -------------------------------------------------------------- FF-PROD-TASKATTR (THR-390 PR9)
+    // task_attributes_ui is on in production since PR9: the same card and one
+    // attributes GET as the local FF-ON-TASKATTR case.
     {
-      const id = 'FF-OFF-TASKATTR-en-1440';
-      beginCase(id, 'production: task detail has no Attributes card and sends no attributes request');
+      const id = 'FF-PROD-TASKATTR-en-1440';
+      beginCase(id, 'production: task detail shows the Attributes card with one attributes GET (flag on since PR9)');
       await reset();
       const from = ledger.length;
       const page = await openPage(`${base}${root}/tasks/${FF_TASK_ID}`, { init: `${seedLocale('en')}\n${chineseNavigator}` });
       check(`${id} task detail settled`, await waitTrue(page, textIn(tr('en', 'tasks.rail.heading')), 'task detail settle'), true);
-      await pause(1500);
+      check(`${id} card settled`, await waitTrue(page, textIn(tr('en', 'tasks.attributes.card.noDefs')), 'card settle'), true);
       const rows = await observe(from);
-      check(`${id} Attributes card absent`, await evaluate(page, "Boolean(document.querySelector('[data-testid=task-attributes-card]'))"), false);
-      check(`${id} attributes GET count`, rows.filter((row) => row.path === `/api/v1/orgs/${org}/tasks/${FF_TASK_ID}/attributes`).length, 0);
+      check(`${id} Attributes card present`, await evaluate(page, "Boolean(document.querySelector('[data-testid=task-attributes-card]'))"), true);
+      check(`${id} attributes GET count`, rows.filter((row) => row.path === `/api/v1/orgs/${org}/tasks/${FF_TASK_ID}/attributes`).length, 1);
       check(`${id} no attribute writes`, rows.filter((row) => row.method !== 'GET' && /\/attributes/.test(row.path)).map(brief), []);
       await capture(page, id, meta({ locale: 'en', viewport: '1440x900', state: 'task-detail' }));
       await closePage(page);

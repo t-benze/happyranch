@@ -6383,7 +6383,7 @@ Reload latest, 422 maps `changes.<i>.value` to fields, a lost response is
 "Save outcome unknown" until Refresh to check; never an automatic retry).
 History uses the embedded projection, is append-only, shows the original
 estimate as immutable and labels Founder actors from `actor_kind`. Production
-stays off until PR9. Details: `web/ARCHITECTURE.md` § Task attribute values.
+has it on since PR9. Details: `web/ARCHITECTURE.md` § Task attribute values.
 
 
 ## Roots attribute filters and export (THR-390 PR5)

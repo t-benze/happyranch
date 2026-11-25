@@ -568,7 +568,7 @@ export async function runTaskAttrListCases(h, { org, only }) {
       const ex = exportRows(from);
       check(`EXP01 ${locale} ${width} exactly one export request, no extra roots reads`, [ex.length, rootsRows(from).length], [1, 0]);
       check(`EXP01 ${locale} ${width} export params`, ex[0] ? [...sp(ex[0])] : null, [['format', 'json'], ['limit', '1000'], ['status', 'in_progress'], ['assigned_agent', 'agent-a'], ['attr_min', 'fx_delta=0'], ['attr_set', 'comment'], ['attr_set', 'ready'], ['attr_set', 'risk']]);
-      check(`EXP01 ${locale} ${width} receipt`, (await evaluate(page, `document.querySelector('[data-testid="tasks-export-receipt"]').innerText.trim()`)), tr(locale, 'tasks.export.receipt', { n: 52 }));
+      check(`EXP01 ${locale} ${width} receipt`, (await evaluate(page, `document.querySelector('[data-testid="tasks-export-receipt"]').innerText.trim()`)), tr(locale, 'tasks.export.receipt', { count: 52, fmt: 'JSON' }));
       const ready = await dialogText(page);
       copyLog.push([locale, 'ready', ready]);
       await clickDialog(page, tr(locale, 'tasks.export.download')); await pause(300);
@@ -593,7 +593,7 @@ export async function runTaskAttrListCases(h, { org, only }) {
       check('EXP02 csv name', await evaluate(page, 'window.__downloads'), [`task-roots-${org}-20261125T120000Z.csv`]);
       const bytes = await evaluate(page, `window.__lastBlob.text().then(t => ({ bom: t.charCodeAt(0) === 0xFEFF, header: t.split('\\r\\n')[0], crlf: t.includes('\\r\\n'), html: t.includes('<img src=x onerror=alert(1)>') }))`);
       check('EXP02 bytes', bytes, { bom: false, header: 'task_id,brief_excerpt,status,assigned_agent,created_at,attribute:comment,attribute:effort,attribute:fx_delta,attribute:ready,attribute:risk', crlf: true, html: true });
-      check('EXP02 receipt counts CSV records', await evaluate(page, `document.querySelector('[data-testid="tasks-export-receipt"]').innerText.trim()`), tr('en', 'tasks.export.receipt', { n: 3 }));
+      check('EXP02 receipt counts CSV records', await evaluate(page, `document.querySelector('[data-testid="tasks-export-receipt"]').innerText.trim()`), tr('en', 'tasks.export.receipt', { count: 3, fmt: 'CSV' }));
       await closePage(page);
     }
     endCase();
@@ -654,7 +654,7 @@ export async function runTaskAttrListCases(h, { org, only }) {
       await clickDialog(page, tr(locale, 'tasks.export.export'));
       await settle(page, `!!document.querySelector('[data-testid="tasks-export-receipt"]')`, 'receipt');
       const receipt = await evaluate(page, `document.querySelector('[data-testid="tasks-export-receipt"]').innerText`);
-      check(`CAP02 ${locale} ${width} receipt + more-may-match`, receipt.split('\n').map((s) => s.trim()).filter(Boolean), [tr(locale, 'tasks.export.receipt', { n: 2 }), tr(locale, 'tasks.export.moreMayMatch')]);
+      check(`CAP02 ${locale} ${width} receipt + more-may-match`, receipt.split('\n').map((s) => s.trim()).filter(Boolean), [tr(locale, 'tasks.export.receipt', { count: 2, fmt: 'JSON' }), tr(locale, 'tasks.export.moreMayMatch')]);
       copyLog.push([locale, 'pageFull', await dialogText(page)]);
       check(`CAP02 ${locale} ${width} no overflow`, await overflow(page), false);
       await capture(page, `cap02-${locale}-${width}`, { case: 'CAP02', locale, viewport: width });
@@ -770,7 +770,7 @@ export async function runTaskAttrListCases(h, { org, only }) {
     const r = retried[0];
     check('EXP-CONT-413-LOWER retry ledger: before = failed cursor, limit = 1, other predicates unchanged', r ? { before: sp(r).get('before'), limit: sp(r).get('limit'), rest: [...sp(r)].filter(([k]) => k !== 'before' && k !== 'limit').join('&') } : null, { before: failedBefore, limit: '1', rest: [...sp(failed)].filter(([k]) => k !== 'before' && k !== 'limit').join('&') });
     const receipt = await evaluate(page, `document.querySelector('[data-testid="tasks-export-receipt"]').innerText`);
-    check('EXP-CONT-413-LOWER honest receipt: 1 row + more may match + next page offered', [receipt.split('\n').map((x) => x.trim()).filter(Boolean), await evaluate(page, `[...document.querySelectorAll('[data-testid="tasks-export-dialog"] button')].some(b => b.innerText.trim().endsWith(${q(tr('en', 'tasks.export.nextPage'))}))`)], [[tr('en', 'tasks.export.receipt', { n: 1 }), tr('en', 'tasks.export.moreMayMatch')], true]);
+    check('EXP-CONT-413-LOWER honest receipt: 1 row + more may match + next page offered', [receipt.split('\n').map((x) => x.trim()).filter(Boolean), await evaluate(page, `[...document.querySelectorAll('[data-testid="tasks-export-dialog"] button')].some(b => b.innerText.trim().endsWith(${q(tr('en', 'tasks.export.nextPage'))}))`)], [[tr('en', 'tasks.export.receipt', { count: 1, fmt: 'JSON' }), tr('en', 'tasks.export.moreMayMatch')], true]);
     await capture(page, 'exp-cont-413-lower-en-1440-retried', { case: 'EXP-CONT-413-LOWER', locale: 'en', viewport: 1440, state: 'retried' });
     await closePage(page);
     endCase();
