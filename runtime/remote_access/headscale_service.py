@@ -147,13 +147,13 @@ def collect_lan_inventory() -> tuple[tuple[LANInterface, ...], tuple[LANDefaultR
                     _attributes(hops[8:length])
                     if index not in interfaces:
                         raise ValueError
-                    routes.append(LANDefaultRoute(index, source, table))
+                    routes.append(LANDefaultRoute(index, source, table, family))
                     hops = hops[(length + 3) & ~3:]
             else:
                 index, = struct.unpack("=I", attrs[4])
                 if index not in interfaces:
                     raise ValueError
-                routes.append(LANDefaultRoute(index, source, table))
+                routes.append(LANDefaultRoute(index, source, table, family))
         return (tuple(LANInterface(index, up, loopback, tuple(addresses))
                       for index, (up, loopback, addresses) in interfaces.items()), tuple(routes))
     except (OSError, ValueError, KeyError, struct.error, OverflowError):

@@ -316,11 +316,12 @@ class KernelDump:
             policy += (nla(9, struct.pack("=HBBi", 8, 0, 0, 3) * 2)
                        if case.endswith("-ecmp") else nla(4, struct.pack("=I", 3)))
             bodies[24].append(policy)  # Deliberately no RTA_PREFSRC.
-        if case == "ipv6":
+        if case in {"ipv6", "ipv6-no-source", "policy2022-unresolved"}:
             ipv6 = socket.inet_pton(socket.AF_INET6, "2001:db8::2")
             bodies[20].append(struct.pack("=BBBBI", socket.AF_INET6, 64, 0, 0, 2) + nla(1, ipv6))
             bodies[24].append(struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 254, 4, 0, 1, 0)
-                              + nla(4, struct.pack("=I", 2)) + nla(7, ipv6))
+                              + nla(4, struct.pack("=I", 2))
+                              + (nla(7, ipv6) if case == "ipv6" else b""))
         if value.kernel_reverse:
             bodies[24].reverse()
         def message(kind, body, flags=2):
@@ -1060,7 +1061,7 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
 
 @pytest.mark.parametrize("reverse,metric", [(False, 1), (False, 200), (True, 1), (True, 200)])
 @pytest.mark.parametrize("case,category,policy_route", [
-    ("ecmp", "multiple_addresses", None), ("ipv6", "dial_ip", None),
+    ("ecmp", "multiple_addresses", None),
     ("unresolved", "inventory", None), ("unresolved-second", "inventory", None),
     ("unknown-interface", "inventory", None), ("down", "no_address", None),
     ("loopback", "no_address", None), ("duplicate-interface", "inventory", None),
@@ -1095,8 +1096,6 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
         + nla(7, socket.inet_pton(socket.AF_INET, "192.168.1.40")))),
     ("policy-non-rfc1918", "dial_ip", policy_default(nla(4, struct.pack("=I", 3))
         + nla(7, socket.inet_pton(socket.AF_INET, "198.18.0.1")))),
-    ("policy-ipv6", "dial_ip", struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 252, 4, 0, 1, 0)
-        + nla(4, struct.pack("=I", 3)) + nla(7, socket.inet_pton(socket.AF_INET6, "2001:db8::2"))),
     ("policy-only", "no_address", policy_default(nla(4, struct.pack("=I", 3)))),
 ], ids=lambda value: value if isinstance(value, str) else "")
 def test_kernel_inventory_refuses_before_publication(fixture, monkeypatch, capsys, case, category, policy_route,
@@ -1118,13 +1117,18 @@ def test_kernel_inventory_refuses_before_publication(fixture, monkeypatch, capsy
 
 @pytest.mark.parametrize("reverse,metric", [(False, 1), (False, 200), (True, 1), (True, 200)])
 @pytest.mark.parametrize("case,policy_route,indices,tables", [
-    ("policy2022-unresolved", None, [2, 3], [254, 2022]),
+    ("policy2022-unresolved", None, [2, 3, 2], [254, 2022, 254]),
     ("policy2022-unresolved-ecmp", None, [2, 3, 3], [254, 2022, 2022]),
     ("header252", policy_default(nla(4, struct.pack("=I", 3))), [2, 3], [254, 252]),
     ("attr2022-over254", policy_default(nla(4, struct.pack("=I", 3))
         + nla(15, struct.pack("=I", 2022)), table=254), [2, 3], [254, 2022]),
     ("distinct-ecmp", policy_default(nla(15, struct.pack("=I", 2022)) + nla(9,
         struct.pack("=HBBi", 8, 0, 1, 3) + struct.pack("=HBBi", 8, 0, 9, 4))), [2, 3, 4], [254, 2022, 2022]),
+    ("ipv6", None, [2, 2], [254, 254]),
+    ("ipv6-no-source", None, [2, 2], [254, 254]),
+    ("policy-ipv6", struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 252, 4, 0, 1, 0)
+        + nla(4, struct.pack("=I", 3)) + nla(7, socket.inet_pton(socket.AF_INET6, "2001:db8::2")),
+        [2, 3], [254, 252]),
 ], ids=lambda value: value if isinstance(value, str) else "")
 @pytest.mark.parametrize("boundary", ["selector", "preparation"])
 def test_thr327_policy_default_without_source_selects_main(fixture, case, boundary, policy_route, indices, tables,
@@ -1148,8 +1152,10 @@ def test_thr327_policy_default_without_source_selects_main(fixture, case, bounda
     expected = list(zip(indices, tables))
     if reverse:
         # Reverse routes, retaining the order of hops within one ECMP route.
-        expected = expected[1:] + expected[:1]
+        expected = expected[::-1] if case == "policy2022-unresolved" else expected[1:] + expected[:1]
     assert [(route.interface_index, route.table) for route in routes] == expected
+    assert sum(route.family == socket.AF_INET6 for route in routes) == (
+        1 if case in {"ipv6", "ipv6-no-source", "policy-ipv6", "policy2022-unresolved"} else 0)
 
 
 def test_config_publication_idempotency_and_address_change(fixture, monkeypatch, capsys) -> None:

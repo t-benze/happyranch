@@ -6,6 +6,7 @@ The installer must supply a complete inventory and protect the rendered files.
 from __future__ import annotations
 
 import re
+import socket
 from dataclasses import dataclass
 
 import yaml
@@ -32,13 +33,14 @@ class LANDefaultRoute:
     """One default route, its selected local source and resolved Linux table ID.
 
     Include IPv6, every ECMP hop and unresolved sources (empty string). The
-    four-byte RTA_TABLE overrides the header. Legacy callers default to main
-    (254), so they cannot silently ignore an unresolved source.
+    four-byte RTA_TABLE overrides the header. Legacy callers default to IPv4
+    and main (254), so they cannot silently ignore an unresolved IPv4 source.
     """
 
     interface_index: int
     source_ip: str
     table: int = 254
+    family: int = int(socket.AF_INET)
 
 
 def _dial_ip_valid(dial_ip: object) -> bool:
@@ -52,8 +54,9 @@ def select_lan_dial_ip(
 
     Down/loopback interfaces cannot supply a usable route. Missing/duplicate
     interface identities or a source not assigned to its interface refuse.
-    Only a non-main default with no preferred source is ignored, after record
-    and interface validation. No table/metric/device ranking or address fallback.
+    IPv6 defaults cannot choose an IPv4 dial address. Among IPv4 defaults, only
+    a non-main default with no preferred source is ignored, after record and
+    interface validation. No table/metric/device ranking or address fallback.
     Multiple usable routes refuse even when their selected source is identical.
     """
     if type(interfaces) is not tuple or type(default_routes) is not tuple:
@@ -70,13 +73,16 @@ def select_lan_dial_ip(
     for route in default_routes:
         if (type(route) is not LANDefaultRoute or type(route.interface_index) is not int
                 or type(route.source_ip) is not str or route.interface_index not in by_index
-                or type(route.table) is not int or not 0 <= route.table <= 0xffffffff):
+                or type(route.table) is not int or not 0 <= route.table <= 0xffffffff
+                or type(route.family) is not int or route.family not in (socket.AF_INET, socket.AF_INET6)):
             raise HomeHeadscaleError("inventory")
-        if ((route.table == 254 or route.source_ip)
+        if (route.family == socket.AF_INET and (route.table == 254 or route.source_ip)
                 and route.source_ip not in by_index[route.interface_index].addresses):
             raise HomeHeadscaleError("inventory")
     candidates: list[str] = []
     for route in default_routes:
+        if route.family != socket.AF_INET:
+            continue
         if route.table != 254 and not route.source_ip:
             continue
         interface = by_index[route.interface_index]
