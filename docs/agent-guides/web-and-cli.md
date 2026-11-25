@@ -140,8 +140,8 @@ While a state is active, `NativeRecoveryFence` (in
 `shared/connection/NativeRecoveryPanel`) shows the panel in place of runtime
 content, which stays mounted but hidden so drafts and page state survive. The
 AppShell fences every routed page except `/orgs/:slug/settings/*`; Settings
-fences only its target-backed sections (Capacity, Organization, Executors,
-Coding) inside the page, so the Settings sub-nav and the client-only
+fences only its target-backed sections (Capacity, Organization, Task
+attributes, Executors) inside the page, so the Settings sub-nav and the client-only
 Preferences section stay visible and usable. Sidebar and the AppBar Language
 selector stay reachable, and the index route does not redirect to onboarding.
 A recovery state met before any org is known (startup on `/`) has no org for
@@ -6367,6 +6367,23 @@ initial/provenance/history and authority details are in the
 `api/taskAttributes.ts` and `taskAttributeTypes.ts` are handwritten mirrors.
 Plain creation and CLI ship in PR3 below; roots filters/export ship in PR5
 below. Other creation producers, UI and score seeds are separate slices.
+
+**Browser task-attribute editing (THR-390 PR7, flag `task_attributes_ui`).**
+Task detail shows an Attributes card in the rail listing every item of
+`GET /tasks/{id}/attributes` (all active definitions, plus archived ones with
+evidence) with its value, provenance and original admission value. The browser
+is the Founder path (it never sends `session_id`). Editing renders only the
+server `editability`: there is no lifecycle rule, so finished tasks stay
+editable unless the server refuses, and the same server refusal copy appears on
+the card, at editor entry and after a refused save. Archived definitions are
+read-only and their values cannot be written. One Save is one atomic PUT of
+the changed fields, each carrying its read `expected_version` and
+`expected_revision`; any refusal saves nothing (409 keeps the draft and offers
+Reload latest, 422 maps `changes.<i>.value` to fields, a lost response is
+"Save outcome unknown" until Refresh to check; never an automatic retry).
+History uses the embedded projection, is append-only, shows the original
+estimate as immutable and labels Founder actors from `actor_kind`. Production
+stays off until PR9. Details: `web/ARCHITECTURE.md` § Task attribute values.
 
 
 ## Roots attribute filters and export (THR-390 PR5)

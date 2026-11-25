@@ -599,3 +599,38 @@ Route `/orgs/:slug/settings/task-attributes`; web sub-nav between Organization a
 - **Create/Edit (B).** Display name, stable key (mono), type (token-styled native radios in a fieldset), description with a `n / 4000` counter, constraints by type. Key/type/constraints lock from the server's `can_edit_structure`. Server 422 errors show a focused summary linking to the fields. Saving disables Save and inputs (Cancel stays). Refusals keep the draft with Copy draft: key in use (names the owner), version conflict (compare panel + Reload latest by definition id), structure frozen after first use, archived while open (read-only), permission revoked, definite failure (Retry re-sends the same body). A lost response shows "Save outcome unknown" with Refresh to check; Retry appears only if the check proves nothing was saved. While a sent save is pending or unknown, Cancel, Escape, close, navigation and app close hold through the shared owner gate (Check result, no Discard) until it is reconciled. A whole-number bound beyond ±9,007,199,254,740,991 is refused with a field error before sending (never rounded). Discard asks Keep editing / Discard.
 - **Detail (C).** Key, type, validation, state, version with "Last edited by {actor} · {time}", rubric, and version history (current + up to 4 older, then "Load earlier versions (n)" pages of 5; unavailable with Retry; "No earlier versions" only at v1). The actor is `useIdentityPresentation().label('founder')`. Edit/Archive come from the detail read.
 - **Archive (C2).** Confirm with Keep active (default focus) / Archive; stale (Reload latest), already archived by another (Close only), permission refused, definite failure (Retry), unknown (Refresh to check, then Not archived + Retry or done). While the archive request is pending or unknown, Keep active, Escape and close hold through the shared owner gate, so no second archive can be sent until it is reconciled.
+
+## 15. Task detail — Attributes (THR-390 PR7, flag-gated)
+
+Design baseline: THR-390 design v1.2 screens D, E and E2. Shown only with the
+build-time flag `task_attributes_ui` (development `true`, production `false`
+until PR9); with the flag off no card renders and no attributes request is
+sent.
+
+- **Card (D).** In the task-detail rail below the Details block. Heading
+  "Attributes" with View history and Edit attributes (Edit only when the server
+  allows). One row per server item: display name, mono key chip, Archived badge
+  when archived, the value (Not set / number / True·False / text, or
+  Empty string `""`), the provenance badge (Supplied before dispatch, Not
+  supplied before dispatch, Definition added later, Timing unknown (legacy)),
+  "Original {value}" when the admission value differs from the current one, the
+  latest actor · time, and a Rubric disclosure. Footer scope note. States:
+  loading skeleton (`aria-busy`), isolated fetch error with Retry, no
+  definitions, read-only/authority-unknown notice, "Attributes saved" (polite).
+- **Editor (E).** Dialog "Edit attributes", subtitle `TASK-ID · brief line`.
+  Every row of the read: Unset/Set plus input (numeric, string) or
+  Unset/True/False (boolean); archived rows "Archived · read-only". The
+  admission value line "Supplied before dispatch · {value} · immutable".
+  Disabled Save with "No changes to save." when nothing changed. Error summary
+  (`role=alert`, focused, links to fields); conflict notice with Your draft /
+  Latest saved comparison (stacks under 640 px), Copy draft, Reload latest;
+  network failure with Try again; Save outcome unknown with Refresh to check;
+  Discard / Keep editing confirm for a dirty close.
+- **History (E2).** Dialog "Attribute history": Original/Current pairs, the
+  "Before first dispatch" table with "Admitted by {actor} · {time}", and the
+  "After dispatch" table newest first (When with UTC subline, Who, Attribute,
+  Old, New with optional Note, Rubric version with "now v… " subline). Under
+  640 px the tables become labelled stacked cells. Legacy tasks read "History
+  unavailable…"; tasks with events but no admission note that earlier history
+  was not recorded.
+

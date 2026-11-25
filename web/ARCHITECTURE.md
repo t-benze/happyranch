@@ -563,3 +563,48 @@ still loaded) and run once Retry clears it.
   the hook falls back to the canonical `founder` ID). If agent-authored
   definition writes are ever allowed, the server must add an actor field to
   version reads **first**. Residual for PR7/PR8.
+
+## Task attribute values (THR-390 PR7)
+
+Task detail › Attributes (`features/tasks/attributes/`, behind
+`task_attributes_ui`) is a card in the `TaskStatusCard` rail, mounted only
+inside a loaded task and given the task ID, never its status. Data flows
+through the `taskAttributeValues` `DataContext` slice
+(`_real-task-attribute-values.ts`; `_mock-task-attribute-values.ts` with the
+type-only SYNTHETIC fixtures in `_task-attribute-value-fixtures.ts`) and
+`hooks/task-attribute-values.ts`, over the PR2 client
+`getAttributes`/`saveAttributes`. The query key is
+`[org, 'task-attribute-values', taskId]`, disjoint from PR6's definition keys;
+it has no `refetchInterval` and waits during a native recovery state. One
+`GET /tasks/{id}/attributes` snapshot feeds the card, the editor and the
+history; the separate history endpoint is not used.
+
+- **Rows.** The card lists every item in `attributes[]`: all active
+  definitions, plus archived ones the server includes because they have
+  evidence. Unset rows read "Not set" with the server `provenance`
+  (`definition_added_later` is never relabelled "not supplied before
+  dispatch"). An empty list reads "This org has no task attributes."
+- **Authority is server-reported only** (`model.ts`). The task-level and
+  per-field `editability` decide every control; refusal copy is keyed only by
+  `refusal_reason.code` and is the same on the card, at editor entry and after
+  a refused save. There is no status-derived rule. Archived fields are
+  read-only rows.
+- **Editor.** Re-reads on mount and gates Save on that read being a settled
+  success (MEM-300), rechecked at the callback. One Save sends one PUT with
+  only the changed writable fields, each with its read `expected_version` and
+  `expected_revision` (per-field CAS; PR2 has no task-wide revision). Numeric
+  text is only parsed; the server's 422 is the validation authority. Outcomes:
+  409 keeps the draft, names the actor/time of the latest event for a value
+  revision conflict, uses neutral copy for a definition change, and keeps a
+  newly archived field read-only with "Your draft · not saved" until the dialog
+  closes; Reload latest adopts the fresh read and keeps drafts whose field
+  revision did not move. 422 maps `changes.<i>.value` to fields with an error
+  summary; 403 switches to the server refusal; 5xx is a definite failure with
+  Try again; a lost response is "Save outcome unknown" until Refresh to check.
+  The editor is a `tasks.attributes` config owner, so writes go through
+  `owner.track` and closing/navigation asks the owner gate.
+- **History.** Per-field append-only events (When, Who, Attribute, Old, New,
+  Rubric version, optional Note), the admission ("Before first dispatch")
+  table and Original/Current pairs. Who uses `identity(actor_id, kind)` with
+  the kind and the "(Founder)" suffix taken only from `actor_kind`.
+
