@@ -41,7 +41,7 @@ await mkdir(scratch, { recursive: true });
 // It supplies only native IO; real parsers, read hooks, model and JSX run.
 const source = `
 import React, {useEffect, useRef, useState} from 'react';
-import {I18nProvider, useTranslation} from '@/hooks/i18n';
+import {I18nProvider, useI18n} from '@/hooks/i18n';
 import {OwnerGateProvider} from '@/shared/owners';
 import {ConnectionDialogBody} from '@/features/connection/ConnectionDialogBody';
 import {Dialog, DialogContent} from '@/design-system/primitives/Dialog';
@@ -115,7 +115,7 @@ __setNativeBridgeForTests({
   }
 });
 function Mounted(){
-  const ref=useRef(null), [open,setOpen]=useState(true), {setLocale}=useTranslation();
+  const ref=useRef(null), [open,setOpen]=useState(true), {setLocale}=useI18n();
   useEffect(()=>{api.close=()=>setOpen(false);api.open=()=>setOpen(true);api.locale=setLocale;},[setLocale]);
   return <Dialog open={open} onOpenChange={setOpen}><DialogContent className="max-h-[90vh] overflow-auto">
     <ConnectionDialogBody headingRef={ref} onOpenSettings={()=>{}}/>
