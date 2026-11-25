@@ -1,5 +1,27 @@
 # Agent Executors And Permissions
 
+## Task temporary storage (THR-307 seq430)
+
+Task launches already prepare `<workspace>/.happyranch/task-tmp/<task_id>/` and
+set `TMPDIR`, `TMP`, and `TEMP` through `apply_task_scratch_environment`.
+Claude, Codex, opencode and pi use `_callee_env` for both ordinary and supervised
+launches; custom adapters use it for both paths too. Task-owned jobs prepare
+the same root and apply the same environment before launch. No launcher rebuild
+is needed. Thread invocations without a task binding keep the default environment;
+there is no new per-invocation directory or cleanup.
+
+Use `"${TMPDIR:-/tmp}/payload.json"` for disposable shell payloads, and expand
+the variable to an absolute path before using a file tool. The fallback also
+works in thread turns with `TMPDIR` unset. Put browser profiles and Postgres or
+other database data under `$TMPDIR`. Unix socket paths have an approximately
+107-byte limit, including the socket filename: if the full path would exceed
+about 100 bytes, keep data in task scratch and use a short, private socket-only
+directory such as `/tmp/hr-<task>-s`, only when the task permits that path.
+Create it exclusively with mode 0700; refuse an existing entry or symlink.
+This fallback grants no shared-temp cleanup authority. Tools that hard-code
+`/tmp` can still escape the environment convention; the nightly report's
+`system_tmp` section provides bounded, read-only visibility.
+
 ## Thread invite credentials (THR-362 slice 1)
 
 Founder-approved thread guest seats introduce the `hrinv_` invite-code class:

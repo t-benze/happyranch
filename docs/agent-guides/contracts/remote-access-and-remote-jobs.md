@@ -1,5 +1,12 @@
 # Remote access and remote jobs contracts
 
+Disposable agent payload paths use `"${TMPDIR:-/tmp}/payload.json"` (expand
+before writing with a file tool). Task-owned jobs already receive their task
+scratch environment. Unbound thread invocations keep the default environment;
+this convention adds no invocation directory, cleanup, host mount or remote
+access permission. See [temporary storage](../agent-executors-and-permissions.md#task-temporary-storage-thr-307-seq430)
+for browser-profile placement and Unix socket path limits.
+
 ## Thread guests remain local (THR-362 slice 1)
 
 The three POST seat routes (`/threads/{id}/guests`,

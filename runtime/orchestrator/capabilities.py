@@ -251,7 +251,7 @@ def build_capabilities_prompt(
         "once when all children are terminal.\n",
         "- Action token: `fanout` (the alias `parallel` is also accepted).\n",
         "#### Example completion payload\n",
-        "Write `/tmp/completion-<task_id>.json` with BOTH fields set:",
+        "Write `${TMPDIR:-/tmp}/completion-<task_id>.json` (expand the variable first) with BOTH fields set:",
         "```json",
         "{",
         '  "task_id": "TASK-XXX",',

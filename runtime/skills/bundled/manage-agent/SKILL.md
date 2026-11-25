@@ -16,7 +16,8 @@ agent credentials. This prose grants no execution/permission change.
 
 ## Usage
 
-Write a JSON file to `/tmp/manage-agent-<unique>.json` using the Write tool.
+Write a JSON file to `${TMPDIR:-/tmp}/manage-agent-<unique>.json` using the Write tool
+(expand the variable to an absolute path first).
 Use the `(task_id, session_id)` pair from your current task session.
 
 **Task-path enroll:**
@@ -97,7 +98,7 @@ current roster row's dictionary.
 
 Invoke as a single-line command:
 ```bash
-happyranch manage-agent --org {ORG_SLUG} --from-file /tmp/manage-agent-<unique>.json
+happyranch manage-agent --org {ORG_SLUG} --from-file "${TMPDIR:-/tmp}/manage-agent-<unique>.json"
 ```
 The `--from-file` form is mandatory for agent sessions. In Claude sessions,
 multi-line bash commands are rejected by the `Bash(happyranch:*)` permission rule

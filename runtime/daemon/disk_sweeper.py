@@ -39,6 +39,7 @@ from types import CodeType
 from typing import Any
 
 from runtime.daemon.cleanup_helpers import helper_argv
+from runtime.orchestrator.task_scratch import SEQUENTIAL_TASK_ID_PATTERN
 
 from runtime.daemon._disk_sweep_fs import (
     Expired, Retain, allocated, check, directory, identity, mutate, names,
@@ -60,6 +61,122 @@ _OPEN_MUTATION_STATES = ('inspecting', 'mutation_in_flight', 'partial_or_unknown
 TERMINAL = {'completed', 'failed', 'cancelled', 'superseded'}
 TASK = re.compile(r'TASK-[0-9]+\Z')
 _history = ContextVar('disk_sweep_kept_history', default=None)
+
+
+def observe_system_tmp(tmp_root: Path, deadline: float) -> dict:
+    """Advisory names/sizes only; never supplies candidates or removal authority.
+
+    Use literal fd-relative reads, including across directory replacement races.
+    An admitted kernel read cannot be preempted; no further read starts after
+    the deadline. Run after candidate work, within the unchanged sweep window.
+    """
+    deadline = min(deadline, time.monotonic() + 0.2)
+    result = dict(root=str(tmp_root), report_only=True, status='partial',
+                  task_named_count=0, count_complete=False, sized_count=0,
+                  root_entries_observed=0, size_entries_observed=0, top=[],
+                  limits=dict(seconds=0.2, root_entries=16384, size_entries=8192,
+                              entries_per_tree=2048, depth=32, top=10))
+    reasons: set[str] = set()
+    pattern = re.compile(rf'(?<![A-Za-z0-9])(?:{SEQUENTIAL_TASK_ID_PATTERN}|(?i:TASK-[0-9]+))(?![A-Za-z0-9])')
+
+    def admit() -> None:
+        if time.monotonic() >= deadline:
+            raise TimeoutError('deadline')
+
+    def measure(parent: int, name: str, device: int, depth: int, work: list[int]) -> tuple[int, bool]:
+        admit()
+        if result['size_entries_observed'] >= 8192 or work[0] >= 2048:
+            reasons.add('size_entry_limit')
+            return 0, False
+        result['size_entries_observed'] += 1
+        work[0] += 1
+        info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        size = info.st_blocks * 512
+        if not stat.S_ISDIR(info.st_mode):
+            return size, True  # links/sockets/FIFOs are measured, never opened
+        if info.st_dev != device or depth >= 32:
+            reasons.add('device_or_depth_limit')
+            return size, False
+        admit()
+        child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            opened = os.fstat(child)
+            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                raise OSError('directory_changed')
+            complete = True
+            with os.scandir(child) as rows:
+                while True:
+                    admit()
+                    if result['size_entries_observed'] >= 8192 or work[0] >= 2048:
+                        reasons.add('size_entry_limit')
+                        return size, False
+                    row = next(rows, None)
+                    if row is None:
+                        break
+                    try:
+                        value, known = measure(child, row.name, device, depth + 1, work)
+                        size += value
+                        complete = complete and known
+                    except OSError:
+                        reasons.add('entry_unavailable')
+                        complete = False
+            return size, complete
+        finally:
+            os.close(child)
+
+    try:
+        # Reject aliases in every root component, without resolving them.
+        if not tmp_root.is_absolute() or '..' in tmp_root.parts:
+            raise ValueError('invalid_root')
+        with ExitStack() as opened:
+            admit()
+            root = os.open(tmp_root.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            opened.callback(os.close, root)
+            for part in tmp_root.parts[1:]:
+                admit()
+                root = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+                opened.callback(os.close, root)
+            device = os.fstat(root).st_dev
+            candidates = []
+            with os.scandir(root) as rows:
+                for _ in range(16384):
+                    admit()
+                    row = next(rows, None)
+                    if row is None:
+                        result['count_complete'] = True
+                        break
+                    result['root_entries_observed'] += 1
+                    ids = sorted(set(match.group() if match.group().startswith('TASK-SEQ-')
+                                     else match.group().upper() for match in pattern.finditer(row.name)))
+                    if ids:
+                        result['task_named_count'] += 1
+                        candidates.append((row.name, ids))
+                else:
+                    reasons.add('root_entry_limit')
+            for name, ids in candidates:
+                admit()
+                if result['size_entries_observed'] >= 8192:
+                    reasons.add('size_entry_limit')
+                    break
+                try:
+                    size, complete = measure(root, name, device, 0, [0])
+                except OSError:
+                    reasons.add('entry_unavailable')
+                    continue
+                result['sized_count'] += 1
+                result['top'].append(dict(name=name, task_id=ids[0] if len(ids) == 1 else None,
+                                          task_ids=ids, allocated_bytes_observed=size, size_complete=complete))
+                result['top'].sort(key=lambda item: (-item['allocated_bytes_observed'], item['name']))
+                del result['top'][10:]
+            if result['count_complete'] and not reasons:
+                result['status'] = 'complete'
+    except Exception as exc:
+        # No private exception text or new sweep failure/eligibility state.
+        reasons.add('deadline' if isinstance(exc, TimeoutError) else type(exc).__name__)
+        if not result['root_entries_observed']:
+            result['status'] = 'unavailable'
+    result['reasons'] = sorted(reasons)
+    return result
 
 
 # Review revision 3 section 5.3: the sole scope/coverage classification table.
@@ -2055,7 +2172,7 @@ def sweep_org(org: Path, deadline: float, *, mode: str, checkpoint=lambda: None,
 
 
 @_measure_run
-def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, scheduled_date: str | None, revision: str, started_monotonic: float | None = None, runtime_root: Path | None = None, native_writers: dict[str, str] | None = None, manual_backlog: bool = False) -> dict:
+def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, scheduled_date: str | None, revision: str, started_monotonic: float | None = None, runtime_root: Path | None = None, native_writers: dict[str, str] | None = None, manual_backlog: bool = False, tmp_root: Path = Path('/tmp')) -> dict:
     from runtime.orchestrator.org_config import load_org_config
     from runtime.orchestrator._paths import OrgPaths
     report = dict(format='disk-sweep@1', revision=revision, source_revision=revision, scheduled_date=scheduled_date,
@@ -2065,6 +2182,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
                   process_scope=PROCESS_SCOPE,
                   outcome='incomplete', orgs=[], unreached_orgs=list(sorted(roots)),
                   stop_cause='in_progress',
+                  system_tmp=dict(root=str(tmp_root), report_only=True, status='not_observed'),
                   policy='thr307-ended-root-one-hour-all-orgs',
                   previous_interrupted_removals=(_history.get() or {}).get('interrupted_removals', []),
                   measurement_history={k: v for k, v in (_history.get() or {}).items() if k not in ('paths', 'interrupted_removals')})
@@ -2129,6 +2247,7 @@ def sweep(roots: list[str], deadline: float, summary: Path, *, dry_run: bool, sc
     except Expired as exc:
         report['stop_cause'] = _stop_cause(exc)
         report['error'] = str(exc)
+    report['system_tmp'] = observe_system_tmp(tmp_root, deadline)
     report['finished_at'] = datetime.now().astimezone().isoformat()
     report['elapsed_seconds'] = max(0, time.monotonic() - (started_monotonic if started_monotonic is not None else deadline - BUDGET_SECONDS))
     try:
@@ -2167,6 +2286,7 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
     if scheduled_date:
         argv += ['--scheduled-date', scheduled_date]
     initial = dict(format='disk-sweep@1', revision=revision, source_revision=revision, orgs=[], unreached_orgs=roots,
+                   system_tmp=dict(root='/tmp', report_only=True, status='not_observed'),
                    runtime_discovery='unknown' if runtime_root else 'selected_daemon_orgs',
                    outcome='incomplete', scheduled_date=scheduled_date, budget_seconds=budget,
                    started_at=datetime.now().astimezone().isoformat(),
@@ -2226,7 +2346,8 @@ async def run_worker(roots: list[str], summary: Path, *, dry_run: bool, schedule
         try:
             report = _read_json(summary)
         except Exception:
-            report = dict(format='disk-sweep@1', orgs=[], unreached_orgs=roots, revision=revision, source_revision=revision)
+            report = dict(format='disk-sweep@1', orgs=[], unreached_orgs=roots, revision=revision, source_revision=revision,
+                          system_tmp=dict(root='/tmp', report_only=True, status='not_observed'))
         for item in report.get('orgs', []):
             _summarize_org(item)
         report.update(worker_pid=process.pid, worker_returncode=process.returncode, worker_group_stop='owned group signalled SIGKILL when present; leader reaped; uninterruptible kernel I/O remains an OS limitation')
@@ -2341,6 +2462,7 @@ async def _run_deletion_worker(state: Any, summary: Path, date: str | None, *, m
     deadline = started + budget
     admission = await asyncio.to_thread(_scheduled_admission, deadline) if refusal is None else {}
     report = dict(format='disk-sweep@1', revision=_revision(), scheduled_date=date,
+                  system_tmp=dict(root='/tmp', report_only=True, status='not_observed'),
                   timezone=datetime.now().astimezone().tzname(), timezone_offset=datetime.now().astimezone().strftime('%z'),
                   started_at=started_at, deadline_monotonic=deadline, budget_seconds=budget,
                   process_scope=PROCESS_SCOPE, outcome='incomplete', orgs=[],
@@ -2655,6 +2777,7 @@ def _audit_payload(report: dict, item: dict | None, summary: Path) -> dict:
         'interruption': report.get('interruption'),
         'move_deferred_orgs': report.get('move_deferred_orgs'),
         'low_disk_below_20_percent': report.get('low_disk_below_20_percent'),
+        'system_tmp': report.get('system_tmp'),
     }
 
 

@@ -1,5 +1,13 @@
 # Reusable workflow contracts
 
+For disposable agent callback payloads use `"${TMPDIR:-/tmp}/payload.json"`,
+expanding it before a file-tool write. Task-bound launches and jobs already
+receive workspace task scratch. Unbound thread turns keep the default
+environment with no new directory or cleanup. This convention changes no
+private executable venue or explicit isolation recipe below. See
+[temporary storage](../agent-executors-and-permissions.md#task-temporary-storage-thr-307-seq430)
+for database data, browser profiles and the short Unix-socket fallback.
+
 ## R2 unit (c): supported Draft → Review bundle
 
 `release/happyranch/draft-review@1` is a supported bundled definition on generic
