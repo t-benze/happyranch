@@ -1,7 +1,11 @@
 /**
  * SettingsPage — full page (not dialog) with left sub-nav + field panel.
  *
- * Sub-nav: Capacity · Organization · Executors · Preferences.
+ * Sub-nav: Capacity · Organization · Task attributes · Executors · Preferences.
+ * (THR-390 PR6: Task attributes sits between Organization and Executors and
+ * is shown only when the build-time flag `task_attributes_ui` is on; it has
+ * its own definitions query and `NativeRecoveryFence`, not the useSettings
+ * gate. With the flag off its URL falls through to Capacity.)
  * (THR-061 seq79: the Usage sub-tab was removed — token usage now lives on
  * the standalone /usage page.)
  * Each sub-nav item routes to /orgs/:slug/settings/:section.
@@ -36,6 +40,7 @@ import {
   Terminal,
   Gauge,
   Languages,
+  Tag,
   type LucideIcon,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
@@ -48,10 +53,13 @@ import { useNativeRecovery } from '@/hooks/nativeRecovery';
 import { NativeRecoveryFence } from '@/shared/connection/NativeRecoveryPanel';
 import { useRemoteHost } from '@/lib/remotePolicy';
 import { RemoteUnavailablePage } from '@/shared/remotePolicy/RemoteReadOnlyNote';
+import { features } from '@/config/features';
+import { TaskAttributesSection } from './task-attributes/TaskAttributesSection';
 
 const SECTIONS = [
   { key: 'daemon-capacity', labelKey: 'settings.nav.daemonCapacity', icon: Gauge },
   { key: 'organization', labelKey: 'settings.nav.organization', icon: HomeIcon },
+  { key: 'task-attributes', labelKey: 'settings.nav.taskAttributes', icon: Tag },
   { key: 'executors', labelKey: 'settings.nav.executors', icon: Terminal },
 ] as const satisfies ReadonlyArray<{
   key: string;
@@ -69,6 +77,13 @@ const PREFERENCES_SECTION = {
 export type SettingsSection =
   | (typeof SECTIONS)[number]['key']
   | (typeof PREFERENCES_SECTION)['key'];
+
+/**
+ * The sections this build shows. `task-attributes` stays in the type so typed
+ * code is stable whatever the flag says, and is filtered out at runtime when
+ * `task_attributes_ui` is off (UI visibility only, not access control).
+ */
+const VISIBLE_SECTIONS = SECTIONS.filter((s) => s.key !== 'task-attributes' || features.task_attributes_ui);
 
 /**
  * SettingsPage — the outer shell: left sub-nav + right panel outlet.
@@ -131,6 +146,19 @@ export function SettingsPage(): JSX.Element {
           <Route path="daemon-capacity" element={gated(<DaemonCapacityPanel key={slug} />)} />
           <Route path="organization" element={gated(settingsQuery.data && <OrganizationPanel key={slug} org={settingsQuery.data.org} />)} />
           <Route path="executors" element={gated(<ExecutorsPanel key={slug} />)} />
+          {/* Own definitions query + recovery fence; absent (→ Capacity) with the flag off. */}
+          {features.task_attributes_ui && (
+            <Route
+              path="task-attributes"
+              element={
+                <SettingsContent>
+                  <NativeRecoveryFence>
+                    <TaskAttributesSection key={slug} />
+                  </NativeRecoveryFence>
+                </SettingsContent>
+              }
+            />
+          )}
           <Route path="*" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
         </Routes>
       </ContentWrap>
@@ -187,6 +215,7 @@ export function RecoverySettingsPage({ notFound }: { notFound: ReactNode }): JSX
           <Route path="daemon-capacity" element={fenced} />
           <Route path="organization" element={fenced} />
           <Route path="executors" element={fenced} />
+          {features.task_attributes_ui && <Route path="task-attributes" element={fenced} />}
           <Route path="*" element={<Navigate to={`${base}/preferences`} replace />} />
         </Routes>
       </ContentWrap>
@@ -217,7 +246,7 @@ function SettingsContent({ children, base }: { children: ReactNode; base?: strin
  */
 function SettingsSubNav({ base }: { base: string }): JSX.Element {
   const { t } = useTranslation();
-  const sections = [...SECTIONS, PREFERENCES_SECTION];
+  const sections = [...VISIBLE_SECTIONS, PREFERENCES_SECTION];
 
   return (
     <aside className="border-border-default bg-surface-sunken w-full min-w-0 shrink-0 border-b p-3 sm:w-50 sm:border-r sm:border-b-0">
@@ -262,6 +291,10 @@ export function SettingsPane({ section }: { section: SettingsSection }): JSX.Ele
   const remoteHost = useRemoteHost();
 
   if (section === 'preferences') return <PreferencesPanel />;
+  // THR-390 PR6: its own definitions query and recovery fence (no useSettings gate).
+  if (section === 'task-attributes') {
+    return features.task_attributes_ui ? <NativeRecoveryFence><TaskAttributesSection /></NativeRecoveryFence> : <PreferencesPanel />;
+  }
   // S8-2b (v2.4 §4): the remote Host shares no Capacity reads with a
   // connected app, so that page is named unavailable, never fake values.
   if (remoteHost && section === 'daemon-capacity') {

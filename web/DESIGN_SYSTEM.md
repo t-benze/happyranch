@@ -463,13 +463,14 @@ and retry is local state, so Storybook remains daemon-isolated.
 
 ## Coverage ledger
 
-**47 reusable components: 45 story-covered, 2 justified exclusions.** Stories
+**48 reusable components: 46 story-covered, 2 justified exclusions.** Stories
 preserve the former catalogue's descriptions, examples, variants, and token
 visibility through titles, docs, controls, and representative renders.
 
 | Reusable export | Story or exclusion | Representative states / variants | Tokens |
 |---|---|---|---|
 | `Avatar` | [source:primitives/Avatar.tsx#Avatar] [story:primitives/Avatar.coverage.stories.tsx#Coverage] Primitives / Avatar Variants | founder/manager/worker/soft/neutral tones; sm 22 / md 30 / lg 34px | `--accent`→`--info` gradient, `--color-agent-*` (aliases of `--color-info`/`--color-accent-default`), `--accent-soft`/`--accent-text`, surface-2, `--color-text-inverse` |
+| `Badge` | [source:primitives/Badge.tsx#Badge] [story:primitives/Badge.coverage.stories.tsx#Coverage] Primitives / Badge Tones | positive/info/attention/danger/neutral; callers pass `TONE_CLASS[tone]` from `semanticTone` (primitives may not import patterns); optional decorative icon; caller-supplied localized word (THR-390 PR6) | `TONE_CLASS` tokens: `--accent-soft`/`--accent-text`, `--color-info(-soft)`, `--color-attention-*`, status/border |
 | `Button` | [source:primitives/Button.tsx#Button] [story:primitives/Button.coverage.stories.tsx#Coverage] Primitives / Button States | default/secondary/outline/ghost/destructive/destructive-outline/link; default/sm/lg/icon; loading, disabled, icon, focus, `asChild` | `components.button` |
 | `Card` | [source:primitives/Card.tsx#Card] [story:primitives/Card.coverage.stories.tsx#Coverage] Primitives / Card Variants | container (18px), entry (12px); padding default (20) / none; with CardHeader | `--radius-lg`, `--radius-md`, `shadow-pasture-sm`, surface/border |
 | `CardHeader` | [source:primitives/Card.tsx#CardHeader] [story:primitives/CardHeader.coverage.stories.tsx#Coverage] Primitives / Card Header | title, meta, actions | `.card-head`, `.card-title` |

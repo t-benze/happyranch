@@ -10,7 +10,10 @@
 /**
  * Settings dialog pages, in nav order (v2.4 §2: This app, This computer,
  * then Runtime). `local` (HappyRanch on this computer, S7-L2) is a
- * desktop-only page with no browser Settings route.
+ * desktop-only page with no browser Settings route. `task-attributes`
+ * (THR-390 PR6) follows Organization and is OPTIONAL: it is a page only when
+ * the caller passes it in `enabledOptional` (the build-time flag
+ * `task_attributes_ui`; this module stays import-free for its Node test).
  */
 export const DESKTOP_SETTINGS_SECTIONS = [
   'preferences',
@@ -18,9 +21,13 @@ export const DESKTOP_SETTINGS_SECTIONS = [
   'daemon-capacity',
   'executors',
   'organization',
+  'task-attributes',
 ] as const;
 
 export type DesktopSettingsSection = (typeof DESKTOP_SETTINGS_SECTIONS)[number];
+
+/** Pages that exist only when enabled by the caller (build-time UI flags). */
+export const OPTIONAL_SETTINGS_SECTIONS: readonly DesktopSettingsSection[] = ['task-attributes'];
 
 /** Page used when a request names no page or an unknown/legacy page. */
 export const DEFAULT_ORG_SETTINGS_SECTION: DesktopSettingsSection = 'daemon-capacity';
@@ -42,8 +49,10 @@ export type DesktopDialogState =
 
 export const CLOSED: DesktopDialogState = { dialog: null };
 
-function isSection(value: string): value is DesktopSettingsSection {
-  return (DESKTOP_SETTINGS_SECTIONS as readonly string[]).includes(value);
+function isSection(value: string, enabledOptional: readonly DesktopSettingsSection[]): value is DesktopSettingsSection {
+  if (!(DESKTOP_SETTINGS_SECTIONS as readonly string[]).includes(value)) return false;
+  const section = value as DesktopSettingsSection;
+  return !OPTIONAL_SETTINGS_SECTIONS.includes(section) || enabledOptional.includes(section);
 }
 
 /**
@@ -68,18 +77,22 @@ export function applyOpenRequest(
  * redirects are mirrored: no page, the legacy `assistant`/`system`/`agents`
  * pages and unknown pages select Capacity. The org-less recovery route
  * `/settings/<page>` defaults to Language (Preferences), as its page does.
- * Returns null for any other path.
+ * An optional page not in `enabledOptional` is unknown (it selects the
+ * default page). Returns null for any other path.
  */
-export function settingsRequestFromPath(pathname: string): DesktopDialogRequest | null {
+export function settingsRequestFromPath(
+  pathname: string,
+  enabledOptional: readonly DesktopSettingsSection[] = [],
+): DesktopDialogRequest | null {
   const org = /^\/orgs\/[^/]+\/settings(?:\/([^/]*))?(?:\/|$)/.exec(pathname);
   if (org) {
     const page = org[1] ?? '';
-    return { dialog: 'settings', section: isSection(page) ? page : DEFAULT_ORG_SETTINGS_SECTION };
+    return { dialog: 'settings', section: isSection(page, enabledOptional) ? page : DEFAULT_ORG_SETTINGS_SECTION };
   }
   const recovery = /^\/settings(?:\/([^/]*))?(?:\/|$)/.exec(pathname);
   if (recovery) {
     const page = recovery[1] ?? '';
-    return { dialog: 'settings', section: isSection(page) ? page : DEFAULT_RECOVERY_SETTINGS_SECTION };
+    return { dialog: 'settings', section: isSection(page, enabledOptional) ? page : DEFAULT_RECOVERY_SETTINGS_SECTION };
   }
   return null;
 }

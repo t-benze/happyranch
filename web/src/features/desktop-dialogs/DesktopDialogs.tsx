@@ -58,8 +58,12 @@ import {
   type DesktopSettingsSection,
 } from './dialogModel';
 import { isDesktopShell } from './desktopShell';
+import { features } from '@/config/features';
 import { orgOfPath, useOwnerGate, type OwnerGateEffect } from '@/shared/owners';
 import type { OwnerRecord } from '@/lib/owners/ownerRegistry';
+
+/** Optional Settings pages this build shows (build-time UI flags, THR-390 PR6). */
+const ENABLED_OPTIONAL_SECTIONS: readonly DesktopSettingsSection[] = features.task_attributes_ui ? ['task-attributes'] : [];
 
 /** Id of the Main content landmark: the focus-return fallback. */
 export const MAIN_CONTENT_ID = 'happyranch-main-content';
@@ -243,7 +247,7 @@ export function DesktopDialogsProvider({
   useEffect(() => {
     if (!isDesktopShell()) return;
     setNavigationInterceptor((next) => {
-      const request = settingsRequestFromPath(next.pathname);
+      const request = settingsRequestFromPath(next.pathname, ENABLED_OPTIONAL_SECTIONS);
       if (!request) return false;
       const org = orgOfPath(next.pathname);
       if (org !== null && org !== orgOfPath(window.location.pathname)) return false;
@@ -418,7 +422,7 @@ export function DesktopSettingsRoute(): JSX.Element {
   const slug = orgMatch?.params.slug;
 
   useEffect(() => {
-    const request = settingsRequestFromPath(location.pathname);
+    const request = settingsRequestFromPath(location.pathname, ENABLED_OPTIONAL_SECTIONS);
     // The Main link that led here (Sidebar Settings) is the invoker; a cold
     // deep link has none and uses the Main fallback on close.
     if (request) openDesktopDialog(request, takeLinkInvoker(location.pathname));
