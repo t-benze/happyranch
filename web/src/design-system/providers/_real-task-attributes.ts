@@ -9,9 +9,10 @@
  * - `useDefinition` always re-reads on mount: a dialog never takes authority
  *   from a cached prefetch (MEM-300).
  * - No `refetchInterval`: these reads are never polled.
- * - The list read waits while a native recovery state is active: the
- *   recovery fence keeps the section mounted but hidden, and it must send no
- *   definitions request then. Retry clears the state and the read runs.
+ * - The list and row-authority reads wait while a native recovery state is
+ *   active: the recovery fence keeps the section mounted but hidden, and it
+ *   must send no definitions request then, even when a cached list is still
+ *   shown as loaded. Retry clears the state and the reads run.
  * - Mutations are plain sends: never retried, never replayed.
  */
 import { useSyncExternalStore } from 'react';
@@ -101,11 +102,12 @@ export const realTaskAttributesApi: TaskAttributesApi = {
     const slug = useSlug();
     const qc = useQueryClient();
     const limit = limiterFor(qc);
+    const recovery = useSyncExternalStore(subscribeNativeRecovery, getNativeRecoveryState, getNativeRecoveryState);
     const results = useQueries({
       queries: ids.map((id) => ({
         queryKey: taskAttributeKeys.definition(slug, id),
         queryFn: () => limit(() => taskAttributes.getDefinition(slug, id)),
-        enabled: enabled && !!slug,
+        enabled: enabled && !!slug && recovery === null,
       })),
     });
     const byId: Record<string, TaskAttributesQuery<AttributeDefinitionRead>> = {};

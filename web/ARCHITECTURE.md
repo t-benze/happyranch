@@ -527,8 +527,9 @@ the type-only fixtures in `_task-attribute-fixtures.ts`) and
 `hooks/task-attributes.ts`. Query keys are `[org, 'task-attributes', …]`; none
 of these reads has a `refetchInterval`. The section sits in its own
 `NativeRecoveryFence`, which keeps it mounted but hidden during a native
-recovery state; the list read is disabled while that state is active (no
-definitions request) and runs once Retry clears it.
+recovery state; the list read and the per-row definition reads are disabled
+while that state is active (no definitions request, also when a cached list is
+still loaded) and run once Retry clears it.
 
 - **Authority is server-reported only.** The list's top-level `editability`
   decides whether row actions are offered; each row's own
