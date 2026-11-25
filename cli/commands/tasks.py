@@ -224,7 +224,13 @@ def cmd_run(args: argparse.Namespace) -> None:
                 item["display_name"] = display_name
             payload_attachments.append(item)
         payload["attachments"] = payload_attachments
-    r = client.post(f"/api/v1/orgs/{slug}/tasks", json=payload)
+    from cli.commands.task_attributes import creation_values, transport_failure
+    try:
+        if getattr(args, "attr", None):
+            payload["attributes"] = creation_values(client, f"/api/v1/orgs/{slug}", args.attr, args.session_id)
+        r = client.post(f"/api/v1/orgs/{slug}/tasks", json=payload)
+    except httpx.HTTPError:
+        transport_failure()
     if not _ok(r):
         return
     task_id = r.json()["task_id"]
@@ -1430,6 +1436,9 @@ def register(sub) -> None:
         ),
         dest="attachments",
     )
+    p_run.add_argument("--attr", action="append", default=None, metavar="KEY=VALUE",
+                       help="This task's own initial attribute; repeat for multiple keys")
+    p_run.add_argument("--session-id", default=None, help="Current agent proof for attribute discovery")
     task_selection_arguments(p_run)
     p_run.set_defaults(func=cmd_run)
 

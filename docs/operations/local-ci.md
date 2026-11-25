@@ -17,7 +17,7 @@ observes capped size walking, exhausted time, unavailable roots/reads and an
 unchanged successful sweep outcome. No daemon, provider, scheduled sweep or
 new CI trigger is run. Existing active-task/root/job keepers remain unchanged.
 
-## Focused custom task attributes (THR-390 PR1/PR2)
+## Focused custom task attributes (THR-390 PR1/PR2/PR3)
 
 ```bash
 uv run --frozen python -B -m unittest scripts.test_task_attributes -v
@@ -33,7 +33,16 @@ PR2 also exercises P01–P28 at the shipping FastAPI/ASGI boundary with the
 existing synthetic-org fixture: current owner/manager/Founder authority, tenant
 isolation, strict transport, revision/archive/freeze conflicts, atomic audit
 fault rollback, provenance, coherent two-connection reads and full history.
-No daemon lifespan, provider or live state. OpenAPI generation remains
+PR3 extends that same venue with shared-adapter caller ownership, real plain
+creation, second-connection/reopen no-residue assertions, pre-INSERT semantic
+refusals, attachment joint commits, SQL fault rollback, writer races and shipping
+CLI parser/HTTP-bridge cases. H01–H03/R01–R12/C01–C08 map to the accepted PR3
+design; A01/A03 observe the served create schema and existing route inventory.
+C09 separately uses a task-owned disposable runtime job and real CLI processes,
+with isolated daemon home and ephemeral loopback port; retain its transcript,
+exact source identity, port/process custody and teardown receipt.
+No daemon lifespan, provider or live state in the focused in-process cases.
+OpenAPI generation remains
 `uv run --frozen python scripts/generate_openapi_snapshot.py --write`, followed
 by the same command with `--check`; full body/response models are checked in
 the focused cases because the snapshot pins only params/statuses. Native Swift

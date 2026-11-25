@@ -1,7 +1,8 @@
-# Custom Task Attributes — storage, validation and HTTP adapters
+# Custom Task Attributes — storage, HTTP, plain creation and CLI
 
-Status: PR1 foundation and PR2 HTTP adapters; THR-390 / TASK-19073 / TASK-19123.
-CLI, creation producers and UI are subsequent slices. No definitions are seeded.
+Status: PR1 foundation, PR2 HTTP adapters and PR3 plain creation/CLI;
+THR-390 / TASK-19073 / TASK-19160. Other creation producers and UI remain
+subsequent slices. No definitions are seeded.
 The source contract is `runtime/task_attributes.py`,
 `runtime/infrastructure/db/task_attributes.py`, and the additive installer in
 `SchemaMixin._create_tables`. This spec implements PRD v1.0 F1–F6 storage portions
@@ -283,3 +284,59 @@ including real two-connection orderings, SQL-insert faults, independent durable
 row checks, coherent snapshots, complete 2,048-event history and full OpenAPI
 model checks. This remains outside retired Python/Web units, skipped general
 integration, Product E2E and required lint/static checks.
+
+
+## PR3 — plain creation, CLI discovery and task values
+
+Accepted implementation/test design: TASK-19152 `pr3-test-design.md`, 79,656
+bytes, SHA-256 `e9c879ea291ed67b2592156fb77de0c6cc74d81e2ae9ebfb48c5500cc54634a3`;
+TASK-19157 design PASS; manager TASK-19150 acceptance bound in TASK-19160.
+
+POST `/tasks` has optional `attributes:{key:native_value}`. Absence and `{}`
+record one positive empty admission; null and non-objects refuse. All supplied
+keys must resolve to current org-local non-archived definitions. Semantic
+failure returns 422 `detail:{code:"attribute_validation_failed",errors:{KEY:[REASON]}}`;
+container refusal is keyed `attributes`; SQL/storage failure returns 503
+`attribute_storage_unavailable`. An invalid set leaves no task/ownership/link,
+attribute row, first-use marker or successful mutation audit. Existing unrelated
+owner/attachment/model refusals remain in place.
+
+`runtime/task_attribute_admission.py` is the shared PR3/PR4 creation adapter.
+Creators own the org async lock, move gate, DB RLock and `BEGIN IMMEDIATE`.
+`validate_initial_attributes` reuses PR1's read-only whole-set validator before
+ID/row allocation inside that writer. Insert the task, then call
+`write_initial_attributes_uncommitted` with the same raw map and caller-trusted
+actor. It revalidates current definitions, invokes PR1's uncommitted initial
+writer and composes PR2 `task_attribute_set` audits in input order: actual task
+scope, definition ID/version, revision 1, actor ID/kind, old absent and new typed
+presence. Empty/omitted fields emit no value or field audit. Caller must roll
+back the entire creation on any failure, including binding, audit and COMMIT,
+commit once, then enqueue. The adapter never awaits, commits, enqueues, looks up
+parent values or supplies defaults. Preflight/cache results never authorize a
+later writer. PR4 must validate every leg's explicit raw map before allocation
+and preserve its producer's whole-operation rollback; no PR4 producer ships here.
+
+The attachment wrapper accepts lazy task allocation so its writer validates
+before task ID allocation and commits task, ownership, links, attributes and
+both success audits jointly. Its existing caller contract otherwise remains.
+`persist_root_task` opts into admission only for the plain HTTP producer;
+knowledge-distill keeps its existing atomic `bind` and prior provenance.
+
+The registered CLI producer is `happyranch run --attr KEY=VALUE` (repeatable),
+with existing owner/brief/model/attachment options. `attributes list|show`
+provides definitions, and `attributes get|set|clear|history` uses PR2 routes.
+All verbs support explicit org/session proof and machine JSON. Numeric tokens
+are finite JSON numbers with exact native integers, Boolean tokens exactly
+`true`/`false`, strings literal RHS; duplicates are rejected before map collapse.
+No attrs requires no discovery request. Set/clear read definition version and
+current revision then send one CAS batch; clear omits `value`. No automatic
+retry after conflicts or lost replies; nonzero uncertainty requires readback.
+Original admission stays immutable. Existing Founder/session/owner/manager
+boundaries are unchanged. See the [CLI guide](../agent-guides/web-and-cli.md#optional-task-attributes-in-the-cli-thr-390-pr3).
+
+The existing standalone `scripts.test_task_attributes` venue owns H01–H03,
+R01–R12, C01–C08 and served-schema A01/A03 additions; no retired suite, required
+CI gate or Product E2E trigger is added. C09 is a separate disposable runtime
+process transcript. The normalized OpenAPI snapshot pins status/parameter
+inventory; full served schema owns the optional create field. Web API mirrors
+are reserved for serial PR6 follow-up; PR3 makes no `web/` edit.

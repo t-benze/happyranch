@@ -30,6 +30,7 @@ from cli.client.client import (  # noqa: F401  (cli.main.OpcClient must stay the
 from cli.commands import (
     agents,
     artifacts,
+    task_attributes,
     connection,
     doctor,
     dreams,
@@ -170,6 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
     runtime.register(sub)
     connection.register(sub)
     tasks.register(sub)
+    task_attributes.register(sub)
     teams.register(sub)
     agents.register(sub)
     jobs.register(sub)

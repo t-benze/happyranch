@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, closing
 import asyncio
 from unittest.mock import patch
 
@@ -1537,6 +1537,621 @@ class StorageTests(unittest.TestCase):
         finally:
             self.db._conn.set_authorizer(None)
         self.assertEqual(self.projection(d)["history"], suffix)
+
+class AdmissionTests(unittest.TestCase):
+    """H01/H02: shared adapter retains the real caller's transaction."""
+    setUp = StorageTests.setUp
+    tearDown = StorageTests.tearDown
+    task = StorageTests.task
+    create = StorageTests.create
+    observer = StorageTests.observer
+
+    def test_h01_h02_owned_writer_visibility_rollback_and_own_inputs(self):
+        from runtime.task_attribute_admission import validate_initial_attributes, write_initial_attributes_uncommitted as write
+        d = self.create(constraints={"min": 1, "max": 10})
+        observer = self.observer()
+        with self.assertRaisesRegex(AttributeStoreError, "owned_transaction_required"):
+            write(self.db, "TASK-1", {}, **ACTOR)
+        for commit, child_value in ((False, {}), (True, {})):
+            with self.subTest(commit=commit, child=child_value):
+                self.db._conn.execute("BEGIN IMMEDIATE")
+                for task_id, values in (("TASK-A", {"effort": 4}), ("TASK-B", child_value)):
+                    validate_initial_attributes(self.db, values)
+                    self.db._insert_task_uncommitted(TaskRecord(id=task_id, brief="Synthetic shared admission", parent_task_id="TASK-A" if task_id == "TASK-B" else "TASK-1"))
+                    write(self.db, task_id, values, **ACTOR)
+                    self.assertTrue(self.db._conn.in_transaction)
+                    self.assertIsNone(observer.execute("SELECT id FROM tasks WHERE id=?", (task_id,)).fetchone())
+                with self.assertRaises(AttributeValidationError):
+                    write(self.db, "TASK-1", {"effort": 11}, **ACTOR)
+                self.assertTrue(self.db._conn.in_transaction)
+                self.assertIsNotNone(self.db.execute("SELECT id FROM tasks WHERE id='TASK-A'").fetchone())
+                if commit:
+                    self.db._conn.commit()
+                    projection = observer.get_task_attribute("TASK-B", d["definition_id"])
+                    self.assertEqual(projection["current"]["present"], bool(child_value))
+                    self.assertEqual(len(observer.get_task_attribute_history("TASK-B")["events"]), len(child_value))
+                else:
+                    self.db._conn.rollback()
+                    self.assertIsNone(observer.execute("SELECT id FROM tasks WHERE id='TASK-A'").fetchone())
+                    self.assertEqual(observer.execute("SELECT COUNT(*) FROM task_attribute_admissions").fetchone()[0], 0)
+        # Explicit own input on another child never reuses A's value.
+        self.db._conn.execute("BEGIN IMMEDIATE")
+        self.db._insert_task_uncommitted(TaskRecord(id="TASK-C", brief="Synthetic child own values", parent_task_id="TASK-A"))
+        write(self.db, "TASK-C", {"effort": 6}, **ACTOR)
+        self.db._conn.commit()
+        self.assertEqual(observer.get_task_attribute("TASK-C", d["definition_id"])["current"]["value"], 6)
+
+
+class CreationTests(unittest.IsolatedAsyncioTestCase):
+    asyncSetUp = RouteTests.asyncSetUp
+    asyncTearDown = RouteTests.asyncTearDown
+    create = RouteTests.create
+    change = RouteTests.change
+    interleave = RouteTests.interleave
+
+    def inventory(self):
+        path = self.org.db.execute("PRAGMA database_list").fetchone()[2]
+        # Open/close twice: neither a writer-local read nor a retained snapshot
+        # can mask a committed orphan after a refusal.
+        tables = TABLES + ["tasks", "workflow_task_ownership", "task_attachments", "audit_log"]
+        with closing(sqlite3.connect(path)) as conn:
+            first = {name: conn.execute(f"SELECT * FROM {name} ORDER BY rowid").fetchall() for name in tables}
+        with closing(sqlite3.connect(path)) as conn:
+            self.assertEqual(first, {name: conn.execute(f"SELECT * FROM {name} ORDER BY rowid").fetchall() for name in tables})
+        return first
+
+    async def submit(self, attributes=None, *, omitted=False, **fields):
+        return await self.client.post(self.base + "/tasks", json={"brief": "Synthetic PR3", "owner": "worker",
+            **({} if omitted else {"attributes": attributes}), **fields})
+
+    def manifest(self, task_id, values):
+        path = self.org.db.execute("PRAGMA database_list").fetchone()[2]
+        with closing(sqlite3.connect(path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM tasks WHERE id=?", (task_id,)).fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM workflow_task_ownership WHERE task_id=?", (task_id,)).fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT actor_id,actor_kind FROM task_attribute_admissions WHERE task_id=?", (task_id,)).fetchall(), [("founder", "founder")])
+            stored = conn.execute("SELECT v.key,i.value_json FROM task_attribute_initial_values i JOIN task_attribute_definition_versions v ON v.definition_id=i.definition_id AND v.version=i.definition_version WHERE i.task_id=?", (task_id,)).fetchall()
+            self.assertEqual({key: json.loads(value) for key, value in stored}, values)
+            for key, raw in stored:
+                self.assertIs(type(json.loads(raw)), type(values[key]))
+            for table in ("task_attribute_initial_values", "task_attribute_values", "task_attribute_value_events"):
+                self.assertEqual(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE task_id=?", (task_id,)).fetchone()[0], len(values))
+            audits = conn.execute("SELECT payload FROM audit_log WHERE task_id=? AND action='task_attribute_set' ORDER BY id", (task_id,)).fetchall()
+            self.assertEqual(len(audits), len(values))
+            for payload, value in zip(audits, values.values()):
+                p = json.loads(payload[0])
+                self.assertEqual(set(p), {"definition_id", "definition_version", "revision", "actor_id", "actor_kind", "old", "new"})
+                self.assertEqual((p["revision"], p["actor_id"], p["actor_kind"], p["old"], p["new"]),
+                    (1, "founder", "founder", {"present": False}, {"present": True, "value": value}))
+
+    async def test_r01_r06_r11_r12_admission_types_omission_and_queue(self):
+        effort = await self.create(constraints={"min": 1, "max": 10, "integer_only": True})
+        await self.create("label", type="string")
+        await self.create("ready", type="boolean")
+        await self.create("free")
+        queue = self.client._transport.app.state.daemon.queue
+        from runtime.daemon.runner import enqueue_task
+        seen = []
+        def observe(state, slug, task_id):
+            self.manifest(task_id, expected)
+            seen.append(task_id)
+            enqueue_task(state, slug, task_id)
+        for values in ({"effort": 1, "label": "  é🙂=x  ", "ready": False, "free": 9007199254740993},
+                       {"effort": 10, "label": "", "ready": True, "free": 10**100},
+                       {"effort": 4.0, "free": 0}, {}, None):
+            expected = values or {}
+            with self.subTest(values=values), patch("runtime.daemon.routes.tasks.enqueue_task", observe):
+                before = queue._queue.qsize()
+                response = await self.submit(values, omitted=values is None)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual((response.json()["assigned_agent"], response.json()["team"]), ("worker", "retiring"))
+                task_id = response.json()["task_id"]
+                self.assertEqual(queue._queue.qsize(), before + 1)
+                self.assertEqual(seen[-1], task_id)
+                read = (await self.client.get(self.base + f"/tasks/{task_id}/attributes")).json()
+                field = next(a for a in read["attributes"] if a["definition"]["key"] == "effort")
+                if "effort" not in expected:
+                    self.assertEqual(field["provenance"], "not_supplied_before_dispatch")
+                    self.assertEqual(field["initial"], {"state": "unset"})
+                    self.assertEqual(field["history"], {"history_state": "complete", "events": []})
+        self.assertIsNotNone(self.org.db.get_task_attribute_definition(effort["definition_id"])["first_used_at"])
+
+    async def test_r02_r03_r04_r05_keyed_refusals_before_insert(self):
+        await self.create(constraints={"min": 1, "max": 10, "integer_only": True})
+        await self.create("ratio", constraints={"min": -2.5, "max": 2.5})
+        await self.create("label", type="string")
+        await self.create("short", type="string", constraints={"min_length": 1, "max_length": 3})
+        await self.create("ready", type="boolean")
+        archived = await self.create("archived")
+        self.org.db.archive_task_attribute_definition(archived["definition_id"], expected_version=1)
+        renamed = await self.create("old")
+        self.org.db.update_task_attribute_definition(renamed["definition_id"], expected_version=1, key="new")
+        foreign_db = Database(Path(self.tmp.name) / "foreign.db")
+        try:
+            foreign_db.create_task_attribute_definition(key="foreign", type="numeric", name="Private other org rubric")
+        finally:
+            foreign_db.close()
+        used = await self.create("archived_used")
+        admitted = await self.submit({"archived_used": 4})
+        self.assertEqual(admitted.status_code, 200, admitted.text)
+        self.org.db.archive_task_attribute_definition(used["definition_id"], expected_version=1)
+        cases = [("archived_used", 4, ["archived_key"])]
+        for value in ("4", "4.0", "", True, False, None, [], {}):
+            cases.append(("effort", value, ["expected_finite_number"]))
+        for value, errors in ((0, ["below_min"]), (-1, ["below_min"]), (11, ["above_max"]),
+                (4.5, ["expected_integer"]), (0.5, ["expected_integer", "below_min"]), (10.5, ["expected_integer", "above_max"])):
+            cases.append(("effort", value, errors))
+        cases += [("ratio", -2.5001, ["below_min"]), ("ratio", 2.5001, ["above_max"]),
+                  ("short", "", ["below_min_length"]), ("short", "设计🙂x", ["above_max_length"]),
+                  ("label", "🙂" * 4001, ["above_max_length"])]
+        cases += [("label", value, ["expected_string"]) for value in (4, 4.0, True, False, None, [], {})]
+        cases += [("ready", value, ["expected_boolean"]) for value in (0, 1, -1, 1.0, "true", "false", "yes", "1", "", None, [], {})]
+        cases += [(key, 4, [reason]) for key, reason in (("foreign", "unknown_key"), ("old", "unknown_key"), ("archived", "archived_key"))]
+        queue = self.client._transport.app.state.daemon.queue
+        for key, value, errors in cases:
+            with self.subTest(key=key, value=repr(value)[:40], errors=errors):
+                before, queued, sql = self.inventory(), queue._queue.qsize(), []
+                self.org.db._conn.set_trace_callback(sql.append)
+                try:
+                    response = await self.submit({"label": "valid", key: value})
+                finally:
+                    self.org.db._conn.set_trace_callback(None)
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(response.json()["detail"]["errors"][key], errors)
+                self.assertFalse(any(s.lstrip().upper().startswith("INSERT INTO TASKS ") for s in sql), sql)
+                self.assertEqual(self.inventory(), before)
+                self.assertEqual(queue._queue.qsize(), queued)
+        response = await self.submit({"effort": 0, "short": "long", "missing": 1})
+        self.assertEqual(set(response.json()["detail"]["errors"]), {"effort", "short", "missing"})
+        for value in (None, [], 4, "map"):
+            with self.subTest(shape=value):
+                before = self.inventory()
+                response = await self.submit(value)
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(response.json()["detail"]["errors"], {"attributes": ["expected_object"]})
+                self.assertEqual(self.inventory(), before)
+        for token in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(raw_nonfinite=token):
+                before = self.inventory()
+                response = await self.client.post(self.base + "/tasks", content=(
+                    '{"brief":"Synthetic nonfinite","owner":"worker","attributes":{"effort":' + token + '}}'),
+                    headers={"Content-Type": "application/json"})
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertEqual(response.json()["detail"]["errors"]["effort"], ["expected_finite_number"])
+                self.assertEqual(self.inventory(), before)
+        for values in ({"short": "设"}, {"short": "设计🙂"}, {"label": "🙂" * 4000}, {"ratio": -2.5}, {"ratio": 2.5}, {"ratio": 1.25}):
+            response = await self.submit(values)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.manifest(response.json()["task_id"], values)
+
+    async def test_r12_owner_selection_controls_preserved(self):
+        await self.create()
+        response = await self.submit({"effort": 4}, owner=None, model="synthetic-model")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual((response.json()["assigned_agent"], response.json()["team"]), ("keeper", "engineering"))
+        task_id = response.json()["task_id"]
+        self.manifest(task_id, {"effort": 4})
+        task = self.org.db.get_task(task_id)
+        self.assertEqual((task.model_override, task.override_source), ("synthetic-model", "founder"))
+        self.assertTrue(any(a["action"] == "task_created" for a in self.org.db.get_audit_logs(task_id)))
+        for fields, code in (({"owner": "missing"}, "unknown_owner"), ({"team": "engineering"}, "owner_team_mismatch"),
+                             ({"reasoning_effort": "invalid"}, "invalid_task_selection")):
+            before = self.inventory()
+            response = await self.submit({"effort": 4}, **fields)
+            self.assertGreaterEqual(response.status_code, 400, response.text)
+            self.assertEqual(response.json()["detail"]["code"], code)
+            self.assertEqual(self.inventory(), before)
+
+    async def test_r06_zero_definitions_r07_later_and_legacy_r11_originals(self):
+        response = await self.submit({}, owner="keeper", team="engineering")
+        self.assertEqual(response.status_code, 200, response.text)
+        task_id = response.json()["task_id"]
+        self.manifest(task_id, {})
+        d = await self.create()
+        url = self.base + f"/tasks/{task_id}/attributes"
+        read = (await self.client.get(url)).json()["attributes"][0]
+        self.assertEqual((read["provenance"], read["initial"]), ("definition_added_later", {"state": "unset"}))
+        for revision, operation in ((0, {"op": "set", "value": 6}), (1, {"op": "clear"}), (2, {"op": "clear"})):
+            response = await self.client.put(url, json={"changes": [{**self.change(d, revision=revision), **operation}] if operation["op"] == "set" else [
+                {key: value for key, value in {**self.change(d, revision=revision), **operation}.items() if key != "value"}]})
+            self.assertEqual(response.status_code, 200, response.text)
+        field = response.json()["attributes"][0]
+        self.assertEqual(field["initial"], {"state": "unset"})
+        self.assertEqual([e["source"] for e in field["history"]["events"]], ["edit", "clear", "clear"])
+        legacy = (await self.client.get(self.values)).json()["attributes"][0]
+        self.assertEqual(legacy["initial"], {"state": "unknown"})
+        self.assertEqual(legacy["history"]["history_state"], "unavailable")
+
+    async def attachment(self):
+        from runtime.daemon.routes.tasks import _task_attachment_store
+        store = _task_attachment_store(self.org)
+        # The real store's upload API, no invented link/claim fixture.
+        upload = await self.client.post(self.base + "/tasks/attachments", files={"file": ("synthetic.txt", b"synthetic attachment", "text/plain")})
+        self.assertEqual(upload.status_code, 200, upload.text)
+        ref = {"storage_key": upload.json()["storage_key"], "display_name": "synthetic.txt"}
+        self.assertTrue(store.path_for(ref["storage_key"]).is_file())
+        return ref
+
+    async def test_r08_attachments_joint_admission_and_claim_refusal(self):
+        await self.create()
+        for attrs in ({"effort": 4}, {}):
+            ref = await self.attachment()
+            response = await self.submit(attrs, attachments=[ref])
+            self.assertEqual(response.status_code, 200, response.text)
+            task_id = response.json()["task_id"]
+            self.manifest(task_id, attrs)
+            self.assertEqual(self.org.db.get_task_attachment_by_storage_key(ref["storage_key"]).task_id, task_id)
+            before = self.inventory()
+            response = await self.submit(attrs, attachments=[ref])
+            self.assertEqual(response.json()["detail"]["code"], "attachment_already_claimed")
+            self.assertEqual(self.inventory(), before)
+        ref = await self.attachment()
+        before = self.inventory()
+        response = await self.submit({"missing": 4}, attachments=[ref])
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(self.inventory(), before)
+        self.assertIsNone(self.org.db.get_task_attachment_by_storage_key(ref["storage_key"]))
+        response = await self.submit({}, attachments=[{"storage_key": "missing", "display_name": "x.txt"}])
+        self.assertEqual(response.json()["detail"]["code"], "task_attachment_not_found")
+        self.assertEqual(self.inventory(), before)
+
+    async def test_r09_r08_real_sql_faults_revert_all_effects_and_recover(self):
+        queue = self.client._transport.app.state.daemon.queue
+        for attachment in (False, True):
+            for target in ("admissions", "initial_values", "values", "value_events", "audit_log"):
+                with self.subTest(attachment=attachment, target=target):
+                    prefix = ("attached_" if attachment else "plain_") + target
+                    first_key, second_key = prefix + "_first", prefix + "_second"
+                    await self.create(first_key)
+                    second = await self.create(second_key)
+                    values = {first_key: 4, second_key: 6}
+                    ref = await self.attachment() if attachment else None
+                    table = target if target == "audit_log" else "task_attribute_" + target
+                    where = f"NEW.action='task_attribute_set' AND json_extract(NEW.payload,'$.definition_id')='{second['definition_id']}'" if target == "audit_log" else "1" if target == "admissions" else f"NEW.definition_id='{second['definition_id']}'"
+                    before, queued = self.inventory(), queue._queue.qsize()
+                    self.org.db.execute(f"CREATE TEMP TRIGGER pr3_fault BEFORE INSERT ON {table} WHEN {where} BEGIN SELECT RAISE(ABORT, 'synthetic PR3 fault'); END")
+                    try:
+                        response = await self.submit(values, **({"attachments": [ref]} if ref else {}))
+                        self.assertEqual(response.status_code, 503, response.text)
+                        self.assertEqual(response.json()["detail"]["code"], "attribute_storage_unavailable")
+                        self.assertEqual(self.inventory(), before)
+                        self.assertEqual(queue._queue.qsize(), queued)
+                    finally:
+                        self.org.db.execute("DROP TRIGGER pr3_fault")
+                    response = await self.submit(values, **({"attachments": [ref]} if ref else {}))
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.manifest(response.json()["task_id"], values)
+
+    async def test_h03_bind_failure_preexisting_writer_internal_provenance(self):
+        from runtime.daemon.routes.tasks import SubmitTask, persist_root_task, resolve_task_owner
+        body = SubmitTask(owner="worker", brief="Synthetic internal")
+        await self.create()
+        before = self.inventory()
+        resolve_task_owner(body, self.org)
+        self.assertEqual(self.inventory(), before)
+        def bind(task):
+            self.org.db.insert_audit_log_uncommitted(task.id, "worker", "synthetic_binding", {})
+            raise RuntimeError("synthetic bind failed")
+        with self.assertRaisesRegex(RuntimeError, "bind failed"):
+            persist_root_task(self.org, body, bind=bind, admit_attributes=True)
+        self.assertEqual(self.inventory(), before)
+        self.org.db._conn.execute("BEGIN IMMEDIATE")
+        try:
+            with self.assertRaisesRegex(RuntimeError, "own transaction"):
+                persist_root_task(self.org, body)
+            self.assertTrue(self.org.db._conn.in_transaction)
+        finally:
+            self.org.db._conn.rollback()
+        task = persist_root_task(self.org, body, bind=lambda task: self.org.db.insert_audit_log_uncommitted(task.id, "worker", "synthetic_binding", {}))
+        self.assertEqual(self.org.db.execute("SELECT COUNT(*) FROM task_attribute_admissions WHERE task_id=?", (task.id,)).fetchone()[0], 0)
+        self.assertEqual(self.org.db.get_audit_logs(task.id)[0]["action"], "synthetic_binding")
+
+    async def test_r09_precommit_failure_and_r08_concurrent_claim(self):
+        from runtime.daemon.routes.tasks import persist_root_task, SubmitTask
+        await self.create()
+        connection = self.org.db._conn
+        class CommitFault:
+            def __getattr__(self, name):
+                return getattr(connection, name)
+            def commit(self):
+                raise sqlite3.OperationalError("synthetic precommit fault")
+        for attached in (False, True):
+            ref = await self.attachment() if attached else None
+            before = self.inventory()
+            self.org.db._conn = CommitFault()
+            try:
+                response = await self.submit({"effort": 4}, **({"attachments": [ref]} if ref else {}))
+                self.assertEqual(response.status_code, 503, response.text)
+            finally:
+                self.org.db._conn = connection
+            self.assertEqual(self.inventory(), before)
+        ref = await self.attachment()
+        expected = {}
+        def claim(db):
+            from runtime.infrastructure.workflow_task_ownership import install_task_ownership
+            install_task_ownership(db, org_slug="alpha")
+            db.insert_task_with_attachments(TaskRecord(id="TASK-competing-claim", brief="Synthetic competing claim"),
+                [{"ordinal": 0, "storage_key": ref["storage_key"], "display_name": "synthetic.txt", "size_bytes": 20,
+                  "content_type": "text/plain"}], uploaded_by="founder")
+            for table in TABLES + ["tasks", "workflow_task_ownership", "task_attachments", "audit_log"]:
+                expected[table] = [tuple(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+        response = await self.interleave(lambda: self.submit({"effort": 4}, attachments=[ref]), claim)
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"]["code"], "attachment_already_claimed")
+        self.assertEqual(self.inventory(), expected)
+        # Direct bind remains under the same root transaction even after attrs.
+        with self.assertRaisesRegex(RuntimeError, "late bind"):
+            persist_root_task(self.org, SubmitTask(owner="worker", brief="Synthetic late bind", attributes={"effort": 4}),
+                admit_attributes=True, bind=lambda task: (_ for _ in ()).throw(RuntimeError("late bind")))
+        self.assertEqual(self.inventory(), expected)
+
+    async def test_r10_current_definitions_at_writer_boundary(self):
+        for operation, changes, reason in (("tighten", {"constraints": {"max": 3}}, "above_max"),
+                ("type", {"type": "boolean"}, "expected_boolean"), ("rename", {"key": "renamed"}, "unknown_key"),
+                ("archive", None, "archived_key"), ("metadata", {"description": "current metadata"}, None)):
+            with self.subTest(operation=operation):
+                d = await self.create("race_" + operation)
+                expected = {}
+                queued = self.client._transport.app.state.daemon.queue._queue.qsize()
+                def winner(db):
+                    if changes is None:
+                        db.archive_task_attribute_definition(d["definition_id"], expected_version=1)
+                    else:
+                        db.update_task_attribute_definition(d["definition_id"], expected_version=1, **changes)
+                    for table in TABLES + ["tasks", "workflow_task_ownership", "task_attachments", "audit_log"]:
+                        expected[table] = [tuple(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+                response = await self.interleave(lambda: self.submit({d["key"]: 4}), winner)
+                self.assertEqual(response.status_code, 422 if reason else 200, response.text)
+                if reason:
+                    self.assertEqual(response.json()["detail"]["errors"][d["key"]], [reason])
+                    self.assertEqual(self.inventory(), expected)
+                    self.assertEqual(self.client._transport.app.state.daemon.queue._queue.qsize(), queued)
+                else:
+                    task_id = response.json()["task_id"]
+                    self.manifest(task_id, {d["key"]: 4})
+                    field = self.org.db.get_task_attribute(task_id, d["definition_id"])
+                    self.assertEqual(field["initial"]["definition"]["version"], 2)
+                    with self.assertRaisesRegex(AttributeStoreError, "definition_structure_frozen"):
+                        self.org.db.update_task_attribute_definition(d["definition_id"], expected_version=2, constraints={"max": 3})
+        before = self.inventory()
+        self.org.db._conn.set_authorizer(lambda action, name, *_: sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_READ and name == "task_attribute_definitions" else sqlite3.SQLITE_OK)
+        try:
+            response = await self.submit({})
+            self.assertEqual(response.status_code, 503, response.text)
+        finally:
+            self.org.db._conn.set_authorizer(None)
+        self.assertEqual(self.inventory(), before)
+
+    async def test_a01_a03_served_create_schema_and_inventory(self):
+        schema = (await self.client.get("/openapi.json")).json()
+        operation = schema["paths"]["/api/v1/orgs/{slug}/tasks"]["post"]
+        self.assertIn("503", operation["responses"])
+        error_schema = operation["responses"]["422"]["content"]["application/json"]["schema"]
+        self.assertIn({"$ref": "#/components/schemas/AttributeErrorResponse"}, error_schema["anyOf"])
+        ref = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"].split("/")[-1]
+        body = schema["components"]["schemas"][ref]
+        self.assertIn("attributes", body["properties"])
+        self.assertEqual(body["properties"]["attributes"]["type"], "object")
+        self.assertIn("description", body["properties"]["attributes"])
+        self.assertNotIn("attributes", body["required"])
+        self.assertIn("brief", body["required"])
+        self.assertTrue({"owner", "team", "model", "reasoning_effort", "attachments"} <= body["properties"].keys())
+        classification = json.loads((Path(__file__).resolve().parents[1] / "tests/contract/route-classification.json").read_text())
+        self.assertEqual(classification["included"].count("POST /api/v1/orgs/{slug}/tasks"), 1)
+        self.assertFalse(set(classification["included"]) & set(classification["excluded"]))
+        self.assertEqual(len(classification["included"]), len(set(classification["included"])))
+
+
+class AttributeCliTests(unittest.IsolatedAsyncioTestCase):
+    """The shipping parser/handlers bridged only at HTTP transport to real ASGI."""
+    asyncSetUp = RouteTests.asyncSetUp
+    asyncTearDown = RouteTests.asyncTearDown
+    create = RouteTests.create
+    change = RouteTests.change
+    submit = CreationTests.submit
+    manifest = CreationTests.manifest
+    inventory = CreationTests.inventory
+    attachment = CreationTests.attachment
+
+    async def invoke(self, *arguments, after=None, startup_error=None):
+        from cli.main import build_parser
+        from cli.client.client import OpcClient
+        from contextlib import redirect_stdout, redirect_stderr
+        from io import StringIO
+        from types import SimpleNamespace
+        loop = asyncio.get_running_loop()
+        calls = []
+        async def send(method, path, kwargs):
+            response = await self.client.request(method, path, **kwargs)
+            calls.append((method, path, kwargs, response))
+            if after:
+                await after(method, path, kwargs, response)
+            return response
+        def request(method, path, **kwargs):
+            return asyncio.run_coroutine_threadsafe(send(method, path, kwargs), loop).result(15)
+        bridge = SimpleNamespace(get=lambda path, **kw: request("GET", path, **kw),
+            post=lambda path, **kw: request("POST", path, **kw), request=request)
+        def invoke():
+            stdout, stderr, code = StringIO(), StringIO(), 0
+            with patch.object(OpcClient, "from_env", return_value=bridge, side_effect=startup_error), redirect_stdout(stdout), redirect_stderr(stderr):
+                try:
+                    args = build_parser().parse_args(list(arguments) + ["--org", "alpha"])
+                    args.func(args)
+                except SystemExit as exc:
+                    code = exc.code
+            return code, stdout.getvalue(), stderr.getvalue(), calls
+        return await asyncio.to_thread(invoke)
+
+    async def test_c01_c02_discovery_and_typed_presence_rendering(self):
+        code, out, _, _ = await self.invoke("attributes", "list", "--json")
+        self.assertEqual((code, json.loads(out)["definitions"]), (0, []))
+        await self.create("free", description=None)
+        await self.create("ready", type="boolean")
+        await self.create("label", type="string")
+        archived = await self.create("archived")
+        self.org.db.archive_task_attribute_definition(archived["definition_id"], expected_version=1)
+        before = self.inventory()
+        for flags in ([], ["--json"]):
+            code, out, _, _ = await self.invoke("attributes", "list", *flags)
+            self.assertEqual(code, 0, out)
+            items = json.loads(out)["definitions"]
+            self.assertEqual({d["key"] for d in items}, {"free", "ready", "label"})
+            self.assertTrue(all({"type", "constraints", "description", "definition_id", "version"} <= d.keys() for d in items))
+            code, out, _, _ = await self.invoke("attributes", "show", "free", *flags)
+            self.assertEqual(code, 0, out)
+            self.assertIsNone(json.loads(out)["definition"]["description"])
+        code, out, _, _ = await self.invoke("attributes", "list", "--include-archived")
+        self.assertEqual(len(json.loads(out)["definitions"]), 4)
+        code, out, _, _ = await self.invoke("attributes", "show", "missing")
+        self.assertNotEqual(code, 0)
+        self.assertIn("unknown", out)
+        self.assertEqual(self.inventory(), before)
+        response = await self.submit({"free": 0, "ready": False, "label": ""})
+        task_id = response.json()["task_id"]
+        code, out, _, _ = await self.invoke("attributes", "get", task_id, "--json", "--session-id", "synthetic-sibling")
+        self.assertEqual(code, 0, out)
+        read = json.loads(out)
+        self.assertFalse(read["editability"]["can_edit"])
+        for field in read["attributes"]:
+            self.assertIn("value", field["current"])
+        self.assertEqual({a["definition"]["key"]: a["current"]["value"] for a in read["attributes"]}, {"free": 0, "ready": False, "label": ""})
+        self.assertTrue(all(a["initial"]["state"] == "set" for a in read["attributes"]))
+
+    async def test_c03_c04_run_set_clear_history_and_exact_scalar_parsing(self):
+        await self.create("free")
+        await self.create("ready", type="boolean")
+        await self.create("label", type="string")
+        for numeric, text in (("9007199254740993", "  设计🙂=x  "), ("4.0", ""), ("1e2", "null"), ("0", "false")):
+            with self.subTest(numeric=numeric, text=text):
+                extra = []
+                if numeric == "9007199254740993":
+                    ref = await self.attachment()
+                    brief_file = Path(self.tmp.name) / "brief.txt"
+                    brief_file.write_text("Synthetic CLI")
+                    extra = ["--brief-file", str(brief_file), "--model", "synthetic-model", "--attach", ref["storage_key"] + ":synthetic.txt"]
+                else:
+                    extra = ["--brief", "Synthetic CLI"]
+                code, out, _, calls = await self.invoke("run", "--owner", "worker", *extra,
+                    "--attr", "free=" + numeric, "--attr", "ready=false", "--attr", "label=" + text)
+                self.assertEqual(code, 0, out)
+                request = next(c for c in calls if c[0] == "POST" and c[1].endswith("/tasks"))
+                task_id = request[3].json()["task_id"]
+                self.assertEqual(request[2]["json"]["brief"], "Synthetic CLI")
+                if numeric == "9007199254740993":
+                    self.assertEqual(request[2]["json"]["model"], "synthetic-model")
+                    self.assertEqual(self.org.db.get_task_attachment_by_storage_key(ref["storage_key"]).task_id, task_id)
+                expected = {"free": json.loads(numeric), "ready": False, "label": text}
+                self.manifest(task_id, expected)
+                code, out, _, _ = await self.invoke("attributes", "set", task_id, "free", "6", "--note", "updated", "--json")
+                self.assertEqual(code, 0, out)
+                code, out, _, calls = await self.invoke("attributes", "clear", task_id, "free", "--json")
+                self.assertEqual(code, 0, out)
+                change = next(c for c in calls if c[0] == "PUT")[2]["json"]["changes"][0]
+                self.assertNotIn("value", change)
+                self.assertEqual(change["expected_revision"], 2)
+                code, out, _, _ = await self.invoke("attributes", "history", task_id, "--key", "free", "--json")
+                self.assertEqual(code, 0, out)
+                events = json.loads(out)["events"]
+                self.assertEqual([e["source"] for e in events], ["admission", "edit", "clear"])
+                self.assertEqual(events[1]["note"], "updated")
+                self.assertEqual([e["revision"] for e in events], [1, 2, 3])
+                code, out, _, _ = await self.invoke("attributes", "get", task_id)
+                field = next(a for a in json.loads(out)["attributes"] if a["definition"]["key"] == "free")
+                self.assertEqual(field["initial"]["value"], expected["free"])
+                self.assertFalse(field["current"]["present"])
+        code, out, _, calls = await self.invoke("run", "--owner", "worker", "--brief", "No scores")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(any("/task-attributes/definitions" in c[1] for c in calls))
+        request = next(c for c in calls if c[0] == "POST" and c[1].endswith("/tasks"))
+        self.manifest(request[3].json()["task_id"], {})
+        for _ in range(2):
+            code, out, _, _ = await self.invoke("attributes", "clear", "TASK-target", "free")
+            self.assertEqual(code, 0, out)
+            self.assertEqual(json.loads(out)["attributes"][0]["initial"], {"state": "unknown"})
+
+    async def test_c05_c06_lexical_constraints_and_duplicate_refusals(self):
+        await self.create(constraints={"min": 1, "max": 10, "integer_only": True})
+        await self.create("ready", type="boolean")
+        await self.create("label", type="string")
+        tokens = [["effort=" + s] for s in ("abc", "", "null", "true", "[]", "{}", "NaN", "Infinity", "1e999", "0x4", "01", "0", "11", "4.5")]
+        tokens += [["ready=" + s] for s in ("1", "0", "yes", "no", "True", "False", "", "null")]
+        tokens += [[s] for s in ("effort", "=4", "Effort=4", "a-b=4", " effort=4", "missing=4")]
+        tokens += [["effort=4", "effort=6"], ["effort=4", "effort=4"]]
+        for items in tokens:
+            with self.subTest(tokens=items):
+                before = self.inventory()
+                arguments = [arg for token in items for arg in ("--attr", token)]
+                code, out, _, calls = await self.invoke("run", "--brief", "Invalid", "--owner", "worker", *arguments)
+                self.assertNotEqual(code, 0, out)
+                self.assertIn("effort" if items[0].startswith("effort") else "errors", out)
+                self.assertEqual(self.inventory(), before)
+                if items[0] not in ("effort=0", "effort=11", "effort=4.5"):
+                    self.assertFalse(any(c[0] in ("POST", "PUT") and c[1].endswith(("/tasks", "/attributes")) for c in calls))
+
+    async def test_c07_real_cas_archive_conflicts_and_uncertain_transport(self):
+        import httpx
+        d = await self.create()
+        fired = False
+        async def competitor(method, path, kwargs, response):
+            nonlocal fired
+            if method == "GET" and path == self.values and not fired:
+                fired = True
+                result = await self.client.put(self.values, json={"changes": [self.change(d, 8)]})
+                self.assertEqual(result.status_code, 200, result.text)
+        code, out, _, calls = await self.invoke("attributes", "set", "TASK-target", "effort", "4", after=competitor)
+        self.assertNotEqual(code, 0)
+        self.assertIn("value_revision_conflict", out)
+        self.assertEqual(sum(c[0] == "PUT" for c in calls), 1)
+        for action in ("version", "archive"):
+            d = await self.create("race_" + action)
+            fired = False
+            async def change_definition(method, path, kwargs, response):
+                nonlocal fired
+                if method == "GET" and path == self.values and not fired:
+                    fired = True
+                    if action == "archive":
+                        self.org.db.archive_task_attribute_definition(d["definition_id"], expected_version=1)
+                    else:
+                        self.org.db.update_task_attribute_definition(d["definition_id"], expected_version=1, description="new")
+            code, out, _, calls = await self.invoke("attributes", "set", "TASK-target", d["key"], "4", after=change_definition)
+            self.assertNotEqual(code, 0)
+            self.assertIn("definition_version_conflict", out)
+            self.assertEqual(sum(c[0] == "PUT" for c in calls), 1)
+        async def lose(method, path, kwargs, response):
+            if method in ("POST", "PUT") and path.endswith(("/tasks", "/attributes")) and response.is_success:
+                raise httpx.ReadError("synthetic lost reply after COMMIT")
+        for arguments, method in ((("attributes", "set", "TASK-target", "effort", "6"), "PUT"),
+                                  (("run", "--owner", "worker", "--brief", "Lost create", "--attr", "effort=4"), "POST")):
+            code, out, _, calls = await self.invoke(*arguments, after=lose)
+            self.assertNotEqual(code, 0)
+            self.assertIn('"committed": null', out)
+            self.assertIn("readback_required", out)
+            self.assertEqual(sum(c[0] == method and c[1].endswith(("/tasks", "/attributes")) for c in calls), 1)
+            if method == "POST":
+                self.manifest(next(c[3].json()["task_id"] for c in calls if c[0] == "POST" and c[1].endswith("/tasks")), {"effort": 4})
+            else:
+                self.assertEqual(self.org.db.get_task_attribute("TASK-target", next(a["definition_id"] for a in self.org.db.list_task_attribute_definitions() if a["key"] == "effort"))["current"]["value"], 6)
+
+    async def test_c08_session_forwarding_denials_and_unavailable_service(self):
+        from cli.client.client import DaemonNotRunning
+        await self.create()
+        for sid, allowed in (("synthetic-worker", True), ("synthetic-manager", True), ("synthetic-sibling", False), ("stale", False)):
+            code, out, _, calls = await self.invoke("attributes", "set", "TASK-target", "effort", "4", "--session-id", sid)
+            self.assertEqual(code == 0, allowed, out)
+            self.assertTrue(all(c[2].get("params", {}).get("session_id") == sid for c in calls if "/attributes" in c[1] or "/task-attributes" in c[1]))
+            if not allowed:
+                self.assertTrue("not_task_owner_or_owning_manager" in out or "authority_unknown" in out)
+        self.org.db._conn.set_authorizer(lambda action, name, *_: sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_READ and name == "task_attribute_definitions" else sqlite3.SQLITE_OK)
+        try:
+            code, out, _, _ = await self.invoke("attributes", "list")
+            self.assertNotEqual(code, 0)
+            self.assertIn("attribute_storage_unavailable", out)
+        finally:
+            self.org.db._conn.set_authorizer(None)
+        code, out, _, calls = await self.invoke("attributes", "list", startup_error=DaemonNotRunning("synthetic unavailable"))
+        self.assertNotEqual(code, 0)
+        self.assertIn("transport_unavailable", out)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

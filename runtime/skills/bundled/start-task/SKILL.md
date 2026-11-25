@@ -49,6 +49,35 @@ description: Use this skill at the start of every task. Parses task_id, session_
 
    If nothing matches, proceed. If something matches, treat it as authoritative unless the brief explicitly contradicts it — in which case escalate rather than silently override.
 
+   **Optional task attributes (plain creation).** Discover the org's current
+   definitions and rubric before supplying values; attributes are optional and
+   never automatically scored. Use your current session proof for agent reads
+   and edits (task reads/edits also retain the CLI's existing bearer boundary):
+
+   ```bash
+   happyranch attributes list --org {ORG_SLUG} --session-id <your-session-id>
+   happyranch attributes show <key-or-definition-id> --org {ORG_SLUG} --session-id <your-session-id>
+   happyranch attributes get <task-id> --org {ORG_SLUG} --session-id <your-session-id> --json
+   happyranch run --org {ORG_SLUG} --owner <agent-id> --brief "..." --session-id <your-session-id> --attr effort=4 --attr ready=false
+   happyranch attributes set <task-id> <key> <value> --org {ORG_SLUG} --session-id <your-session-id> --note "Reason for update"
+   happyranch attributes clear <task-id> <key> --org {ORG_SLUG} --session-id <your-session-id>
+   happyranch attributes history <task-id> --org {ORG_SLUG} --session-id <your-session-id> --key <key-or-definition-id> --json
+   ```
+
+   These keys are examples, not installed defaults. Numeric input is a finite
+   JSON number, Boolean input is exactly `true` or `false`, and string input
+   preserves the entire value, including empty text and `=`; quote shell values
+   when needed. Repeat `--attr key=value` for distinct keys. Duplicate keys,
+   unknown/archived keys and invalid values refuse the whole create. Missing
+   values stay unset; no parent values are inherited. This slice admits only
+   plain `run`/POST task creation, including attachments; delegate, fanout and
+   then-leg values are not supported yet. Editing later preserves the original
+   admission and appends history. Set/clear use the read definition version and
+   current revision; conflict or uncertain transport exits nonzero, with no
+   automatic retry. Read back before deliberately issuing another mutation.
+   Agents discover definitions; Founder owns their configuration. Existing
+   owner/owning-manager edit authority still applies.
+
 4. **Plan and execute.** Treat `role_guidance` as your primary instruction when present; otherwise treat `brief` as the full instruction. If repo writes are needed, invoke the **make-worktree** skill first.
 
    Task sessions and task-owned jobs already set `TMPDIR`, `TMP`, and `TEMP` to
