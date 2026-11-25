@@ -12,7 +12,7 @@ from typing import Callable
 COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
            'runtime.remote_access.home_activation')
 HOST_STATE_CATEGORIES = frozenset({'residue', 'owner', 'provenance', 'custody',
-                                    'inventory', 'quiescence', 'timeout', 'unknown'})
+                                    'inventory', 'quiescence', 'timeout', 'unknown', 'unverified'})
 SETUP_STATES = frozenset({'off', 'ready', 'pending', 'prepared_no_receipt', 'failed_uncertain',
                           'partial_cleanup', 'runtime_unavailable', 'setup_unverified', 'renewal_failed'})
 PREPARATION_CATEGORIES = frozenset({
@@ -21,7 +21,7 @@ PREPARATION_CATEGORIES = frozenset({
     'address-changed', 'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain',
     'custody-uncertain', 'inventory', 'no_address', 'multiple_addresses', 'dial_ip', 'dial-ip',
     'occupied-port', 'port-check-uncertain', 'ready-restart-failed-turn-off',
-    'activation-retry-later', 'activation-prepared-retry',
+    'activation-retry-later', 'activation-prepared-retry', 'activation-unverified',
 })
 
 

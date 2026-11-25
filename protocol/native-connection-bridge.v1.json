@@ -512,7 +512,7 @@
           "type": "object",
           "properties": {
             "category": {
-              "description": "Optional hostStateUnrecognized refusal category; absent or unrecognized maps to unknown. No host metadata.",
+              "description": "Optional hostStateUnrecognized refusal category; absent, legacy unknown or unrecognized maps to unverified. No host metadata.",
               "enum": [
                 "residue",
                 "owner",
@@ -521,7 +521,8 @@
                 "inventory",
                 "quiescence",
                 "timeout",
-                "unknown"
+                "unknown",
+                "unverified"
               ]
             },
             "code": {
@@ -1234,7 +1235,8 @@
             "port-check-uncertain",
             "ready-restart-failed-turn-off",
             "activation-retry-later",
-            "activation-prepared-retry"
+            "activation-prepared-retry",
+            "activation-unverified"
           ]
         },
         "effect": {

@@ -755,6 +755,8 @@ def helper_main() -> int:
                 print(json.dumps({'preparationFailure': error.category}, separators=(',', ':')))
             else:
                 _log_activation_failure(error)
+                if deadline is not None and time.monotonic() < deadline:
+                    print('{"preparationFailure":"activation-unverified"}')
         return 1  # No raw paths, keys, credentials or exception text leave this child.
 
 

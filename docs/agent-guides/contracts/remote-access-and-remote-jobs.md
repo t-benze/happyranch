@@ -4723,3 +4723,26 @@ start time are rechecked against PID reuse. No running-unit-only exemption,
 port reservation, stop, replay, new unit rendering or upgrade format is added.
 The ordinary headscale_start_verify effect and its fresh admin verification
 still follow preflight.
+
+### Settled Enable and unattributed Status refusals (THR-327 G)
+
+The original #1876 preparation diagnostic applies only to the actual typed
+preparation call. Later activation/recovery exceptions therefore had no such
+reason; the private child emitted no frame, and the parent settled a categoryless
+failed/uncertain result. The legacy `preparationFailure` field and
+`enablePreparationFailed` native code now also carry the one closed
+`activation-unverified` category for other settled Enable failures. This names
+an unverified activation, never preparation provenance or absence of effects.
+No message, cause, path, credential or duck-typed category is reflected. Typed
+reasons still win; late/lost/invalid transport still cannot claim no effect.
+The destination-addressed terminal receipt keeps its original caller, auth,
+serial/owner and deadline checks. Both Host presentations carry bilingual
+recovery copy and retain unknown effect until a fresh observation.
+
+Status failures with no attributable closed stage use `unverified`, including
+normalizing the legacy `unknown` category at the native display boundary. The
+old wire value remains accepted for compatibility. Known stage categories
+remain unchanged. This is display only, with no new ownership or cleanup proof.
+The Linux handbook's checked status projection records success, refusal and
+named unavailable evidence before atomic file replacement; it does not assert
+that every CLI response is a success object or treat file-write success as READY.

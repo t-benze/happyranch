@@ -26,7 +26,7 @@ class ClosedError(Exception):
                  category: str | None = None) -> None:
         self.value = dict(code=code, effect=effect, recovery=recovery)
         if code == "hostStateUnrecognized":
-            self.value['category'] = category if category in contract.HOST_STATE_CATEGORIES else 'unknown'
+            self.value['category'] = category if category in contract.HOST_STATE_CATEGORIES and category != 'unknown' else 'unverified'
         elif code in ("enablePreparationFailed", 'turnOffFailed'):
             categories = contract.PREPARATION_CATEGORIES if code == 'enablePreparationFailed' else contract.DISABLE_CATEGORIES
             if (type(category) is str and category in categories

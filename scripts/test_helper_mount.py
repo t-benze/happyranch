@@ -115,7 +115,8 @@ def test_enable_preparation_provenance_rejected(
         patch.setattr(sys, 'stdout', output)
         patch.setattr(sys, 'stderr', errors)
         assert backend.helper_main() == 1
-    assert output.getvalue() == errors.getvalue() == ''
+    assert output.getvalue() == '{"preparationFailure":"activation-unverified"}\n'
+    assert errors.getvalue() == ''
 
 
 @pytest.mark.parametrize('raw,code,method,step', [
@@ -216,6 +217,8 @@ def test_enable_completion_unicast_envelope(
                         outcome='completed' if outcome in ('completed', 'absent_to_new') else 'failed')
         if outcome in ('typed', 'audit', 'settlement', 'auth_deadline', 'flush_error'):
             expected['category'] = 'inventory'
+        if outcome in ('generic', 'success_audit', 'success_settlement', 'intent'):
+            expected['category'] = 'activation-unverified'
         if outcome == 'prepared':
             expected['category'] = 'activation-prepared-retry'
         assert sent == [(':1.42', m.h.OBJECT_PATH, m.h.INTERFACE, 'LifecycleCompleted', expected)]
@@ -515,7 +518,7 @@ def test_thr327_capture_refusal_transport(composition: Any, monkeypatch: pytest.
 
 
 @pytest.mark.parametrize('category', ['residue', 'owner', 'provenance', 'custody', 'inventory',
-    'quiescence', 'timeout', 'unknown'])
+    'quiescence', 'timeout', 'unknown', 'unverified'])
 def test_thr327_status_category_dbus(mount: Any, monkeypatch: pytest.MonkeyPatch, category: str) -> None:
     m = mount
     m.helper.control.status = Mock(side_effect=m.h.Refused('unavailable'))
@@ -527,6 +530,7 @@ def test_thr327_status_category_dbus(mount: Any, monkeypatch: pytest.MonkeyPatch
     with pytest.raises(m.h.Refused) as failure:
         m.helper._status_snapshot(1000, time.monotonic() + 2)
     m.h.RemoteAccessHelper._error(m.helper, m.message, failure.value.category)
+    category = 'unverified' if category == 'unknown' else category
     m.message.new_method_error_literal.assert_called_once_with(
         m.h.INTERFACE + '.Error.host_state_unrecognized_' + category, 'host-state-unrecognized-' + category)
     assert not m.reader.effect.called and not m.helper.authority.call.called
@@ -2493,7 +2497,7 @@ def test_thr327_closed_host_status(
             assert status['runtime'] == dict(state='unavailable', age_seconds=0)
     else:
         m.message.new_method_error_literal.assert_called_once_with(
-            m.h.INTERFACE + '.Error.host_state_unrecognized', 'host-state-unrecognized')
+            m.h.INTERFACE + '.Error.host_state_unrecognized_unverified', 'host-state-unrecognized-unverified')
     assert staged_inventory(v.fixture) == before and v.calls == calls
     assert not m.helper.authority.call.called and not m.reader.effect.called
     assert not m.helper.audit.path.exists() and v.mints == mints and v.account_creations == accounts
@@ -2567,7 +2571,7 @@ def test_thr327_skipped_revoke_is_partial(mount: Any, monkeypatch: pytest.Monkey
     assert 'un-revoked connector trust state and persisted sidecar state' in v.helper.lifecycle_result['residue']
 
 
-@pytest.mark.parametrize('category', ['ready-restart-failed-turn-off', 'activation-retry-later', 'activation-prepared-retry'])
+@pytest.mark.parametrize('category', ['ready-restart-failed-turn-off', 'activation-retry-later', 'activation-prepared-retry', 'activation-unverified'])
 def test_thr327_native_terminal_preserves_lifecycle_category(category: str) -> None:
     path = Path(__file__).resolve().parents[1] / 'packaging/linux/desktop/connection_contract.py'
     spec = importlib.util.spec_from_file_location('thr327_native_contract', path)

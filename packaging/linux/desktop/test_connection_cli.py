@@ -32,7 +32,7 @@ PREPARATION_TOKENS = ('deb-layout-required', 'issuer-state-uncertain', 'account-
     'account-receipt-uncertain', 'foreign-unit', 'foreign-custody', 'publication-uncertain',
     'address-changed', 'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain',
     'custody-uncertain', 'inventory', 'no_address', 'multiple_addresses', 'dial_ip', 'dial-ip',
-    'occupied-port', 'port-check-uncertain')
+    'occupied-port', 'port-check-uncertain', 'activation-unverified')
 
 
 def terminal_frame(**changes: object) -> str:
@@ -756,7 +756,7 @@ class ConnectionCLITests(unittest.TestCase):
         for category in ("host_state_unrecognized", "owner_unknown", "owner_ambiguous",
                          "owner_unsupported", "owner_mismatch", "release_home_invalid",
                          *("host_state_unrecognized_" + part for part in (
-                             "residue", "owner", "provenance", "custody", "inventory", "quiescence", "timeout", "unknown"))):
+                             "residue", "owner", "provenance", "custody", "inventory", "quiescence", "timeout", "unknown", "unverified"))):
             with self.subTest(category=category):
                 self.bus.status_error = "ai.happyranch.RemoteAccess1.Error." + category
                 # Keep the exact CLI transcript assertion independent of the
@@ -768,7 +768,8 @@ class ConnectionCLITests(unittest.TestCase):
                     self.assertTrue(warning.filename.endswith('/gi/events.py'))
                 self.assertEqual(code, 1)
                 part = (category.removeprefix("host_state_unrecognized_") if category.startswith("host_state_unrecognized_")
-                        else "unknown" if category == "host_state_unrecognized" else "owner")
+                        else "unverified" if category == "host_state_unrecognized" else "owner")
+                if part == "unknown": part = "unverified"
                 self.assertEqual(result, dict(code="hostStateUnrecognized", category=part, effect="none", recovery="refresh"))
                 self.assertEqual(message.strip(), "Remote access files or the release runtime owner could not be verified. "
                                  "Check the local installation. Category: " + part + ".")

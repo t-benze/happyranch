@@ -30,14 +30,14 @@ CLI_LIFECYCLE_TIMEOUTS = {"Enable": 482000, "ReplaceFailed": 482000, "Disable": 
                           "IssueInvite": 122000, "CancelInvite": 122000,
                           "RecoverInvite": 122000, "RetryPolicyRenewal": 122000}
 HOST_STATE_CATEGORIES = frozenset({"residue", "owner", "provenance", "custody", "inventory",
-                                    "quiescence", "timeout", "unknown"})
+                                    "quiescence", "timeout", "unknown", "unverified"})
 PREPARATION_CATEGORIES = frozenset({
     "deb-layout-required", "issuer-state-uncertain", "account-shape",
     "account-receipt-uncertain", "foreign-unit", "foreign-custody", "publication-uncertain",
     "address-changed", "account-create-uncertain", "cleanup-uncertain", "materializer-uncertain",
     "custody-uncertain", "inventory", "no_address", "multiple_addresses", "dial_ip", "dial-ip",
     "occupied-port", "port-check-uncertain",
-    "ready-restart-failed-turn-off", "activation-retry-later", "activation-prepared-retry",
+    "ready-restart-failed-turn-off", "activation-retry-later", "activation-prepared-retry", "activation-unverified",
 })
 HELPER_NAME = "ai.happyranch.RemoteAccess1"
 HELPER_PATH = "/ai/happyranch/RemoteAccess1"
@@ -683,9 +683,9 @@ def request_host(self: object, method: str, complete: object, current: object, o
             category = remote[len(prefix):] if isinstance(remote, str) and remote.startswith(prefix) else None
             if category is not None or code == "hostStateUnrecognized":
                 if category is None:
-                    category = "unknown" if remote.endswith("host_state_unrecognized") else "owner"
-                elif category not in HOST_STATE_CATEGORIES:
-                    category = "unknown"
+                    category = "unverified" if remote.endswith("host_state_unrecognized") else "owner"
+                elif category not in HOST_STATE_CATEGORIES or category == "unknown":
+                    category = "unverified"
                 complete(None, dict(code="hostStateUnrecognized", category=category))
             elif code:
                 complete(None, code)

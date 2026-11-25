@@ -275,7 +275,7 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
  for(const category of ['deb-layout-required','issuer-state-uncertain','account-shape','account-receipt-uncertain',
   'foreign-unit','foreign-custody','publication-uncertain','address-changed','account-create-uncertain',
   'cleanup-uncertain','materializer-uncertain','custody-uncertain','inventory','no_address',
-  'multiple_addresses','dial_ip','dial-ip','occupied-port','port-check-uncertain']){
+  'multiple_addresses','dial_ip','dial-ip','occupied-port','port-check-uncertain','activation-unverified']){
   contexts[1].failure={code:'enablePreparationFailed',category,effect:'unknown',recovery:'nativeRecovery'};
   const error=await vm.runInContext("happyranchConnection.call('host.enable','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(error)),contexts[1].failure);
@@ -285,11 +285,11 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
   const error=await vm.runInContext("happyranchConnection.call('host.enable','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(error)),{code:'outcomeUnknown',effect:'unknown',recovery:'nativeRecovery'});
  }
- for(const category of ['residue','owner','provenance','custody','inventory','quiescence','timeout','unknown',null,'/private/canary']){
+ for(const category of ['residue','owner','provenance','custody','inventory','quiescence','timeout','unknown','unverified',null,'/private/canary']){
   contexts[1].failure={code:'hostStateUnrecognized',effect:'none',recovery:'refresh',category,private:'secret'};
   const error=await vm.runInContext("happyranchConnection.call('host.status','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(error)),{code:'hostStateUnrecognized',effect:'none',recovery:'refresh',
-   category:!category || category.startsWith('/') ? 'unknown' : category});
+   category:!category || category==='unknown' || category.startsWith('/') ? 'unverified' : category});
  }
  for(const code of ['permissionDenied','owner_edits_pending','outcomeUnknown','hostStateUnrecognized']){
   contexts[1].failure={code,effect:'unknown',recovery:'nativeRecovery'};

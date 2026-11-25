@@ -363,7 +363,7 @@ const HOST_STATE_ERROR: Record<string, MessageKey> = {
   residue: 'connection.host.hErrStateResidue', owner: 'connection.host.hErrStateOwner',
   provenance: 'connection.host.hErrStateProvenance', custody: 'connection.host.hErrStateCustody',
   inventory: 'connection.host.hErrStateInventory', quiescence: 'connection.host.hErrStateQuiescence',
-  timeout: 'connection.host.hErrStateTimeout', unknown: 'connection.host.hErrStateUnknown',
+  timeout: 'connection.host.hErrStateTimeout', unverified: 'connection.host.hErrStateUnknown', unknown: 'connection.host.hErrStateUnknown',
 };
 
 export function errorKey(command: ConnectionCommand, code: string, category?: ConnectionFailure['category']): MessageKey {

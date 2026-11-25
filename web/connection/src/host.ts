@@ -242,6 +242,11 @@ export class HostView {
     const outcome = this.outcome;
     if (!outcome) return [];
     const nodes: HTMLElement[] = [];
+    const reasonKey = (failure: Failure): Key => {
+      const detail = failure.code === 'enablePreparationFailed' ? 'enableFailure.' + failure.category :
+        failure.code === 'hostStateUnrecognized' ? 'hostState.' + (failure.category === 'unknown' ? 'unverified' : failure.category) : '';
+      return Object.hasOwn(catalogs.en, detail) ? detail as Key : errorKey[failure.code] ?? 'errUnavailable';
+    };
     const name = outcome.raw ?? '';
     const action = this.t(actionName[outcome.command]);
     const checkAgain = (): HTMLButtonElement | null => this.has('host.status') ? this.button('host.status', 'checkAgain', { id: 'outcome:check' }) : null;
@@ -268,7 +273,7 @@ export class HostView {
       if (result.effect === 'unknown') nodes.push(...this.actions([checkAgain()]));
     } else if (outcome.error) {
       const error = outcome.error;
-      const text = `${this.t('failedAction', { action })} ${this.t(errorKey[error.code] ?? 'errUnavailable')}` +
+      const text = `${this.t('failedAction', { action })} ${this.t(reasonKey(error))}` +
         (error.effect === 'unknown' && error.code !== 'outcomeUnknown' ? ` ${this.t('effectUnknown')}` : '');
       nodes.push(this.notice(text, error.effect === 'unknown' ? 'attention' : 'danger', true));
       const recovery: (HTMLButtonElement | null)[] = [];
@@ -290,7 +295,7 @@ export class HostView {
     }
     const read = outcome.read;
     if (read) {
-      nodes.push(this.notice(`${this.t('failedAction', { action: this.t('checkAgain') })} ${this.t(errorKey[read.code] ?? 'errUnavailable')}`,
+      nodes.push(this.notice(`${this.t('failedAction', { action: this.t('checkAgain') })} ${this.t(reasonKey(read))}`,
         read.effect === 'unknown' ? 'attention' : 'danger', true));
       if (read.recovery === 'refresh' && !nodes.some((node) => node.querySelector('[data-focus-key="outcome:check"]'))) nodes.push(...this.actions([checkAgain()]));
     }

@@ -431,8 +431,9 @@ class RemoteAccessHelper:
                 return Snapshot(0, uid, False, state, False, None, ()), False, state
             except Exception:
                 if isinstance(error, _helper_generation.GenerationUnavailable):
-                    raise Refused('host-state-unrecognized-' + error.category) from None
-                raise Refused('host-state-unrecognized') from None
+                    category = 'unverified' if error.category == 'unknown' else error.category
+                    raise Refused('host-state-unrecognized-' + category) from None
+                raise Refused('host-state-unrecognized-unverified') from None
         return Snapshot(0, uid, True, 'off', False, None, ()), True, 'off'
 
     def _target(self, method: str, sender: str, snapshot: Snapshot) -> Device:
@@ -658,6 +659,9 @@ class RemoteAccessHelper:
             return
         frame = dict(method=capture.method, correlation=dict(serial=capture.message.get_serial(),
             owner=self.connection.get_unique_name()), outcome='failed')
+        if (category is None and capture.method == 'Enable'
+                and outcome in (_helper_lifecycle.SetupPhase.FAILED, _helper_lifecycle.SetupPhase.UNCERTAIN)):
+            category = 'activation-unverified'
         if category is not None:
             frame['category'] = category
         elif capture.method == 'Disable' and outcome != _helper_lifecycle.SetupPhase.OFF:

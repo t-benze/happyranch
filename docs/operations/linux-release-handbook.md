@@ -1913,3 +1913,96 @@ real Headscale or systemd acceptance is claimed. See the remote-access contract'
 Citations removed from the body, with the section they supported:
 
 - `THR-346 seq43/44` — Build the intermediate payload (original line 5).
+
+### Recording refused or unavailable Host status (THR-327)
+
+Replace the local test plan's success-only `host status | python3 -c ... assert`
+projection with this block. It captures the CLI exit separately, discards stderr,
+and records only closed fields/counts. Unknown, malformed, empty, timed-out or
+exit-2 responses produce named unavailable evidence. A refusal remains a
+refusal. Validation finishes before an atomic evidence-file replacement; no
+raw device labels or CLI streams are written. This command's successful file
+write is not remote-access acceptance. Only kind=status, observation=known,
+setup=ready and runtime=available can support that separate READY observation.
+Keep the plan's existing stop rules and action budgets.
+
+<!-- THR327-STATUS-PROJECTION -->
+```sh
+python3 - "$EVIDENCE/case1-host-status.json" <<'PY_STATUS'
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+output = {"kind": "unavailable", "category": "status-unavailable", "cliExitCode": None}
+def unique(items):
+    value = {}
+    for key, item in items:
+        if key in value:
+            raise ValueError("duplicate field")
+        value[key] = item
+    return value
+try:
+    result = subprocess.run(["/usr/bin/happyranch", "connection", "host", "status"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            check=False, timeout=8)
+    output["cliExitCode"] = result.returncode
+    if len(result.stdout) > 32768:
+        raise ValueError("bounded status")
+    value = json.loads(result.stdout, object_pairs_hook=unique)
+    if type(value) is not dict:
+        raise ValueError("status object")
+    if result.returncode == 0:
+        allowed = {"observation": {"known", "unavailable"},
+                   "setup": {"off", "pending", "ready", "paused", "failed", "unknown",
+                             "prepared_no_receipt", "failed_uncertain", "partial_cleanup",
+                             "runtime_unavailable", "setup_unverified", "renewal_failed"},
+                   "runtime": {"available", "offline", "unknown"}}
+        if not all(type(value.get(key)) is str and value[key] in choices for key, choices in allowed.items()):
+            raise ValueError("closed status")
+        devices = value.get("devices")
+        if devices is not None and (type(devices) is not list or len(devices) > 32):
+            raise ValueError("device count")
+        output = {"kind": "status", "cliExitCode": 0, **{key: value[key] for key in allowed},
+                  "approvedDeviceCount": None if devices is None else len(devices),
+                  "pendingPresent": value.get("pending") is not None,
+                  "selectedPresent": value.get("selected") is not None}
+    elif result.returncode == 1:
+        if (set(value) not in ({"code", "effect", "recovery"}, {"code", "effect", "recovery", "category"})
+                or value.get("code") not in {"hostStateUnrecognized", "unavailable", "busy", "expired",
+                                             "stateChanged", "permissionDenied", "invalidRequest"}
+                or value.get("effect") != "none" or value.get("recovery") not in {
+                    "refresh", "nativeRecovery", "nativePermission", "explicitRetry", "operatorRecovery", "none"}):
+            raise ValueError("closed refusal")
+        if "category" in value and (value["code"] != "hostStateUnrecognized"
+                or type(value["category"]) is not str or value["category"] not in {
+                    "residue", "owner", "provenance", "custody", "inventory", "quiescence",
+                    "timeout", "unknown", "unverified"}):
+            raise ValueError("closed category")
+        output = {"kind": "refusal", "cliExitCode": 1, **value}
+except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+    pass  # Keep named unavailable; no raw stdout/stderr/exception is evidence.
+
+temporary = None
+try:
+    destination = os.path.abspath(sys.argv[1])
+    fd, temporary = tempfile.mkstemp(prefix=".host-status-", dir=os.path.dirname(destination))
+    with os.fdopen(fd, "w", encoding="utf-8") as evidence:
+        evidence.write(json.dumps(output, sort_keys=True) + "\n")
+        evidence.flush()
+        os.fsync(evidence.fileno())
+    os.replace(temporary, destination)
+    temporary = None
+except OSError:
+    print("Status evidence could not be written.", file=sys.stderr)
+    sys.exit(2)
+finally:
+    if temporary is not None:
+        os.unlink(temporary)
+PY_STATUS
+```
+<!-- /THR327-STATUS-PROJECTION -->
+
+Focused documentation-command verification (no installed CLI/systemd):
+`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_home_status_projection.py -q --tb=short`.

@@ -139,7 +139,7 @@ export interface ConnectionFailure {
   effect: Effect;
   recovery: Recovery;
   side?: 'host' | 'app' | 'unknown';
-  category?: 'residue' | 'owner' | 'provenance' | 'custody' | 'inventory' | 'quiescence' | 'timeout' | 'unknown' | PreparationCategory;
+  category?: 'residue' | 'owner' | 'provenance' | 'custody' | 'inventory' | 'quiescence' | 'timeout' | 'unknown' | 'unverified' | PreparationCategory;
 }
 
 export type PreparationCategory =
@@ -148,7 +148,7 @@ export type PreparationCategory =
   | 'account-create-uncertain' | 'cleanup-uncertain' | 'materializer-uncertain' | 'custody-uncertain'
   | 'inventory' | 'no_address' | 'multiple_addresses' | 'dial_ip' | 'dial-ip'
   | 'occupied-port' | 'port-check-uncertain'
-  | 'ready-restart-failed-turn-off' | 'activation-retry-later' | 'activation-prepared-retry';
+  | 'ready-restart-failed-turn-off' | 'activation-retry-later' | 'activation-prepared-retry' | 'activation-unverified';
 
 export interface EnableFinished {
   operationId: string;
@@ -161,7 +161,7 @@ const PREPARATION_CATEGORIES: readonly string[] = [
   'foreign-unit', 'foreign-custody', 'publication-uncertain', 'address-changed',
   'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain', 'custody-uncertain',
   'inventory', 'no_address', 'multiple_addresses', 'dial_ip', 'dial-ip', 'occupied-port', 'port-check-uncertain',
-  'ready-restart-failed-turn-off', 'activation-retry-later', 'activation-prepared-retry',
+  'ready-restart-failed-turn-off', 'activation-retry-later', 'activation-prepared-retry', 'activation-unverified',
 ];
 
 type Obj = Record<string, unknown>;
@@ -399,8 +399,8 @@ export function parseConnectionFailure(error: unknown): ConnectionFailure {
   }
   if ('category' in obj && obj.code !== 'hostStateUnrecognized') return UNKNOWN_FAILURE;
   if (obj.code === 'hostStateUnrecognized') {
-    const categories = ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'unknown'];
-    failure.category = (oneOf(obj.category, categories) ? obj.category : 'unknown') as ConnectionFailure['category'];
+    const categories = ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'unknown', 'unverified'];
+    failure.category = (oneOf(obj.category, categories) && obj.category !== 'unknown' ? obj.category : 'unverified') as ConnectionFailure['category'];
   }
   return failure;
 }

@@ -396,14 +396,14 @@ APP_RELAY = r"""(() => {
           ? detail.recovery : 'nativeRecovery'};
       if (result.code === 'incompatible' && ['host','app','unknown'].includes(detail.side)) result.side = detail.side;
       if (result.code === 'hostStateUnrecognized') result.category =
-        ['residue','owner','provenance','custody','inventory','quiescence','timeout','unknown'].includes(detail.category)
-          ? detail.category : 'unknown';
+        ['residue','owner','provenance','custody','inventory','quiescence','timeout','unknown','unverified'].includes(detail.category)
+          && detail.category !== 'unknown' ? detail.category : 'unverified';
       if (result.code === 'enablePreparationFailed') {
         const categories = ['deb-layout-required','issuer-state-uncertain','account-shape',
           'account-receipt-uncertain','foreign-unit','foreign-custody','publication-uncertain',
           'address-changed','account-create-uncertain','cleanup-uncertain','materializer-uncertain',
           'custody-uncertain','inventory','no_address','multiple_addresses','dial_ip','dial-ip',
-          'occupied-port','port-check-uncertain','ready-restart-failed-turn-off','activation-retry-later','activation-prepared-retry'];
+          'occupied-port','port-check-uncertain','ready-restart-failed-turn-off','activation-retry-later','activation-prepared-retry','activation-unverified'];
         if (Object.keys(detail).sort().join(',') === 'category,code,effect,recovery'
             && categories.includes(detail.category) && detail.effect === 'unknown'
             && detail.recovery === 'nativeRecovery') result.category = detail.category;
