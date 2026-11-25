@@ -145,7 +145,7 @@ export function TaskAttributesSection(): JSX.Element {
           tone="danger"
           role="alert"
           title={t('settings.taskAttributes.list.loadError')}
-          actions={<Button variant="outline" size="sm" onClick={() => void list.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>}
+          actions={<Button variant="outline" className="bg-surface-raised" size="sm" onClick={() => void list.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>}
         >
           {t('settings.taskAttributes.list.loadErrorBody')}
         </Callout>
@@ -170,7 +170,7 @@ export function TaskAttributesSection(): JSX.Element {
           <Callout
             tone="attention"
             title={t('settings.taskAttributes.list.stale')}
-            actions={<Button variant="outline" size="sm" onClick={() => void list.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>}
+            actions={<Button variant="outline" className="bg-surface-raised" size="sm" onClick={() => void list.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>}
           >
             {t('settings.taskAttributes.list.staleBody', { org: slug, time: formatWhen(locale, new Date(list.dataUpdatedAt).toISOString()) })}
           </Callout>
@@ -202,7 +202,7 @@ export function TaskAttributesSection(): JSX.Element {
                 <>
                   <h3 className="text-text-primary font-semibold break-words">{t('settings.taskAttributes.list.noMatch', { q })}</h3>
                   <p className="text-text-secondary text-sm">{t('settings.taskAttributes.list.noMatchBody')}</p>
-                  <Button variant="outline" size="sm" onClick={() => setQ('')}>{t('settings.taskAttributes.list.clearSearch')}</Button>
+                  <Button variant="outline" className="bg-surface-raised" size="sm" onClick={() => setQ('')}>{t('settings.taskAttributes.list.clearSearch')}</Button>
                 </>
               ) : (
                 <>
@@ -420,7 +420,7 @@ function DefinitionRow({
           </Button>
         )}
         {unavailable && (
-          <Button variant="outline" size="sm" onClick={() => void read?.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>
+          <Button variant="outline" className="bg-surface-raised" size="sm" onClick={() => void read?.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>
         )}
       </div>
       {pending && <p id={reasonId} className="sr-only">{t('settings.taskAttributes.list.actionsChecking')}</p>}

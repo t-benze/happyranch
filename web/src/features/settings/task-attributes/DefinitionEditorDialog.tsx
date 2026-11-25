@@ -465,13 +465,13 @@ export function DefinitionEditorDialog(props: {
             {shownArchived && <StateBadge archived />}
           </DialogDescription>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-4" data-testid="ta-editor-body">
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-3 pb-4" data-testid="ta-editor-body">
           {loading ? (
             loadFailed ? (
               <Callout
                 tone="danger"
                 role="alert"
-                actions={<Button variant="outline" size="sm" onClick={() => void read.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>}
+                actions={<Button variant="outline" className="bg-surface-raised" size="sm" onClick={() => void read.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>}
               >
                 {t('settings.taskAttributes.editor.loadError')}
               </Callout>
@@ -546,10 +546,10 @@ export function DefinitionEditorDialog(props: {
         <div className="border-border-default flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">
           {copied && <span role="status" className="text-text-secondary mr-auto text-xs">{t('settings.taskAttributes.editor.copied')}</span>}
           {(needsReload || status.s === 'archived' || status.s === 'permRevoked' || status.s === 'keyReserved' || status.s === 'refused') && (
-            <Button variant="outline" onClick={copyDraft}>{t('settings.taskAttributes.editor.copyDraft')}</Button>
+            <Button variant="outline" className="bg-surface-raised" onClick={copyDraft}>{t('settings.taskAttributes.editor.copyDraft')}</Button>
           )}
           {mode === 'edit' && (needsReload || status.s === 'archived') && (
-            <Button variant="outline" onClick={() => void reloadLatest()}>{t('settings.taskAttributes.editor.reload')}</Button>
+            <Button variant="outline" className="bg-surface-raised" onClick={() => void reloadLatest()}>{t('settings.taskAttributes.editor.reload')}</Button>
           )}
           <Button variant="ghost" onClick={requestClose}>{t('settings.taskAttributes.editor.cancel')}</Button>
           {!archivedRefusal && (
@@ -571,7 +571,7 @@ export function DefinitionEditorDialog(props: {
           <DialogTitle className="font-display text-lg">{t('settings.taskAttributes.editor.discardTitle')}</DialogTitle>
           <DialogDescription>{t('settings.taskAttributes.editor.discardBody')}</DialogDescription>
           <div className="flex flex-wrap justify-end gap-2">
-            <Button id="ta-keep-editing" variant="outline" onClick={() => setConfirmDiscard(false)}>{t('settings.taskAttributes.editor.keepEditing')}</Button>
+            <Button id="ta-keep-editing" variant="outline" className="bg-surface-raised" onClick={() => setConfirmDiscard(false)}>{t('settings.taskAttributes.editor.keepEditing')}</Button>
             <Button variant="destructive" onClick={discardAndClose}>{t('settings.taskAttributes.editor.discard')}</Button>
           </div>
         </DialogContent>
@@ -777,7 +777,7 @@ function StatusNotices({
           tone="attention"
           role="alert"
           title={t('settings.taskAttributes.editor.unknownTitle')}
-          actions={<Button variant="outline" size="sm" loading={status.checking} disabled={status.checking} onClick={onRefresh}>{t('settings.taskAttributes.editor.refresh')}</Button>}
+          actions={<Button variant="outline" className="bg-surface-raised" size="sm" loading={status.checking} disabled={status.checking} onClick={onRefresh}>{t('settings.taskAttributes.editor.refresh')}</Button>}
         >
           {t('settings.taskAttributes.editor.unknownBody')}
           {status.refreshFailed && <> {t('settings.taskAttributes.editor.refreshFailed')}</>}

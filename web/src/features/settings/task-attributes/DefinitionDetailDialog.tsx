@@ -88,10 +88,10 @@ export function DefinitionDetailDialog({
           <DialogTitle className="font-display text-lg break-words">{current?.name ?? t('settings.taskAttributes.detail.loading')}</DialogTitle>
           <DialogDescription id="ta-detail-sub" className="mt-1 font-mono text-xs break-all">{current?.key ?? ''}</DialogDescription>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-4">
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-3 pb-4">
           {!current ? (
             read.isError ? (
-              <Callout tone="danger" role="alert" actions={<Button variant="outline" size="sm" onClick={() => void read.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>}>
+              <Callout tone="danger" role="alert" actions={<Button variant="outline" className="bg-surface-raised" size="sm" onClick={() => void read.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>}>
                 {t('settings.taskAttributes.editor.loadError')}
               </Callout>
             ) : (
@@ -159,7 +159,7 @@ export function DefinitionDetailDialog({
                 ))}
                 {current.version === 1 && <p className="text-text-secondary text-sm">{t('settings.taskAttributes.detail.noEarlier')}</p>}
                 {allPagesLoaded && remaining > 0 && (
-                  <Button variant="outline" size="sm" className="self-start" onClick={() => setPages((p) => [...p, pageBelow(lastRequested, PAGE)])}>
+                  <Button variant="outline" size="sm" className="bg-surface-raised self-start" onClick={() => setPages((p) => [...p, pageBelow(lastRequested, PAGE)])}>
                     {t('settings.taskAttributes.detail.loadEarlier', { n: Math.min(PAGE, remaining) })}
                   </Button>
                 )}
@@ -201,7 +201,7 @@ function HistoryPage({
       <Callout
         tone="attention"
         role="alert"
-        actions={<Button variant="outline" size="sm" onClick={() => void page.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>}
+        actions={<Button variant="outline" className="bg-surface-raised" size="sm" onClick={() => void page.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>}
       >
         {t('settings.taskAttributes.detail.historyUnavailable')}
       </Callout>

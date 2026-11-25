@@ -187,7 +187,7 @@ export function ArchiveDefinitionDialog({
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-4">
           {!def ? (
             read.isError && !read.isFetching ? (
-              <Callout tone="danger" role="alert" actions={<Button variant="outline" size="sm" onClick={() => void read.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>}>
+              <Callout tone="danger" role="alert" actions={<Button variant="outline" className="bg-surface-raised" size="sm" onClick={() => void read.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>}>
                 {t('settings.taskAttributes.editor.loadError')}
               </Callout>
             ) : (
@@ -201,7 +201,7 @@ export function ArchiveDefinitionDialog({
                   tone="attention"
                   role="alert"
                   title={t('settings.taskAttributes.editor.unknownTitle')}
-                  actions={<Button variant="outline" size="sm" loading={status.checking} disabled={status.checking} onClick={() => void refreshToCheck()}>{t('settings.taskAttributes.editor.refresh')}</Button>}
+                  actions={<Button variant="outline" className="bg-surface-raised" size="sm" loading={status.checking} disabled={status.checking} onClick={() => void refreshToCheck()}>{t('settings.taskAttributes.editor.refresh')}</Button>}
                 >
                   {t('settings.taskAttributes.editor.unknownBody')}
                   {status.refreshFailed && <> {t('settings.taskAttributes.editor.refreshFailed')}</>}
@@ -233,12 +233,12 @@ export function ArchiveDefinitionDialog({
         </div>
         <div className="border-border-default flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">
           {closeOnly ? (
-            <Button id="ta-keep-active" variant="outline" onClick={requestClose}>{t('settings.taskAttributes.archive.close')}</Button>
+            <Button id="ta-keep-active" variant="outline" className="bg-surface-raised" onClick={requestClose}>{t('settings.taskAttributes.archive.close')}</Button>
           ) : (
             <>
-              <Button id="ta-keep-active" variant="outline" onClick={requestClose}>{t('settings.taskAttributes.archive.keepActive')}</Button>
+              <Button id="ta-keep-active" variant="outline" className="bg-surface-raised" onClick={requestClose}>{t('settings.taskAttributes.archive.keepActive')}</Button>
               {status.s === 'stale' && (
-                <Button variant="outline" onClick={() => void reloadLatest()}>{t('settings.taskAttributes.editor.reload')}</Button>
+                <Button variant="outline" className="bg-surface-raised" onClick={() => void reloadLatest()}>{t('settings.taskAttributes.editor.reload')}</Button>
               )}
               <Button variant="destructive" onClick={confirm} disabled={archiveDisabled} loading={status.s === 'archiving'}>
                 {retry ? t('settings.taskAttributes.editor.retry') : t('settings.taskAttributes.archive.confirm')}
