@@ -67,7 +67,14 @@
         "issued",
         "expired",
         "used",
-        "unknown"
+        "unknown",
+        "minting",
+        "encoding",
+        "pairing",
+        "refused",
+        "uncertain",
+        "recovered",
+        "cancelled"
       ]
     },
     "timestamp": {

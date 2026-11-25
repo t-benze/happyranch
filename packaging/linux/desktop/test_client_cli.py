@@ -45,6 +45,7 @@ class Session:
     cleanup_error = False
     runtime_error = False
     join_cancel = False
+    health_error = None
     calls = []
     snapshot = None
 
@@ -82,6 +83,11 @@ class Session:
             raise cli.native.ClientError("accessUnavailable")
         return "http://127.0.0.1:12345/"
 
+    def health(self) -> None:
+        self.calls.append('health')
+        if self.health_error:
+            raise cli.native.ClientError(self.health_error)
+
     def stop(self) -> None:
         self.calls.append("stop")
         if self.cleanup_error:
@@ -93,6 +99,7 @@ class ClientCLITests(unittest.TestCase):
         self.secret = FakeSecret()
         Session.instances, Session.calls, Session.snapshot = [], [], None
         Session.cleanup_error = Session.runtime_error = Session.join_cancel = False
+        Session.health_error = None
         Terminal.choices, Terminal.output, Terminal.reads = [], [], []
         from gi.repository import Gio
         for target, name, value in ((cli.native, "ClientSession", Session), (cli, "Terminal", Terminal),
@@ -105,12 +112,12 @@ class ClientCLITests(unittest.TestCase):
         active.start()
         self.addCleanup(active.stop)
 
-    def run_cli(self, action: str, choices: list | None = None) -> tuple:
+    def run_cli(self, action: str, choices: list | None = None, *, cancel_when_reachable: bool = True) -> tuple:
         Terminal.choices = list(choices or [])
         class Output(io.StringIO):
             def write(self, text: str) -> int:
                 count = super().write(text)
-                if text == "\n" and '"state": "runtimeReachable"' in self.getvalue().splitlines()[-1]:
+                if cancel_when_reachable and text == "\n" and '"state": "runtimeReachable"' in self.getvalue().splitlines()[-1]:
                     os.kill(os.getpid(), signal.SIGINT)
                 return count
         out = Output()
@@ -120,6 +127,28 @@ class ClientCLITests(unittest.TestCase):
                        "synthetic-control", "100.64.0.1", "synthetic-private-canary", "b" * 64, "fingerprint", "127.0.0.1", "secret diagnostic canary"):
             self.assertNotIn(secret, out.getvalue())
         return code, [json.loads(line) for line in out.getvalue().splitlines()]
+
+    def test_foreground_observes_later_access_denial(self) -> None:
+        cli.custody.SecretStore(cli.native).save(record())
+        for denial in ('revoked', 'accessUnavailable'):
+            with self.subTest(denial=denial):
+                Session.calls = []
+                Session.health_error = denial
+                ticks = [0]
+                started = time.monotonic()
+                def sleep(_seconds: float) -> None:
+                    ticks[0] += 1
+                    if ticks[0] >= 20:
+                        raise cli.Cancelled()  # Bound the old unobserved foreground loop.
+                with patch.object(cli.time, 'sleep', sleep), \
+                        patch.object(cli.time, 'monotonic', lambda: started + ticks[0] / 10):
+                    code, rows = self.run_cli('connect-saved', ['1', 'connect'], cancel_when_reachable=False)
+                self.assertEqual(code, 1)
+                self.assertEqual(rows[0]['state'], 'runtimeReachable')
+                self.assertEqual(rows[-1], dict(code=denial, effect='unknown', savedAccess='saved'))
+                self.assertEqual(Session.calls.count('health'), 1)
+                self.assertEqual(Session.calls.count('stop'), 1)
+                self.assertEqual(sum(isinstance(call, tuple) and call[0] == 'restore' for call in Session.calls), 1)
 
     def address_case(self, **changes: object) -> object:
         saved = record()

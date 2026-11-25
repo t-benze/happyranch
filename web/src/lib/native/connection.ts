@@ -70,7 +70,8 @@ export type SavedAccess = 'none' | 'saved' | 'notSaved' | 'needsPermission' | 'r
 export type Observation = 'known' | 'stale' | 'unavailable';
 export type Runtime = 'available' | 'offline' | 'restarting' | 'unknown';
 export type Route = 'direct' | 'relay' | 'unknown';
-export type InviteState = 'none' | 'issued' | 'expired' | 'used' | 'unknown';
+export type InviteState = 'none' | 'issued' | 'expired' | 'used' | 'unknown'
+  | 'minting' | 'encoding' | 'pairing' | 'refused' | 'uncertain' | 'recovered' | 'cancelled';
 export type HostSetup = 'off' | 'pending' | 'ready' | 'paused' | 'failed' | 'unknown'
   | 'prepared_no_receipt' | 'failed_uncertain' | 'partial_cleanup' | 'runtime_unavailable' | 'setup_unverified' | 'renewal_failed';
 
@@ -172,7 +173,7 @@ const RUNTIME: readonly string[] = ['available', 'offline', 'restarting', 'unkno
 const ROUTE: readonly string[] = ['direct', 'relay', 'unknown'];
 const EFFECT: readonly string[] = ['none', 'confirmed', 'unknown'];
 const CLEANUP: readonly string[] = ['confirmed', 'incomplete', 'unknown', 'notApplicable'];
-const INVITE: readonly string[] = ['none', 'issued', 'expired', 'used', 'unknown'];
+const INVITE: readonly string[] = ['none', 'issued', 'expired', 'used', 'unknown', 'minting', 'encoding', 'pairing', 'refused', 'uncertain', 'recovered', 'cancelled'];
 const SETUP: readonly string[] = ['off', 'pending', 'ready', 'paused', 'failed', 'unknown',
   'prepared_no_receipt', 'failed_uncertain', 'partial_cleanup', 'runtime_unavailable', 'setup_unverified', 'renewal_failed'];
 const ACCESS: readonly string[] = ['allowed', 'accessDenied', 'revokedConfirmed', 'unknown'];

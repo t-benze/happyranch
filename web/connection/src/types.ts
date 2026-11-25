@@ -5,7 +5,8 @@ export type SavedAccess = 'none' | 'saved' | 'notSaved' | 'needsPermission' | 'r
 export type Route = 'direct' | 'relay' | 'unknown';
 export type Effect = 'none' | 'confirmed' | 'unknown';
 export type Cleanup = 'confirmed' | 'incomplete' | 'unknown' | 'notApplicable';
-export type InviteState = 'none' | 'issued' | 'expired' | 'used' | 'unknown';
+export type InviteState = 'none' | 'issued' | 'expired' | 'used' | 'unknown'
+  | 'minting' | 'encoding' | 'pairing' | 'refused' | 'uncertain' | 'recovered' | 'cancelled';
 export interface Device { label: string; comparisonPhrase: string | null }
 export interface Computer { computerRef: string; label: string }
 export interface HostSnapshot {

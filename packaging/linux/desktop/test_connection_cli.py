@@ -156,6 +156,9 @@ class Bus:
     def call(self, *args: object) -> None:
         name, path, interface, method, inputs, signature, flags, timeout, cancel, callback, data = args
         self.calls.append((name, path, interface, method, inputs, signature.dup_string(), flags, timeout))
+        if method == 'StatusV2' and hasattr(self, 'status_detail'):
+            self.queue(lambda: callback(self, (json.dumps(self.status_detail), None), data))
+            return
         if method == 'StatusV2' and hasattr(self, 'setup_state'):
             value = {'version': 2, **{key: dict(state='unknown', age_seconds=None)
                 for key in ('setup', 'runtime', 'invite', 'address', 'policy', 'cleanup')}}
@@ -202,6 +205,34 @@ class ConnectionCLITests(unittest.TestCase):
                     ' ' * 16385):
             with self.assertRaises(ValueError):
                 protocol.host_details(snapshot, raw)
+
+    def test_invite_journal_detail_reaches_cli(self) -> None:
+        for state in ('none', 'issued', 'expired', 'minting', 'encoding', 'pairing',
+                      'refused', 'uncertain', 'recovered'):
+            with self.subTest(state=state):
+                self.bus.calls.clear()
+                value = {'version': 2, **{key: dict(state='unknown', age_seconds=None)
+                    for key in ('setup', 'runtime', 'invite', 'address', 'policy', 'cleanup')}}
+                value['setup'] = dict(state='ready', age_seconds=0)
+                expiry = int(time.time()) + 120 if state == 'issued' else None
+                value['invite'] = dict(state=state, age_seconds=0, deadline_utc_seconds=expiry)
+                self.bus.status_detail = value
+                code, result, _ = self.run_native('status')
+                self.assertEqual(code, 0)
+                self.assertEqual((result['setup'], result['runtime'], result['inviteState']),
+                                 ('ready', 'available', state))
+                self.assertEqual(result['expiresAt'] is not None, state == 'issued')
+                self.assertEqual(len(result['devices']), 2)
+                self.assertEqual([call[3] for call in self.bus.calls], ['Status', 'StatusV2'])
+        value['invite']['age_seconds'] = 31
+        self.bus.status_detail = value
+        _, result, _ = self.run_native('status')
+        self.assertEqual(result['inviteState'], 'unknown')
+        self.assertIsNone(result['expiresAt'])
+        value['invite'] = dict(state='issued', age_seconds=0, deadline_utc_seconds=True)
+        _, result, _ = self.run_native('status')
+        self.assertEqual(result['inviteState'], 'unknown')
+        self.assertIsNone(result['expiresAt'])
 
     def test_named_setup_states_remain_visible_in_cli(self) -> None:
         for state in ('prepared_no_receipt', 'failed_uncertain', 'partial_cleanup',
@@ -681,6 +712,7 @@ class ConnectionCLITests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 expected = ["Status", "NextDevice", "NextDevice", "RevokeSelected", "Status"] if action == "revoke-device" else (
                     [method, "Status"] if method in native.contract.HOST_MUTATIONS else [method])
+                expected = [entry for name in expected for entry in ([name, 'StatusV2'] if name == 'Status' else [name])]
                 self.assertEqual([call[3] for call in self.bus.calls], expected)
                 self.assertEqual(len(self.opens), 1)
                 self.assertEqual(self.opens[0][0], "unix:path=/run/dbus/system_bus_socket")
@@ -692,7 +724,7 @@ class ConnectionCLITests(unittest.TestCase):
                                               122000 if mutation else 3000))
                 if method in native.contract.HOST_MUTATIONS:
                     self.assertEqual(result["effect"], "confirmed")
-                    self.assertEqual(result["networkCleanup"], "unknown" if method == "RevokeSelected" else "notApplicable")
+                    self.assertEqual(result["networkCleanup"], "notApplicable")
                 else:
                     self.assertEqual(result["devices"][0], dict(label="Same & label", comparisonPhrase="synthetic comparison"))
 
@@ -940,7 +972,7 @@ class ConnectionCLITests(unittest.TestCase):
                     code, result, _ = self.run_native("revoke-device")
                 self.assertEqual((len(self.opens), [call[3] for call in self.bus.calls],
                                   [call[3] for call in replacement.calls]),
-                                 (1, ["Status", "NextDevice"], []))
+                                 (1, ["Status", "StatusV2", "NextDevice"], []))
                 self.assertEqual((code, result["code"], result["effect"]), (1, "unavailable", "none"))
 
 

@@ -328,6 +328,13 @@ export class HostView {
       box.append(this.text('p', this.t('hInviteNoCancel'), 'hint'));
       return [box];
     }
+    const notice: Partial<Record<HostSnapshot['inviteState'], Key>> = {
+      minting: 'hInvitePreparing', encoding: 'hInvitePreparing', pairing: 'hInvitePreparing',
+      refused: 'hInviteRefused', uncertain: 'hInviteUncertain', recovered: 'hInviteRecovered',
+      cancelled: 'hInviteCancelled',
+    };
+    const key = notice[snapshot.inviteState];
+    if (key) return [this.notice(this.t(key), 'attention')];
     if (snapshot.inviteState === 'expired') return [this.notice(this.t('hInviteExpired'), 'attention')];
     if (snapshot.inviteState === 'used') return [this.notice(this.t('hInviteUsed'), 'neutral')];
     return [];

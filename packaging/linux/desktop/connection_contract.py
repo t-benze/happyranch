@@ -543,7 +543,7 @@ class Protocol:
             "capabilities": [{"command": name, "availability": (
                 "available" if name in CLIENT_COMMANDS | HOST_METHODS.keys() else "unavailable")}
                 for name in self.commands if name != "bridge.hello"],
-            "observationLimits": {"host": ["inviteState", "expiresAt"],
+            "observationLimits": {"host": [],
                                   "client": ["route", "comparisonPhrase"]}})
 
     def host(self, raw: str) -> dict:
@@ -588,12 +588,38 @@ class Protocol:
         part = value['setup']
         states = {'prepared_no_receipt', 'failed_uncertain', 'partial_cleanup',
                   'runtime_unavailable', 'setup_unverified', 'renewal_failed'}
+        legacy = {'ready': 'ready', 'off': 'off', 'in_progress': 'pending',
+                  'failed': 'failed', 'uncertain': 'failed'}
         if (type(part) is not dict or set(part) != {'state', 'age_seconds'}
-                or part['state'] not in states or type(part['age_seconds']) is not int
-                or not 0 <= part['age_seconds'] <= 30):
+                or type(part['state']) is not str or part['state'] not in states | legacy.keys()
+                or type(part['age_seconds']) is not int or not 0 <= part['age_seconds'] <= 30):
             raise ValueError('unavailable status detail')
-        return self.result('host.status', {**snapshot, 'setup': part['state'], 'runtime': 'offline',
-            'devices': None, 'pending': None, 'selected': None})
+        if part['state'] in states:
+            snapshot = {**snapshot, 'setup': part['state'], 'runtime': 'offline',
+                        'devices': None, 'pending': None, 'selected': None}
+        elif snapshot['setup'] != legacy[part['state']]:
+            raise ValueError('changed status detail')  # Never promote v1 failure to ready.
+        invitation = value['invite']
+        phases = {'none', 'issued', 'expired', 'minting', 'encoding', 'pairing',
+                  'refused', 'uncertain', 'recovered', 'cancelled', 'consumed', 'pending_approval'}
+        if (type(invitation) is not dict or set(invitation) != {
+                'state', 'age_seconds', 'deadline_utc_seconds'} or type(invitation['state']) is not str):
+            raise ValueError('invalid invite detail')
+        state, age, expiry = (invitation[k] for k in ('state', 'age_seconds', 'deadline_utc_seconds'))
+        if state == 'unknown' and age is None and expiry is None:
+            return self.result('host.status', snapshot)
+        if (state not in phases or type(age) is not int or not 0 <= age <= 30):
+            raise ValueError('unavailable invite detail')
+        active = state in ('issued', 'pending_approval')
+        if (active and (type(expiry) is not int or not 0 <= expiry < 253402300800)
+                or not active and expiry is not None):
+            raise ValueError('invalid invite deadline')
+        state = {'consumed': 'used', 'pending_approval': 'issued'}.get(state, state)
+        if active and expiry <= time.time():
+            state, expiry = 'expired', None
+        expires = (datetime.fromtimestamp(expiry, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                   if expiry is not None else None)
+        return self.result('host.status', {**snapshot, 'inviteState': state, 'expiresAt': expires})
 
     def host_unavailable(self, setup: str = "unknown") -> dict:
         return self.result("host.status", dict(setup=setup, runtime="unknown", observation="unavailable",
@@ -601,11 +627,11 @@ class Protocol:
 
     def host_action(self, method: str, snapshot: dict) -> dict:
         # An acknowledged helper commit establishes only its documented effect.
-        # It supplies no host-service or network-membership cleanup receipt.
+        # Per-device revoke performs no network-membership cleanup operation.
         return dict(effect="confirmed", hostDenial="confirmed" if method in
                     ("RejectPending", "RevokeSelected") else "notApplicable",
                     hostCleanup="notApplicable", localCleanup="notApplicable",
-                    networkCleanup="unknown" if method == "RevokeSelected" else "notApplicable",
+                    networkCleanup="notApplicable",
                     inviteState="unknown", expiresAt=None, host=snapshot, client=None)
 
 
@@ -740,7 +766,7 @@ def request_host(self: object, method: str, complete: object, current: object, o
                 call("Status")
                 return
             snapshot = self.protocol.host(raw)
-            if snapshot['setup'] in ('failed', 'pending', 'paused'):
+            if called == 'Status':
                 status_snapshot = snapshot
                 call('StatusV2')
                 return

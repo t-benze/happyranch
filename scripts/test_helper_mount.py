@@ -2036,7 +2036,7 @@ def test_issue_invite_single_reply_and_secrecy(issue_mount: Any, monkeypatch: py
     assert v.control.reserve_invite.call_count == 2
     assert v.trust.load().invite_record.secret_digest == hashlib.sha256(decoded.pair_secret.encode()).hexdigest()
     observed = SimpleNamespace(generation=7, operation='b' * 32, release_uid=1000)
-    invite, _ = v.helper._invite_status(1000, observed)
+    invite, _ = v.helper._invite_status(1000, observed, time.monotonic() + 2)
     assert invite.state.value == 'issued' and invite.deadline_utc_seconds == frame['expires_at']
     v.helper.status_lock, v.helper.status_worker = threading.Lock(), None
     observed.phase = 'ready'
@@ -2578,3 +2578,71 @@ def test_thr327_native_terminal_preserves_lifecycle_category(category: str) -> N
     protocol = native.Protocol(path.parents[3] / 'protocol/native-connection-bridge.v1.json')
     failure = dict(code='enablePreparationFailed', effect='unknown', recovery='nativeRecovery', category=category)
     protocol.validate(failure, protocol.schema['$defs']['preparationError'])
+
+
+@pytest.mark.parametrize('phase', ['none', 'issued', 'expired', 'minting', 'encoding', 'pairing',
+                                  'refused', 'uncertain', 'recovered', 'unsafe', 'changed'])
+def test_thr327_invite_journal_status_after_restart(invite_mount: Any, monkeypatch: pytest.MonkeyPatch,
+                                                    phase: str) -> None:
+    v = invite_mount
+    if phase == 'none':
+        v.journal.unlink()
+    elif phase == 'issued':
+        record = v.record()
+        record['expires_at'] = int(time.time()) + 120
+        v.journal.write_text(json.dumps(record))
+    elif phase == 'unsafe':
+        v.journal.chmod(0o644)
+    elif phase not in ('issued', 'changed'):
+        record = v.record()
+        record['outcome'] = 'issued' if phase == 'expired' else phase
+        if phase == 'expired':
+            record['expires_at'] = time.time() - 1
+        v.journal.write_text(json.dumps(record))
+    before = {p: p.read_bytes() for p in v.journal.parent.iterdir()}
+    trust = v.trust.snapshot()
+    if phase == 'changed':
+        original = v.child._config
+        calls = []
+        def config(uid: int) -> tuple:
+            token, value = original(uid)
+            calls.append(True)
+            return ({**token, 'operation': 'e' * 32} if len(calls) > 1 else token), value
+        monkeypatch.setattr(v.child, '_config', config)
+    expected = json.dumps({k: v.token[k] for k in ('uid', 'generation', 'operation')},
+                          sort_keys=True, separators=(',', ':'))
+    commit = Mock(side_effect=AssertionError('status must not request commit'))
+    if phase in ('unsafe', 'changed'):
+        with pytest.raises(Exception):
+            v.child.dispatch('IssueInvite', 1000, 'status', expected,
+                             deadline=time.monotonic() + 2, before_commit=commit)
+    else:
+        result = v.child.dispatch('IssueInvite', 1000, 'status', expected,
+                                 deadline=time.monotonic() + 2, before_commit=commit)
+        assert result == dict(invite=phase, expires_at=int(v.record()['expires_at']) if phase == 'issued' else None)
+        assert set(result) == {'invite', 'expires_at'}
+        assert not hasattr(v.helper, 'invite_observation'), 'observation must survive a fresh helper'
+        from runtime.remote_access.helper_generation import HomeLifecycleClient
+        transport = HomeLifecycleClient('IssueInvite', 1000)
+        monkeypatch.setattr(transport, '_call', lambda step, binding, remaining:
+            v.child.dispatch('IssueInvite', 1000, step, binding,
+                             deadline=time.monotonic() + remaining, before_commit=commit))
+        v.reader.invite_status = transport.invite_status
+        observed = SimpleNamespace(generation=7, operation='b' * 32, release_uid=1000, phase='ready')
+        v.helper.generations = SimpleNamespace(current_generation=lambda _: observed)
+        v.helper.control.status = lambda: SimpleNamespace(owned=True, release_uid=1000, ready=True)
+        monkeypatch.setattr(v.h.threading, 'Thread', lambda target, **kw: SimpleNamespace(start=target))
+        monkeypatch.setattr(v.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+        v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+        reply = SimpleNamespace(set_body=lambda body: setattr(reply, 'body', body))
+        v.message.new_method_reply = lambda: reply
+        v.helper.connection.send_message = Mock()
+        v.helper._status_v2(v.message, ':1.42')
+        wire = v.helper.connection.send_message.call_args.args[0].body.unpack()[0]
+        public = json.loads(wire)
+        assert public['invite'] == dict(state=phase, age_seconds=0, deadline_utc_seconds=result['expires_at'])
+        assert public['cleanup'] == dict(state='unknown', age_seconds=None), 'journal is not cleanup proof'
+        assert set(public) == {'version', 'setup', 'runtime', 'invite', 'address', 'policy', 'cleanup'}
+    assert {p: p.read_bytes() for p in v.journal.parent.iterdir()} == before
+    assert v.trust.snapshot() == trust and not v.events and not v.control.calls
+    assert not commit.called and len(v.original.calls) == 1, 'no mint, cleanup, lock or commit'

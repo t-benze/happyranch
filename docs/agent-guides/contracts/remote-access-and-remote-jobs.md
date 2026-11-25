@@ -4671,13 +4671,25 @@ never credited as successful revoke/stop/cleanup. No budget is renewed.
 The ready restart / retry-later / prepared-retry categories are carried through
 the existing Enable terminal channel and its closed native/schema/web parsers,
 with English and Simplified Chinese recovery hints. This category extension is
-not completion of G: issuer-journal invitation projection, network cleanup and
-client revocation display remain unimplemented in TASK-19228. Status now reads
-live setup detail without any durable marker. Status v1 retains its five-field
-shape and phase vocabulary, mapping the named failures to failed/pending/paused
-with ready=false. After those states, native consumers make one read-only
-StatusV2 call and admit only fresh (age at most 30s), closed named setup detail;
-unavailable/older peers keep the original non-ready v1 result. Both web views
+not completion of G: generic later Enable refusal naming and the manager-plan
+projection remain unfinished in TASK-19228. Status reads live setup detail
+without any durable marker. Status v1 retains its five-field shape and phase
+vocabulary, mapping named failures to failed/pending/paused with ready=false.
+After Status, native consumers make one read-only StatusV2 call and admit only
+fresh (age at most 30s), closed setup/invitation detail; unavailable/older peers
+keep the original v1 result. Detail never promotes an inconsistent v1 setup to
+ready. After helper restart, the existing protected HomeInviteIssuer.observe
+reader supplies the current journal phase/deadline through the fixed child,
+with UID/G/O matching and configuration checks before/after the read. It creates
+no minter, serving pairing owner, lock, commit or repair. A same-helper settled
+invite observation retains its original uncertainty/staleness rules. No IDs or
+private issuer fields enter StatusV2. The native bridge exposes journal phases
+minting/encoding/pairing/refused/uncertain/recovered, with EN/zh-CN explanations;
+expired invites have no countdown. Missing/unsafe evidence stays unconfirmed.
+An acknowledged per-device RevokeSelected confirms denial/stream closure but
+performs no network-membership cleanup; that action's networkCleanup is
+notApplicable, never an invented confirmed network removal. Failed/lost
+acknowledgements retain their existing unknown-effect handling. Both web views
 ship English and Simplified Chinese reasons/recovery actions. Named unhealthy
 detail suppresses device/selection claims (null, never fabricated empty access).
 Ordinary inventory still refuses transitional ActiveStates; Status names
@@ -4685,3 +4697,14 @@ setup_unverified, without granting ownership. CLI Disable terminal delivery is
 documented under B9. The #1876 channel only wraps typed
 preparation-stage errors and Enable completion; later activation/recovery/stop
 errors do not enter that wrapper, explaining their absent preparation reason.
+
+
+THR-327 foreground Linux client observation (TASK-19228): after the initial
+runtimeReachable frame, the existing foreground owner performs authenticated
+health reads at one-second intervals (no overlapping reads or transport retries).
+A later error terminates through the existing named CLI error and bounded local
+session cleanup. Only the existing revocation_denied/revocation_stream_closed
+responses map to revoked; generic identity denial remains accessUnavailable,
+never proof of confirmed revocation. This adds no network/auth/credential change,
+no keyring deletion, and no UI-loaded/Connected claim. The native GUI's existing
+health action already distinguishes revokedConfirmed from accessDenied.

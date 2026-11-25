@@ -319,7 +319,7 @@ class RemoteAccessHelper:
                     return settled(raw, None)
                 if setup is not None:
                     setup = _status_v2.SetupObservation(setup.state, int(time.monotonic() - observed_at))
-                invite, cleanup = self._invite_status(uid, observed)
+                invite, cleanup = self._invite_status(uid, observed, deadline)
                 policy = None
                 try:
                     state = _helper_generation.HomeLifecycleClient('RetryPolicyRenewal', uid).policy_status(
@@ -338,9 +338,17 @@ class RemoteAccessHelper:
         timer.start()
         threading.Thread(target=observe, daemon=True).start()
 
-    def _invite_status(self, uid: int, observed: object) -> tuple:
+    def _invite_status(self, uid: int, observed: object, deadline: float) -> tuple:
         observation = getattr(self, 'invite_observation', None)
         if observation is None or observed is None or observation[0] != uid:
+            if observed is not None and observed.release_uid == uid:
+                try:
+                    state = _helper_generation.HomeLifecycleClient('IssueInvite', uid).invite_status(
+                        observed, deadline - time.monotonic())
+                    return (_status_v2.InviteObservation(_status_v2.InvitePhase(state['invite']),
+                                0, state['expires_at']), None)
+                except Exception:
+                    pass  # Missing/unsafe journal is never absence or cleanup proof.
             return None, None
         expected = json.loads(observation[1])
         if (expected['generation'], expected['operation'], uid) != (

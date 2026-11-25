@@ -490,6 +490,7 @@ export interface HostView {
   manage: boolean;
   turnOff: boolean;
   invite: 'issued' | 'expired' | 'used' | null;
+  inviteNotice: MessageKey | null;
   hints: MessageKey[];
   stale: boolean;
 }
@@ -554,6 +555,12 @@ export function hostView(snapshot: HostSnapshot, unconfirmed: boolean): HostView
     manage: phase === 'ready' || phase === 'paused',
     turnOff: ['ready', 'paused', 'failed_uncertain', 'runtime_unavailable', 'partial_cleanup', 'renewal_failed'].includes(phase),
     invite: phase !== 'ready' ? null : issued ? 'issued' : snapshot.inviteState === 'expired' ? 'expired' : snapshot.inviteState === 'used' ? 'used' : null,
+    inviteNotice: phase !== 'ready' ? null : ({
+      minting: 'connection.host.hInvitePreparing', encoding: 'connection.host.hInvitePreparing',
+      pairing: 'connection.host.hInvitePreparing', refused: 'connection.host.hInviteRefused',
+      uncertain: 'connection.host.hInviteUncertain', recovered: 'connection.host.hInviteRecovered',
+      cancelled: 'connection.host.hInviteCancelled',
+    } as Partial<Record<HostSnapshot['inviteState'], MessageKey>>)[snapshot.inviteState] ?? null,
     hints,
     stale: snapshot.observation === 'stale',
   };

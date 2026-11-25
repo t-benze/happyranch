@@ -202,6 +202,25 @@ class HomeLifecycleClient:
             raise GenerationUnavailable()
         return value
 
+    def invite_status(self, observed: GenerationSnapshot, remaining: float) -> dict:
+        if self.method != 'IssueInvite':
+            raise GenerationUnavailable()
+        binding = json.dumps(dict(uid=self.uid, generation=observed.generation, operation=observed.operation),
+                             sort_keys=True, separators=(',', ':'))
+        value = self._call('status', binding, remaining)
+        states = {'none', 'minting', 'encoding', 'pairing', 'issued', 'recovered',
+                  'expired', 'refused', 'uncertain'}
+        if (set(value) != {'invite', 'expires_at'} or type(value['invite']) is not str
+                or value['invite'] not in states):
+            raise GenerationUnavailable()
+        expiry = value['expires_at']
+        if value['invite'] == 'issued':
+            if type(expiry) is not int or not 0 <= expiry <= 9_223_372_036_854_775_807:
+                raise GenerationUnavailable()
+        elif expiry is not None:
+            raise GenerationUnavailable()
+        return value
+
     def recover_invite(self, expected: str, deadline: float, before_commit: Callable[[], None]) -> dict:
         if not time.monotonic() < deadline <= time.monotonic() + 120:
             raise GenerationUnavailable()

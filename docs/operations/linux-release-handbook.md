@@ -716,7 +716,11 @@ C19 acceptance belongs to slice 7 and is **NOT RUN**.
 Connections live only in this foreground invocation. Authenticated native health
 yields `runtimeReachable`, never `Connected`: CLI cannot observe the GUI's loaded
 RELEASE UI. Open the loopback URL printed only on the terminal and keep CLI
-running. Ctrl-C/SIGTERM cancels/disconnects this owner with bounded cleanup.
+running. The Linux foreground owner continues authenticated health reads at
+one-second intervals. A later explicit revocation reply reports `revoked`;
+generic access denial reports `accessUnavailable`. Both terminate through
+bounded cleanup without deleting saved access or retrying transport.
+Ctrl-C/SIGTERM cancels/disconnects this owner with bounded cleanup.
 Unfinished save/readback reaches its existing safe point before teardown;
 unconfirmed cleanup reports `cleanupIncomplete`, effect unknown.
 
