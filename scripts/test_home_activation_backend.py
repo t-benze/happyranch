@@ -776,6 +776,8 @@ def venue(live_venue: Venue, monkeypatch: pytest.MonkeyPatch) -> Venue:
     v.home = v.legacy.replace(b"NotifyAccess=main", b"Environment=SSL_CERT_FILE=/etc/happyranch/control-ca.pem\nEnvironment=SSL_CERT_DIR=/etc/happyranch/empty-ca-directory\nNotifyAccess=main", 1)
     v.path(SIDECAR).write_bytes(v.legacy)
     v.path("/etc/happyranch/headscale").chmod(0o700)
+    # The mocked publication above claims this exact installed member exists.
+    v.path("/etc/happyranch/empty-ca-directory").mkdir(mode=0o755)
     v.path("/run").mkdir(mode=0o755)
     v.active = False
     v.fail = None
@@ -807,6 +809,11 @@ def venue(live_venue: Venue, monkeypatch: pytest.MonkeyPatch) -> Venue:
                     assert os.readlink(link) == OWNED_LINK_TARGET
                 else:
                     link.symlink_to(OWNED_LINK_TARGET)
+            if args[1] == "enable" and args[2] == 'happyranch-remote-access-policy-renew.timer':
+                link = v.path('/etc/systemd/system/happyranch-managed.target.wants/' + args[2])
+                link.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+                if not link.is_symlink():
+                    link.symlink_to('/usr/lib/systemd/system/' + args[2])
             if args[1] == "start" and args[2] == adapters._HEADSCALE:
                 v.active = True
             if args[1:] == ["start", adapters._TARGET]:
@@ -839,7 +846,7 @@ def assert_locked(v: Venue) -> None:
 def observations(v: Venue) -> Iterator[list[bytes]]:
     """Existing observe-self protocol, repeated for real owner verification reads."""
     path = v.path("/run/happyranch-tsnet-sidecar/observe.sock")
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(f"/proc/self/fd/{parent}/{path.name}")
@@ -1312,7 +1319,7 @@ def test_backend_prepared_without_txn(venue: Venue, monkeypatch: pytest.MonkeyPa
 
 @pytest.mark.parametrize('case', ['ready', 'failed', 'half-published', 'rollover',
                                  'unmarked-joined', 'missing-txn', 'mismatched-operation', 'live-key-no-node'])
-def test_private_helper_enable_persists_ready_and_ready_is_inspect_only(
+def test_private_helper_enable_persists_ready_without_activation_replay(
         venue: Venue, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
     v = venue
     lifecycle = h.HelperLifecycleBackend(v.backend._io)
@@ -1332,8 +1339,9 @@ def test_private_helper_enable_persists_ready_and_ready_is_inspect_only(
         assert v.path('/etc/happyranch/policy.json').read_bytes() == policy_before
         if case == 'ready':
             v.source.write_bytes(b'synthetic source-token rotation')
-            with pytest.raises(ActivationRefused):
+            with pytest.raises(h.EnablePreparationRefused) as caught:
                 lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)
+            assert caught.value.category == 'ready-restart-failed-turn-off'
             assert v.receipts.read(expected_generation=0) == ready and v.audit == before
             return
 
@@ -1377,7 +1385,12 @@ def test_private_helper_enable_persists_ready_and_ready_is_inspect_only(
         monkeypatch.setattr(adapters.headscale_service, 'preflight_ports', forbidden)
         records, units = v.records(), unit_config_bytes(v)
         observed = lifecycle.capture('Enable', v.prepared.release_uid)
-        if case in ('unmarked-joined', 'missing-txn', 'mismatched-operation', 'live-key-no-node'):
+        if case == 'live-key-no-node':
+            with pytest.raises(h.EnablePreparationRefused) as caught:
+                lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)
+            assert caught.value.category == 'activation-retry-later'
+            assert v.records() == records
+        elif case in ('unmarked-joined', 'missing-txn', 'mismatched-operation'):
             with pytest.raises(ActivationRefused):
                 lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)
             assert v.records() == records

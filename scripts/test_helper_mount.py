@@ -1295,7 +1295,8 @@ def test_disable_policy_journal_recovery_before_stop(renewal_fixture: Any, monke
         show_properties=lambda name, keys: dict(LoadState='not-found', FragmentPath='', DropInPaths='',
             NeedDaemonReload='no', ActiveState='inactive', SubState='dead', MainPID='0', ControlPID='0', ControlGroup='', Job=''),
         disable=lambda name: events.append(('disable', name)))
-    def stop() -> None:
+    def stop(*, disabling: bool = False) -> None:
+        assert disabling is True
         events.append('legacy-stop')
         assert (folder / 'install-transaction.json').exists() is (case != 'valid')
         raise RuntimeError('stop at existing downstream seam')
@@ -1524,7 +1525,7 @@ def test_disable_real_backend_residue_still_attempts_owned_stops(
     if not revoked:
         mount.helper.control.revoke_all.side_effect = mount.h.Refused('unavailable')
     mount.admit()
-    io.stop_and_confirm.assert_called_once_with()
+    io.stop_and_confirm.assert_called_once_with(disabling=True)
     assert ['systemctl', 'stop', 'happyranch-headscale.service'] in custody.calls
     assert not io.cleanup_headscale.called and activation.exists()
     result = mount.helper.lifecycle_result
@@ -1546,7 +1547,10 @@ def test_stop_includes_headscale_and_disables_only_owned_units(store: Any, monke
     put_pair(store._io.root)
     io = store._io
     events = []
-    io.stop_and_confirm = lambda: events.append('stop-owned')
+    def stop(*, disabling: bool = False) -> None:
+        assert disabling is True
+        events.append('stop-owned')
+    io.stop_and_confirm = stop
     io.inventory = lambda: SimpleNamespace(state='owned-activated')
     io._confirm_quiescent = lambda: events.append('confirm-owned')
     io._headscale_receipt = lambda: {}

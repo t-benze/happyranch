@@ -226,7 +226,10 @@ def test_each_resume_failure_is_unchanged(venue: RecoveryVenue, monkeypatch: pyt
     with peer(venue, json.dumps(record).encode()):
         with pytest.raises(RecoveryRefused) as caught:
             venue.recover(**kwargs)
-    assert str(caught.value) in ("recovery_refused", "token_source_invalid")
+    if case in ("zero-nodes", "unused"):
+        assert str(caught.value) == "retry_later"
+    else:
+        assert str(caught.value) in ("recovery_refused", "token_source_invalid")
     assert venue.snapshot() == before
     venue.no_effects()
     if case in ("source", "release", "auth", "generation", "operation"):
