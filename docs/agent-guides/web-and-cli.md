@@ -458,6 +458,18 @@ placeholder. It reads native state only and keeps no second store:
   once per `app.stateChanged` (coalesced), with one `client.savedComputers`
   discovery on open. `host.status` is read on open and `host.stateChanged`
   applies newer sequences only. Results stay in component state.
+  Enable also subscribes to host.enableFinished before dispatch, matching the
+  native-generated operationId from admission. One early event may await its
+  Promise continuation. The native observer survives active_operation cleanup.
+  Typed enablePreparationFailed retains its literal EN/zh-CN reason and unknown
+  effect through read loss. Terminal delivery invalidates earlier reads/events
+  and starts fresh host.status; only a fresh known state lifts unsafe-action
+  holds. Check current status is read-only. Completed means worker completion,
+  never confirmed Ready. Invalid/unsupported/no-result peers keep status-unclear;
+  unsubscribe/close/context replacement drops observation without replay.
+  Enable is rendered only after a host snapshot exists; failed reads retain
+  that snapshot. The no-snapshot preparation-reason case is covered in the
+  model/Node venue, not by an unreachable mounted one-click sequence.
 - **Close is not Cancel or Disconnect.** Closing only unmounts the body;
   native keeps the attempt. Reopening re-reads `app.status`, `client.status`
   and `host.status` and replays no action.

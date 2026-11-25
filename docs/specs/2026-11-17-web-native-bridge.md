@@ -246,7 +246,7 @@ on(eventName: string, handler: (data: string) => void): () => void
 
 `call` sends a closed command ID asynchronously. `data` carries the proposed versioned schema's JSON `args` text (for example, `"{}"`); the resolved string carries its JSON `result` text. Native parses and strictly validates against the negotiated version, command and unchanged size bounds below. The facade/transport owns the envelope and `requestId`/version correlation internally, with no extra caller parameters. Failure rejects with a **string** carrying a closed JSON error object (`code`, `effect`, `recovery`), never an Error object or free-form backend message. Normalize facade/transport failures to that vocabulary with truthful effect semantics.
 
-`on` accepts only the closed native event list: **`host.stateChanged` and `client.stateChanged` in v1**. The handler receives the proposed versioned snapshot/event JSON as a string. Unknown names throw/refuse locally before transport; native never emits names outside the list. The returned unsubscribe function detaches the listener; `on`/unsubscribe manage the existing one-per-view native stream internally, subject to generation teardown. The fixed dispatcher stays internal; no page-supplied callback name or executable string.
+`on` accepts only the closed native event list: **`host.stateChanged` and `client.stateChanged` in v1**, plus Linux Main’s additive `host.enableFinished` described below. The handler receives the proposed versioned snapshot/event JSON as a string. Unknown names throw/refuse locally before transport; native never emits names outside the list. The returned unsubscribe function detaches the listener; `on`/unsubscribe manage the existing one-per-view native stream internally, subject to generation teardown. The fixed dispatcher stays internal; no page-supplied callback name or executable string.
 
 Absence of the facade means plain-browser behavior: hide the feature. Facade presence and a hello result are UX detection only, never authorization; native admission still governs every real request and delivery.
 
@@ -278,7 +278,7 @@ These are envelope examples; command results are discriminated types, not one ar
 | --- | --- | --- |
 | `bridge.hello` | `{"minVersion":1,"maxVersion":1}` → `{version:1, platform, roles, capabilities, observationLimits}` | Both native dispatchers; `platform` is `mac` or `linux`. In B, Linux advertises implemented host/client capabilities; Mac advertises client only. No permission prompt or implicit role switch; no Mac host capability. |
 | `host.status` | `{}` → HostSnapshot | Linux Status; readiness is never inferred from process presence. Mac host deferred (§5). |
-| `host.enable` | `{}` → ActionResult | Linux future fixed Enable; backend delivery owned by TASK-16779. Mac host deferred. |
+| `host.enable` | `{}` → legacy ActionResult or unknown-effect admission with native operationId | Linux fixed Enable; subscribed Main receives one separate host.enableFinished event. Mac host deferred. |
 | `host.turnOff` | `{}` → ActionResult | Linux future fixed Disable; not daemon Stop or legacy connector Stop. Mac host deferred. |
 | `host.createInvite` | `{}` → ActionResult with `inviteState` and authoritative `expiresAt` or null | Linux future fixed IssueInvite; Mac host deferred; native display/copy only. Never invite bytes in the result. |
 | `host.approveDevice`, `host.rejectDevice` | `{}` → ActionResult | Linux ApprovePending/RejectPending with protected capture and genuine OS approval; Mac host deferred. |
@@ -313,7 +313,19 @@ Closed result projections (JSON object syntax describes the parsed contents; **a
 - **ActionResult:** `{effect,hostDenial,hostCleanup,localCleanup,networkCleanup,inviteState,expiresAt,host,client}`. Effect is `none/confirmed/unknown`; each cleanup and host-denial dimension is `confirmed/incomplete/unknown/notApplicable`. Host/client are fresh snapshots or null when not relevant/observable; invite metadata is null/unknown unless supported. Opening a dialog is acknowledged with `effect:none`; a subsequent event or completed native result records the outcome. Never call dialog-open, request dispatch or an optimistic web change a completed mutation.
 - **Health:** access is `allowed/accessDenied/revokedConfirmed/unknown`, route is `direct/relay/unknown`; observation time is a native UTC value or null. Connected requires the native expected release-UI load gate, not just allowed access or network join.
 
-**Native event allowlist:** `host.stateChanged` and `client.stateChanged` only. `on` data is a JSON string containing `{version:1,sequence,observedAt,snapshot}`, with the corresponding HostSnapshot or ClientSnapshot. Sequence is a positive, monotonically increasing integer per role/view generation; observation time is native UTC. Native starts each role subscription with a full snapshot, coalesces changes and keeps one underlying stream per view; unsubscribe is idempotent and detaches only that listener, stopping the native stream when no listeners remain. Unknown event names synchronously throw the closed `unsupportedCommand` error **string** and cannot create a native subscription. No JS callback name or code is forwarded. Teardown detaches all listeners.
+**Native event allowlist:** `host.stateChanged`, `client.stateChanged`, plus
+additive Linux Main `host.enableFinished`. The latter has closed alternatives
+{version:1,operationId,method:Enable,outcome:failed,error} and
+{version:1,operationId,method:Enable,outcome:completed,result}; it is not a state
+snapshot. Enable admission may include a native-generated 32-hex operationId
+only for a subscribed original document. Its separate observer survives
+admission cleanup, delivers once after the reply barrier and retires on original
+document/context/listener loss or a newer Enable. No replay or broadcast exists.
+Preparation error is enablePreparationFailed/category/unknown/nativeRecovery
+(B9's exact 19 tokens); completed result is enableCompleted/unknown/refresh.
+Neither proves effects, state or cleanup. A genuinely fresh known status owns
+Off/Ready, while failure copy survives unavailable reads. Older peers keep
+unknown fallback. Existing state events retain their snapshot contract. `on` data is a JSON string containing `{version:1,sequence,observedAt,snapshot}`, with the corresponding HostSnapshot or ClientSnapshot. Sequence is a positive, monotonically increasing integer per role/view generation; observation time is native UTC. Native starts each role subscription with a full snapshot, coalesces changes and keeps one underlying stream per view; unsubscribe is idempotent and detaches only that listener, stopping the native stream when no listeners remain. Unknown event names synchronously throw the closed `unsupportedCommand` error **string** and cannot create a native subscription. No JS callback name or code is forwarded. Teardown detaches all listeners.
 
 Capability discovery reports exact page-callable command IDs (as listed above), supported observation fields and `availability` (`available`, `unavailable`, `unsupportedVersion`). It is UX information, never authorization. A capability is advertised only if its native backend exists and view admission succeeds. Permission is requested per action, not during hello; missing capability disables that action with an honest native-app/update explanation. Unknown commands fail closed rather than falling through to strings passed to an executor.
 

@@ -40,6 +40,25 @@ surfaces such as Work Hours; to capture them, build with
 
 ## Quick start (the worked example)
 
+Enable failure cases use the same harness with test-side native IO and the real
+ConnectionDialogBody/HostSection, providers, parser and read hook. Produce the
+synthetic trace through the retained helper mount, native Main and relay
+selections using `ENABLE_PREPARATION_TRACE=/absolute/task-output/production-trace.json`.
+Then, after the documented locked Web dependency setup, run from `web/`:
+`node scripts/screenshot-harness/enable-failure-cases.mjs /absolute/task-output/production-trace.json /absolute/task-output/screenshots`.
+The adapter uses the existing installed Vite/Playwright primitives and an
+OS-selected private port. It exercises literal reasons, held read ordering,
+stale/new status events, failed read-only recovery, pending/early terminal and
+completed/unknown controls, each reason across locale changes, and original
+invocation ownership through close/reopen, then captures
+inventory with Off, inventory unavailable and genuine unknown in EN/zh-CN at
+390×844 and 1440×900 (12 images). This is synthetic bridge presentation, not
+installed bus/polkit or live-host acceptance; execution results must be reported
+separately from source delivery. No new dependency or CI trigger is added.
+The unavailable case has a real snapshot. A no-snapshot one-click Enable case
+is unreachable because Enable requires a snapshot and failed reads retain it;
+the existing model/Node null-snapshot cases own that diagnostic contract.
+
 ```bash
 cd web
 npm run build                                  # modes A/B need dist/

@@ -760,6 +760,13 @@ because helper scratch removal cannot be confirmed.
 /usr/bin/python3 -B packaging/linux/desktop/test_client_store.py CustodyTests -v
 GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_connection.py -v
 GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_connection_cli.py -v
+# For the composed Enable diagnostic trace, first generate the task-local
+# production-trace.json via scripts/test_helper_mount.py's focused
+# test_enable_preparation_production_trace, then pass its absolute path as
+# ENABLE_PREPARATION_TRACE through the CLI, Main, relay and Node selections.
+# Each consumes the preceding production bytes; separate synthetic fixtures
+# alone are not a composed trace. Mounted case adapter:
+# web/scripts/screenshot-harness/README.md (existing Vite/Playwright venue).
 # GTK/WebKit smoke when the existing desktop session is available:
 PYTHONWARNINGS=ignore GSETTINGS_BACKEND=memory /usr/bin/python3 -B packaging/linux/desktop/test_client_gtk.py -v
 # Shipping connector parser/forwarder compatibility (existing project Python dependencies):

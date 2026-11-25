@@ -13,6 +13,32 @@ COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
            'runtime.remote_access.home_activation')
 HOST_STATE_CATEGORIES = frozenset({'residue', 'owner', 'provenance', 'custody',
                                     'inventory', 'quiescence', 'timeout', 'unknown'})
+PREPARATION_CATEGORIES = frozenset({
+    'deb-layout-required', 'issuer-state-uncertain', 'account-shape',
+    'account-receipt-uncertain', 'foreign-unit', 'foreign-custody', 'publication-uncertain',
+    'address-changed', 'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain',
+    'custody-uncertain', 'inventory', 'no_address', 'multiple_addresses', 'dial_ip', 'dial-ip',
+    'occupied-port', 'port-check-uncertain',
+})
+
+
+class PreparationFailed(Exception):
+    """Only the closed Enable/enable exit-1 frame can create this diagnostic."""
+
+    def __init__(self, category: str) -> None:
+        if type(category) is not str or category not in PREPARATION_CATEGORIES:
+            raise ValueError('invalid preparation category')
+        self.category = category
+        super().__init__('preparation failed')
+
+
+def _unique_pairs(items: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in items:
+        if key in result:
+            raise ValueError('duplicate key')
+        result[key] = value
+    return result
 
 
 def host_state_category(error: Exception) -> str:
@@ -113,6 +139,15 @@ class HomeLifecycleClient:
                 raise GenerationUnavailable('timeout')
             if len(result.stdout) > 4096:
                 raise GenerationUnavailable()
+            if self.method == 'Enable' and step == 'enable' and result.returncode == 1:
+                if len(result.stdout) > 256:
+                    raise GenerationUnavailable()
+                value = json.loads(result.stdout, object_pairs_hook=_unique_pairs)
+                if (type(value) is dict and set(value) == {'preparationFailure'}
+                        and type(value['preparationFailure']) is str
+                        and value['preparationFailure'] in PREPARATION_CATEGORIES):
+                    raise PreparationFailed(value['preparationFailure'])
+                raise GenerationUnavailable()
             value = json.loads(result.stdout)
             if result.returncode:
                 if (self.method == 'Enable' and step == 'capture' and result.returncode == 1
@@ -122,7 +157,7 @@ class HomeLifecycleClient:
             if type(value) is not dict:
                 raise GenerationUnavailable()
             return value
-        except GenerationUnavailable:
+        except (GenerationUnavailable, PreparationFailed):
             raise
         except subprocess.TimeoutExpired:
             raise GenerationUnavailable('timeout') from None

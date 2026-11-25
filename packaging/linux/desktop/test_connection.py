@@ -11,6 +11,30 @@ from connection_contract import Assets, Protocol, parse_json
 
 
 class ConnectionBoundaryTests(unittest.TestCase):
+    def test_enable_completion_protocol_closed(self) -> None:
+        good = dict(code="enablePreparationFailed", category="inventory", effect="unknown", recovery="nativeRecovery")
+        error_schema = self.protocol.schema["$defs"]["error"]
+        self.protocol.validate(good, error_schema)
+        for changes in (dict(category="unknown"), dict(category=None), dict(effect="none"),
+                        dict(effect="confirmed"), dict(recovery="refresh"), dict(message="synthetic"),
+                        dict(code="unavailable")):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.protocol.validate(good | changes, error_schema)
+        self.protocol.validate(good | dict(code="hostStateUnrecognized"), error_schema)
+        missing = {k: v for k, v in good.items() if k != "category"}
+        with self.assertRaises(ValueError):
+            self.protocol.validate(missing, error_schema)
+        event = dict(version=1, operationId="a"*32, method="Enable", outcome="failed", error=good)
+        self.protocol.validate(event, self.protocol.events["host.enableFinished"])
+        for changes in (dict(operationId="A"*32), dict(outcome="completed"), dict(extra=1),
+                        dict(error=good | dict(effect="none")), dict(method="Disable")):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.protocol.validate(event | changes, self.protocol.events["host.enableFinished"])
+        completed = dict(code="enableCompleted", effect="unknown", recovery="refresh")
+        self.protocol.validate(completed, self.protocol.schema["$defs"]["enableCompleted"])
+        with self.assertRaises(ValueError):
+            self.protocol.validate(completed, error_schema)
+
     def setUp(self) -> None:
         self.scratch = tempfile.TemporaryDirectory()
         self.addCleanup(self.scratch.cleanup)

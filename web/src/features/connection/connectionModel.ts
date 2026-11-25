@@ -367,6 +367,9 @@ const HOST_STATE_ERROR: Record<string, MessageKey> = {
 };
 
 export function errorKey(command: ConnectionCommand, code: string, category?: ConnectionFailure['category']): MessageKey {
+  if (command === 'host.enable' && code === 'enablePreparationFailed' && category) {
+    return ('connection.host.enableFailure.' + category) as MessageKey;
+  }
   if (command.startsWith('host.') && code === 'hostStateUnrecognized' && category) {
     return HOST_STATE_ERROR[category] ?? HOST_STATE_ERROR.unknown;
   }
@@ -450,6 +453,11 @@ export function outcomeView(
     return null;
   }
   const { failure } = outcome;
+  if (command === 'host.enable' && failure.code === 'enablePreparationFailed' && failure.category) {
+    return { lines: [{ key: 'connection.host.enableFailed' },
+      { key: errorKey(command, failure.code, failure.category) }, { key: 'connection.client.effectUnknown' }],
+      tone: 'danger', checkAgain: true, retry: false, hints: [], components: false };
+  }
   const lines: OutcomeLine[] = [{ key: 'connection.client.failedAction', action: true }, { key: errorKey(command, failure.code, failure.category), name: true }];
   if (failure.effect === 'unknown' && failure.code !== 'outcomeUnknown') lines.push({ key: 'connection.client.effectUnknown' });
   const hints: MessageKey[] = [];

@@ -11,18 +11,21 @@
  *
  * Hidden when `host.status` answers `unsupportedCommand` (Mac: no host role).
  */
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/design-system/primitives/Button';
 import { useTranslation } from '@/hooks/i18n';
 import {
   callConnection,
   failureOf,
   parseActionResult,
+  parseEnableAdmission,
+  subscribeEnableFinished,
   parseHostSnapshot,
   UNKNOWN_FAILURE,
   type ActionResult,
   type ConnectionFailure,
   type HostCommand,
+  type EnableFinished,
 } from '@/lib/native/connection';
 import { ACTION_LABEL, hostView, outcomeView } from './connectionModel';
 import { Actions, Hint, Notice, OutcomeNotice, Section, ToneBadge, WRAP, formatTime, joinSentences } from './parts';
@@ -55,6 +58,30 @@ export function HostSection(): JSX.Element | null {
   const [confirm, setConfirm] = useState<{ command: Confirmable; name: string | null } | null>(null);
   const confirmCancelRef = useRef<HTMLButtonElement>(null);
   const openerRef = useRef<HTMLButtonElement | null>(null);
+  const invocation = useRef<{ id?: string; early?: EnableFinished; consumed: boolean } | null>(null);
+  const receive = useRef<(event: EnableFinished) => void>(() => {});
+  receive.current = (event) => {
+    const attempt = invocation.current;
+    if (!attempt || attempt.consumed) return;
+    if (!attempt.id) {
+      attempt.early ??= event;
+      return;
+    }
+    if (event.operationId !== attempt.id) return;
+    attempt.consumed = true;
+    attempt.early = undefined;
+    setUncertainSince(reads.invalidate());
+    setPending(null);
+    setOutcome({ command: 'host.enable', name: null, failure: event.failure ?? UNKNOWN_FAILURE });
+    void reads.refresh();
+  };
+  useEffect(() => {
+    const off = subscribeEnableFinished((event) => receive.current(event));
+    return () => {
+      invocation.current = null;
+      off?.();
+    };
+  }, []);
 
   const { state } = reads;
   if (state.kind === 'unsupported') return null;
@@ -64,6 +91,10 @@ export function HostSection(): JSX.Element | null {
     setConfirm(null);
     setPending(command);
     setOutcome(null);
+    const attempt = command === 'host.enable' ? { consumed: false } as {
+      id?: string; early?: EnableFinished; consumed: boolean;
+    } : null;
+    invocation.current = attempt;
     const before = reads.revision();
     let next: HostOutcome;
     try {
@@ -76,11 +107,20 @@ export function HostSection(): JSX.Element | null {
         else setOutcome({ command, name, failure: UNKNOWN_FAILURE });
         return;
       }
-      const result = parseActionResult(raw);
+      const admission = command === 'host.enable' ? parseEnableAdmission(raw) : null;
+      if (attempt && invocation.current === attempt) {
+        attempt.id = admission?.operationId;
+        if (attempt.id && attempt.early) receive.current(attempt.early);
+        attempt.early = undefined;
+        if (attempt.consumed) return;
+      }
+      const result = command === 'host.enable' ? admission?.result : parseActionResult(raw);
       next = result ? { command, name, result } : { command, name, failure: UNKNOWN_FAILURE };
     } catch (error) {
+      if (attempt?.consumed) return;
       next = { command, name, failure: failureOf(error) };
     }
+    if (attempt && invocation.current !== attempt) return;
     if (next.result?.effect === 'unknown' || next.failure?.effect === 'unknown') setUncertainSince(reads.observedCount());
     setPending(null);
     setOutcome(next);
@@ -90,7 +130,7 @@ export function HostSection(): JSX.Element | null {
   };
 
   const checkAgain = (): void => {
-    setOutcome(null);
+    setOutcome((current) => current?.failure?.code === 'enablePreparationFailed' ? current : null);
     void reads.refresh();
   };
 
@@ -146,13 +186,19 @@ export function HostSection(): JSX.Element | null {
         <OutcomeNotice
           key="outcome"
           testId="connection-host-outcome"
-          view={{ ...ov, retry: ov.retry && stillApplies }}
+          view={{ ...ov, retry: ov.retry && stillApplies,
+            checkAgain: outcome.failure?.code === 'enablePreparationFailed' ? false : ov.checkAgain }}
           params={params}
           result={outcome.result}
           onCheckAgain={checkAgain}
           onRetry={() => void run(outcome.command, outcome.name)}
           retryLabel={t('connection.client.tryAgainAction', { action })}
         />,
+      );
+      if (outcome.failure?.code === 'enablePreparationFailed') parts.push(
+        <Button key="check" size="sm" variant="outline" className={WRAP} onClick={checkAgain}>
+          {t('connection.host.checkCurrentStatus')}
+        </Button>,
       );
       if (ov.retry && !stillApplies) parts.push(<Hint key="gone">{t('connection.host.hRecordGone', { name: outcome.name ?? '' })}</Hint>);
     }

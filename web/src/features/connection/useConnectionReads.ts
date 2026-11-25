@@ -126,6 +126,8 @@ export interface HostReadApi {
   observed: number;
   /** The same count, read synchronously (taken right after an uncertain action returns). */
   observedCount: () => number;
+  /** Retire reads and queued observations that began before terminal knowledge. */
+  invalidate: () => number;
 }
 
 /** `host.status` on open + `host.stateChanged`; `unsupportedCommand` hides Host management. */
@@ -134,6 +136,7 @@ export function useHostSnapshot(): HostReadApi {
   const revision = useRef(0);
   const last = useRef<HostSnapshot | null>(null);
   const seen = useRef(0);
+  const eventFence = useRef(0);
   const [state, setState] = useState<HostReads>({ kind: 'loading' });
   const [observed, setObserved] = useState(0);
 
@@ -146,7 +149,7 @@ export function useHostSnapshot(): HostReadApi {
     (snapshot: HostSnapshot) => {
       revision.current += 1;
       last.current = snapshot;
-      succeeded();
+      if (snapshot.observation === 'known') succeeded();
       setState({ kind: 'ready', snapshot });
     },
     [succeeded],
@@ -162,7 +165,7 @@ export function useHostSnapshot(): HostReadApi {
         return null;
       }
       last.current = next;
-      succeeded();
+      if (next.observation === 'known') succeeded();
       setState({ kind: 'ready', snapshot: next });
       return next;
     } catch (error) {
@@ -177,7 +180,7 @@ export function useHostSnapshot(): HostReadApi {
   useEffect(() => {
     void refresh();
     const off = subscribeHostState((event) => {
-      if (alive.current) apply(event.snapshot);
+      if (alive.current && Date.parse(event.observedAt) > eventFence.current) apply(event.snapshot);
     });
     return () => off?.();
   }, [alive, apply, refresh]);
@@ -190,7 +193,12 @@ export function useHostSnapshot(): HostReadApi {
   );
   const current = useCallback(() => revision.current, []);
   const observedCount = useCallback(() => seen.current, []);
-  return { state, refresh, observe, revision: current, observed, observedCount };
+  const invalidate = useCallback(() => {
+    revision.current += 1;
+    eventFence.current = Date.now();
+    return seen.current;
+  }, []);
+  return { state, refresh, observe, revision: current, observed, observedCount, invalidate };
 }
 
 export interface HealthReads {

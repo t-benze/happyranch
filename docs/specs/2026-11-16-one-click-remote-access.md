@@ -181,8 +181,18 @@ action fields. Six methods acknowledge `accepted` before effects. The CLI keeps
 the dedicated bus alive through the operation budget plus margin for live-caller
 revalidation, then reports
 `outcomeUnknown` / effect `unknown`, exit 1, without inventing completion, denial
-or cleanup from admission. Private worker outcomes/residue are not a terminal
-receipt. Lost/late/malformed results remain unknown; no polling or redispatch.
+or cleanup from admission. Private worker outcomes/residue alone are not a
+terminal receipt. Enable alone adds a unicast LifecycleCompleted(s) receipt
+before helper release, correlated to its original call serial and authenticated
+helper owner within the original 480s budget. Its sole method reply remains
+admission-only accepted. The closed 512-byte signal carries failed/completed
+and optionally one of B9's exact 19 typed preparation categories, preserving
+both dial spellings. The private exit-1 preparationFailure frame is bounded to
+256 bytes. No paths, addresses or raw diagnostic text are exported.
+CLI consumes once: enablePreparationFailed/category/unknown/nativeRecovery
+returns exit 1; enableCompleted/unknown/refresh returns exit 0. Neither proves
+effect, Ready, Off or cleanup. Invalid/late/wrong-correlation/unsupported or
+absent frames retain outcomeUnknown. No lookup, replay, broadcast or redispatch.
 Turn off uses fresh system authorization without an additional CLI prompt.
 
 I5c / bridge slice 2b delivers only host.enable, host.turnOff and host.createInvite
@@ -190,6 +200,11 @@ in the Linux packaged window, using the same validator and fixed zero-input
 Enable/Disable/IssueInvite methods with 482/302/122-second transport deadlines.
 Enable/Disable acceptance leaves effect, host denial and host/network cleanup
 unknown; the persistent dedicated bus and later Status observations own state.
+Subscribed Main documents additionally receive a native operationId and one
+host.enableFinished event. A plain EN/zh-CN preparation reason survives read
+loss; a fresh post-terminal status read owns displayed state. Observation ends
+with its original document/context/listener. Completed never confirms effects
+or state; older peers retain status-unclear.
 IssueInvite returns only closed nonsecret issuance/expiry metadata. The complete
 invite stays in a native GTK sheet with explicit Copy, local absolute expiry and
 m:ss countdown; expiry/close drops the text and best-effort clears only our

@@ -3620,6 +3620,35 @@ passed to every step and no late success. Disable has a 300-second budget;
 status at most 2 seconds. B15 conveys progress/terminal outcomes using
 `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`.
 Transport loss after dispatch never means no change.
+
+Enable alone adds a destination-addressed `LifecycleCompleted(s)` signal on
+`ai.happyranch.RemoteAccess1`, before captured slot/name release, to the original
+unique caller only. Its sole method reply stays JSON `"accepted"` (admission).
+The closed, duplicate-free, 512-byte frame has method=Enable,
+correlation={serial:original call serial,owner:authenticated helper unique name},
+outcome=failed|completed, and optional category on failed only. No broadcast,
+cache, lookup, replay, cross-caller transfer or automatic Enable follows.
+
+Only HeadscaleServiceError.category at the actual prepare_headscale call mints
+preparation provenance. The private child emits one exact preparationFailure
+object/newline on exit 1, at most 256 bytes; its decoder raises PreparationFailed,
+separate from GenerationUnavailable/capture categories. The exact 19 tokens are
+deb-layout-required, issuer-state-uncertain, account-shape,
+account-receipt-uncertain, foreign-unit, foreign-custody, publication-uncertain,
+address-changed, account-create-uncertain, cleanup-uncertain,
+materializer-uncertain, custody-uncertain, inventory, no_address,
+multiple_addresses, dial_ip, dial-ip, occupied-port, port-check-uncertain.
+Both dial spellings survive separately. Text, stderr, causes and duck-typed
+properties never mint provenance. Earlier provisioning effects remain uncertain.
+
+Delivery runs once after settlement attempts and before release under the
+original operation deadline, preserving a typed reason even if audit later
+fails. Receipt checks retain the slot/caller UID/B8 owner; they do not compare
+the old snapshot after a legitimate first generation. All pre-effect G/O/CAS
+checks remain. The fixed 2s UID read starts only with more than 2s left, with
+time checked after blocking reads. One cancellable async flush uses the
+remaining budget on the worker's own main context. Lost delivery changes no
+effect, journal, ownership or cleanup evidence.
 After each Enable, ReplaceFailed, Disable, RetryPolicyRenewal, IssueInvite,
 CancelInvite or RecoverInvite operation settles, including terminal refusal,
 the helper seals admission and exits through its idle/close path after the
@@ -3659,7 +3688,8 @@ The slot is captured before authorization; its callback constructs the worker
 under the helper lock, then starts it only after leaving that lock. The slot stays
 captured across unlock/start, so another caller still refuses as busy; the worker
 retains current-caller revalidation and the nonblocking effect guards.
-Worker startup failure uses the existing locked error/clear handling. Genuine
+Worker startup failure clears safely without a second post-acceptance method
+reply/error. Genuine
 effect uncertainty retains ownership until the worker returns; returned-worker
 settlement uncertainty is recorded as uncertain and releases the slot while
 sealing admission for process exit. The next activation recovers the durable
@@ -3690,6 +3720,32 @@ authorization and original 482/302/122-second native transport budgets. Accepted
 Enable/Disable replies project unknown effect, host denial and host/network
 cleanup, with no fabricated snapshot or completion. The window retains its bus
 caller; subsequent Status/host.stateChanged observations drive presentation.
+Enable's separate terminal observer subscribes before the one low-level send,
+checks destination/signature/no-FD/raw closed frame, and authenticates against
+the original full admission reply. One early candidate may await that callback.
+It survives admission clearing active_operation and unrelated Status reads.
+Acceptance ends at original send+480s; the original 482s fallback supplies no
+grace. Invalid, unsupported, late or wrong-owner/serial frames are ignored.
+Caller/document/context retirement, unsubscribe or a new explicit Enable ends
+that observer; helper restart never rebinds it.
+
+Subscribed Main documents receive optional native 32-hex operationId on
+admission and one closed host.enableFinished event after reply delivery, only
+to that original current listener. Preparation failure projects exactly
+{code:enablePreparationFailed,category,effect:unknown,recovery:nativeRecovery}.
+CLI prints one terminal JSON/exit 1, or
+{code:enableCompleted,effect:unknown,recovery:refresh}/exit 0 for a supported
+completed worker path. Category-free failed/lost results keep outcomeUnknown.
+Older peers keep fallback. Completion never means Ready, Off or cleanup.
+GUI retains its translated failure reason while starting a genuinely
+post-terminal Status read. Earlier reads/events cannot confirm state; only a
+fresh known applicable status can display Off/Ready. Native Status completions
+from an earlier terminal epoch return unavailable; newer-epoch waiters start or
+join a fresh Status after the older slot completes. Same-epoch coalescing, the
+waiter cap, mutation ownership and native timeouts remain unchanged.
+Unavailable/off absence evidence stays unconfirmed. Read failure cannot erase a known failure or enable
+unsafe actions. Check current status is read-only. Close drops component
+observation; reopening rereads without replay.
 Post-dispatch loss/timeout/cancellation/late reply stays unknown with one dispatch
 and no automatic retry. Polkit denial means permissionDenied and no effect.
 Client paste/confirmation reservations and mutation/Status busy rules remain.

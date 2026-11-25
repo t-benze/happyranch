@@ -129,10 +129,28 @@ class HostBridge:
         self.busy, self.host_status_waiters = False, None
         self.subscribers = {}
         self.host_timer, self.host_snapshot, self.host_sequence = None, None, 0
+        self.host_epoch = 0
         self.invite_sheet = None
         self.invite_owner = None
         self.operation_owner = None
         self.cancel_request = None
+        self.enable_observer = self.enable_owner = None
+        self.enable_subscribers = {}
+
+    def subscribe_enable(self, owner: object, *, current: object, emit: object) -> None:
+        if owner in self.enable_subscribers:
+            return
+        self.enable_subscribers[owner] = dict(current=current, emit=emit)
+
+    def unsubscribe_enable(self, owner: object) -> None:
+        self.enable_subscribers.pop(owner, None)
+        self.retire_enable(owner)
+
+    def retire_enable(self, owner: object) -> None:
+        if self.enable_owner is owner:
+            if self.enable_observer is not None:
+                self.enable_observer.close()
+            self.enable_observer = self.enable_owner = None
 
     def subscribe(self, owner: object, *, current: object, visible: object, emit: object, window: object) -> None:
         if owner in self.subscribers:
@@ -143,7 +161,7 @@ class HostBridge:
         # Every new subscriber receives a complete observation, even unchanged.
         if self.host_snapshot is not None or self.busy or not visible():
             self.GLib.idle_add(self.send_host_event, self.subscribers[owner],
-                self.host_snapshot or self.protocol.host_unavailable())
+                self.host_snapshot or self.protocol.host_unavailable(), self.host_epoch)
         if visible() and not self.busy:
             self.host_request("Status", lambda *_: None, owner=owner, current=current, window=window)
 
@@ -153,6 +171,7 @@ class HostBridge:
             self.GLib.source_remove(self.host_timer)
             self.host_timer = None
     def detach(self, owner: object) -> None:
+        self.unsubscribe_enable(owner)
         self.unsubscribe(owner)
         if self.operation_owner is owner and self.cancel_request is not None:
             self.cancellable.cancel()
@@ -177,10 +196,11 @@ class HostBridge:
     def observe_host(self, snapshot: dict) -> None:
         self.host_snapshot = snapshot
         for subscriber in tuple(self.subscribers.values()):
-            self.GLib.idle_add(self.send_host_event, subscriber, snapshot)
+            self.GLib.idle_add(self.send_host_event, subscriber, snapshot, self.host_epoch)
 
-    def send_host_event(self, subscriber: dict, snapshot: dict) -> bool:
-        if not any(item is subscriber for item in self.subscribers.values()) or not subscriber["current"]():
+    def send_host_event(self, subscriber: dict, snapshot: dict, epoch: int) -> bool:
+        if (epoch != self.host_epoch
+                or not any(item is subscriber for item in self.subscribers.values()) or not subscriber["current"]()):
             return False
         self.host_sequence += 1
         data = dict(version=1, sequence=self.host_sequence,
@@ -192,10 +212,10 @@ class HostBridge:
         return False
 
     def host_request(self, method: str, finish: object, *, owner: object,
-                     current: object, window: object) -> None:
+                     current: object, window: object, terminal_current: object = None) -> None:
         if self.busy:
             if method == "Status" and self.host_status_waiters is not None and len(self.host_status_waiters) < 8:
-                self.host_status_waiters.append(finish)
+                self.host_status_waiters.append((self.host_epoch, finish, owner, current, window))
             else:
                 finish(None, "busy")
             return
@@ -216,8 +236,11 @@ class HostBridge:
             model.host_prompt_document = owner
         waiters = [] if method == "Status" else None
         self.host_status_waiters = waiters
+        observation_epoch = self.host_epoch
 
         def complete(*outcome: object) -> None:
+            if method == "Status" and observation_epoch != self.host_epoch:
+                outcome = (None, "unavailable")
             self.busy, self.operation_owner = False, None
             self.cancel_request = None
             self.active_operation = None
@@ -226,8 +249,16 @@ class HostBridge:
             self.host_status_waiters = None
             finish(*outcome)
             if waiters is not None:
-                for waiter in waiters:
-                    waiter(*outcome)
+                for epoch, waiter, waiter_owner, waiter_current, waiter_window in waiters:
+                    if epoch == observation_epoch:
+                        waiter(*outcome)
+                    elif waiter_current():
+                        # Keep the older operation's slot and deadline intact;
+                        # a newer epoch needs its own native observation.
+                        self.host_request("Status", waiter, owner=waiter_owner,
+                                          current=waiter_current, window=waiter_window)
+                    else:
+                        waiter(None, "unavailable")
                 waiters.clear()
 
         self.cancel_request = lambda: complete(None, "outcomeUnknown", "unknown", "nativeRecovery")
@@ -237,9 +268,29 @@ class HostBridge:
                 raise ValueError("retired invite document")
             self.show_invite(text, expires_at, deadline, window)
 
+        subscriber = self.enable_subscribers.get(owner) if method == "Enable" else None
+        context_current = terminal_current or current
+        if method == "Enable":
+            if self.enable_observer is not None:
+                self.enable_observer.close()
+            self.enable_owner = owner
+        def terminal_live() -> bool:
+            return (context_current() and self.enable_owner is owner
+                    and (subscriber is None or self.enable_subscribers.get(owner) is subscriber
+                         and subscriber["current"]()))
+        def terminal(raw: str) -> None:
+            if terminal_live():
+                self.host_epoch += 1  # Reads started before terminal knowledge cannot publish fresh state.
+                self.host_snapshot = self.protocol.host_unavailable()
+                subscriber["emit"](raw)
+        def observe(snapshot: dict) -> None:
+            if observation_epoch == self.host_epoch:
+                self.observe_host(snapshot)
         _contract.request_host(self, method, complete,
-                               lambda: self.active_operation is operation and current(), self.observe_host,
-                               display_invite=show_invite)
+                               lambda: self.active_operation is operation and current(), observe,
+                               display_invite=show_invite,
+                               terminal=terminal if subscriber is not None else None,
+                               terminal_current=terminal_live if method == "Enable" else None)
 
     def show_invite(self, text: str, expires_at: int, deadline: float, window: object) -> None:
         if self.invite_sheet is not None:
