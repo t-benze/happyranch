@@ -212,11 +212,12 @@ def _child_landed_terminal_report_in_view(orch: "Orchestrator", child: "TaskReco
             return None
     # Use the ordinary consumer's parser for both structured decisions and
     # its supported legacy JSON-in-output_summary representation.
-    if Orchestrator._parse_next_step(orch, report).action in ('workflow_start', 'workflow_control', 'workflow_wait'):
-        # This genuine callback requests workflow work; it does not finish the
-        # source task, including while readiness refuses allocation. Its own
-        # waiting/closeout owner alone may release the source. Parent/Pause/
-        # summary readers must not mistake the transport result for terminality.
+    if Orchestrator._parse_next_step(orch, report).action in (
+        'delegate', 'fanout', 'parallel', 'workflow_start', 'workflow_control', 'workflow_wait',
+    ):
+        # Delegation/fanout opens more work; wait for the child's terminal row.
+        # Workflow callbacks likewise leave release to their waiting/closeout
+        # owner, including while readiness refuses allocation.
         return None
     if workflow_dependency_state(orch._db, child.id) in ('waiting', 'unavailable'):
         return None

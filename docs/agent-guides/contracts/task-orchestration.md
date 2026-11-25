@@ -910,7 +910,11 @@ The callback and native settlement contracts above remain unchanged.
 A completed start/control/wait callback is not dispatch-terminal evidence,
 including the ordinary consumer's legacy JSON-in-`output_summary` representation
 when `decision_json` is absent. Both readers use that same decision parser. The
-shared reader serves parent chain/fanout release, delegated Pause eligibility
+same exclusion applies to `delegate`, `fanout` and its `parallel` alias: those
+reports open more work, so a manager child stays behind its enclosing fanout or
+chain barrier until its task row is terminal. A later genuine final `done`
+retains the ordinary completion-status-lag fast path.
+The shared reader serves parent chain/fanout release, delegated Pause eligibility
 and child-wait projection. A wait-set initiator's unfinished owned runs/ordinary
 dependencies also prevent early release; unavailable workflow evidence is
 nonterminal and projects unavailable. Readers do not acknowledge, enqueue or

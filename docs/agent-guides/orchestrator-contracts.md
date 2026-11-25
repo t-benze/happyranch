@@ -4349,6 +4349,13 @@ See [THR-356](../specs/2026-11-13-task-model-reasoning-overrides.md).
 
 A manager can declare a multi-leg workflow in one `delegate` decision using `NextStep.then` and optional per-leg `expect_verdict` gates. The orchestrator auto-advances to the next leg when a child terminates completed with a matching verdict. Since THR-211, auto-advance may also fire from a child whose completion report has durably landed while its task row still reads `in_progress` (the completion-status-lag window) — the recognition is session-safe and at-most-once, and the chain gate consumes the exact authenticated `(task_id, assigned_agent, current_session_id)` report so a newer unrelated row can never advance or clear the chain.
 
+Landed `delegate`, `fanout` and `parallel` reports open more work and are not
+dispatch-terminal. A manager in a `then` leg therefore does not advance the
+enclosing chain on delegation; its real terminal transition rechecks the chain.
+A later authenticated final `done` retains the completion-status-lag fast path.
+The same shared rule holds fanout joins, delegated Pause eligibility and
+child-wait reads behind a manager branch that is still working.
+
 A parked chain owner is never admitted for its own session mid-chain, including
 when the current leg's report has landed but its session has not finalized.
 Rediscovery and final session admission share this exclusion. A dequeued owner
