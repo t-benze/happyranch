@@ -53,14 +53,21 @@ def screenshot_png(width: int = 760, height: int = 560) -> bytes:
             + chunk(b'IDAT', zlib.compress((b'\0' + b'\xff' * (width * 3)) * height)) + chunk(b'IEND', b''))
 
 
-def screenshot_files(folder: Path, locale: str) -> list[dict]:
+def screenshot_files(folder: Path, locale: str, with_scroll: bool = False) -> list[dict]:
     records = []
     for theme in ('light', 'dark'):
         for scale in (100, 200):
             for dialog in ('settings', 'connection', 'main'):
                 name = f'{locale}-{theme}-{scale}-{dialog}.png'
                 (folder / name).write_bytes(screenshot_png())
-                records.append(dict(event='screenshot', name=name))
+                records.append(dict(event='screenshot', name=name, theme=theme, webTheme=theme))
+                if scale == 200 and with_scroll:
+                    for number in (1, 2):
+                        name = f'{locale}-{theme}-{scale}-{dialog}-scroll-{number}.png'
+                        (folder / name).write_bytes(screenshot_png())
+                        records.append(dict(event='screenshot', name=name, theme=theme, webTheme=theme))
+                    records.append(dict(event='capture_complete', locale=locale, theme=theme, textPercent=scale,
+                        dialog=dialog, scrollCaptures=2, scrollers=[dict(index=0, pages=2, step=300, maximum=600)]))
     return records
 
 
@@ -76,6 +83,17 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                 self.assertEqual(base64.b64decode(row['data']), screenshot_png())
                 self.assertEqual(row['sha256'], hashlib.sha256(screenshot_png()).hexdigest())
                 self.assertEqual((row['width'], row['height']), (760, 560))
+            for number in (1, 2):
+                (root / f'en-dark-200-connection-scroll-{number}.png').write_bytes(screenshot_png())
+            scrolled = screenshot_archive(root, 'en', {('dark', 'connection'): 2})
+            self.assertEqual(len(scrolled), 14)
+            self.assertEqual([row['scroll_capture'] for row in scrolled if row['name'].startswith('en-dark-200-connection')], [0, 1, 2])
+            self.assertEqual(base64.b64decode(scrolled[-2]['data']), screenshot_png())
+            (root / 'en-dark-200-connection-scroll-1.png').unlink()
+            with self.assertRaises(OSError):
+                screenshot_archive(root, 'en', {('dark', 'connection'): 2})
+            with self.assertRaises(ValueError):
+                screenshot_archive(root, 'en', {('dark', 'connection'): 17})
             image = root / 'en-light-100-settings.png'
             for invalid in ('missing', 'alias', 'oversize', 'dimensions'):
                 with self.subTest(invalid=invalid):
@@ -94,17 +112,30 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                     image.write_bytes(screenshot_png())
 
     def test_process_collection_requires_both_locales_complete_receipts_and_zero_exit(self) -> None:
-        for failure in ('none', 'missing-file', 'missing-receipt', 'nonzero'):
+        for failure in ('none', 'missing-file', 'missing-receipt', 'nonzero', 'missing-completion',
+                        'duplicate-completion', 'missing-scroll', 'scroll-gap', 'duplicate-receipt', 'wrong-theme'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder); downloads = root / 'downloads'; downloads.mkdir()
                 calls = []
                 def command(argv: list[str], *args: object, **kwargs: object) -> tuple[int, bytes]:
                     locale = argv[-1].removeprefix('dialogs-'); calls.append(locale)
-                    rows = screenshot_files(downloads, locale)
+                    rows = screenshot_files(downloads, locale, with_scroll=True)
                     if locale == 'zh' and failure == 'missing-file':
-                        (downloads / rows[-1]['name']).unlink()
+                        (downloads / f'{locale}-dark-100-main.png').unlink()
                     if locale == 'zh' and failure == 'missing-receipt':
-                        rows.pop()
+                        rows = [row for row in rows if row.get('name') != f'{locale}-dark-100-main.png']
+                    if locale == 'zh' and failure == 'missing-completion':
+                        rows = [row for row in rows if row.get('event') != 'capture_complete']
+                    if locale == 'zh' and failure == 'duplicate-completion':
+                        rows.append(next(row for row in rows if row['event'] == 'capture_complete').copy())
+                    if locale == 'zh' and failure == 'missing-scroll':
+                        (downloads / f'{locale}-light-200-connection-scroll-1.png').unlink()
+                    if locale == 'zh' and failure == 'scroll-gap':
+                        rows = [row for row in rows if row.get('name') != f'{locale}-light-200-connection-scroll-1.png']
+                    if locale == 'zh' and failure == 'duplicate-receipt':
+                        rows.append(rows[0].copy())
+                    if locale == 'zh' and failure == 'wrong-theme':
+                        next(row for row in rows if row.get('theme') == 'dark' and row['event'] == 'screenshot')['webTheme'] = 'light'
                     Path(argv[-3]).write_text('\n'.join(json.dumps(row) for row in rows) + '\n')
                     return (1 if locale == 'zh' and failure == 'nonzero' else 0), b''
                 section = {}
@@ -113,7 +144,8 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                                     root, time.monotonic() + 10, section, downloads)
                 self.assertEqual(calls, ['en', 'zh'])
                 self.assertEqual(section['dialogs']['status'], 'PASS' if failure == 'none' else 'FAIL')
-                self.assertEqual(len(section['dialogs']['screenshots']), 12 if failure == 'missing-file' else 24)
+                incomplete = failure in ('missing-file', 'missing-scroll', 'missing-completion', 'duplicate-completion')
+                self.assertEqual(len(section['dialogs']['screenshots']), 24 if incomplete else 48)
 
 
 class ColdClientCompositionEvidenceTests(unittest.TestCase):

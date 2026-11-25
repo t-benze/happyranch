@@ -13,6 +13,14 @@ from build, spec, Vite, originals preparation, archive and independent verificat
 They supply no shipping tokens, IPC, mandatory receipts or emitted-closure gates.
 Retained historical source is nonshipping; it is not invoked indirectly.
 
+`Package.swift` keeps testable app code in the `HappyRanchApp` library target.
+Both test targets depend only on libraries. The `HappyRanchLauncher` executable
+target contains the sole `@main` shim, which awaits the library's `AppEntry.main()`.
+The explicit executable product remains `HappyRanchApp`, preserving `swift run`,
+build-app/suite binary lookup, bundle identity and `Bundle.main` resource paths.
+Tests never link the executable entrypoint; no runtime test-environment detection
+is used. Every existing native test and parameter invocation remains enabled.
+
 ## Founder release command
 
 Use a clean reviewed checkout, the existing private signing configuration from
@@ -102,24 +110,33 @@ still runs the full unfiltered XCTest + Swift Testing workload and transport
 qualification. It additionally launches the same product's existing qualifier
 in `dialogs-en` and `dialogs-zh` modes (40 seconds each, within the existing
 2,100-second suite deadline). Each captures Settings, Connection and Main with
-the web viewport, in light/dark and 100%/200% web text: **24 PNGs,
-each 760×560**. The qualifier checks the rendered destination, focused dialog
-and locale. WebKit's page snapshot is composited with AppKit's native window
+the web viewport, in light/dark and 100%/200% web text: **24 top PNGs,
+each 760×560**, plus overlapping scroll captures at 200% for every visible
+vertical scrolling pane, through its bottom. It drives the shipping
+`happyranch.theme` storage key, `data-theme` attribute and storage listener,
+and checks the applied theme before every snapshot. The qualifier checks the
+rendered destination, focused dialog and locale. WebKit's page snapshot is composited with AppKit's native window
 frame; no screen-recording permission is requested. Only the commissioned
 qualification process sets its isolated launch language/theme/text size.
 
-`probe.json.app_scheme.dialogs` retains each PNG's fixed name, dimensions,
+`probe.json.app_scheme.dialogs` retains each PNG's closed name, dimensions,
 locale/theme/text percentage, byte count, SHA256 and `base64` data through the
 existing JSON artifact collection. Decode `data` and verify `bytes`/`sha256`.
 The collector refuses missing/aliased/oversized files, wrong PNG dimensions,
-missing/duplicate receipts or a nonzero process exit. Bounds are 2 MiB per PNG
-and 8 MiB per locale. Complete locale captures survive a failure in the other
+missing/duplicate receipts, missing 200% completion records, wrong web theme or
+a nonzero process exit. Scroll names append `-scroll-N` before `.png`; completion
+records retain pane ranges/page counts, and image receipts retain actual offsets.
+Bounds are eight scrolling panes and sixteen additional captures per 200% view,
+2 MiB per PNG and 8 MiB per locale, within the unchanged 40-second process cap.
+Exhaustion fails qualification rather than claiming complete content.
+Complete locale captures survive a failure in the other
 locale; an incomplete locale is FAIL. No Jenkins job/configuration changed.
 
 Maker native compilation, XCTest/Swift Testing, screenshot capture, native
 layout/focus/VoiceOver and managed/DIY live traffic are **NOT RUN on Linux**.
-PR #1863 has **6/9 builds used**, with one diagnostic and two final-QA builds
-remaining under Founder THR-387 seq146. The maker runs no Mac/Jenkins build. The existing portable command below
+PR #1863 has **7/9 builds used** (72–78), with build 8 reserved for final QA after
+round-8 exact-head APPROVE and build 9 reserved. Exceeding nine needs Founder.
+The maker runs no Mac/Jenkins build. The existing portable command below
 checks collector failures and the shipping JavaScript event/retirement seam;
 it does not establish native acceptance. `MainDialogTests` adds real WebKit
 drop/subscription/retirement coverage to the
@@ -1124,7 +1141,8 @@ uses invocation-local Go/npm/Swift/temp caches, and builds Go c-archive, frozen
 daemon+CLI, Vite web and Swift app with ordinary tools. Iconutil produces the
 app icon. Runtime skill/catalog resources and their originals remain bundled.
 
-Sparkle **2.10.1** is a direct binary target used only by HappyRanchApp. The
+Sparkle **2.10.1** is a direct binary dependency of the HappyRanchApp library,
+linked into the HappyRanchApp executable product through HappyRanchLauncher. The
 official `Sparkle-for-Swift-Package-Manager.zip` is pinned in `Package.swift`
 with SHA256 `4c2e48a3e50ebcc2c88a58a4c7264a1a99c3c31857ce754357afb9cdb323022a`;
 SwiftPM checks the download. No git package dependency or `Package.resolved`

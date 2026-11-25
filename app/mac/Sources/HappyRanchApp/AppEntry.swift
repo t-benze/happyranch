@@ -5,10 +5,9 @@ import Darwin
 
 /// Branch before constructing SwiftUI/AppDelegate: CLI never starts a daemon,
 /// opens a connection window, or controls an existing GUI/CLI invocation.
-@main
-enum AppEntry {
+public enum AppEntry {
     @MainActor
-    static func main() async {
+    public static func main() async {
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments.first?.hasPrefix("--qualify-app-scheme") == true {
             guard arguments.first == "--qualify-app-scheme" else { exit(2) }

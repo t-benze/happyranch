@@ -1743,10 +1743,21 @@ legacy phase-strip/compatibility cutover remain separate.
 
 The existing `SUITE=app-scheme` collector additionally captures native 760×560
 Settings, Connection and Main web-viewport PNGs at 100%/200% text,
-EN/ZH and light/dark (24 total). Same-product qualifier processes check the
-visible/focused dialog and locale, then combine WebKit snapshots with the native
+EN/ZH and light/dark (24 top views plus overlapping 200% scroll views through
+each scrolling pane's bottom). Same-product qualifier processes drive the shipping
+`happyranch.theme`/`data-theme` mechanism and storage listener, check the applied
+theme, visible/focused dialog and locale, then combine WebKit snapshots with the native
 AppKit frame. Bounded PNG base64/digests and exact capture receipts are embedded
-in `probe.json.app_scheme.dialogs`; no Jenkins job/config change is required.
+in `probe.json.app_scheme.dialogs`, including contiguous scroll images, pane/offset
+and completion receipts. Eight panes/sixteen extra images per 200% view, 2 MiB
+per image, 8 MiB per locale and the existing 40-second process cap bound capture;
+incomplete/over-budget capture fails. No product layout change or Jenkins
+job/config change is included.
+The Mac Package keeps testable `HappyRanchApp` code in a library target; native
+tests depend on libraries, and only the `HappyRanchLauncher` executable target
+owns `@main`. Its explicit product remains `HappyRanchApp`. The split unfiltered
+XCTest/Swift Testing runs and timeout diagnostics remain unchanged; no runtime
+test-environment sniff or test removal/filter/skip is introduced.
 A required portless cold-client qualification uses the real ContentView/
 AppDelegate composition and production resource lookup; it checks focused
 Settings/Connection from explicit menu actions, absence of a native toolbar, no

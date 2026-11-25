@@ -304,7 +304,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         for theme in ["light", "dark"] {
             window.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
             for scale in [100, 200] {
-                _ = try await view.callAsyncJavaScript("document.documentElement.style.fontSize = size; localStorage.setItem('theme', theme); document.documentElement.classList.toggle('dark', theme === 'dark');",
+                _ = try await view.callAsyncJavaScript("document.documentElement.style.fontSize = size; localStorage.setItem('happyranch.theme', theme); document.documentElement.setAttribute('data-theme', theme); window.dispatchEvent(new StorageEvent('storage', {key: 'happyranch.theme', newValue: theme, storageArea: localStorage}));",
                     arguments: ["size": "\(scale)%", "theme": theme], in: nil, contentWorld: .page)
                 for dialog in ["settings", "connection", "main"] {
                     if dialog == "main" {
@@ -328,27 +328,87 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
                     let localeReady = try await view.callAsyncJavaScript("return document.documentElement.lang.toLowerCase().startsWith(expected);",
                         arguments: ["expected": locale], in: nil, contentWorld: .page)
                     guard localeReady as? Bool == true else { throw AppAPIError.unavailable }
+                    // Reset each real scrolling pane before the original top capture.
+                    let planValue = try await view.callAsyncJavaScript(#"""
+                        const root = document.scrollingElement;
+                        const candidates = [...new Set([root, ...document.querySelectorAll('*')])].filter(Boolean);
+                        for (const e of candidates) {
+                            if (e.scrollHeight > e.clientHeight) e.scrollTop = 0;
+                        }
+                        window.__hrCaptureScrollers = candidates.filter(e => {
+                            const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+                            return e.clientHeight > 0 && e.scrollHeight > e.clientHeight + 1 &&
+                                (e === root || /auto|scroll/.test(s.overflowY)) && s.visibility !== 'hidden' &&
+                                r.width > 0 && r.bottom > 0 && r.top < innerHeight;
+                        });
+                        return window.__hrCaptureScrollers.map((e, index) => {
+                            const r = e.getBoundingClientRect();
+                            const viewport = Math.min(e.clientHeight, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+                            const step = Math.max(1, Math.floor(viewport * .75));
+                            const maximum = e.scrollHeight - e.clientHeight;
+                            return {index, step, maximum, pages: Math.ceil(maximum / step)};
+                        });
+                        """#, arguments: [:], in: nil, contentWorld: .page)
+                    guard let plan = planValue as? [[String: Any]], plan.count <= 8 else { throw AppAPIError.unavailable }
                     try await Task.sleep(for: .milliseconds(200)) // settle dialog/theme animation
-                    let page = try await view.takeSnapshot(configuration: nil)
-                    frame.layoutSubtreeIfNeeded()
-                    guard let native = frame.bitmapImageRepForCachingDisplay(in: frame.bounds),
-                          let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 760, pixelsHigh: 560,
-                            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
-                          let graphics = NSGraphicsContext(bitmapImageRep: bitmap) else { throw AppAPIError.unavailable }
-                    frame.cacheDisplay(in: frame.bounds, to: native)
-                    NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = graphics
-                    native.draw(in: NSRect(x: 0, y: 0, width: 760, height: 560))
-                    page.draw(in: view.convert(view.bounds, to: frame))
-                    NSGraphicsContext.restoreGraphicsState()
-                    guard let png = bitmap.representation(using: .png, properties: [:]), png.count <= 2 * 1024 * 1024 else { throw AppAPIError.unavailable }
-                    let name = "\(locale)-\(theme)-\(scale)-\(dialog).png"
-                    try png.write(to: downloads.appendingPathComponent(name), options: .withoutOverwriting)
-                    log.write("screenshot", ["name": name, "width": 760, "height": 560, "textPercent": scale,
-                        "locale": locale, "theme": theme, "dialog": dialog])
+                    let prefix = "\(locale)-\(theme)-\(scale)-\(dialog)"
+                    try await captureDialogPage(view, frame: frame, name: "\(prefix).png", locale: locale,
+                        theme: theme, scale: scale, dialog: dialog, scroll: [:])
+                    var count = 0
+                    if scale == 200 {
+                        for pane in plan {
+                            guard let index = pane["index"] as? Int, let pages = pane["pages"] as? Int,
+                                  let step = pane["step"] as? Int, let maximum = pane["maximum"] as? Int,
+                                  pages > 0, count + pages <= 16 else { throw AppAPIError.unavailable }
+                            for page in 1...pages {
+                                let scroll = try await view.callAsyncJavaScript(#"""
+                                    const panes = window.__hrCaptureScrollers;
+                                    for (const e of panes) e.scrollTop = 0;
+                                    const e = panes[index], requested = Math.min(page * step, maximum);
+                                    e.scrollTop = requested;
+                                    await new Promise(requestAnimationFrame);
+                                    await new Promise(requestAnimationFrame);
+                                    if (Math.abs(e.scrollTop - requested) > 1) throw Error('capture scroll incomplete');
+                                    return {scrollIndex: index, scrollPage: page, scrollTop: e.scrollTop,
+                                        scrollMaximum: maximum, viewportHeight: e.clientHeight};
+                                    """#, arguments: ["index": index, "page": page, "step": step,
+                                        "maximum": maximum], in: nil, contentWorld: .page)
+                                guard let scroll = scroll as? [String: Any] else { throw AppAPIError.unavailable }
+                                count += 1
+                                try await captureDialogPage(view, frame: frame, name: "\(prefix)-scroll-\(count).png",
+                                    locale: locale, theme: theme, scale: scale, dialog: dialog, scroll: scroll)
+                            }
+                        }
+                        log.write("capture_complete", ["locale": locale, "theme": theme, "textPercent": scale,
+                            "dialog": dialog, "scrollCaptures": count, "scrollers": plan])
+                    }
                 }
             }
         }
+    }
+
+    private func captureDialogPage(_ view: WKWebView, frame: NSView, name: String, locale: String,
+                                   theme: String, scale: Int, dialog: String, scroll: [String: Any]) async throws {
+        let themeReady = try await view.callAsyncJavaScript("return localStorage.getItem('happyranch.theme') === expected && document.documentElement.getAttribute('data-theme') === expected;",
+            arguments: ["expected": theme], in: nil, contentWorld: .page)
+        guard themeReady as? Bool == true else { throw AppAPIError.unavailable }
+        let page = try await view.takeSnapshot(configuration: nil)
+        frame.layoutSubtreeIfNeeded()
+        guard let native = frame.bitmapImageRepForCachingDisplay(in: frame.bounds),
+              let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 760, pixelsHigh: 560,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let graphics = NSGraphicsContext(bitmapImageRep: bitmap) else { throw AppAPIError.unavailable }
+        frame.cacheDisplay(in: frame.bounds, to: native)
+        NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = graphics
+        native.draw(in: NSRect(x: 0, y: 0, width: 760, height: 560))
+        page.draw(in: view.convert(view.bounds, to: frame))
+        NSGraphicsContext.restoreGraphicsState()
+        guard let png = bitmap.representation(using: .png, properties: [:]), png.count <= 2 * 1024 * 1024 else { throw AppAPIError.unavailable }
+        try png.write(to: downloads.appendingPathComponent(name), options: .withoutOverwriting)
+        let fields: [String: Any] = ["name": name, "width": 760, "height": 560, "textPercent": scale,
+            "locale": locale, "theme": theme, "webTheme": theme, "dialog": dialog]
+        log.write("screenshot", fields.merging(scroll) { _, new in new })
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         navigationFailed(webView, stage: "provisional")

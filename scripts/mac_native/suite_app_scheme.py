@@ -189,28 +189,35 @@ def qualify_cold_client(argv: list[str], env: dict[str, str], scratch: Path, dea
         result['command_error'] = type(error).__name__
 
 
-def screenshot_archive(folder: Path, locale: str) -> list[dict[str, Any]]:
-    """Fixed names, bounded native PNGs in the already collected probe JSON."""
+def screenshot_archive(folder: Path, locale: str,
+                       scroll_counts: dict[tuple[str, str], int] | None = None) -> list[dict[str, Any]]:
+    """Closed names, bounded top/scroll PNGs in the existing probe JSON."""
     if locale not in ('en', 'zh'):
         raise ValueError('unsupported capture locale')
     rows = []
+    scroll_counts = scroll_counts or {}
     for theme in ('light', 'dark'):
         for scale in (100, 200):
             for dialog in ('settings', 'connection', 'main'):
-                name = f'{locale}-{theme}-{scale}-{dialog}.png'
-                descriptor = os.open(folder / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                with os.fdopen(descriptor, 'rb') as source:
-                    info = os.fstat(source.fileno())
-                    if not stat.S_ISREG(info.st_mode) or not 33 <= info.st_size <= PNG_CAP:
-                        raise ValueError('screenshot size/type')
-                    raw = source.read(PNG_CAP + 1)
-                if (len(raw) != info.st_size or len(raw) > PNG_CAP
-                        or raw[:16] != b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
-                        or struct.unpack('>II', raw[16:24]) != (760, 560)):
-                    raise ValueError('screenshot PNG dimensions/header')
-                rows.append(dict(name=name, locale=locale, theme=theme, text_percent=scale, dialog=dialog,
-                    width=760, height=560, encoding='base64', bytes=len(raw),
-                    sha256=hashlib.sha256(raw).hexdigest(), data=base64.b64encode(raw).decode('ascii')))
+                count = scroll_counts.get((theme, dialog), 0) if scale == 200 else 0
+                if type(count) is not int or not 0 <= count <= 16:
+                    raise ValueError('screenshot scroll count')
+                for number in range(count + 1):
+                    suffix = f'-scroll-{number}' if number else ''
+                    name = f'{locale}-{theme}-{scale}-{dialog}{suffix}.png'
+                    descriptor = os.open(folder / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    with os.fdopen(descriptor, 'rb') as source:
+                        info = os.fstat(source.fileno())
+                        if not stat.S_ISREG(info.st_mode) or not 33 <= info.st_size <= PNG_CAP:
+                            raise ValueError('screenshot size/type')
+                        raw = source.read(PNG_CAP + 1)
+                    if (len(raw) != info.st_size or len(raw) > PNG_CAP
+                            or raw[:16] != b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
+                            or struct.unpack('>II', raw[16:24]) != (760, 560)):
+                        raise ValueError('screenshot PNG dimensions/header')
+                    rows.append(dict(name=name, locale=locale, theme=theme, text_percent=scale, dialog=dialog,
+                        scroll_capture=number, width=760, height=560, encoding='base64', bytes=len(raw),
+                        sha256=hashlib.sha256(raw).hexdigest(), data=base64.b64encode(raw).decode('ascii')))
     if sum(row['bytes'] for row in rows) > 8 * 1024 * 1024:
         raise ValueError('screenshot archive size')
     return rows
@@ -234,15 +241,38 @@ def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadlin
         # Keep completed files even if a later capture/process fails. A partial
         # locale is never accepted as complete or silently truncated.
         try:
-            capture['screenshots'].extend(screenshot_archive(downloads, locale))
-            receipts = [event for event in read_events(events) if event.get('event') == 'screenshot']
+            evidence = read_events(events)
+            completions = [event for event in evidence if event.get('event') == 'capture_complete']
+            row['completion_events'] = completions
+            counts = {}
+            for event in completions:
+                key = (event.get('theme'), event.get('dialog'))
+                count = event.get('scrollCaptures')
+                panes = event.get('scrollers')
+                if (key in counts or key[0] not in ('light', 'dark') or key[1] not in ('settings', 'connection', 'main')
+                        or event.get('locale') != locale or event.get('textPercent') != 200
+                        or type(count) is not int or not 0 <= count <= 16 or not isinstance(panes, list)
+                        or len(panes) > 8 or any(not isinstance(pane, dict) or pane.get('index') != index
+                            or type(pane.get('pages')) is not int or pane['pages'] <= 0
+                            for index, pane in enumerate(panes))
+                        or sum(pane['pages'] for pane in panes) != count):
+                    raise ValueError('incomplete scroll capture receipt')
+                counts[key] = count
+            if len(counts) != 6:
+                raise ValueError('missing scroll capture completion')
+            images = screenshot_archive(downloads, locale, counts)
+            capture['screenshots'].extend(images)
+            receipts = [event for event in evidence if event.get('event') == 'screenshot']
             row['events'] = receipts
-            expected = {image['name'] for image in capture['screenshots'] if image['locale'] == locale}
-            if row['exit_code'] == 0 and len(receipts) == 12 and {event.get('name') for event in receipts} == expected:
+            expected = {image['name']: image for image in images}
+            if (row['exit_code'] == 0 and len(receipts) == len(expected)
+                    and {event.get('name') for event in receipts} == set(expected)
+                    and all(event.get('webTheme') == event.get('theme') == expected[event['name']]['theme']
+                        for event in receipts)):
                 row['status'] = 'PASS'
         except (OSError, ValueError, RuntimeError) as error:
             row['capture_error'] = type(error).__name__
-    if all(row['status'] == 'PASS' for row in capture['processes']) and len(capture['screenshots']) == 24:
+    if all(row['status'] == 'PASS' for row in capture['processes']):
         capture['status'] = 'PASS'
 
 
