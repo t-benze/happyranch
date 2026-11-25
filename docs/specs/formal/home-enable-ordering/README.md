@@ -11,7 +11,7 @@ ordering and unchanged old-intent/Ready refusal paths. No dependency or CI trigg
 | Renew | HomeActivationOwner.perform -> HomeLiveConfigOwner.renew_policy -> _renew_policy_locked(fresh_auth=True), under the existing activation flock. Results abstract ordinary refusal, valid renewed policy and a no-op leaving expiry. |
 | Start / RefuseCurrent | Live-config validation and strict _common require_current before the effect's daemon_reload/enable/start. headscale represents its first newly issued service effect, including reload. |
 | EnableTimer / StartTarget | Existing managed_services re-stamp and timer-before-target ordering. |
-| oldIntent / ready | Backend recovery and attempted interrupted Enable never replay effects; Ready Enable inspects only. |
+| oldIntent / ready | Backend recovery and attempted interrupted Enable never replay effects; Ready Enable never replays activation; ordinary start is covered by HomeRetry. |
 
 Invariants cover renewal before any start, strict currentness at start, zero starts
 on renewal failure, no renewal in non-forward paths, no writes for non-shipped
@@ -34,3 +34,28 @@ with HomeEnable and each config. Keep jar/state directories outside this repo.
 current must exit 0. negative-late-renewal must violate NoStartBeforeRenewal;
 negative-noncurrent must violate StartRequiresCurrent (exit 12). Actual results
 are recorded in RESULTS.md; finite model results do not establish live acceptance.
+
+
+## Retry, ordinary start and serving-only Disable
+
+`HomeRetry.tla` / `retry.cfg` complements the original renewal-order model.
+Enable requires current renewed policy. Interrupted no-mint/live-key/expired-key
+journals recover without replay; live keys must expire before rollover. Ready
+ordinary start changes runtime only, preserving mint count and receipt. Disable
+accepts active/inactive/activating/deactivating exact owned units (exact custody
+and fresh authentication are abstract admission assumptions). Each invocation
+resets ack; already-revoked generations require serving revoke again. Failed
+stop retains ready and admits another Disable. Unavailable revoke still stops;
+cleanup retains trust and enters partial with no modeled exit, matching the
+unresolved B4 case. Successful cleanup alone admits fresh Enable, with expired
+policy requiring renewal. The inherited HomeEnable model owns detailed group 5
+renewal-before-start and timer-before-target ordering.
+
+Run HomeRetry with retry.cfg using the pinned jar/command above. Invariants check
+no mint on ready, same-invocation revoke plus stop for Off, retained trust after
+failed revoke and current policy before ready. Two mint operations and two
+Disable invocations bound the state space. No liveness/fairness, native custody,
+authentication, socket ownership or installed-host proof is implied. A failed
+ordinary start/joined verifier stutters with a named refusal. Receipt alone is
+not runtime availability. The never-ready-after-failed-stop requirement was
+withdrawn in TASK-19228; the model intentionally retains ready.
