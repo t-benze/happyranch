@@ -173,7 +173,7 @@ export function DefinitionDetailDialog({
             <Button variant="ghost" onClick={onArchive}>{t('settings.taskAttributes.detail.archive')}</Button>
           )}
           {settled && editability && offerEdit && anyEditAllowed(editability) && (
-            <Button variant="outline" onClick={onEdit}>{t('settings.taskAttributes.detail.edit')}</Button>
+            <Button variant="outline" className="bg-surface-raised" onClick={onEdit}>{t('settings.taskAttributes.detail.edit')}</Button>
           )}
         </div>
       </DialogContent>
