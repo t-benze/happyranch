@@ -398,6 +398,7 @@ function DefinitionRow({
           <Button
             variant="outline"
             size="sm"
+            className="bg-surface-raised"
             disabled={paused || edit.state !== 'enabled'}
             aria-busy={edit.state === 'pending' || undefined}
             aria-describedby={describedBy}
