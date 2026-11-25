@@ -189,9 +189,17 @@ export function TaskAttributesSection(): JSX.Element {
       )}
       {definitions.length === 0 ? (
         <div className="border-border-default bg-surface-raised flex flex-col items-center gap-2 rounded-lg border px-4 py-10 text-center">
-          <Tag size={24} aria-hidden="true" className="text-text-muted" />
-          <h3 className="text-text-primary font-semibold">{t('settings.taskAttributes.list.emptyTitle')}</h3>
+          <span className="bg-accent-soft text-accent-text grid size-10 place-items-center rounded-md">
+            <Tag size={18} aria-hidden="true" />
+          </span>
+          <h3 className="font-display text-text-primary text-lg">{t('settings.taskAttributes.list.emptyTitle')}</h3>
           <p className="text-text-secondary max-w-md text-sm">{t('settings.taskAttributes.list.emptyBody')}</p>
+          {top?.can_create && (
+            <Button size="sm" className="mt-2" disabled={stale} onClick={(e) => open({ kind: 'create' }, e.currentTarget)}>
+              <Plus aria-hidden="true" />
+              {t('settings.taskAttributes.list.create')}
+            </Button>
+          )}
         </div>
       ) : (
         <>
