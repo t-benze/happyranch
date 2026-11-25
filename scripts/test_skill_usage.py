@@ -144,15 +144,95 @@ class SkillUsageTests(unittest.TestCase):
         self.record(self.capture("codex", [started, self.command("item-relative", f"cat {relative}")]))
         self.assertEqual(self.rows(), [])
 
+        # Even an existing workspace skill must not override an explicit cwd.
         expected.parent.mkdir(parents=True)
         expected.write_text("Synthetic expected skill\n")
+        for field in ("cwd", "workdir"):
+            for value in (str(other), "relative-directory", None, 42, ""):
+                with self.subTest(field=field, value=value):
+                    event = self.command("item-explicit", f"cat {relative}")
+                    event["item"][field] = value
+                    self.record(self.capture("codex", [started, event]))
+                    self.assertEqual(self.rows(), [])
+        event = self.command("item-event-cwd", f"cat {relative}")
+        event["cwd"] = str(other)
+        self.record(self.capture("codex", [started, event]))
+        self.assertEqual(self.rows(), [])
+
         read = subprocess.run(["cat", str(expected)], cwd=other, capture_output=True, text=True, check=True)
         self.assertEqual(read.stdout, "Synthetic expected skill\n")
-        self.record(self.capture("codex", [started, self.command("item-absolute", f"cat {expected}")]))
+        event = self.command("item-absolute", f"cat {expected}")
+        event["item"]["workdir"] = str(other)
+        self.record(self.capture("codex", [started, event]))
         with closing(sqlite3.connect(self.db.db_path)) as conn, conn:
             self.assertEqual(conn.execute("SELECT skill_slug,skill_source,custom_skill_id,signal_kind "
                                           "FROM skill_use_events").fetchall(),
                              [("start-task", "custom", "CS-original", "opened_skill_file")])
+
+    def test_codex_named_read_variants(self) -> None:
+        relative = ".agents/skills/start-task/SKILL.md"
+        expected = self.workspace / relative
+        expected.parent.mkdir(parents=True)
+        expected.write_text("Synthetic skill\n")
+        commands = [
+            f"cat {relative}", f"cat -- './{relative}'", f"/usr/bin/zsh -lc 'cat {relative}'",
+            f"sed -n '1,20p' {relative}", f"sed -n '1,20p;40,60p' {relative}",
+            f"sed -n -e '1,20p' -e '40p' -- {relative}",
+            f"head {relative}", f"head -n 20 {relative}", f"head -n20 {relative}",
+            f"head -20 {relative}", f"head --lines=20 {relative}",
+            f"head -c 20 {relative}", f"tail --bytes=20 {relative}",
+            f"tail {relative}", f"tail -n +20 {relative}", f"tail -20 {relative}",
+            f"tail -n20 {relative}", f"nl {relative}", f"nl -ba {relative}", f"nl -b a {relative}",
+        ]
+        started = {"type": "thread.started", "thread_id": "provider-current"}
+        for index, command in enumerate(commands):
+            with self.subTest(command=command):
+                event = self.command(f"item-read-{index}", command)
+                if index % 2:
+                    event["item"]["workdir"] = str(self.workspace)
+                capture = self.capture("codex", [started, event])
+                self.record(capture)
+                self.record(capture)
+        with closing(sqlite3.connect(self.db.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT skill_slug,signal_kind,source_ref FROM skill_use_events ORDER BY id").fetchall(),
+                             [("start-task", "opened_skill_file", f"codex:item-read-{i}") for i in range(len(commands))])
+
+    def test_codex_multi_slug_command_identity_and_dedup(self) -> None:
+        for root, slug in ((".agents", "start-task"), (".claude", "start-task"), (".agents", "make-worktree")):
+            skill = self.workspace / root / "skills" / slug / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("Synthetic skill\n")
+        capture = self.capture("codex", [
+            {"type": "thread.started", "thread_id": "provider-current"},
+            self.command("item-multiple", "cat .agents/skills/start-task/SKILL.md "
+                         ".agents/skills/make-worktree/SKILL.md .claude/skills/start-task/SKILL.md "
+                         ".agents/skills/start-task/SKILL.md"),
+        ])
+        self.assertEqual([(s.slug, s.source_ref) for s in usage.parse_skill_use(capture, "provider-current")],
+                         [("start-task", "codex:item-multiple"), ("make-worktree", "codex:item-multiple")])
+        self.record(capture)
+        self.record(capture)
+        with closing(sqlite3.connect(self.db.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT skill_slug,signal_kind,source_ref FROM skill_use_events ORDER BY id").fetchall(),
+                             [(s, "opened_skill_file", "codex:item-multiple") for s in ("start-task", "make-worktree")])
+
+    def test_codex_search_listing_and_shell_mentions_do_not_count(self) -> None:
+        path = str(self.workspace / ".agents/skills/start-task/SKILL.md")
+        commands = [f"rg -n name {path}", f"grep name {path}", f"ls {path}",
+                    f"find {self.workspace} -name SKILL.md", f"echo {path}",
+                    f"cat {path} | head -20", f"false; cat {path}", f"true && cat {path}",
+                    f"cat # {path}", f"cat $(echo {path})", f"cat {path} > out",
+                    f"sed -n '1e cat {path}' {path}", f"sed -n '1,20w {path}' {path}",
+                    f"head -n 0 {path}", f"tail -f {path}", "cat r5/start-task/SKILL.md",
+                    "cat .agents/skills/*/SKILL.md", "cat .agents/skills/../start-task/SKILL.md",
+                    "cat .agents/skills/missing/SKILL.md"]
+        started = {"type": "thread.started", "thread_id": "provider-current"}
+        for index, command in enumerate(commands):
+            with self.subTest(command=command):
+                self.record(self.capture("codex", [started, self.command(f"item-negative-{index}", command)]))
+                with closing(sqlite3.connect(self.db.db_path)) as conn:
+                    self.assertEqual(conn.execute("SELECT skill_slug FROM skill_use_events WHERE source_ref=?",
+                                                  (f"codex:item-negative-{index}",)).fetchall(), [])
 
     def test_bad_sources_discard_entire_batch(self) -> None:
         valid = [self.user(self.prompt), self.skill("start-task", "tool-current")]

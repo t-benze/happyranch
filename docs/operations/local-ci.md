@@ -4147,6 +4147,10 @@ honest file-open signals, unsafe/malformed/missing/oversized input refusal,
 reparse idempotency, fail-safe observation and additive legacy upgrades without
 providers, daemon lifespan or live data. This venue is outside retired Python
 units, general integration and Product E2E and adds no required CI check.
+Codex cases include relative workspace reads, explicit cwd/workdir refusal,
+named multi-file reads with per-command slug deduplication, numeric sed ranges,
+head/tail/nl variants, and search/listing/shell-mention exclusions. Relative
+reads without cwd metadata use the documented workspace/existing-file inference.
 
 ## Focused execution-track recall checks
 
