@@ -14,6 +14,7 @@ from runtime.infrastructure.thread_archive import after_thread_invocations_commi
 # - db/threads.py: thread core, participants, messages, and invocations
 # - db/reply_delivery.py: reply delivery, recovery, breaker, and settlement
 # - db/reply_exchange.py: strict reply exchange lifecycle and projections
+# - db/task_attributes.py: custom task attribute definitions, values and immutable provenance
 # - db/schema.py: schema bootstrap, migrations, and their module-level closure
 # - db/authority_v1.py: v1 authority claims, fences, and continue envelopes
 # - db/authority_policy.py: authority policy release, activation, selector, and session binding
@@ -105,6 +106,7 @@ from runtime.infrastructure.db.tasks import (
 )
 from runtime.infrastructure.db.shared_artifacts import SharedArtifactsMixin
 from runtime.infrastructure.db.threads import ThreadsMixin
+from runtime.infrastructure.db.task_attributes import TaskAttributesMixin
 from runtime.infrastructure.db.thread_guests import ThreadGuestsMixin
 from runtime.infrastructure.db.reply_delivery import ReplyDeliveryMixin
 from runtime.infrastructure.db.reply_exchange import (
@@ -474,6 +476,7 @@ class Database(
     WorkspaceCleanupMixin,
     ThreadsMixin,
     ThreadGuestsMixin,
+    TaskAttributesMixin,
     ReplyDeliveryMixin,
     ReplyExchangeMixin,
     SchemaMixin,

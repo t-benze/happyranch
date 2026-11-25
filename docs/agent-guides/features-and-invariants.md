@@ -5056,3 +5056,13 @@ Unsupported-stop audit failure is retained without interrupting the original
 executor wait; the once-only dispatch and final native settlement report it.
 The stop limitation is captured for the original running generation before
 dispatch, and an ended attempt is not relabeled running during retry backoff.
+
+## Custom task attributes (THR-390, PR1 foundation)
+
+The per-org Database has additive custom-attribute definitions/versions, reserved
+historical keys, revision-checked current values, immutable admission snapshots
+and append-only value events. Native-type validation, first-use structural
+freeze, archive write blocking and explicit provenance/history states are
+documented in [the PR1 spec](../specs/2026-11-25-custom-task-attributes.md).
+Store APIs are present; routes, creation wiring, CLI and UI remain later work.
+No effort/complexity definitions or defaults are configured by PR1.
