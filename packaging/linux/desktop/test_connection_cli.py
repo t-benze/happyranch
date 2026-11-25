@@ -66,6 +66,7 @@ class Bus:
         self.early = False
         self.hold, self.held = False, []
         self.next_serial = 17
+        self.unique_name, self.reply_owner = ":1.42", ":1.100"
 
     def queue(self, callback: object) -> None:
         if self.hold:
@@ -74,7 +75,7 @@ class Bus:
             GLib.idle_add(lambda: (callback(), False)[1])
 
     def get_unique_name(self) -> str:
-        return ":1.42"
+        return self.unique_name
 
     def signal_subscribe(self, *args: object) -> int:
         self.next_handle += 1
@@ -123,8 +124,8 @@ class Bus:
             raw, error = result
             incoming = (message.new_method_error_literal(error, "synthetic private canary") if error
                         else message.new_method_reply())
-            incoming.set_sender(":1.100")
-            incoming.set_destination(":1.42")
+            incoming.set_sender(self.reply_owner)
+            incoming.set_destination(self.get_unique_name())
             if not error:
                 incoming.set_body(GLib.Variant("(s)", (raw,)))
             self.incoming(incoming)
@@ -191,17 +192,32 @@ class ConnectionCLITests(unittest.TestCase):
         good = terminal_frame()
         invalid = {
             "malformed": '{"category":"inventory"',
+            "lone_surrogate": good + "\ud800",
+            "non_object": '["inventory"]',
+            "trailing_value": good + '{"category":"inventory"}',
             "oversized": good + " " * (513 - len(good)),
             "multibyte": good + "界" * 200,
             "duplicate_key": good.replace('"category":', '"category":"inventory","category":'),
+            "duplicate_category_conflict": good.replace('"category":', '"category":"occupied-port","category":'),
+            "duplicate_method_equal": good.replace('"method":', '"method":"Enable","method":'),
+            "duplicate_method_conflict": good.replace('"method":', '"method":"Disable","method":'),
+            "duplicate_outcome_equal": good.replace('"outcome":', '"outcome":"failed","outcome":'),
+            "duplicate_outcome_conflict": good.replace('"outcome":', '"outcome":"completed","outcome":'),
             "duplicate_nested": good.replace('"serial":', '"serial":17,"serial":'),
+            "duplicate_serial_conflict": good.replace('"serial":', '"serial":18,"serial":'),
+            "duplicate_owner_equal": good.replace('"owner":', '"owner":":1.100","owner":'),
+            "duplicate_owner_conflict": good.replace('"owner":', '"owner":":1.101","owner":'),
             "wrong_type": terminal_frame(correlation=dict(serial=True, owner=":1.100")),
             "float_serial": terminal_frame(correlation=dict(serial=17.0, owner=":1.100")),
+            "string_serial": terminal_frame(correlation=dict(serial="17", owner=":1.100")),
             "zero_serial": terminal_frame(correlation=dict(serial=0, owner=":1.100")),
             "overflow_serial": terminal_frame(correlation=dict(serial=4294967296, owner=":1.100")),
+            "correlation_array": terminal_frame(correlation=[17, ":1.100"]),
             "extra_field": terminal_frame(message="SYNTHETIC_PRIVATE_CANARY"),
             "extra_correlation": terminal_frame(correlation=dict(serial=17, owner=":1.100", uid=1000)),
             "wrong_method": terminal_frame(method="Disable"),
+            "wrong_method_case": terminal_frame(method="enable"),
+            "wrong_method_invite": terminal_frame(method="IssueInvite"),
             "wrong_request": terminal_frame(correlation=dict(serial=18, owner=":1.100")),
             "wrong_owner": terminal_frame(correlation=dict(serial=17, owner=":1.101")),
             "completed_category": terminal_frame(outcome="completed"),
@@ -328,6 +344,128 @@ class ConnectionCLITests(unittest.TestCase):
                         context.iteration(False)
                     self.assertLessEqual(len(seen), 1)
                     self.assertEqual([call[3] for call in bus.calls], ["Enable"])
+                    host.close()
+
+    def test_enable_pending_original_owner_survives_name_release(self) -> None:
+        context = GLib.MainContext.default()
+        for pending in (False, True):
+            with self.subTest(pending_original_result=pending):
+                host, bus, admissions, events = native.Host(), Bus(), [], []
+                host.connection, bus.hold, bus.early = bus, True, True
+                bus.terminal_frames = [terminal_frame()] if pending else []
+                try:
+                    native.contract.request_host(host, "Enable", lambda *a: admissions.append(a),
+                        lambda: True, lambda _snapshot: None, terminal=events.append,
+                        terminal_current=lambda: True)
+                    # Receive the wire reply and optional result; keep the
+                    # send_message_with_reply completion callback queued.
+                    self.assertEqual(len(bus.held), 1)
+                    bus.held.pop(0)()
+                    while context.pending():
+                        context.iteration(False)
+                    observer = host.enable_observer
+                    self.assertEqual((admissions, events), ([], []))
+                    self.assertEqual(observer.pending is not None, pending)
+                    for old, new in ((":1.100", ""), ("", ":1.101")):
+                        changed = Gio.DBusMessage.new_signal("/org/freedesktop/DBus",
+                            "org.freedesktop.DBus", "NameOwnerChanged")
+                        changed.set_sender("org.freedesktop.DBus")
+                        changed.set_body(GLib.Variant("(sss)", ("ai.happyranch.RemoteAccess1", old, new)))
+                        bus.incoming(changed)
+                    while context.pending():
+                        context.iteration(False)
+                    bus.signal(terminal_frame(correlation=dict(serial=17, owner=":1.101")), sender=":1.101")
+                    while bus.held:
+                        bus.held.pop(0)()
+                    while context.pending():
+                        context.iteration(False)
+                    self.assertEqual(len(admissions), 1)
+                    self.assertEqual(len(events), 1 if pending else 0)
+                    if pending:
+                        event = json.loads(events[0])
+                        self.assertEqual(event["operationId"], admissions[0][0]["operationId"])
+                        self.assertEqual(event["error"], dict(code="enablePreparationFailed",
+                            category="inventory", effect="unknown", recovery="nativeRecovery"))
+                    else:
+                        self.assertEqual(admissions, [(None, "outcomeUnknown", "unknown")])
+                    bus.signal(terminal_frame())
+                    observer._expired()
+                    observer._lost()
+                    while context.pending():
+                        context.iteration(False)
+                    self.assertEqual((len(admissions), len(events)), (1, 1 if pending else 0))
+                    self.assertEqual([call[3] for call in bus.calls], ["Enable"])
+                    self.assertEqual((bus.filters, bus.subscriptions, bus.handlers), ({}, {}, {}))
+                finally:
+                    host.close()
+
+    def test_enable_new_attempt_rejects_old_result(self) -> None:
+        context = GLib.MainContext.default()
+        for next_owner in (":1.100", ":1.101"):
+            with self.subTest(next_owner=next_owner):
+                host, bus, admissions, events = native.Host(), Bus(), [], []
+                host.connection, bus.hold = bus, True
+                def drain() -> None:
+                    while bus.held:
+                        bus.held.pop(0)()
+                    while context.pending():
+                        context.iteration(False)
+                def dispatch() -> None:
+                    native.contract.request_host(host, "Enable", lambda *a: admissions.append(a),
+                        lambda: True, lambda _snapshot: None, terminal=events.append,
+                        terminal_current=lambda: True)
+                    drain()
+                try:
+                    dispatch()
+                    bus.signal(terminal_frame())
+                    drain()
+                    self.assertEqual(len(events), 1)
+                    first = host.enable_observer
+                    bus.reply_owner = next_owner
+                    dispatch()
+                    second_id = admissions[-1][0]["operationId"]
+                    self.assertNotEqual(second_id, json.loads(events[0])["operationId"])
+                    bus.signal(terminal_frame())  # Prior serial, possibly prior owner.
+                    drain()
+                    self.assertEqual(len(events), 1)
+                    bus.signal(terminal_frame(correlation=dict(serial=18, owner=next_owner)), sender=next_owner)
+                    drain()
+                    self.assertEqual(len(events), 2)
+                    self.assertEqual(json.loads(events[-1])["operationId"], second_id)
+                    self.assertEqual(json.loads(events[-1])["error"]["category"], "inventory")
+                    bus.signal(terminal_frame())
+                    first._lost()
+                    first._expired()
+                    drain()
+                    self.assertEqual((len(admissions), len(events)), (2, 2))
+                    self.assertEqual([call[3] for call in bus.calls], ["Enable", "Enable"])
+                    self.assertEqual((bus.filters, bus.subscriptions, bus.handlers), ({}, {}, {}))
+                    # A new same-UID caller has its own destination. Old bytes
+                    # cannot satisfy its subscription even with serial reuse.
+                    other, other_bus, other_events = native.Host(), Bus(), []
+                    other.connection, other_bus.hold = other_bus, True
+                    other_bus.unique_name = ":1.43"
+                    try:
+                        native.contract.request_host(other, "Enable", lambda *a: None,
+                            lambda: True, lambda _snapshot: None, terminal=other_events.append,
+                            terminal_current=lambda: True)
+                        while other_bus.held:
+                            other_bus.held.pop(0)()
+                        while context.pending():
+                            context.iteration(False)
+                        self.assertEqual(other_events, [])
+                        other_bus.signal(terminal_frame(), destination=":1.42")
+                        while context.pending():
+                            context.iteration(False)
+                        self.assertEqual(other_events, [])
+                        other_bus.signal(terminal_frame(), destination=":1.43")
+                        while context.pending():
+                            context.iteration(False)
+                        self.assertEqual(len(other_events), 1)
+                        self.assertEqual([call[3] for call in other_bus.calls], ["Enable"])
+                    finally:
+                        other.close()
+                finally:
                     host.close()
 
     def test_enable_consumes_production_trace(self) -> None:
