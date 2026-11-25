@@ -1,5 +1,49 @@
 # Current THR307 nightly disk sweeper contract
 
+## Temporary storage guidance and read-only visibility (THR-307 seq430)
+
+The permanent fix corrects literal payload guidance, not task launchers:
+`prepare_task_scratch` and `apply_task_scratch_environment` already give every
+built-in/custom task executor and task-owned job the workspace task-tmp root.
+Shell payload paths use `"${TMPDIR:-/tmp}/payload.json"`, with expansion before
+file-tool writes. Thread invocations without task binding explicitly retain the
+default environment: no per-invocation directory or cleanup is introduced.
+Browser profiles and database data belong under `$TMPDIR`. Check the full Unix
+socket path including its filename against the approximately 107-byte limit;
+above about 100 bytes use a short private socket-only directory, for example
+`/tmp/hr-<task>-s`, only if the task permits it, with exclusive mode-0700 creation
+and refusal of existing entries/symlinks. Data stays in task scratch. No shared
+system-temp cleanup is authorized.
+
+After candidate work, `sweep` adds advisory `system_tmp` to the nightly JSON.
+The root defaults to `/tmp` and is injectable for disposable acceptance fixtures.
+The scan uses fd-relative read-only operations, never follows symlinks (including
+root ancestors), never opens file/socket/FIFO contents and never changes entries,
+permissions or mtimes. A symlink root is unavailable, including a platform's
+`/tmp` alias; there is no automatic alias traversal. Directory reads can update
+access times through the OS; this is not an atime-preservation guarantee.
+Names containing a delimited numeric `TASK-<digits>` (case-insensitive) or an
+exact persisted sequential task ID (the shared `SEQUENTIAL_TASK_ID_PATTERN`)
+are counted; ids are attribution hints, not authoritative ownership joins. Multiple
+ids are listed with `task_id=null`. Nonmatching caches remain outside this report.
+
+Work admits at most 0.2 seconds within the unchanged sweep deadline, 16384 root
+entries, 8192 size entries globally, 2048 entries per tree and depth 32. The top
+10 are sorted by observed allocated bytes (inode blocks, including directories
+and symlinks themselves); hard links may be counted per entry. Counts are
+lower bounds unless `count_complete`; sizes are lower bounds unless
+`size_complete`. Top results are only among successfully sized observed entries,
+not a claim of global largest entries when truncated. Errors, cross-device
+directories and limits are report-only, with explicit reasons/status and
+`sized_count`. Exhausted sweep time skips observation; this never marks an
+otherwise complete sweep incomplete. A single admitted kernel call can still
+block until the unchanged outer worker deadline/termination, as with existing
+filesystem reads. Interrupted/early reports may say `not_observed`.
+
+No eligibility, active-task/root/job retention, one-hour floor, budget, schedule,
+legacy cleanup setting or deletion boundary changes. Tools that hard-code
+`/tmp` still slip through; this section supplies visibility only.
+
 Authority: Founder THR307 seq51 approves seq48, engineering seq49 and consultant
 seq50; original delivery root TASK-11518. Founder seq85/88 authorizes the
 three bounded corrections under continuation root TASK-11742; TASK-11518 remains

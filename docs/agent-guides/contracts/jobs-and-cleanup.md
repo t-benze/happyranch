@@ -1,5 +1,23 @@
 # Jobs, disk sweeping and workspace cleanup contracts
 
+## Temporary storage guidance and visibility (THR-307 seq430)
+
+Task-owned jobs already prepare the owning task's
+`<workspace>/.happyranch/task-tmp/<task_id>/` and set `TMPDIR`, `TMP`, and `TEMP`
+through `apply_task_scratch_environment`. Disposable callback examples use
+`"${TMPDIR:-/tmp}/payload.json"`; expand that expression before writing with a
+file tool. Thread invocations without a task binding keep their default
+environment, with no new directory or cleanup. See [temporary-storage guidance](../agent-executors-and-permissions.md#task-temporary-storage-thr-307-seq430)
+for browser profiles and the Unix socket length fallback.
+
+The nightly JSON report includes advisory `system_tmp` counts and top ten
+observed allocated sizes. It never makes `/tmp` a cleanup candidate. The scan
+runs after candidate work, admits at most 0.2 seconds inside the existing sweep
+deadline, and caps root entries, size entries, per-tree entries and depth.
+Partial/unavailable results do not change sweep outcome or eligibility. See
+the [sweeper spec](../../specs/2026-10-15-nightly-disk-sweeper.md#temporary-storage-guidance-and-read-only-visibility-thr-307-seq430)
+for exact limits and interpretation.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked

@@ -1,5 +1,12 @@
 # Features And Invariants
 
+Task sessions and task-owned jobs already use workspace task scratch through
+`TMPDIR`/`TMP`/`TEMP`. Disposable payload guidance uses `${TMPDIR:-/tmp}`;
+unbound thread invocations keep the default environment and gain no new cleanup.
+The nightly `system_tmp` report is bounded and read-only, including when tools
+hard-code `/tmp`; it changes no active-task/root/job retention rule. See
+[temporary storage](agent-executors-and-permissions.md#task-temporary-storage-thr-307-seq430).
+
 ## Older document-review transports removed — THR-336 msg157, P1a/P1b
 
 P1b removes POST `/workflows/reviews/human-receipts`, POST

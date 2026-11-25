@@ -57,7 +57,7 @@ Coding v3 has additive Founder Workflows → Setup Save and separate Allow/Disab
 ## Agent-side rules
 
 - Perform side effects through the `happyranch` CLI. The baseline allow rule for every agent is `happyranch`.
-- Completion and callback payloads must be single-line `happyranch ... --from-file <path>` invocations; shell separators and multiline continuations break permission matching. **The `--from-file` path MUST be absolute** (e.g. `/tmp/completion.json`), never relative — a relative path resolves against the agent's cwd and can litter stray files under the runtime orgs root.
+- Completion and callback payloads must be single-line `happyranch ... --from-file <path>` invocations; shell separators and multiline continuations break permission matching. **The `--from-file` path MUST be absolute** (e.g. `${TMPDIR:-/tmp}/completion.json`), never relative — a relative path resolves against the agent's cwd and can litter stray files under the runtime orgs root.
 - Keep task-only evidence, including routine/automatic screenshots, logs, QA evidence and review packets, in `output/<actual-task-id>/`, report that `output_dir`, and retrieve via `happyranch recall`; binary handoff uses a fresh task attachment.
 - Agents must not self-authorize with ambient credentials. Source delivery never authorizes live migration, deployment, restart, role assignment, activation or cleanup; those need separate explicit authority.
 

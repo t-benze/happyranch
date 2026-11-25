@@ -5,6 +5,11 @@ description: Use this skill before any git commit, git checkout, or file edit in
 
 # make-worktree
 
+Use `$TMPDIR` for disposable payloads and browser profiles (shell fallback:
+`${TMPDIR:-/tmp}`); linked worktrees still belong only in the canonical slot
+below. Keep database data under `$TMPDIR` too; Unix socket path limits and the
+permitted short socket-only fallback are documented in the start-task skill.
+
 Per Claude Code convention, worktrees live inside the repo at `.claude/worktrees/<task_id>/` and use a branch named `task/<task_id>`. The read-only review recipe below may detach only after normal guard setup on that branch.
 
 ## When to invoke

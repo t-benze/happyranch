@@ -4,6 +4,9 @@ description: Use when you need to create a scheduled Todo for yourself from expl
 ---
 
 
+Payload paths use `${TMPDIR:-/tmp}`. Expand it to an absolute path before a
+file-tool write, and keep the shell command path quoted.
+
 ## Current names and permanent automation IDs
 
 Fresh prompts may show current Name · ID for this turn. Use the permanent ID
@@ -56,7 +59,7 @@ the skill body is discoverability only — it does not bypass server validation.
 ## The single-line callback
 
 ```bash
-happyranch schedules create --org {ORG_SLUG} --from-file /tmp/schedule-<task_id>.json
+happyranch schedules create --org {ORG_SLUG} --from-file "${TMPDIR:-/tmp}/schedule-<task_id>.json"
 ```
 
 Callback writes MUST be single-line and use `--from-file` with a pre-written
@@ -223,7 +226,7 @@ daemon-restart recovery.
 
 **Context:** The founder says "follow up on TASK-4000 in 48 hours."
 
-Write `/tmp/schedule-TASK-4317.json`:
+Write `${TMPDIR:-/tmp}/schedule-TASK-4317.json`:
 
 ```json
 {
@@ -246,7 +249,7 @@ Write `/tmp/schedule-TASK-4317.json`:
 > **Do NOT conduct a live schedule create** — this is a template.
 
 ```bash
-happyranch schedules create --org happyranch --from-file /tmp/schedule-TASK-4317.json
+happyranch schedules create --org happyranch --from-file "${TMPDIR:-/tmp}/schedule-TASK-4317.json"
 ```
 
 ### Example 2 — Saturday market update (weekly)
@@ -254,7 +257,7 @@ happyranch schedules create --org happyranch --from-file /tmp/schedule-TASK-4317
 **Context:** The founder says "send me a market update every Saturday
 at 09:00 Shanghai time."
 
-Write `/tmp/schedule-weekly-market.json`:
+Write `${TMPDIR:-/tmp}/schedule-weekly-market.json`:
 
 ```json
 {
@@ -278,7 +281,7 @@ Write `/tmp/schedule-weekly-market.json`:
 > `normalized_brief` must reflect reality.
 
 ```bash
-happyranch schedules create --org happyranch --from-file /tmp/schedule-weekly-market.json
+happyranch schedules create --org happyranch --from-file "${TMPDIR:-/tmp}/schedule-weekly-market.json"
 ```
 
 ### Example 3 — fortnightly Tuesday/Thursday report, ending after six successful dispatches (recurring)
@@ -308,7 +311,7 @@ this exact commitment and phase. Let the daemon calculate the first instant.
 ```
 
 ```bash
-happyranch schedules create --org happyranch --from-file /tmp/schedule-fortnightly-report.json
+happyranch schedules create --org happyranch --from-file "${TMPDIR:-/tmp}/schedule-fortnightly-report.json"
 ```
 
 ## v2 boundaries — what is NOT included

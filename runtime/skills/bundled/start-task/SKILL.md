@@ -51,6 +51,18 @@ description: Use this skill at the start of every task. Parses task_id, session_
 
 4. **Plan and execute.** Treat `role_guidance` as your primary instruction when present; otherwise treat `brief` as the full instruction. If repo writes are needed, invoke the **make-worktree** skill first.
 
+   Task sessions and task-owned jobs already set `TMPDIR`, `TMP`, and `TEMP` to
+   `<workspace>/.happyranch/task-tmp/<task_id>/`. Put disposable payloads, database
+   data, and browser profiles under `$TMPDIR`; resolve `${TMPDIR:-/tmp}` before
+   using a file tool, and quote it in shell commands. Thread invocations without
+   a task binding keep the default environment; no per-invocation directory or
+   new cleanup is created. For Postgres/other Unix sockets, check the full socket
+   pathname (including its filename): the limit is about 107 bytes. If it would
+   exceed about 100 bytes, keep data under `$TMPDIR` and use a short, private,
+   socket-only directory such as `/tmp/hr-<task>-s` only when that path is permitted
+   by the task; create it exclusively with mode 0700, never reuse an existing
+   directory or follow a symlink. This grants no shared-temp cleanup authority.
+
    Follow applicable task and role instructions for verification and review.
    Report incomplete work and blockers with concrete evidence, and use the
    daemon's supported completion and decision actions.
@@ -239,8 +251,9 @@ description: Use this skill at the start of every task. Parses task_id, session_
    separators and only the first subcommand matches `Bash(happyranch:*)`.
 
    Create the payload with your executor's file tool at an absolute writable
-   path, preferring `<workspace>/output/<task_id>/completion.json`. `/tmp` is
-   optional when writable and permitted by the task environment. Use this shape:
+   path, preferring `<workspace>/output/<task_id>/completion.json`. For disposable
+   payloads use `${TMPDIR:-/tmp}` (expand it before writing),
+   subject to the task environment's path restrictions. Use this shape:
 
    ```json
    {

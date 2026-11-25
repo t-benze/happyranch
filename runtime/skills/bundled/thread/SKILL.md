@@ -5,6 +5,11 @@ description: Use this skill when the orchestrator invokes you for thread partici
 
 # thread
 
+Payload examples use `${TMPDIR:-/tmp}`: expand it before writing with a file
+tool and quote the resulting shell path. Thread invocations without a task
+binding keep the default environment, including an unset `TMPDIR`; no new
+per-invocation directory or cleanup is created.
+
 You've been invoked because something happened on a thread (THR-NNN). The
 available prior history is in your prompt, along with a note explaining WHY you were
 invoked AND an `invocation_token` that authorizes this single turn. Read the
@@ -136,12 +141,12 @@ turn.
 
 ### Reply
 
-Write `/tmp/thread-reply-<thread_id>-<seq>.json`:
+Write `${TMPDIR:-/tmp}/thread-reply-<thread_id>-<seq>.json`:
 {"thread_id": "<id>", "invocation_token": "<token>",
  "speaker": "<your permanent agent ID>", "body_markdown": "...", "in_response_to_seq": <N>}
 
 Then single-line:
-happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json
+happyranch threads reply --org <slug> --thread-id <id> --from-file "${TMPDIR:-/tmp}/thread-reply-<id>-<seq>.json"
 
 `body_markdown` renders as Markdown. Use **actual newline characters** and
 valid Markdown (blank lines, list items, hard breaks) for visual line breaks —
@@ -164,36 +169,36 @@ attachment store and are NOT visible to the rest of the org.
 
 **Default path (thread-scoped):** use `--attach` on reply/send/compose:
 
-    happyranch threads reply --org <slug> --thread-id <id> --from-file /tmp/thread-reply-<id>-<seq>.json --attach /tmp/file.ext
+    happyranch threads reply --org <slug> --thread-id <id> --from-file "${TMPDIR:-/tmp}/thread-reply-<id>-<seq>.json" --attach "${TMPDIR:-/tmp}/file.ext"
 
 This uploads the file to the thread's private store and includes an
 `attachment_id` ref in the payload. Compose attachments are sent as
 multipart form data and stored thread-scoped by default. Recipients
 list and download using their invocation token for proof:
 
-Write `/tmp/att-list-<thread_id>.json`:
+Write `${TMPDIR:-/tmp}/att-list-<thread_id>.json`:
 ```json
 {"thread_id": "<id>", "agent": "<your permanent agent ID>", "invocation_token": "<token>"}
 ```
 Then:
 
-    happyranch threads attachments list --org <slug> --from-file /tmp/att-list-<id>.json
+    happyranch threads attachments list --org <slug> --from-file "${TMPDIR:-/tmp}/att-list-<id>.json"
 
 Or inline (single-line):
 
     happyranch threads attachments list --org <slug> --thread-id <id> --agent <your permanent agent ID> --invocation-token <token>
 
-To download an attachment, write `/tmp/att-get-<thread_id>.json`:
+To download an attachment, write `${TMPDIR:-/tmp}/att-get-<thread_id>.json`:
 ```json
 {"thread_id": "<id>", "attachment_id": "<att-id>", "agent": "<your permanent agent ID>", "invocation_token": "<token>"}
 ```
 Then:
 
-    happyranch threads attachments get --org <slug> --from-file /tmp/att-get-<id>.json --output /tmp/file.ext
+    happyranch threads attachments get --org <slug> --from-file "${TMPDIR:-/tmp}/att-get-<id>.json" --output "${TMPDIR:-/tmp}/file.ext"
 
 Or inline:
 
-    happyranch threads attachments get --org <slug> --thread-id <id> <attachment-id> --agent <your permanent agent ID> --invocation-token <token> --output /tmp/file.ext
+    happyranch threads attachments get --org <slug> --thread-id <id> <attachment-id> --agent <your permanent agent ID> --invocation-token <token> --output "${TMPDIR:-/tmp}/file.ext"
 
 The founder (web UI / bearer token) may also list/download without these
 proofs. Agent callers must provide both `agent` and `invocation_token`.
@@ -212,8 +217,8 @@ and decision attachments; never use Shared Artifacts as an ownership workaround.
 For a persistent deliverable, pre-upload with complete metadata (exactly one of
 `--task TASK-ID` or `--thread THR-ID`):
 
-    happyranch artifacts put /tmp/report.pdf --agent <your permanent agent ID> --thread THR-ID --purpose "Final reusable report" --retention default --name <artifact-name> --org <slug>
-    happyranch artifacts put /tmp/design.zip --agent <your permanent agent ID> --task TASK-ID --purpose "Design source" --retention reference --reason "Source for planned revisions" --name <artifact-name> --org <slug>
+    happyranch artifacts put "${TMPDIR:-/tmp}/report.pdf" --agent <your permanent agent ID> --thread THR-ID --purpose "Final reusable report" --retention default --name <artifact-name> --org <slug>
+    happyranch artifacts put "${TMPDIR:-/tmp}/design.zip" --agent <your permanent agent ID> --task TASK-ID --purpose "Design source" --retention reference --reason "Source for planned revisions" --name <artifact-name> --org <slug>
 
 Then include the artifact reference in your reply payload:
 
@@ -228,7 +233,7 @@ routine evidence. Reference-class sharing uses the metadata-complete put above.
 
 Recipients download shared-artifact attachments with:
 
-    happyranch artifacts get <artifact-name> --generation 1 --output /tmp/report.pdf --org <slug>
+    happyranch artifacts get <artifact-name> --generation 1 --output "${TMPDIR:-/tmp}/report.pdf" --org <slug>
 
 Default / design-reference grants are 90 / 180 days; reference needs a named
 owner and reason. Renew/restore requires stated continuing use and a new expiry
@@ -243,12 +248,12 @@ existing payloads, subject to availability and explainable lifecycle responses.
 
 ### Decline
 
-Write `/tmp/thread-decline-<thread_id>-<seq>.json`:
+Write `${TMPDIR:-/tmp}/thread-decline-<thread_id>-<seq>.json`:
 {"thread_id": "<id>", "invocation_token": "<token>",
  "speaker": "<your permanent agent ID>", "reason": "...", "in_response_to_seq": <N>}
 
 Then:
-happyranch threads decline --org <slug> --thread-id <id> --from-file /tmp/thread-decline-<id>-<seq>.json
+happyranch threads decline --org <slug> --thread-id <id> --from-file "${TMPDIR:-/tmp}/thread-decline-<id>-<seq>.json"
 
 Decline when:
 - Another participant has already covered what you'd say — restating wastes
@@ -269,7 +274,7 @@ self-only for workers and managers. If the action belongs to someone else,
 surface it in your reply and let the founder loop them in or open a task tree
 where manager delegation is available.
 
-Write `/tmp/thread-dispatch-<thread_id>.json`:
+Write `${TMPDIR:-/tmp}/thread-dispatch-<thread_id>.json`:
 ```json
 {"thread_id": "<id>", "invocation_token": "<token>",
  "dispatcher": "<your permanent agent ID>", "brief": "..."}
@@ -279,7 +284,7 @@ Write `/tmp/thread-dispatch-<thread_id>.json`:
 other target is rejected). `team` is optional and defaults to your team.
 
 Then:
-happyranch threads dispatch --org <slug> --thread-id <id> --from-file /tmp/thread-dispatch-<id>.json
+happyranch threads dispatch --org <slug> --thread-id <id> --from-file "${TMPDIR:-/tmp}/thread-dispatch-<id>.json"
 
 If the founder requests a model or effort (for example "use opus, high effort"),
 put `"model":"opus"` and `"reasoning_effort":"high"` in the self-dispatch JSON
@@ -317,7 +322,7 @@ Only `supersede` is supported; `continue` is retired and returns 410. Authority
 comes from the validated invocation, with `dispatcher` set to your permanent
 agent ID; do not supply a client-side actor.
 
-Write `/tmp/thread-resolve-escalation.json`:
+Write `${TMPDIR:-/tmp}/thread-resolve-escalation.json`:
 
 ```json
 {"task_id":"TASK-ID","decision":"supersede","rationale":"Authorized replacement for the escalation.","brief":"The successor task's authorized work.","invocation_token":"CURRENT_TOKEN","dispatcher":"<your permanent agent ID>"}
@@ -325,7 +330,7 @@ Write `/tmp/thread-resolve-escalation.json`:
 
 Submit on one line:
 
-    happyranch threads resolve-escalation --org ORG --thread-id THR-ID --from-file /tmp/thread-resolve-escalation.json
+    happyranch threads resolve-escalation --org ORG --thread-id THR-ID --from-file "${TMPDIR:-/tmp}/thread-resolve-escalation.json"
 
 `thread_id` may instead be supplied in the JSON body. The CLI forwards the body
 unchanged. The server rejects retired continuation-envelope keys and `continue`
@@ -370,7 +375,7 @@ loop handles delegation natively.
   thread turn with reply or decline. In that task's active task/session, use
   the compose procedure below: put the intended agent or team manager in
   the payload's `recipients`, then run
-  `happyranch threads compose --org ORG --task-id TASK-ID --session-id SID --from-file /tmp/thread-compose-handoff.json`.
+  `happyranch threads compose --org ORG --task-id TASK-ID --session-id SID --from-file "${TMPDIR:-/tmp}/thread-compose-handoff.json"`.
   The compose parser calls the destination flag `--recipients`; agent compose
   reads recipients from its JSON payload. A thread invocation token supplies
   no task/session binding. The recipient decides whether to self-dispatch work.
@@ -450,7 +455,7 @@ Requirements:
 
 ### Procedure
 
-1. Write `/tmp/thread-compose-<short-tag>.json`:
+1. Write `${TMPDIR:-/tmp}/thread-compose-<short-tag>.json`:
 
    {"composer": "<your permanent agent ID>",
     "subject": "<≤120 chars>",
@@ -465,7 +470,7 @@ Requirements:
 
 2. Single-line:
 
-   happyranch threads compose --org <slug> --task-id <TASK> --session-id <SID> --from-file /tmp/thread-compose-<tag>.json
+   happyranch threads compose --org <slug> --task-id <TASK> --session-id <SID> --from-file "${TMPDIR:-/tmp}/thread-compose-<tag>.json"
 
 3. Capture the returned `thread_id`. Mention it in your task completion
    summary so the founder can find it.
@@ -492,7 +497,7 @@ Use this when you are **already a participant** of an open thread and want to
 add a message to it from your current task session — without waiting to be
 re-invoked.
 
-Write `/tmp/thread-send.json`:
+Write `${TMPDIR:-/tmp}/thread-send.json`:
 
 ```json
 {"composer":"<your permanent agent ID>","body_markdown":"The substantive task update."}
@@ -500,7 +505,7 @@ Write `/tmp/thread-send.json`:
 
 Submit on one line:
 
-    happyranch threads send --org ORG --thread-id THR-ID --task-id TASK-ID --session-id SID --from-file /tmp/thread-send.json
+    happyranch threads send --org ORG --thread-id THR-ID --task-id TASK-ID --session-id SID --from-file "${TMPDIR:-/tmp}/thread-send.json"
 
 Bound `send` uses the shared task-session agent-message path also used by
 `POST /threads/{thread_id}/post-as-agent`; there is no `threads post-as-agent`

@@ -72,11 +72,11 @@ output cap from `runtime/models.py`.
 ## Submit
 
 1. Write the payload to an absolute task-owned scratch path, for example
-   `/tmp/job-<random>.json` (use workspace scratch if /tmp is unavailable).
+   `${TMPDIR:-/tmp}/job-<random>.json` (expand the variable before writing the file).
 2. Submit as a single line; `--from-file` is mandatory:
 
    ```bash
-   happyranch jobs submit --from-file /tmp/job-<random>.json --org <slug>
+   happyranch jobs submit --from-file "${TMPDIR:-/tmp}/job-<random>.json" --org <slug>
    ```
 
 3. Keep the returned `JOB-NNN` ID. HTTP 201 / CLI exit 0 means admission only,

@@ -5,6 +5,9 @@ description: Use this skill when asked mid-thread to reflect on your recent work
 
 # reflection
 
+Disposable payload examples use `${TMPDIR:-/tmp}`. Expand it to an absolute
+path before a file-tool write, and keep the shell command path quoted.
+
 Triggered on-demand when the founder asks you to "reflect" inside a thread turn. It produces a structured opening report and, when the founder is satisfied, persists learnings and optional KB entries directly — no endpoints, no transcript store, no task dispatch.
 
 ## Identity
@@ -66,10 +69,10 @@ When the founder indicates the reflection is done:
    Then call:
 
    ```bash
-   happyranch memory add --org {ORG_SLUG} --agent <your_agent_id> --from-file /tmp/mem-<slug>.yaml
+   happyranch memory add --org {ORG_SLUG} --agent <your_agent_id> --from-file "${TMPDIR:-/tmp}/mem-<slug>.yaml"
    ```
 
-3. **Identify KB-worthy material.** Prefer durable, cross-agent knowledge with an expected useful lifespan of at least 12 months; keep agent-private lessons in memory. Write `/tmp/kb-<slug>.md` with the four required YAML frontmatter fields and a markdown body:
+3. **Identify KB-worthy material.** Prefer durable, cross-agent knowledge with an expected useful lifespan of at least 12 months; keep agent-private lessons in memory. Write `${TMPDIR:-/tmp}/kb-<slug>.md` with the four required YAML frontmatter fields and a markdown body:
 
    ```markdown
    ---
@@ -85,7 +88,7 @@ When the founder indicates the reflection is done:
    Then call:
 
    ```bash
-   happyranch kb add --org {ORG_SLUG} --agent <your_agent_id> --from-file /tmp/kb-<slug>.md
+   happyranch kb add --org {ORG_SLUG} --agent <your_agent_id> --from-file "${TMPDIR:-/tmp}/kb-<slug>.md"
    ```
 
 4. **Post a final thread reply** summarizing outcomes: what was discussed, decisions reached, learnings/KB entries written. Use the same [thread reply contract](../thread/SKILL.md#reply), supplied invocation identity and absolute payload file, then end the turn. This replaces the lost transcript.

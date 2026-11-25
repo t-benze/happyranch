@@ -1,5 +1,22 @@
 # Local CI
 
+## Focused read-only system-temp visibility (THR-307 seq430)
+
+With the existing locked Python environment and task-owned `TMPDIR`, run:
+
+```bash
+python3 scripts/verify_disk_sweeper.py --cases 65 66
+```
+
+This extends the existing disposable sweeper driver, outside retired Python
+units and skipped general integration. The root is injected below freshly
+created task scratch; no system `/tmp` fixture is created or modified. C65
+observes real public sweep JSON, task-name attribution, bounded top sizes,
+symlink/FIFO handling and unchanged entries/content/modes/mtimes/ctimes. C66
+observes capped size walking, exhausted time, unavailable roots/reads and an
+unchanged successful sweep outcome. No daemon, provider, scheduled sweep or
+new CI trigger is run. Existing active-task/root/job keepers remain unchanged.
+
 ## Focused thread guest seats (THR-362 slice 1)
 
 ```bash

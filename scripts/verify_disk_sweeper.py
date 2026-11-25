@@ -6946,12 +6946,113 @@ def c64() -> dict:
         return dict(removed=True, nested_git_directory=True, non_worktree_gitfiles=3, socket_fifo='no endpoint I/O')
 
 
+def c65() -> dict:
+    """Public sweep JSON exposes bounded sizes without changing fixture temp storage."""
+    with fixture() as f:
+        root = f.base / 'system-tmp'; root.mkdir()
+        outside = f.base / 'outside'; outside.mkdir()
+        (outside / 'sentinel').write_bytes(b'outside' * 65536)
+        for number in range(1, 13):
+            (root / f'payload-TASK-{number}.json').write_bytes(b'x' * (number * 8192))
+        data = root / 'TASK-40-pg'; data.mkdir()
+        (data / 'data').write_bytes(b'd' * 262144)
+        (data / 'alias').symlink_to(outside, target_is_directory=True)
+        (root / 'TASK-50-link').symlink_to(outside, target_is_directory=True)
+        (root / 'TASK-51-broken').symlink_to(outside / 'missing')
+        os.mkfifo(root / 'TASK-52-fifo')
+        (root / 'task-60-profile').write_text('browser')
+        (root / 'TASK-80-TASK-81').write_bytes(b'a' * 131072)
+        sequential_id = 'TASK-SEQ-seq-visit-' + 'a' * 64
+        (root / f'payload-{sequential_id}.json').write_bytes(b's' * 114688)
+        (root / 'TASK-999oops').write_text('not a delimited id')
+        (root / 'executor-cache').mkdir()
+
+        def inventory() -> dict:
+            # Fixture-only no-follow entry/metadata/content comparison, including
+            # the external symlink target. Reads deliberately exclude atime.
+            saved = {}
+            for tree in (root, outside):
+                for path in (tree, *tree.rglob('*')):
+                    info = path.lstat()
+                    saved[str(path)] = (info.st_mode, info.st_ino, info.st_nlink,
+                        info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+                        path.read_bytes() if stat.S_ISREG(info.st_mode) else None)
+            return saved
+
+        before = inventory()
+        real_open = os.open
+        def read_only_open(path: str | os.PathLike[str], flags: int, *args: Any, **kwargs: Any) -> int:
+            assert flags & os.O_ACCMODE == os.O_RDONLY, ('write open', path, flags)
+            return real_open(path, flags, *args, **kwargs)
+        # This observes the actual collector; summary publication is outside
+        # the read-only open guard and the injected temp root.
+        with refuse_mutations(), patch.object(os, 'open', read_only_open):
+            observed = ds.observe_system_tmp(root, time.monotonic() + 5)
+        assert observed['status'] == 'complete' and observed['count_complete'], observed
+        assert observed['task_named_count'] == observed['sized_count'] == 19, observed
+        assert len(observed['top']) == 10, observed
+        assert observed['top'][0]['name'] == 'TASK-40-pg', observed
+        assert observed['top'][0]['task_id'] == 'TASK-40'
+        assert observed['top'][0]['allocated_bytes_observed'] < 300000, 'followed external symlink'
+        assert observed['top'][1]['task_ids'] == ['TASK-80', 'TASK-81']
+        assert observed['top'][1]['task_id'] is None
+        assert observed['top'][2]['task_id'] == sequential_id, observed
+        assert all(item['size_complete'] for item in observed['top']), observed
+        summary = f.base / 'summary.json'
+        report = ds.sweep([], time.monotonic() + 5, summary, dry_run=True,
+                          scheduled_date='fixture', revision='fixture', tmp_root=root)
+        assert report['system_tmp']['task_named_count'] == 19, report
+        assert json.loads(summary.read_text())['system_tmp'] == report['system_tmp']
+        assert ds._audit_payload(report, None, summary)['system_tmp'] == report['system_tmp']
+        assert report['outcome'] == 'complete' and report['orgs'] == [], report
+        assert inventory() == before, 'temp entries/content/mode/mtime/ctime changed'
+        return dict(count=19, top=10, symlinks='not followed', fifo='not opened',
+                    unchanged_entries_content_and_metadata=True, public_json=True)
+
+
+def c66() -> dict:
+    """Caps and unavailable temp reads remain advisory to the sweep outcome."""
+    with fixture() as f:
+        root = f.base / 'system-tmp'; root.mkdir()
+        large = root / 'TASK-1-large'; large.mkdir()
+        for number in range(2050):
+            (large / str(number)).touch()
+        limited = ds.observe_system_tmp(root, time.monotonic() + 5)
+        assert limited['status'] == 'partial' and limited['count_complete'], limited
+        assert limited['size_entries_observed'] == 2048 and 'size_entry_limit' in limited['reasons'], limited
+        assert limited['top'][0]['size_complete'] is False, limited
+        root_alias = f.base / 'tmp-alias'; root_alias.symlink_to(root, target_is_directory=True)
+        for target in (root_alias, f.base / 'missing'):
+            value = ds.observe_system_tmp(target, time.monotonic() + 5)
+            assert value['status'] == 'unavailable' and not value['count_complete'], value
+        expired = ds.observe_system_tmp(root, time.monotonic() - 1)
+        assert expired['reasons'] == ['deadline'] and expired['root_entries_observed'] == 0, expired
+        # A deterministic clock crosses the collector's own 0.2s ceiling.
+        with patch.object(ds.time, 'monotonic', side_effect=(10.0, 10.21)):
+            expired = ds.observe_system_tmp(root, 100.0)
+        assert expired['reasons'] == ['deadline'] and expired['size_entries_observed'] == 0, expired
+        real_stat = os.stat
+        def denied(path: str | os.PathLike[str], *args: Any, **kwargs: Any) -> os.stat_result:
+            if path == large.name and kwargs.get('dir_fd') is not None:
+                raise PermissionError('synthetic unreadable entry')
+            return real_stat(path, *args, **kwargs)
+        with patch.object(os, 'stat', denied):
+            unavailable = ds.observe_system_tmp(root, time.monotonic() + 5)
+        assert unavailable['status'] == 'partial' and unavailable['task_named_count'] == 1, unavailable
+        assert 'entry_unavailable' in unavailable['reasons'] and unavailable['top'] == [], unavailable
+        report = ds.sweep([], time.monotonic() + 5, f.base / 'summary.json', dry_run=True,
+                          scheduled_date='fixture', revision='fixture', tmp_root=root_alias)
+        assert report['system_tmp']['status'] == 'unavailable' and report['outcome'] == 'complete', report
+        return dict(per_tree_cap=2048, root_alias='refused', missing='unavailable',
+                    deadline='no reads admitted', read_error='report only', sweep_outcome='complete')
+
+
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     selection=parser.add_mutually_exclusive_group()
     selection.add_argument('--corrections-only', action='store_true', help='THR307seq117/134: C1-C7, S1-S5 (8-12) and per-org settlement (13); no historical/isolation cases')
     selection.add_argument('--correction-cases', type=int, nargs='+', choices=range(1, 14), help='select finite cases within the corrections lane')
-    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,65))
+    selection.add_argument('--cases',type=int,nargs='+',choices=range(1,67))
     selection.add_argument('--candidate-benchmark', action='store_true')
     parser.add_argument('--candidate-baseline', help='run selected cases against exact production commit')
     parser.add_argument('--benchmark-baseline', default='53391d91b0812a2ef6bd2e7126ea87c9d6991e7d')
@@ -7006,7 +7107,8 @@ if __name__=='__main__':
                          'Manual scheduled eligibility parity', 'Manual real-worker budget propagation', 'Manual reports do not count as nights',
                          'Manual founder route and CLI transport')
             purposes += ('Registered linked worktrees in scratch and located coverage', 'Uncertain scratch gitfiles fail closed', 'Seq194 non-worktree scratch remains disposable')
-            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47,c48,c49,c50,c51,c52,c53,c54,c55,c56,c57,c58,c59,c60,c61,c62,c63,c64),purposes),1):
+            purposes += ('Read-only temp inventory and public JSON', 'Temp inventory bounds and failure isolation')
+            for number,(fn,purpose) in enumerate(zip((c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47,c48,c49,c50,c51,c52,c53,c54,c55,c56,c57,c58,c59,c60,c61,c62,c63,c64,c65,c66),purposes),1):
                 if args.cases is None or number in args.cases:
                     if number in (3, 4):
                         RESULTS.append(dict(case=number, purpose=purpose, result='SUPERSEDED', reason='THR307 seq117 removed OS-process eligibility; historical source not executed'))
