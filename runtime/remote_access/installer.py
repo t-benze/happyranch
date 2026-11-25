@@ -336,6 +336,30 @@ class ManagedInstaller:
             raise InstallerError(str(self.root / relative)) from None
         return files
 
+    def _inventory_taildrop(self) -> tuple[str, ...]:
+        """Only the pinned tsnet home-node empty tree, including partial removal."""
+        relative = _STATE_DIRS[1] + "/files"
+        child = "happyranch-node-uid-1"
+        try:
+            with self._publication_parent(relative) as (parent, check):
+                with os.scandir(parent) as entries:
+                    first = next(entries, None)
+                    if first is not None and (first.name != child or next(entries, None) is not None):
+                        raise InstallerError("unknown Taildrop member")
+                present = first is not None
+                if os.fstat(parent).st_nlink != (3 if present else 2):
+                    raise InstallerError("Taildrop directory custody")
+                if present:
+                    with self._publication_parent(relative + "/" + child) as (leaf, check_leaf):
+                        with os.scandir(leaf) as entries:
+                            if next(entries, None) is not None or os.fstat(leaf).st_nlink != 2:
+                                raise InstallerError("Taildrop directory not empty")
+                        check_leaf()
+                check()
+                return (relative, relative + "/" + child) if present else (relative,)
+        except FileNotFoundError:
+            return ()
+
     def _inventory_units(
         self, connector: dict, *, removing_units: set[str] | None = None,
         observed_units: dict[str, str] | None = None,
@@ -639,8 +663,11 @@ class ManagedInstaller:
             ):
                 location = str(self.root / relative)
                 # State contents are never interpreted, replayed or copied.
-                state = self._inventory_files(relative, {name: (service, 0o600, None) for name in names})
+                state = self._inventory_files(relative, {name: (service, 0o600, None) for name in names},
+                    directories={"files"} if relative == _STATE_DIRS[1] else None)
                 paths.extend(str(self.root / relative / name) for name in state)
+                if relative == _STATE_DIRS[1]:
+                    paths.extend(str(self.root / path) for path in self._inventory_taildrop())
             for relative, entries in (
                 ("run/happyranch-connector", {name: (service, 0o600, True) for name in ("ingress.sock", "control.sock")}),
                 ("run/happyranch-tsnet-sidecar", {"health.json": (service, 0o644, False),
@@ -2571,6 +2598,8 @@ class ManagedInstaller:
                 if revoke_succeeded:
                     for path in state_paths:
                         members[path] = "file", self._service_owner, 0o600, None
+                    members["/" + _STATE_DIRS[1] + "/files/happyranch-node-uid-1"] = (
+                        "directory", self._service_owner, 0o700, None)
 
                 def entry(path: str, *, remove: bool = False) -> bool:
                     nonlocal partial
@@ -2642,15 +2671,19 @@ class ManagedInstaller:
 
                 def inventory() -> None:
                     # Shallow fixed custody only; never recurse into an unknown entry.
+                    taildrop = self._inventory_taildrop() if revoke_succeeded else ()
                     for directory in (*headscale.CUSTODY, headscale.HOME_CA,
                                       *(_STATE_DIRS if revoke_succeeded else ())):
                         try:
                             with self._publication_parent(directory) as (parent, check):
                                 if directory in _STATE_DIRS and (stat.S_IMODE(os.fstat(parent).st_mode) != 0o700
-                                                                or os.fstat(parent).st_nlink != 2):
+                                                                or os.fstat(parent).st_nlink != (
+                                                                    3 if directory == _STATE_DIRS[1] and taildrop else 2)):
                                     raise InstallerError("state directory custody")
                                 allowed = {Path(path).name for path in members
                                            if str(Path(path).parent) == "/" + directory}
+                                if directory == _STATE_DIRS[1]:
+                                    allowed.add("files")
                                 with os.scandir(parent) as entries:
                                     for index, item in enumerate(entries):
                                         if index >= 64 or item.name not in allowed:
@@ -2810,6 +2843,7 @@ class ManagedInstaller:
                     if self._headscale_cleanup_identity(receipt) != (False, False):
                         raise InstallerError("identity remains")
                 for directory in (*headscale.CUSTODY, headscale.HOME_CA, "run/happyranch-tsnet-sidecar",
+                                  *((_STATE_DIRS[1] + "/files",) if revoke_succeeded else ()),
                                   *(_STATE_DIRS if revoke_succeeded else ())):
                     require()
                     inventory()
@@ -3312,6 +3346,8 @@ class ManagedInstaller:
     def _check_directory(
         self, descriptor: int, path: str, expected: tuple[int, tuple[int, int] | None] | None,
     ) -> None:
+        if path in {_STATE_DIRS[1] + "/files", _STATE_DIRS[1] + "/files/happyranch-node-uid-1"}:
+            expected = (0o700, self._service_owner)
         info = os.fstat(descriptor)
         if (expected is None and path == "var/log" and info.st_uid == self.root_owner[0]
                 and not info.st_mode & 0o002):

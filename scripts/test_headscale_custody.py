@@ -1709,6 +1709,62 @@ def b6_snapshot(root: Path) -> dict[str, tuple[int, ...]]:
             for path in root.rglob("*")}
 
 
+@pytest.mark.parametrize("case", ["empty-parent", "empty-child", "child-mode", "parent-mode",
+    "child-link", "parent-link", "unknown-child", "nonempty", "uid", "gid"])
+def test_thr327_taildrop_disable_exact_empty_tree(
+    composition: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    v = composition
+    expected = v.lifecycle.capture("Enable", os.getuid())
+    assert v.lifecycle.dispatch("Enable", os.getuid(), "enable", expected,
+                                deadline=time.monotonic() + 480)["outcome"] == "ready"
+    v.observers.close()
+    files = v.path("/var/lib/happyranch-tsnet-sidecar/files")
+    files.mkdir(mode=0o700)
+    child = files / "happyranch-node-uid-1"
+    if case != "empty-parent":
+        child.mkdir(mode=0o700)
+    if case in {"child-mode", "parent-mode"}:
+        (child if case == "child-mode" else files).chmod(0o755)
+    if case in {"child-link", "parent-link"}:
+        target = child if case == "child-link" else files
+        foreign = v.root / "foreign-taildrop"
+        target.rename(foreign)
+        target.symlink_to(foreign, target_is_directory=True)
+    if case == "unknown-child":
+        (files / "happyranch-node-uid-2").mkdir(mode=0o700)
+    if case == "nonempty":
+        (child / "foreign").write_bytes(b"synthetic")
+    if case in {"uid", "gid"}:
+        identity = child.stat().st_dev, child.stat().st_ino
+        real_fstat = os.fstat
+        def mismatch(fd: int) -> os.stat_result:
+            info = real_fstat(fd)
+            if (info.st_dev, info.st_ino) == identity:
+                fields = list(info)
+                fields[4 if case == "uid" else 5] += 1
+                return os.stat_result(fields)
+            return info
+        monkeypatch.setattr(os, "fstat", mismatch)
+    def taildrop_snapshot() -> dict[str, tuple[int, ...]]:
+        return {name: info for name, info in b6_snapshot(v.root).items()
+                if name.startswith(("var/lib/happyranch-tsnet-sidecar", "foreign-taildrop"))}
+    before = taildrop_snapshot()
+    if case not in {"empty-parent", "empty-child"}:
+        assert v.io.inventory().state == "manual-install-conflict"
+        expected = v.lifecycle.capture("Disable", os.getuid())
+        assert v.lifecycle.dispatch("Disable", os.getuid(), "stop", expected)["outcome"] == "partial_cleanup"
+        assert taildrop_snapshot() == before
+        return
+    assert v.io.inventory().state == "owned-activated"
+    expected = v.lifecycle.capture("Disable", os.getuid())
+    assert v.lifecycle.dispatch("Disable", os.getuid(), "stop", expected) == {
+        "outcome": "in_progress", "residue": []}
+    assert v.lifecycle.dispatch("Disable", os.getuid(), "cleanup", expected,
+                                revoke_succeeded=True) == {"outcome": "off", "residue": []}
+    assert not files.exists() and v.receipts.current() is None
+
+
 @pytest.mark.parametrize("mode", [0o600, 0o644])
 @pytest.mark.parametrize("count", [2, 8])
 def test_pre_stop_diagnostics_disable_off_reenable(

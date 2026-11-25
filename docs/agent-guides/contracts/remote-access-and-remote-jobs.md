@@ -3290,9 +3290,16 @@ fixed extensions below do not change the receipt schema.
 | `/var/lib/happyranch-remote-access/home-ca/{ca.key,ca.pem,leaf.pem,leaf.key}` | S_ISREG, root:root 0600, nlink 1; metadata-only unlink. Parent root:root 0700; rmdir only when empty. |
 | `/var/lib/happyranch-connector/{trust-state.json,trust-state.json.anchor,trust-state.json.lock}` | S_ISREG, happyranch:happyranch 0600, nlink 1; metadata-only unlink, only after successful Disable revoke-all. Parent real happyranch:happyranch 0700, nlink 2 when empty; rmdir only when empty. |
 | `/var/lib/happyranch-tsnet-sidecar/{tailscaled.state,credential.consumed,tailscaled.log.conf,tailscaled.log1.txt,tailscaled.log2.txt}` | Same service file/parent custody and revoke-success requirement as connector state; no opaque state read. |
+| `/var/lib/happyranch-tsnet-sidecar/files/happyranch-node-uid-1` and its `files` parent | Exact pinned-tsnet home-node tree only: both directories service UID:GID, 0700, no symlinks; child empty, parent contains only that child or is empty after partial removal. Inventory validates the whole tree; B6 removes the child then empty parent only after successful revoke and existing quiescence proofs. Other names, contents or custody refuse. No recursive removal or opaque contents read. |
 | `/var/lib/happyranch-remote-access/home-activation-txn.json` | Existing bound B4/A5 root:root 0600, regular single-link transaction; canonical reader and current binding required, then unlink only after DB proof and B16 intent. |
 | `/var/lib/happyranch-remote-access/home-issuer/{invite-issuer.json,invite-issuer.lock}` and `home-issuer-publication.json` beside the directory | Existing canonical root:root 0600 regular single-link journal/empty lock and fixed-directory identity receipt; existing nonblocking issuer lock. After DB proof and successful revoke (ceremony burned), B6 also admits canonical minting/uncertain outcomes; pending/unknown/unsafe entries still refuse. Parent root:root 0700, nlink 2; existing fixed unlink/rmdir and parent fsync, B16 intent/outcome. |
 | `/var/lib/happyranch-remote-access/home-minter` | Real root:root 0700 directory; only `happyranch-node` and `happyranch-invite` child names admitted; nlink equals 2 plus present children; rmdir only when empty. |
+
+The exact Taildrop allowance also accepts the tree left by v6/v7; no unit or
+receipt migration is needed. Pinned tsnet v1.78.0 creates it unconditionally on
+peer-API initialization; `TS_DISABLE_TAILDROP` only disables receiving and does
+not prevent directory creation. Its exported Server API has no storage-disable
+option.
 | `home-minter/{happyranch-node,happyranch-invite}` | Real root:root 0700 directories, nlink 2; nonblocking directory flock in that fixed order. Only `operation-[0-9a-f]{64}`, `user-create`, `fence`, `fence.pending`, `rpc.lock` admitted, each S_ISREG root:root 0600 nlink 1, metadata only. Streamed enumeration is bounded at 600,000 entries per user. Existing rpc.lock flock also must be free. Unknown name/type/owner/mode/link count, bound exhaustion or contention refuses the whole minter set unchanged. |
 
 I3c C4/M1 proof is derived inside the existing B6 run: all five Headscale DB,
