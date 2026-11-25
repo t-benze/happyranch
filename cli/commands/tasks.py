@@ -348,18 +348,36 @@ def _cmd_pause_overview(args: argparse.Namespace, client: OpcClient, slug: str) 
 
 def cmd_tasks(args: argparse.Namespace) -> None:
     """List recent tasks."""
+    roots = getattr(args, "roots", False)
+    export = getattr(args, "export", None)
+    attribute_params = {name: getattr(args, name, []) for name in ("attr_min", "attr_max", "attr_set", "attr_not_set")}
+    roots_options = any(attribute_params.values()) or getattr(args, "before", None) is not None or export
+    if ((roots_options and not roots)
+        or (getattr(args, "output", None) is not None and not export)
+        or (export and (args.all_pages or args.json or args.pause_overview))
+        or (args.pause_overview and (roots or roots_options))):
+        print("Error: attribute filters, --before and --export require --roots; --output requires --export; "
+              "export conflicts with --all-pages/--json/--pause-overview; roots conflicts with --pause-overview.",
+              file=sys.stderr)
+        raise SystemExit(2)
     identities.validate_address(args.agent)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
-        print(f"Error: {exc}")
+        print(f"Error: {exc}", file=sys.stderr if roots else sys.stdout)
         sys.exit(1)
     if getattr(args, "pause_overview", False) and not args.org:
         print("Error: tasks --pause-overview requires explicit --org")
         sys.exit(2)
-    slug = resolve_org_slug(
-        args_org=args.org, available=_shared._fetch_available_orgs(client),
-    )
+    try:
+        slug = resolve_org_slug(
+            args_org=args.org, available=_shared._fetch_available_orgs(client),
+        )
+    except httpx.HTTPError as exc:
+        if not roots:
+            raise
+        print(f"Error: task read unavailable: {str(exc)[:512]}", file=sys.stderr)
+        raise SystemExit(1) from exc
     if getattr(args, "pause_overview", False):
         return _cmd_pause_overview(args, client, slug)
 
@@ -372,16 +390,30 @@ def cmd_tasks(args: argparse.Namespace) -> None:
     agent = filter_agent
     if isinstance(agent, str) and agent:
         params["assigned_agent"] = agent
+    if roots:
+        params.update({key: values for key, values in attribute_params.items() if values})
+    if export:
+        if args.before is not None:
+            params["before"] = args.before
+        return _cmd_roots_export(args, client, slug, params)
     all_pages = getattr(args, "all_pages", False) is True
     tasks: list[dict] = []
     seen_ids: set[str] = set()
     seen_cursors: set[str] = set()
-    cursor: str | None = None
+    cursor: str | None = getattr(args, "before", None) if roots else None
+    if cursor is not None:
+        seen_cursors.add(cursor)
     while True:
         page_params = dict(params)
         if cursor is not None:
             page_params["before"] = cursor
-        r = client.get(f"/api/v1/orgs/{slug}/tasks", params=page_params)
+        try:
+            r = client.get(f"/api/v1/orgs/{slug}/tasks" + ("/roots" if roots else ""), params=page_params)
+        except httpx.HTTPError as exc:
+            if not roots:
+                raise
+            print(f"Error: task read unavailable: {str(exc)[:512]}", file=sys.stderr)
+            raise SystemExit(1) from exc
         if not _ok(r):
             return
         body = r.json()
@@ -406,6 +438,8 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         cursor = next_cursor
     if all_pages:
         tasks.sort(key=lambda row: row["task_id"])
+    if roots and not all_pages and next_cursor is not None:
+        print(f"Next page: --before {next_cursor}", file=sys.stderr)
     if getattr(args, "json", False) is True:
         import json as _json
         print(_json.dumps(tasks, indent=2))
@@ -426,10 +460,36 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         # for non-revisit rows. `↩` is a U+21A9 leftwards arrow with hook.
         if t.get("revisit_of_task_id"):
             brief = f"{brief}  ↩ {t['revisit_of_task_id']}"
+        if roots:
+            for key, presence in sorted(t.get("attribute_values", {}).items()):
+                value = json.dumps(presence["value"], ensure_ascii=False) if presence["present"] else "<not-set>"
+                brief += f"  {key}={value}"
         team = t.get("team") or "-"
         if t.get("pause", {}).get("effective_hold"):
             _print_pause(t["pause"])
         print(f"{t['task_id']:<12} {team:<16} {status:<22} {agent:<18} {brief}")
+
+
+def _cmd_roots_export(args: argparse.Namespace, client: OpcClient, slug: str, params: dict) -> None:
+    """Write one successful server body byte-for-byte; diagnostics use stderr."""
+    try:
+        response = client.get(f"/api/v1/orgs/{slug}/tasks/roots/export", params={**params, "format": args.export})
+        if not response.is_success:
+            print(f"Error: task export HTTP {response.status_code}: {response.text[:512]}", file=sys.stderr)
+            raise SystemExit(1)
+        if args.output is not None:
+            Path(args.output).write_bytes(response.content)
+        elif hasattr(sys.stdout, "buffer"):
+            sys.stdout.buffer.write(response.content)
+        else:
+            sys.stdout.write(response.content.decode("utf-8"))
+        cursor = response.headers.get("X-HappyRanch-Next-Cursor")
+        print(f"Export limit={response.headers.get('X-HappyRanch-Export-Limit')} "
+              f"page_full={response.headers.get('X-HappyRanch-Page-Full')}"
+              + (f"; next page: --before {cursor}" if cursor else ""), file=sys.stderr)
+    except (httpx.HTTPError, OSError) as exc:
+        print(f"Error: task export unavailable: {str(exc)[:512]}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 
@@ -1467,6 +1527,14 @@ def register(sub) -> None:
         help="Follow task keyset pages to exhaustion; --limit is the page size",
     )
     p_tasks.add_argument("--json", action="store_true", help="Emit raw JSON")
+    p_tasks.add_argument("--roots", action="store_true", help="List roots only; opt in to attribute filters/export")
+    p_tasks.add_argument("--before", default=None, help="Roots cursor: last task ID of the preceding page")
+    for option in ("min", "max", "set", "not-set"):
+        p_tasks.add_argument("--attr-" + option, action="append", default=[],
+                            metavar="KEY=NUMBER" if option in ("min", "max") else "KEY",
+                            help="Repeatable roots attribute predicate; all predicates AND together")
+    p_tasks.add_argument("--export", choices=("json", "csv"), help="Export one roots page; default20/max1000 rows")
+    p_tasks.add_argument("--output", default=None, metavar="PATH", help="Write exact export bytes after success (otherwise stdout)")
     p_tasks.add_argument(
         "--status", default=None,
         help="Filter by task status (e.g. in_progress, escalated, completed, "

@@ -3,6 +3,7 @@
 | Spec | Status | Owner thread | Purpose |
 | --- | --- | --- | --- |
 | [2026-11-25-custom-task-attributes.md](2026-11-25-custom-task-attributes.md) | PR1 source foundation; adapters pending | THR-390 | Org-local attribute schema, validation, versioned store and provenance |
+| [2026-11-25-custom-task-attributes-list-export.md](2026-11-25-custom-task-attributes-list-export.md) | PR5 implementation | THR-390 | Roots attribute filters, coherent JSON/CSV export and CLI |
 | [2026-04-14-orchestrator-daemon-design.md](2026-04-14-orchestrator-daemon-design.md) | implemented | not recorded | Orchestrator Daemon + HTTP API — Implementation Spec |
 | [2026-04-17-manage-agent-design.md](2026-04-17-manage-agent-design.md) | implemented | not recorded | manage-agent: EH-driven agent lifecycle management |
 | [2026-04-17-manage-repo-design.md](2026-04-17-manage-repo-design.md) | implemented | not recorded | manage-repo: Agent-driven repository management |
