@@ -64,6 +64,8 @@ export function createFeatureFlagsFixture(settings, org) {
       // The generic stub answers unknown paths with {}; the naming UI on
       // Settings needs the real list shape.
       if (request.method === 'GET' && path === `/api/v1/orgs/${org}/identities`) { json(response, 200, { identities: [] }); return true; }
+      // FLAG01 (THR-390 PR8): the Tasks list needs the real roots list shape.
+      if (request.method === 'GET' && path === `/api/v1/orgs/${org}/tasks/roots`) { json(response, 200, { tasks: [], next_cursor: null }); return true; }
       if (request.method === 'GET') return false;
       let raw = '';
       request.on('data', (chunk) => { raw += chunk; });
@@ -452,6 +454,7 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
     await pause(1200);
     const roots = ledger.slice(from).filter((row) => row.path === `/api/v1/orgs/${org}/tasks/roots`);
     check(`${id} roots requested`, roots.length > 0, true);
+    check(`${id} list rendered (no error boundary)`, await evaluate(page, `Boolean(document.querySelector('[data-testid="tasks-page-header"]'))`), true);
     check(`${id} attr_* ${attrOn ? 'sent by ordinary owners' : 'never sent'}`, roots.some((row) => row.search.includes('attr_')), attrOn);
     check(`${id} Export control`, await evaluate(page, `Boolean(document.querySelector('[data-testid="tasks-export-open"]'))`), attrOn);
     check(`${id} attribute chips`, await evaluate(page, `Boolean(document.querySelector('[data-testid="tasks-attr-chips"]'))`), attrOn);
