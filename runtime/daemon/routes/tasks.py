@@ -22,13 +22,18 @@ from typing import TYPE_CHECKING, Any
 from fastapi import Depends, APIRouter, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sse_starlette.sse import EventSourceResponse
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from runtime.daemon.auth import _require_human, require_token
 from runtime.daemon.content_disposition import attachment_content_disposition
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.routes._org_dep import OrgDep, OrgStreamDep, _stream_org_events
 from runtime.daemon.routes.task_attribute_models import AttributeErrorResponse
+from runtime.daemon.routes.task_roots_export import (
+    LIST_RESPONSES, EXPORT_RESPONSES, ExportLimit, root_attribute_filters, prepare_root_filters,
+    encode_roots_export, export_controls, export_headers,
+)
+from runtime.task_attribute_filters import AttributeFilter, AttributeFilterError
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.daemon.work_status import derive_work_status
@@ -903,7 +908,7 @@ def list_tasks(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@router.get("/tasks/roots")
+@router.get("/tasks/roots", responses=LIST_RESPONSES)
 def list_roots(
     org: OrgDep,
     limit: int = 20,
@@ -911,6 +916,7 @@ def list_roots(
     before: str | None = None,
     status: str | None = None,
     block_kind: str | None = None,
+    attribute_filters: tuple[AttributeFilter, ...] = Depends(root_attribute_filters),
 ) -> dict:
     """Return root tasks only (parent_task_id IS NULL) with a per-root
     severity rollup reflecting the worst CURRENT status of each root's subtree.
@@ -923,15 +929,17 @@ def list_roots(
     """
     try:
         with org.db._memory_collection_read_budget(), org.db.coherent_read_view():
+            resolved, filtered_definitions = prepare_root_filters(org.db, attribute_filters)
             tasks = org.db.list_roots(
                 limit=limit, assigned_agent=assigned_agent, before_task_id=before,
-                status=status, block_kind=block_kind,
+                status=status, block_kind=block_kind, attribute_filters=resolved,
             )
             budget = ChildWaitBudget()
             origins = org.db.get_task_thread_origins([t.id for t in tasks])
-            next_cursor = tasks[-1].id if len(tasks) == limit else None
+            next_cursor = tasks[-1].id if tasks and len(tasks) == limit else None
             # Batch-fetch direct revisits for all returned roots (avoid N+1).
             root_ids = [t.id for t in tasks]
+            attribute_values = org.db.root_attribute_values(root_ids, filtered_definitions)
             revisits_map = org.db.batch_get_direct_revisits(root_ids)
             result_tasks: list[dict] = []
             for t in tasks:
@@ -939,6 +947,7 @@ def list_roots(
                 d["pause"] = _pause_projection(org, t.id)
                 d["severity_rollup"] = getattr(t, '_severity_rollup', t.status.value)
                 d["direct_revisits"] = revisits_map.get(t.id, [])
+                d["attribute_values"] = attribute_values[t.id]
                 result_tasks.append(d)
         definitions: dict[str, AgentDef | None] = {}
         for task, data in zip(tasks, result_tasks):
@@ -946,6 +955,44 @@ def list_roots(
         return {"tasks": result_tasks, "next_cursor": next_cursor}
     except (CensusReadUnavailable, TaskThreadOriginUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AttributeFilterError as exc:
+        raise HTTPException(422, detail=exc.detail) from exc
+    except (sqlite3.Error, AttributeStoreError) as exc:
+        raise HTTPException(503, detail={"code": "attribute_storage_unavailable"}) from exc
+
+
+@router.get("/tasks/roots/export", responses=EXPORT_RESPONSES)
+def export_roots(
+    request: Request,
+    org: OrgDep,
+    limit: ExportLimit = 20,
+    format: str = Query("json", description="One page; JSON preserves native scalars, CSV neutralizes formulas.",
+                        json_schema_extra={"enum": ["json", "csv"]}),
+    assigned_agent: str | None = None,
+    before: str | None = None,
+    status: str | None = None,
+    block_kind: str | None = None,
+    attribute_filters: tuple[AttributeFilter, ...] = Depends(root_attribute_filters),
+) -> Response:
+    """Read-only bounded export of the identical roots query in one snapshot."""
+    started = datetime.now(timezone.utc)
+    page_limit, format = export_controls(request.query_params, limit, format)
+    try:
+        with org.db._memory_collection_read_budget(), org.db.coherent_read_view():
+            resolved, _ = prepare_root_filters(org.db, attribute_filters)
+            body, cursor, page_full = encode_roots_export(
+                org.db, filters=resolved, limit=page_limit, format=format,
+                selection={"assigned_agent": assigned_agent, "before_task_id": before,
+                           "status": status, "block_kind": block_kind},
+            )
+        return Response(body, media_type="text/csv" if format == "csv" else "application/json",
+                        headers=export_headers(org.slug, format, page_limit, cursor, page_full, started))
+    except (CensusReadUnavailable, TaskThreadOriginUnavailable) as exc:
+        raise HTTPException(503, detail=str(exc)) from exc
+    except AttributeFilterError as exc:
+        raise HTTPException(422, detail=exc.detail) from exc
+    except (sqlite3.Error, AttributeStoreError) as exc:
+        raise HTTPException(503, detail={"code": "attribute_storage_unavailable"}) from exc
 
 
 def _pause_projection(org: OrgState, task_id: str) -> dict:

@@ -24,6 +24,7 @@
     "POST /api/v1/orgs/{slug}/tasks/attachments",
     "GET /api/v1/orgs/{slug}/tasks",
     "GET /api/v1/orgs/{slug}/tasks/roots",
+    "GET /api/v1/orgs/{slug}/tasks/roots/export",
     "GET /api/v1/orgs/{slug}/tasks/pause-overview",
     "POST /api/v1/orgs/{slug}/tasks/{task_id}/pause",
     "POST /api/v1/orgs/{slug}/tasks/{task_id}/resume",

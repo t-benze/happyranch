@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterator
 
 from runtime.infrastructure.db._shared import _task_move_admission, _late_database_now as _now, _synchronized
 from runtime.task_attribute_admission import validate_initial_attributes, write_initial_attributes_uncommitted
+from runtime.task_attribute_filters import AttributeFilter, attribute_numeric_range
 from runtime.task_attributes import AttributeValidationError
 
 from runtime.infrastructure.db.task_reconciliation import (
@@ -1381,6 +1382,54 @@ class TasksMixin:
         ]
         return self._worst_subtree_status(root.status.value, current)
 
+    def _build_roots_query(
+        self, *, projection: str, limit: int, assigned_agent: str | None = None,
+        before_task_id: str | None = None, status: TaskStatus | str | None = None,
+        block_kind: BlockKind | str | None = None,
+        attribute_filters: tuple[AttributeFilter, ...] = (),
+    ) -> tuple[str, tuple]:
+        """Single selection owner for list and export; caller holds the lock."""
+        columns = {"list": "t.*", "export": "t.id,t.brief,t.status,t.assigned_agent,t.created_at"}[projection]
+        conditions, params = ["t.parent_task_id IS NULL"], []
+        for column, value in (("assigned_agent", assigned_agent), ("status", status), ("block_kind", block_kind)):
+            if value is not None:
+                conditions.append(f"t.{column} = ?")
+                params.append(str(value))
+        if before_task_id is not None:
+            row = self._conn.execute("SELECT created_at FROM tasks WHERE id = ?", (before_task_id,)).fetchone()
+            if row is None:
+                conditions.append("0")
+            else:
+                conditions.append("(t.created_at,t.id) < (?,?)")
+                params.extend((row["created_at"], before_task_id))
+        if any(f.minimum is not None or f.maximum is not None for f in attribute_filters):
+            self._conn.create_function("task_attribute_numeric_range", 3, attribute_numeric_range, deterministic=True)
+        for item in attribute_filters:
+            probe = ("SELECT 1 FROM task_attribute_values v WHERE v.task_id=t.id "
+                     "AND v.definition_id=? AND v.present=1")
+            params.append(item.definition_id)
+            if item.minimum is not None or item.maximum is not None:
+                probe += " AND task_attribute_numeric_range(v.value_json,?,?)"
+                params.extend(None if bound is None else json.dumps(bound, allow_nan=False)
+                              for bound in (item.minimum, item.maximum))
+            conditions.append(("NOT EXISTS" if item.not_set else "EXISTS") + f"({probe})")
+        params.append(limit)
+        return (f"SELECT {columns} FROM tasks t WHERE {' AND '.join(conditions)} "
+                "ORDER BY t.created_at DESC,t.id DESC LIMIT ?", tuple(params))
+
+    def iter_roots_export(self, **filters: Any) -> Iterator[dict]:
+        """Compact rows, consumed inside the request's coherent read view."""
+        with self._lock:
+            query, params = self._build_roots_query(projection="export", **filters)
+            cursor = self._conn.execute(query, params)
+            try:
+                for row in cursor:
+                    yield {"task_id": row["id"], "brief_excerpt": row["brief"][:200],
+                           "status": row["status"], "assigned_agent": row["assigned_agent"],
+                           "created_at": row["created_at"]}
+            finally:
+                cursor.close()
+
     @_synchronized
     def list_roots(
         self,
@@ -1389,6 +1438,7 @@ class TasksMixin:
         before_task_id: str | None = None,
         status: TaskStatus | str | None = None,
         block_kind: BlockKind | str | None = None,
+        attribute_filters: tuple[AttributeFilter, ...] = (),
     ) -> list[TaskRecord]:
         """Return root tasks (parent_task_id IS NULL) with cursor pagination,
         same filter parameters as list_tasks(), plus a per-root _severity_rollup.
@@ -1404,36 +1454,12 @@ class TasksMixin:
         the TaskRecord (not a model field — DERIVE, no schema). See
         ``_current_severity_rollup``.
         """
-        cursor_created_at: str | None = None
-        if before_task_id is not None:
-            row = self._conn.execute(
-                "SELECT created_at FROM tasks WHERE id = ?", (before_task_id,),
-            ).fetchone()
-            if row is None:
-                return []
-            cursor_created_at = row["created_at"]
-
-        conditions = ["parent_task_id IS NULL"]
-        params: list = []
-        if assigned_agent is not None:
-            conditions.append("assigned_agent = ?")
-            params.append(assigned_agent)
-        if status is not None:
-            conditions.append("status = ?")
-            params.append(str(status))
-        if block_kind is not None:
-            conditions.append("block_kind = ?")
-            params.append(str(block_kind))
-        if cursor_created_at is not None:
-            conditions.append("(created_at, id) < (?, ?)")
-            params.extend([cursor_created_at, before_task_id])
-        where = f"WHERE {' AND '.join(conditions)} "
-        params.append(limit)
-        cursor = self._conn.execute(
-            f"SELECT * FROM tasks {where}"
-            "ORDER BY created_at DESC, id DESC LIMIT ?",
-            tuple(params),
+        query, params = self._build_roots_query(
+            projection="list", limit=limit, assigned_agent=assigned_agent,
+            before_task_id=before_task_id, status=status, block_kind=block_kind,
+            attribute_filters=attribute_filters,
         )
+        cursor = self._conn.execute(query, params)
         results: list[TaskRecord] = []
         for row in cursor.fetchall():
             task = TaskRecord(
