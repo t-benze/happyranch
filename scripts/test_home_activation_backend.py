@@ -235,7 +235,7 @@ def test_enable_effect_failure_journals_only_type_source_step(
     line = start + next(i for i, text in enumerate(lines) if 'code, _ = self._run(' in text)
     sent.assert_called_once_with(syslog.LOG_WARNING,
         'remote-access-activation-failure exception=OSError '
-        f'source=runtime/remote_access/installer.py:{line} step=enable')
+        f'source=runtime/remote_access/installer.py:{line} step=enable stage=account')
     emitted = str(sent.call_args)
     assert all(value not in emitted for value in (secret, 'synthetic-secret', 'private-user',
                                                   'https://', '12345', 'synthetic-journal-secret'))

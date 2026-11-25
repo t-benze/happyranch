@@ -119,6 +119,33 @@ def test_enable_preparation_provenance_rejected(
     assert errors.getvalue() == ''
 
 
+@pytest.mark.parametrize('method,step', [('Disable', 'cleanup'), ('ReplaceFailed', 'replace')])
+def test_thr327_child_failure_step_journal(composition: Any, monkeypatch: pytest.MonkeyPatch,
+                                          method: str, step: str) -> None:
+    import syslog
+    v = composition
+    def fail(*args: Any, **kwargs: Any) -> dict:
+        raise PermissionError(errno.EACCES, 'synthetic-private-token /private/path https://private.invalid')
+    monkeypatch.setattr(backend.HelperLifecycleBackend, 'dispatch', fail)
+    monkeypatch.setattr(backend, 'ManagedInstaller', lambda **kw: v.io)
+    request = dict(method=method, uid=os.getuid(), step=step, expected='synthetic',
+                   deadline=time.monotonic() + 30)
+    if step == 'cleanup':
+        request['revoke_succeeded'] = False
+    output = io.StringIO()
+    sent = Mock()
+    monkeypatch.setattr(syslog, 'syslog', sent)
+    monkeypatch.setattr(sys, 'argv', ['home_activation_backend.py'])
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode())))
+    monkeypatch.setattr(sys, 'stdout', output)
+    assert backend.helper_main() == 1
+    sent.assert_called_once_with(syslog.LOG_WARNING,
+        f'remote-access-lifecycle-failure action={"disable" if method == "Disable" else "replace-failed"} '
+        f'step={step} item=0 stage=helper_main exception=PermissionError reason="permission-denied"')
+    assert output.getvalue() == ''
+    assert not v.calls and not v.mints
+
+
 @pytest.mark.parametrize('raw,code,method,step', [
     (b'{"preparationFailure":"inventory"', 1, 'Enable', 'enable'),
     (b'{"preparationFailure":"inventory"}' + b' ' * 225, 1, 'Enable', 'enable'),
@@ -731,7 +758,7 @@ def test_enable_child_diagnostic_preserves_closed_exit(
     assert backend.helper_main() == 1
     sent.assert_called_once_with(syslog.LOG_WARNING,
         'remote-access-enable-refusal origin=child stage=child.dispatch.capture exception=OSError')
-    assert capsys.readouterr() == ('{"refusal": "unknown"}\n', '')
+    assert capsys.readouterr() == ('{"refusal": "unverified"}\n', '')
 
 
 @pytest.mark.parametrize('case', ['clean', 'partial', 'failed', 'pending', 'uid', 'unsafe', 'unknown', 'txn', 'source', 'audit', 'headscale-mode', 'clean-ca', 'clean-unit'])
@@ -2408,9 +2435,12 @@ def test_thr327_live_setup_status(composition: Any, mount: Any, monkeypatch: pyt
             v.states['happyranch-connector.service'] = case
         elif case == 'renewal':
             v.states['happyranch-remote-access-policy-renew.timer'] = 'inactive'
-        elif case in ('failed', 'prepared-receipt'):
+        elif case == 'failed':
             v.path('/var/lib/happyranch-remote-access/home-activation.json').write_bytes(
-                replace(v.receipts.current(), phase=('failed_uncertain' if case == 'failed' else 'prepared'),
+                replace(v.receipts.current(), phase='failed_uncertain').to_bytes())
+        elif case == 'prepared-receipt':
+            v.path('/var/lib/happyranch-remote-access/home-activation.json').write_bytes(
+                replace(v.receipts.current(), phase='prepared',
                         local_node_stable_id=None, home_endpoint=None).to_bytes())
         elif case == 'partial':
             expected = v.lifecycle.capture('Disable', uid)

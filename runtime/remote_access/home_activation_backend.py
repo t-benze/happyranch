@@ -30,7 +30,7 @@ from runtime.remote_access.home_live_config import HomeLiveConfigOwner
 from runtime.remote_access.home_observer import HomeObserver
 from runtime.remote_access.installer import ManagedInstaller, UNITS
 from runtime.remote_access.helper_owner import bootstrap_owner
-from runtime.remote_access.helper_lifecycle import log_enable_refusal
+from runtime.remote_access.helper_lifecycle import log_enable_refusal, log_lifecycle_failure
 from runtime.remote_access.helper_generation import PREPARATION_CATEGORIES, GenerationUnavailable
 from runtime.remote_access.headscale_service import HeadscaleServiceError
 
@@ -207,7 +207,9 @@ class HelperLifecycleBackend:
                         or name == SERVICE_NAME and any(props.get(k) != v for k, v in
                             (('MainPID', '0'), ('ControlPID', '0'), ('ControlGroup', '')))):
                     raise ActivationRefused()
-            except Exception:
+            except Exception as error:
+                log_lifecycle_failure(error, action='disable', step='policy-quiescence',
+                                      item=1 if name == TIMER_NAME else 2)
                 residue.append(name + ': quiescence unconfirmed')
         relative = 'etc/systemd/system/happyranch-managed.target.wants'
         try:
@@ -221,7 +223,8 @@ class HelperLifecycleBackend:
                 check()
         except FileNotFoundError:
             pass
-        except Exception:
+        except Exception as error:
+            log_lifecycle_failure(error, action='disable', step='policy-quiescence')
             residue.append('/' + relative + '/' + TIMER_NAME + ': absence unconfirmed')
         return residue
 
@@ -240,12 +243,15 @@ class HelperLifecycleBackend:
                     timer_owned = True
                 if loaded:
                     self.io.manager.stop(name, timeout=50.0)
-            except Exception:
+            except Exception as error:
+                log_lifecycle_failure(error, action='disable', step='policy-stop',
+                                      item=1 if name == TIMER_NAME else 2)
                 residue.append(name + ': stop unconfirmed')
         if timer_owned:
             try:
                 self.io.manager.disable(TIMER_NAME)
-            except Exception:
+            except Exception as error:
+                log_lifecycle_failure(error, action='disable', step='policy-disable')
                 residue.append(TIMER_NAME + ': disable unconfirmed')
         return residue + self._policy_quiescence()
 
@@ -638,13 +644,15 @@ class HelperLifecycleBackend:
                         check()
                     if transaction is not None:
                         self.io._recover_policy_renewal(transaction)
-                except Exception:
+                except Exception as error:
+                    log_lifecycle_failure(error, action='disable', step='policy-journal')
                     residue.append('/etc/happyranch/install-transaction.json')
                 # Renewal residue vetoes B6, never the independently owned
                 # remote-unit safety stop (including after failed revocation).
                 try:
                     self.io.stop_and_confirm(disabling=True)
-                except Exception:
+                except Exception as error:
+                    log_lifecycle_failure(error, action='disable', step='owned-stop')
                     residue.append('owned remote units: stop unconfirmed')
                 try:
                     from runtime.remote_access import headscale_service
@@ -667,7 +675,8 @@ class HelperLifecycleBackend:
                     if loaded:
                         self.io.manager.stop(name, timeout=50.0)
                     self.io._headscale_stopped()
-                except Exception:
+                except Exception as error:
+                    log_lifecycle_failure(error, action='disable', step='headscale-stop')
                     residue.append('happyranch-headscale.service: stop unconfirmed')
                 try:
                     # B6 owns its receipted Headscale link. Disable the other exact
@@ -680,7 +689,8 @@ class HelperLifecycleBackend:
                             self.io.manager.disable(name)
                     self.io._confirm_quiescent()
                     self.io._headscale_stopped()
-                except Exception:
+                except Exception as error:
+                    log_lifecycle_failure(error, action='disable', step='owned-disable')
                     residue.append('owned remote units: quiescence unconfirmed')
                 residue.extend(self._policy_quiescence())
                 if residue:
@@ -707,7 +717,13 @@ def _log_activation_failure(error: Exception) -> None:
             seen.add(id(cause))
             error = cause
         root = Path(__file__).parent.parent
-        source = None
+        source, stage = None, 'unverified'
+        stages = {'_account': 'account', 'prepare_headscale': 'headscale-preparation',
+            'publish_home_units': 'unit-publication', 'publish_invite_config': 'invite-publication',
+            '_check_directory': 'custody', '_read_file': 'custody', '_record': 'custody',
+            '_managed_fragments': 'unit-inventory', 'renew_policy': 'policy-renewal',
+            '_renew_policy_locked': 'policy-renewal', 'recover': 'recovery', 'verify': 'verification',
+            'perform': 'activation-effect', 'start': 'unit-start', 'enable': 'enable'}
         trace = error.__traceback__
         while trace is not None:
             try:
@@ -720,12 +736,13 @@ def _log_activation_failure(error: Exception) -> None:
                 if (len(path) <= 160 and
                         re.fullmatch(r'(?:[a-z_][a-z0-9_]*/)*[a-z_][a-z0-9_]*\.py', relative.as_posix())):
                     source = f'{path}:{trace.tb_lineno}'
+                    stage = stages.get(trace.tb_frame.f_code.co_name, stage)
             trace = trace.tb_next
         name = type(error).__name__
         name = name if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', name) else 'Exception'
         if source is not None:
             syslog.syslog(syslog.LOG_WARNING,
-                f'remote-access-activation-failure exception={name} source={source} step=enable')
+                f'remote-access-activation-failure exception={name} source={source} step=enable stage={stage}')
     except Exception:
         pass  # Diagnostic loss preserves the original closed failure.
 
@@ -779,19 +796,24 @@ def helper_main() -> int:
         print(json.dumps(result, sort_keys=True, separators=(',', ':')))
         return 0
     except Exception as error:
+        if (type(request) is dict and request.get('method') in ('Disable', 'ReplaceFailed')
+                and request.get('step') in ('capture', 'stop', 'cleanup', 'replace')):
+            log_lifecycle_failure(error, action='disable' if request['method'] == 'Disable' else 'replace-failed',
+                                  step=request['step'])
         if (type(request) is dict and request.get('method') in ('Enable', 'Disable', 'ReplaceFailed')
                 and request.get('step') == 'capture'):
-            log_enable_refusal(error, child=True)
+            if request['method'] == 'Enable':
+                log_enable_refusal(error, child=True)
             from runtime.remote_access.helper_generation import host_state_category
             print(json.dumps({'refusal': host_state_category(error)}))
         elif (type(request) is dict and request.get('method') == 'Enable'
                 and request.get('step') == 'enable'):
+            _log_activation_failure(error)
             if (type(error) is EnablePreparationRefused and deadline is not None
                     and time.monotonic() < deadline and type(error.category) is str
                     and error.category in PREPARATION_CATEGORIES):
                 print(json.dumps({'preparationFailure': error.category}, separators=(',', ':')))
             else:
-                _log_activation_failure(error)
                 if deadline is not None and time.monotonic() < deadline:
                     print('{"preparationFailure":"activation-unverified"}')
         return 1  # No raw paths, keys, credentials or exception text leave this child.

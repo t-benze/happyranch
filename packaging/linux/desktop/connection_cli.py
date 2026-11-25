@@ -183,7 +183,7 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except ClosedError as error:
-        if error.value.get("category") == "not_applicable":
+        if error.value.get("category") == "not_applicable" and error.value["effect"] == "none":
             print("This action does not apply to the current remote access setup. No change was made. "
                   "Category: not_applicable.", file=sys.stderr)
         elif error.value["code"] == "hostStateUnrecognized":

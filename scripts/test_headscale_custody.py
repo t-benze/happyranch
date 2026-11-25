@@ -2314,3 +2314,39 @@ def test_b6_helper_operation_cas_under_receipt_lock(
             fixture.installer.cleanup_headscale(**_HOME_EXPECTED, expected_operation_id=operation)
         assert b6_snapshot(fixture.root) == before
         assert not any(args[0] in {'userdel', 'groupdel'} or args[:2] == ['systemctl', 'disable'] for args in fixture.calls)
+
+
+@pytest.mark.parametrize('journal_available', [False, True])
+@pytest.mark.parametrize('index', [1, 3, 5])
+@pytest.mark.parametrize('failure', ['errno', 'custody'])
+def test_b6_cleanup_directory_journal(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    index: int, failure: str, journal_available: bool,
+) -> None:
+    import syslog
+    from unittest.mock import Mock
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    # Fixed cleanup order, independently named in the diagnostic contract.
+    directories = ('etc/happyranch/headscale', 'var/lib/happyranch-headscale',
+                   'run/happyranch-headscale', 'var/lib/happyranch-remote-access/home-ca',
+                   'run/happyranch-tsnet-sidecar')
+    target = fixture.root / directories[index - 1]
+    native = os.rmdir
+    def remove(name: str, *, dir_fd: int) -> None:
+        if Path(os.readlink('/proc/self/fd/' + str(dir_fd))) / name == target:
+            if failure == 'errno':
+                raise PermissionError(errno.EACCES, 'synthetic-private-key /private/path https://private.invalid')
+            raise module.InstallerError('unsafe directory ownership or mode: ' + str(target))
+        native(name, dir_fd=dir_fd)
+    monkeypatch.setattr(os, 'rmdir', remove)
+    sent = Mock(side_effect=None if journal_available else OSError("synthetic-journal-failure"))
+    monkeypatch.setattr(syslog, 'syslog', sent)
+    with pytest.raises(home.HeadscaleServiceError, match='partial-cleanup-uncertain'):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
+    reason = 'permission-denied' if failure == 'errno' else 'unsafe directory ownership or mode'
+    sent.assert_called_once_with(syslog.LOG_WARNING,
+        f'remote-access-lifecycle-failure action=disable step=cleanup-directory item={index} '
+        f'stage=_cleanup_home_headscale exception={"PermissionError" if failure == "errno" else "InstallerError"} '
+        f'reason={json.dumps(reason)}')
+    assert target.exists() and activation.exists() and fixture.receipt().exists()
+    assert all(token not in str(sent.call_args) for token in (str(fixture.root), 'private-key', '/private/', 'https://'))

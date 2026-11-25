@@ -3869,7 +3869,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "connection.host.hErrExpired": "请求已过期。",
   "connection.host.hErrRuntime": "HappyRanch 未在这台电脑上运行。",
   "connection.host.hErrStateUnrecognized": "无法验证远程访问文件或发布版运行时的所有者。请检查本机安装。",
-  "connection.host.hErrStateNotApplicable": "此操作不适用于当前的远程访问设置。未作任何更改。",
+  "connection.host.hErrStateNotApplicable": "此操作不适用于当前的远程访问设置。执行其他操作前请检查状态。",
   "connection.host.hErrStateResidue": "远程访问尚未验证：残留状态未通过检查。请检查本机安装。",
   "connection.host.hErrStateOwner": "远程访问尚未验证：无法确认运行时所有者。请检查本机安装。",
   "connection.host.hErrStateProvenance": "远程访问尚未验证：无法确认安装记录。请检查本机安装。",

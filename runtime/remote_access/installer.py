@@ -2528,6 +2528,7 @@ class ManagedInstaller:
         from runtime.remote_access.home_unit_gate import HomeUnitGate
 
         partial = False
+        cleanup_directory = 0  # Diagnostic ordinal only; never an admission input.
         self._headscale_preparing = True
         try:
             if self.layout != "deb":
@@ -2849,6 +2850,7 @@ class ManagedInstaller:
                 for directory in (*headscale.CUSTODY, headscale.HOME_CA, "run/happyranch-tsnet-sidecar",
                                   *((_STATE_DIRS[1] + "/files",) if revoke_succeeded else ()),
                                   *(_STATE_DIRS if revoke_succeeded else ())):
+                    cleanup_directory += 1
                     require()
                     inventory()
                     relative = Path(directory)
@@ -2881,6 +2883,7 @@ class ManagedInstaller:
                                 os.fsync(parent)
                     except FileNotFoundError:
                         pass
+                cleanup_directory = 0
                 require()
                 self.manager.daemon_reload()
                 require()
@@ -2915,8 +2918,10 @@ class ManagedInstaller:
                         "account": "removed" if receipt else "preserved: not created by HappyRanch",
                         "home_ca": "removed"}
         except (OSError, InstallerError, ValueError, UnicodeError, ServiceManagerError,
-                headscale.HeadscaleServiceError, home_audit.AuditRefused):
-            pass
+                headscale.HeadscaleServiceError, home_audit.AuditRefused) as error:
+            from runtime.remote_access.helper_lifecycle import log_lifecycle_failure
+            log_lifecycle_failure(error, action='disable',
+                step='cleanup-directory' if cleanup_directory else 'cleanup', item=cleanup_directory)
         finally:
             self._headscale_preparing = False
         raise headscale.HeadscaleServiceError("partial-cleanup-uncertain" if partial else "cleanup-uncertain")

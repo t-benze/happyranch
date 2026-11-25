@@ -513,6 +513,9 @@ class RemoteAccessHelper:
                 details, 1, capture.cancellation_id)), Gio.DBusCallFlags.NONE,
                 int(self.deadline * 1000) + 2000, None, self._authorized, capture)
         except Exception as error:
+            if message.get_member() in ('Disable', 'ReplaceFailed'):
+                _helper_lifecycle.log_lifecycle_failure(error,
+                    action='disable' if message.get_member() == 'Disable' else 'replace-failed', step='capture')
             if message.get_member() == 'Enable':
                 _helper_lifecycle.log_enable_refusal(error)
             if isinstance(self.inflight, Capture) and self.inflight.message == message:
@@ -818,11 +821,13 @@ class RemoteAccessHelper:
                 try:
                     audited('revoke', _home_audit.Component.CREDENTIALS, revoke)
                     revoked = True
-                except Exception:
+                except Exception as error:
+                    lifecycle.log_lifecycle_failure(error, action='disable', step='revoke')
                     residue.append('un-revoked connector trust state and persisted sidecar state')
                 try:
                     stopped = child('stop', _home_audit.Component.UNITS)
-                except Exception:
+                except Exception as error:
+                    lifecycle.log_lifecycle_failure(error, action='disable', step='stop')
                     residue.append('owned units: quiescence unconfirmed')
                 else:
                     if stopped.get('outcome') != 'in_progress' or stopped.get('residue'):
@@ -833,11 +838,15 @@ class RemoteAccessHelper:
                             residue.extend(result['residue'])
                             if result['outcome'] != 'off':
                                 residue.append('B6 cleanup incomplete')
-                        except Exception:
+                        except Exception as error:
+                            lifecycle.log_lifecycle_failure(error, action='disable', step='cleanup')
                             residue.append('B6 custody or retained CA staging and B7/B11 evidence')
                 outcome = (lifecycle.SetupPhase.OFF if revoked and not residue else
                            lifecycle.SetupPhase.PARTIAL_CLEANUP)
-        except Exception:
+        except Exception as error:
+            lifecycle.log_lifecycle_failure(error,
+                action={'Enable': 'enable', 'Disable': 'disable', 'ReplaceFailed': 'replace-failed'}[capture.method],
+                step='enable' if capture.method == 'Enable' else 'replace' if capture.method == 'ReplaceFailed' else 'stop')
             outcome = lifecycle.SetupPhase.UNCERTAIN if operation.dispatched else lifecycle.SetupPhase.FAILED
         finally:
             # Main-context lock holders never join this worker. Wait here after

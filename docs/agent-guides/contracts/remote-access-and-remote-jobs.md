@@ -4604,12 +4604,14 @@ explicit, authenticated Turn on performs the renewal above. No retained-file
 manipulation or other host action is required for that validated shape.
 
 `hostStateUnrecognized` retains its code and adds optional closed category
-`residue|owner|provenance|custody|inventory|quiescence|timeout|unknown`. The child
-emits only `{refusal: category}` on Enable capture refusal; HomeLifecycleClient
+`residue|owner|provenance|custody|inventory|quiescence|timeout|unknown|unverified|not_applicable`. The child
+emits only `{refusal: category}` on Enable, Disable or ReplaceFailed capture refusal; HomeLifecycleClient
 validates the closed frame; helper D-Bus uses `host_state_unrecognized_<category>`.
 The shared native request projection, CLI JSON, Main protocol/relay and Connection
 parser preserve it to English and Simplified Chinese copy. Legacy owner-binding
-refusals map to owner; generic, missing or invalid categories map to unknown.
+refusals map to owner; attributed generic capture failures and missing, invalid
+or legacy unknown categories display as unverified. Raw transport uncertainty
+still retains unknown effect.
 No path, file content, UID, exception message or secret crosses this boundary.
 
 
@@ -4783,3 +4785,25 @@ failures default to `unverified`, with fixed custody, publication/residue and
 inventory stages preserved. Transport loss and effects already dispatched
 retain unknown effect; the no-change copy applies only to pre-admission
 `not_applicable` refusals. B4 and pre-Headscale R7 remain terminal limits.
+
+
+### Local lifecycle failure diagnostics
+
+The helper journals closed action/step/stage tokens and exception classes for
+Enable, Turn off and replace-failed refusals, including caught safety-stop
+failures. Enable also retains its shipped source-relative location and closed
+stage. User-facing results remain category-only. Automatic policy renewal
+journals the same redacted failure dimensions; a suppressed flock
+`BlockingIOError(EAGAIN)` is named `lock-busy`, and still exits unsuccessfully.
+No failure or skipped work is marked successful.
+
+B6 records the failing directory ordinal with `step=cleanup-directory` and a
+fixed internal reason (or a closed native errno reason). The unchanged order is
+1 Headscale configuration, 2 Headscale persistent state, 3 Headscale runtime,
+4 home CA staging, 5 sidecar runtime, and, only after successful serving revoke,
+6 Taildrop files, 7 connector state and 8 sidecar state. Ordinal zero is a
+non-directory step. The diagnostic counter is never an admission input.
+Directory removal, user/group retirement order, custody/revocation checks,
+unit sandbox, expiry and timers are unchanged. No arbitrary exception message,
+path, file contents, identity, credential or invite is journaled. Journal
+failure preserves the original refusal and retained evidence.

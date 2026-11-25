@@ -4058,7 +4058,7 @@ export const en = {
   "connection.host.hErrExpired": "The request expired.",
   "connection.host.hErrRuntime": "HappyRanch isn’t running on this computer.",
   "connection.host.hErrStateUnrecognized": "Remote access files or the release runtime owner could not be verified. Check the local installation.",
-  "connection.host.hErrStateNotApplicable": "This action does not apply to the current remote access setup. No change was made.",
+  "connection.host.hErrStateNotApplicable": "This action does not apply to the current remote access setup. Check status before another action.",
   "connection.host.hErrStateResidue": "Remote access is unverified: retained state was refused. Check the local installation.",
   "connection.host.hErrStateOwner": "Remote access is unverified: the runtime owner could not be confirmed. Check the local installation.",
   "connection.host.hErrStateProvenance": "Remote access is unverified: the installation records could not be confirmed. Check the local installation.",
