@@ -141,14 +141,11 @@ export function TaskAttributesSection(): JSX.Element {
     return (
       <div className="max-w-3xl min-w-0 p-4 sm:p-8">
         {header}
-        <Callout
-          tone="danger"
-          role="alert"
-          title={t('settings.taskAttributes.list.loadError')}
-          actions={<Button variant="outline" className="bg-surface-raised" size="sm" onClick={() => void list.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>}
-        >
-          {t('settings.taskAttributes.list.loadErrorBody')}
-        </Callout>
+        <div role="alert" className="border-border-default bg-surface-raised flex flex-col items-center gap-2 rounded-lg border px-4 py-10 text-center">
+          <h3 className="font-display text-text-primary text-lg">{t('settings.taskAttributes.list.loadError')}</h3>
+          <p className="text-text-secondary max-w-md text-sm">{t('settings.taskAttributes.list.loadErrorBody')}</p>
+          <Button variant="outline" className="bg-surface-raised mt-2" size="sm" onClick={() => void list.refetch()}>{t('settings.taskAttributes.list.retry')}</Button>
+        </div>
       </div>
     );
   }

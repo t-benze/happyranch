@@ -16,6 +16,7 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
+import { AlertCircle } from 'lucide-react';
 import { Button } from '@/design-system/primitives/Button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/design-system/primitives/Dialog';
 import { Input } from '@/design-system/primitives/Input';
@@ -602,16 +603,19 @@ function Field({
   const { t } = useTranslation();
   const describedBy = [help ? `${id}-help` : null, errors.length ? `${id}-error` : null].filter(Boolean).join(' ');
   return (
-    <div className="flex min-w-0 flex-col gap-1">
+    <div className="*:aria-invalid:border-feedback-danger flex min-w-0 flex-col gap-1">
       <label htmlFor={id} className="text-text-primary text-sm font-semibold">
         {label}
         {optional && <span className="text-text-secondary font-normal"> ({t('settings.taskAttributes.editor.optional')})</span>}
       </label>
       {children(describedBy, errors.length > 0)}
-      {errors.length > 0 && (
-        <p id={`${id}-error`} className="text-feedback-danger text-xs break-words">{errors.join(' ')}</p>
-      )}
       {help && <p id={`${id}-help`} className="text-text-secondary text-xs break-words">{help}</p>}
+      {errors.length > 0 && (
+        <p id={`${id}-error`} className="text-feedback-danger flex min-w-0 items-start gap-1.5 text-xs break-words">
+          <AlertCircle size={14} aria-hidden="true" className="mt-px shrink-0" />
+          <span className="min-w-0">{errors.join(' ')}</span>
+        </p>
+      )}
     </div>
   );
 }
@@ -762,7 +766,8 @@ function StatusNotices({
             {[...new Set(Object.keys(errors).map((p) => fieldIdFor(p, draftType)))].map((id) => (
               <li key={id}>
                 <a href={`#${id}`} className="underline" onClick={(e) => { e.preventDefault(); document.getElementById(id)?.focus(); }}>
-                  {fieldLabel(t, id)}
+                  {Object.entries(errors).filter(([p]) => fieldIdFor(p, draftType) === id)
+                    .flatMap(([, codes]) => codes.map((c) => t(ERROR_KEY[c] ?? 'settings.taskAttributes.editor.err.other'))).join(' ') || fieldLabel(t, id)}
                 </a>
               </li>
             ))}
