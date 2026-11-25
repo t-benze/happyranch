@@ -3552,6 +3552,22 @@
             "query"
           ],
           [
+            "attr_max",
+            "query"
+          ],
+          [
+            "attr_min",
+            "query"
+          ],
+          [
+            "attr_not_set",
+            "query"
+          ],
+          [
+            "attr_set",
+            "query"
+          ],
+          [
             "authorization",
             "header"
           ],
@@ -3578,7 +3594,74 @@
         ],
         "responses": [
           "200",
-          "422"
+          "401",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/tasks/roots/export": {
+      "GET": {
+        "params": [
+          [
+            "assigned_agent",
+            "query"
+          ],
+          [
+            "attr_max",
+            "query"
+          ],
+          [
+            "attr_min",
+            "query"
+          ],
+          [
+            "attr_not_set",
+            "query"
+          ],
+          [
+            "attr_set",
+            "query"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "before",
+            "query"
+          ],
+          [
+            "block_kind",
+            "query"
+          ],
+          [
+            "format",
+            "query"
+          ],
+          [
+            "limit",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "status",
+            "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "404",
+          "409",
+          "413",
+          "422",
+          "503"
         ]
       }
     },

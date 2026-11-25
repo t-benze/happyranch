@@ -2154,5 +2154,732 @@ class AttributeCliTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, [])
 
 
+class RootListExportTests(unittest.IsolatedAsyncioTestCase):
+    """PR5 accepted L/E/A/S cases: real store and shipping HTTP boundary."""
+    create = RouteTests.create
+    inventory = CreationTests.inventory
+    asyncTearDown = RouteTests.asyncTearDown
+
+    async def asyncSetUp(self):
+        self.stack, self.tmp = AsyncExitStack(), tempfile.TemporaryDirectory()
+        self.org, self.client = await self.stack.enter_async_context(
+            route_fixture(Path(self.tmp.name) / "fixture", workers=("worker", "sibling")))
+        self.base = "/api/v1/orgs/alpha"
+        self.defs = self.base + "/task-attributes/definitions"
+        self.roots = self.base + "/tasks/roots"
+
+    def task(self, task_id, attributes=None, **fields):
+        self.org.db.insert_task(TaskRecord(**{"id": task_id, "assigned_agent": "worker",
+            "brief": task_id, "created_at": datetime(2026, 11, 25, tzinfo=timezone.utc), **fields}))
+        if attributes:
+            with self.org.db._lock, self.org.db._attribute_writer():
+                self.org.db._write_task_attributes_initial_uncommitted(task_id, attributes, **ACTOR)
+
+    async def read(self, pairs=(), *, format=None, **params):
+        response = await self.client.get(self.roots + ("/export" if format else ""),
+            params=[*pairs, *params.items(), *([("format", format)] if format else [])])
+        self.assertEqual(response.status_code, 200, response.text[:800])
+        return response
+
+    def ids(self, response):
+        if response.headers["content-type"].startswith("text/csv"):
+            import csv, io
+            return [row["task_id"] for row in csv.DictReader(io.StringIO(response.text, newline=""))]
+        return [row["task_id"] for row in response.json()["tasks"]]
+
+    async def refused(self, pairs, code, reason=None):
+        for suffix in ("", "/export"):
+            response = await self.client.get(self.roots + suffix, params=pairs)
+            self.assertEqual(response.status_code, 422, response.text)
+            self.assertEqual(response.json()["detail"]["code"], code)
+            if reason:
+                self.assertIn(reason, [r for reasons in response.json()["detail"]["errors"].values() for r in reasons])
+
+    async def test_l01_min(self):
+        await self.create()
+        for value in (2, 3, 4):
+            self.task("TASK-" + str(value), {"effort": value})
+        self.task("TASK-absent")
+        response = await self.read([("attr_min", "effort=3")])
+        self.assertEqual(self.ids(response), ["TASK-4", "TASK-3"])
+        self.assertEqual([t["attribute_values"]["effort"] for t in response.json()["tasks"]],
+                         [{"present": True, "value": 4}, {"present": True, "value": 3}])
+
+    async def test_l02_max(self):
+        await self.create()
+        for value in (4, 5, 6):
+            self.task("TASK-" + str(value), {"effort": value})
+        self.task("TASK-absent")
+        self.assertEqual(self.ids(await self.read([("attr_max", "effort=5")])), ["TASK-5", "TASK-4"])
+
+    async def test_l03_equal_bounds(self):
+        await self.create()
+        for i, value in enumerate((3.9, 4, 4.0, 4.1)):
+            self.task(f"TASK-{i}", {"effort": value})
+        response = await self.read([("attr_min", "effort=4"), ("attr_max", "effort=4")])
+        self.assertEqual(self.ids(response), ["TASK-2", "TASK-1"])
+        self.assertEqual([type(t["attribute_values"]["effort"]["value"]) for t in response.json()["tasks"]], [float, int])
+
+    async def test_l04_native_numeric_precision(self):
+        await self.create(constraints={"integer_only": True})
+        values = (-5, 0, 3, 4, 100, 2**53, 2**53+1, 2**64, 2**64+1)
+        for i, value in enumerate(values):
+            self.task(f"TASK-{i:02}", {"effort": value})
+        for bound, expected in (("3.5", list(range(8, 2, -1))), ("1e+2", list(range(8, 3, -1))),
+                                (str(2**53+1), [8, 7, 6]), (str(2**64+1), [8]), ("-5", list(range(8, -1, -1)))):
+            with self.subTest(bound=bound):
+                self.assertEqual(self.ids(await self.read([("attr_min", "effort="+bound)])),
+                                 [f"TASK-{i:02}" for i in expected])
+        self.assertEqual(self.ids(await self.read([("attr_max", "effort=0")])), ["TASK-01", "TASK-00"])
+        response = await self.client.get(self.roots + "?attr_min=effort%3D1e%2B2")
+        self.assertEqual(self.ids(response), [f"TASK-{i:02}" for i in range(8, 3, -1)])
+        await self.refused([("attr_min", "effort=1e 2")], "attribute_filter_invalid")
+
+    async def test_l05_inverted(self):
+        await self.create()
+        self.task("TASK-3", {"effort": 3})
+        before = self.inventory()
+        await self.refused([("attr_min", "effort=7"), ("attr_max", "effort=3")],
+                           "attribute_filter_inverted_range", "min_exceeds_max")
+        self.assertEqual(self.ids(await self.read([("attr_min", "effort=3"), ("attr_max", "effort=3")])), ["TASK-3"])
+        self.assertEqual(before, self.inventory())
+
+    async def test_l06_number_grammar(self):
+        await self.create()
+        for token in ("NaN", "Infinity", "1e999", "true", "null", '"4"', "+1", "01", " 1", "1 ", "", "1"*129):
+            with self.subTest(token=token):
+                await self.refused([("attr_min", "effort="+token)], "attribute_filter_invalid",
+                    "number_too_long" if len(token) > 128 else "expected_finite_json_number")
+        for key, kind in (("label", "string"), ("ready", "boolean")):
+            await self.create(key, type=kind)
+            await self.refused([("attr_min", key+"=7"), ("attr_max", key+"=3")], "attribute_filter_not_numeric")
+        for token in ("-0", "1e-2", "1E+2"):
+            await self.read([("attr_min", "effort="+token)])
+        await self.refused([("attr_min", "effort")], "attribute_filter_invalid", "expected_key_equals_number")
+
+    async def test_l07_repeated_and_conflicting(self):
+        for key in ("effort", "risk"):
+            await self.create(key)
+        self.task("TASK-match", {"effort": 4, "risk": 5})
+        self.task("TASK-other", {"effort": 4, "risk": 1})
+        pairs = [("attr_min", "effort=3"), ("attr_min", "risk=3"), ("attr_set", "effort"), ("attr_set", "risk")]
+        self.assertEqual(self.ids(await self.read(pairs)), ["TASK-match"])
+        for tail in (("attr_min", "effort=3"), ("attr_min", "effort=5"), ("attr_not_set", "effort")):
+            await self.refused(pairs+[tail], "attribute_filter_invalid",
+                "conflicting_predicates" if tail[0] == "attr_not_set" else "duplicate_predicate")
+        await self.refused([("attr_not_set", "effort"), ("attr_set", "effort")], "attribute_filter_invalid")
+        await self.refused([("attr_set", f"key_{i}") for i in range(17)], "attribute_filter_invalid", "too_many_keys")
+        await self.refused([("attr_set", "effort")]*65, "attribute_filter_invalid", "too_many_predicates")
+
+    async def test_l08_key_grammar(self):
+        await self.create("risk_score")
+        self.task("TASK-safe", {"risk_score": 4})
+        response = await self.client.get(self.roots+"?attr_min=risk%5Fscore%3D4")
+        self.assertEqual(self.ids(response), ["TASK-safe"])
+        for key in ("a.b", "a b", "a:b", "a-b", "a[b]", "雪", "x' OR 1=1--", "risk%5Fscore", "A", ""):
+            with self.subTest(key=key):
+                await self.refused([("attr_set", key)], "attribute_filter_invalid", "invalid_key")
+
+    async def test_l09_set_false_like(self):
+        for key, kind, values in (("effort", "numeric", (0, -5)), ("ready", "boolean", (False, True)), ("label", "string", ("", "x"))):
+            await self.create(key, type=kind)
+            for i, value in enumerate(values):
+                self.task(f"TASK-{key}-{i}", {key: value})
+            response = await self.read([("attr_set", key)])
+            self.assertEqual(self.ids(response), [f"TASK-{key}-1", f"TASK-{key}-0"])
+            for row in response.json()["tasks"]:
+                self.assertTrue(row["attribute_values"][key]["present"])
+                self.assertIs(type(row["attribute_values"][key]["value"]), type(values[0]))
+
+    async def test_l10_not_set(self):
+        self.task("TASK-legacy")
+        d = await self.create()
+        for tid, values in (("TASK-never", None), ("TASK-clear", {"effort": 4}), ("TASK-zero", {"effort": 0})):
+            self.task(tid, values)
+        self.org.db.clear_task_attribute("TASK-clear", d["definition_id"], expected_version=1, expected_revision=1, **ACTOR)
+        self.assertEqual(self.ids(await self.read([("attr_not_set", "effort")])), ["TASK-never", "TASK-legacy", "TASK-clear"])
+        for key, kind, value in (("ready", "boolean", False), ("label", "string", "")):
+            await self.create(key, type=kind)
+            self.task("TASK-"+key, {key: value})
+            self.assertNotIn("TASK-"+key, self.ids(await self.read([("attr_not_set", key)])))
+
+    async def test_l11_and_existing_filters(self):
+        await self.create()
+        await self.create("risk")
+        cases = [
+            ("match", {"effort": 4, "risk": 2}, {}),
+            ("effort", {"effort": 1, "risk": 2}, {}),
+            ("risk", {"effort": 4, "risk": 9}, {}),
+            ("agent", {"effort": 4, "risk": 2}, {"assigned_agent": "sibling"}),
+            ("status", {"effort": 4, "risk": 2}, {"status": "pending"}),
+            ("block", {"effort": 4, "risk": 2}, {"block_kind": "blocked_on_job"}),
+            ("parent", None, {}),
+            ("child", {"effort": 4, "risk": 2}, {"parent_task_id": "TASK-parent"}),
+        ]
+        for suffix, values, fields in cases:
+            self.task("TASK-"+suffix, values, **{"status": "in_progress", "block_kind": "delegated", **fields})
+        response = await self.read([("attr_min", "effort=3"), ("attr_max", "risk=3")],
+            assigned_agent="worker", status="in_progress", block_kind="delegated", limit=1)
+        self.assertEqual(self.ids(response), ["TASK-match"])
+
+    async def test_l12_filtered_cursor(self):
+        await self.create()
+        for i in range(6):
+            self.task(f"TASK-{i}", {"effort": i % 2})
+        pairs = [("attr_min", "effort=1")]
+        first = await self.read(pairs, limit=2)
+        self.assertEqual(self.ids(first), ["TASK-5", "TASK-3"])
+        self.assertEqual(first.json()["next_cursor"], "TASK-3")
+        self.assertEqual(self.ids(await self.read(pairs, limit=2, before="TASK-3")), ["TASK-1"])
+        self.assertEqual(self.ids(await self.read(pairs, before="TASK-4")), ["TASK-3", "TASK-1"])
+        self.assertEqual(self.ids(await self.read(pairs, before="missing")), [])
+        await self.refused([("attr_set", "unknown"), ("before", "missing")], "attribute_filter_unknown_key")
+
+    async def test_l13_existing_roots_projection(self):
+        await self.create()
+        self.task("TASK-root", {"effort": 4})
+        self.task("TASK-failed", parent_task_id="TASK-root", status="failed")
+        self.task("TASK-retry", parent_task_id="TASK-root", revisit_of_task_id="TASK-failed", status="completed")
+        self.task("TASK-root-retry", revisit_of_task_id="TASK-root", status="completed")
+        response = await self.read([("attr_set", "effort")], status="pending")
+        row = response.json()["tasks"][0]
+        self.assertEqual(row["task_id"], "TASK-root")
+        self.assertEqual(row["severity_rollup"], "pending")
+        self.assertEqual(row["direct_revisits"], ["TASK-root-retry"])
+        self.assertTrue({"pause", "brief", "effective_model", "effective_reasoning_effort",
+                         "originating_thread_id", "originating_task_id"} <= row.keys())
+
+    async def test_l14_unknown_current_key(self):
+        await self.refused([("attr_set", "missing")], "attribute_filter_unknown_key")
+        d = await self.create("old")
+        self.org.db.update_task_attribute_definition(d["definition_id"], expected_version=1, key="new")
+        await self.refused([("attr_set", "old")], "attribute_filter_unknown_key")
+        await self.read([("attr_set", "new")])
+        # Another real org DB owns this key; alpha never discovers it.
+        with closing(Database(Path(self.tmp.name) / "beta.db")) as beta:
+            beta.create_task_attribute_definition(key="foreign", type="numeric", name="Foreign")
+            await self.refused([("attr_set", "foreign")], "attribute_filter_unknown_key")
+
+    async def test_l15_archived(self):
+        d = await self.create()
+        self.task("TASK-set", {"effort": 4})
+        self.task("TASK-unset")
+        self.org.db.archive_task_attribute_definition(d["definition_id"], expected_version=1)
+        before = self.inventory()
+        for pairs, expected in (([("attr_min", "effort=3")], ["TASK-set"]),
+                                ([("attr_set", "effort")], ["TASK-set"]),
+                                ([("attr_not_set", "effort")], ["TASK-unset"])):
+            for format in (None, "json", "csv"):
+                response = await self.read(pairs, format=format)
+                self.assertEqual(self.ids(response), expected)
+                if format == "json":
+                    self.assertTrue(response.json()["attribute_definitions"][0]["archived"])
+        self.assertNotIn("attribute:effort", (await self.read(format="json")).json()["columns"])
+        self.assertEqual(before, self.inventory())
+
+    async def test_l16_current_projection(self):
+        effort = await self.create()
+        await self.create("ready", type="boolean")
+        label = await self.create("label", type="string")
+        await self.create("unfiltered")
+        self.task("TASK-current", {"effort": 4, "ready": False, "label": "", "unfiltered": 8})
+        self.org.db.set_task_attribute("TASK-current", effort["definition_id"], 6, expected_version=1, expected_revision=1, **ACTOR)
+        self.org.db.clear_task_attribute("TASK-current", label["definition_id"], expected_version=1, expected_revision=1, **ACTOR)
+        row = (await self.read([("attr_min", "effort=3"), ("attr_max", "effort=7"),
+                               ("attr_set", "ready"), ("attr_not_set", "label")])).json()["tasks"][0]
+        self.assertEqual(row["attribute_values"], {"effort": {"present": True, "value": 6},
+            "ready": {"present": True, "value": False}, "label": {"present": False}})
+        self.assertEqual((await self.read()).json()["tasks"][0]["attribute_values"], {})
+
+
+    async def test_e01_list_export_parity(self):
+        effort = await self.create()
+        await self.create("ready", type="boolean")
+        for i in range(5):
+            self.task(f"TASK-{i}", {"effort": i, "ready": i % 2 == 0},
+                status="in_progress" if i != 1 else "pending", block_kind="delegated",
+                assigned_agent="sibling" if i == 3 else "worker")
+        self.org.db.archive_task_attribute_definition(effort["definition_id"], expected_version=1)
+        cases = [((), {}, ["TASK-4", "TASK-3", "TASK-2", "TASK-1", "TASK-0"]),
+                 ([("attr_min", "effort=2")], {"assigned_agent": "worker"}, ["TASK-4", "TASK-2"]),
+                 ([("attr_set", "ready")], {"status": "pending"}, ["TASK-1"]),
+                 ([("attr_not_set", "effort")], {}, []),
+                 ([("attr_min", "effort=1"), ("attr_max", "effort=3")],
+                  {"status": "in_progress", "block_kind": "delegated", "before": "TASK-4", "limit": 1}, ["TASK-3"])]
+        for pairs, params, expected in cases:
+            cursors = []
+            for format in (None, "json", "csv"):
+                response = await self.read(pairs, format=format, **params)
+                self.assertEqual(self.ids(response), expected)
+                cursors.append(response.headers.get("X-HappyRanch-Next-Cursor") if format == "csv"
+                               else response.json()["next_cursor"])
+            self.assertEqual(cursors, [cursors[0]]*3)
+
+    async def test_e02_columns(self):
+        self.task("TASK-empty")
+        empty = (await self.read(format="json")).json()
+        self.assertEqual(empty["columns"], ["task_id", "brief_excerpt", "status", "assigned_agent", "created_at"])
+        self.assertEqual(empty["attribute_definitions"], [])
+        await self.create("zeta", type="string", name="雪")
+        await self.create("alpha")
+        a = await self.create("archived")
+        self.org.db.archive_task_attribute_definition(a["definition_id"], expected_version=1)
+        for pairs, keys in (([], ["alpha", "zeta"]), ([("attr_not_set", "archived")], ["alpha", "archived", "zeta"])):
+            data = (await self.read(pairs, format="json")).json()
+            self.assertEqual(data["columns"][5:], ["attribute:"+key for key in keys])
+            self.assertEqual([d["key"] for d in data["attribute_definitions"]], keys)
+            self.assertEqual(data["tasks"][0]["attribute_values"], {key: {"present": False} for key in keys})
+            self.assertEqual(data["attribute_definitions"][-1]["name"], "雪")
+        data = (await self.read(format="json", status="failed")).json()
+        self.assertEqual(data["tasks"], [])
+        self.assertEqual(data["columns"][5:], ["attribute:alpha", "attribute:zeta"])
+
+    async def test_e03_compact_fields(self):
+        brief = "雪\r\n\0" + "😀"*210
+        self.task("TASK-long", brief=brief, assigned_agent=None)
+        row = (await self.read(format="json")).json()["tasks"][0]
+        self.assertEqual(row, {"task_id": "TASK-long", "brief_excerpt": brief[:200], "status": "pending",
+            "assigned_agent": None, "created_at": "2026-11-25T00:00:00+00:00", "attribute_values": {}})
+        self.assertEqual((await self.read()).json()["tasks"][0]["brief"], brief)
+
+    async def test_e04_one_snapshot(self):
+        # Same bounded connection-wrapper venue as P25, with two new read gaps.
+        for i, (format, boundary) in enumerate((f, b) for f in (None, "json", "csv") for b in ("definitions", "roots")):
+            with self.subTest(format=format, boundary=boundary):
+                d = await self.create(f"effort_{i}", name="Old")
+                label = await self.create(f"label_{i}", type="string")
+                tid = f"TASK-snapshot-{i}"
+                self.task(tid, {d["key"]: 4}, brief="old")
+                connection = self.org.db._conn
+                observer = Database(Path(connection.execute("PRAGMA database_list").fetchone()[2]))
+                class SnapshotGate(BeginGate):
+                    def execute(gate, sql, parameters=()):
+                        cursor = gate.connection.execute(sql, parameters)
+                        marker = "FROM task_attribute_definitions d" if boundary == "definitions" else "FROM tasks t WHERE"
+                        if gate.hits == 0 and marker in sql:
+                            gate.hits += 1
+                            gate.arrived.set()
+                            if not gate.release.wait(5):
+                                raise AssertionError("snapshot gate deadline")
+                        return cursor
+                gate = SnapshotGate(connection)
+                self.org.db._conn = gate
+                pairs = [("attr_min", d["key"]+"=3")]
+                pending = asyncio.create_task(asyncio.to_thread(lambda: asyncio.run(self.read(pairs, format=format))))
+                try:
+                    self.assertTrue(await asyncio.to_thread(gate.arrived.wait, 5))
+                    observer.set_task_attribute(tid, d["definition_id"], 2, expected_version=1, expected_revision=1, **ACTOR)
+                    observer.update_task_attribute_definition(d["definition_id"], expected_version=1, name="New")
+                    observer.archive_task_attribute_definition(label["definition_id"], expected_version=1)
+                    observer.execute("UPDATE tasks SET brief='new',status='failed' WHERE id=?", (tid,))
+                    observer.commit()
+                    self.assertFalse(observer._conn.in_transaction, "writer COMMIT precedes reader release")
+                finally:
+                    gate.release.set()
+                    try:
+                        response = await asyncio.wait_for(pending, 10)
+                    finally:
+                        self.org.db._conn = connection
+                        observer.close()
+                self.assertEqual(self.ids(response), [tid])
+                if format == "csv":
+                    import csv, io
+                    row = next(csv.DictReader(io.StringIO(response.text, newline="")))
+                    self.assertEqual((row["brief_excerpt"], row["status"], row["attribute:"+d["key"]]), ("old", "pending", "4"))
+                    self.assertIn("attribute:"+label["key"], row)
+                else:
+                    data = response.json()
+                    row = data["tasks"][0]
+                    self.assertEqual((row["brief_excerpt" if format else "brief"], row["status"]), ("old", "pending"))
+                    self.assertEqual(row["attribute_values"][d["key"]]["value"], 4)
+                    if format:
+                        metadata = {v["key"]: v for v in data["attribute_definitions"]}
+                        self.assertEqual((metadata[d["key"]]["name"], metadata[d["key"]]["version"]), ("Old", 1))
+                        self.assertIn(label["key"], metadata)
+                after = await self.read(pairs, format=format)
+                self.assertEqual(self.ids(after), [])
+                if format == "json":
+                    metadata = {v["key"]: v for v in after.json()["attribute_definitions"]}
+                    self.assertEqual(metadata[d["key"]]["name"], "New")
+                    self.assertNotIn(label["key"], metadata)
+
+    async def test_e05_page_cap(self):
+        for i in range(1001):
+            self.task(f"TASK-{i:04}")
+        self.assertEqual(len(self.ids(await self.read(format="json"))), 20)
+        for format in ("json", "csv"):
+            response = await self.read(format=format, limit=1000)
+            self.assertEqual(self.ids(response), [f"TASK-{i:04}" for i in range(1000, 0, -1)])
+            self.assertEqual(response.headers["X-HappyRanch-Next-Cursor"], "TASK-0001")
+            last = await self.read(format=format, limit=1, before="TASK-0001")
+            self.assertEqual(self.ids(last), ["TASK-0000"])
+            self.assertEqual(last.headers["X-HappyRanch-Page-Full"], "true")
+            self.assertEqual(self.ids(await self.read(format=format, before="TASK-0000")), [])
+            self.assertEqual(self.ids(await self.read(format=format, before="missing")), [])
+        self.assertEqual(len(self.ids(await self.read(limit=1001))), 1001)
+        self.assertEqual(self.ids(await self.read(limit=0)), [])
+        self.assertEqual(len(self.ids(await self.read(limit=-1))), 1001)
+
+    async def test_e06_export_validation(self):
+        for params in ([("limit", v)] for v in ("0", "-1", "1001", "1.5", "abc")):
+            response = await self.client.get(self.roots+"/export", params=params)
+            self.assertEqual(response.status_code, 422, response.text)
+            self.assertEqual(response.json()["detail"]["errors"], {"limit": ["integer_1_1000"]})
+        for pairs in ([("limit", "1"), ("limit", "1")], [("format", "json"), ("format", "csv")], [("format", "xml")]):
+            response = await self.client.get(self.roots+"/export", params=pairs)
+            self.assertEqual((response.status_code, response.json()["detail"]["code"]), (422, "task_export_invalid"))
+            self.assertNotIn("content-disposition", response.headers)
+        for limit in (1, 1000):
+            for format in ("json", "csv"):
+                await self.read(format=format, limit=limit)
+
+    async def test_e07_export_size(self):
+        db = self.org.db
+        with db._lock, db._attribute_writer():
+            definitions = [db._create_task_attribute_definition_uncommitted(key=f"cap_{i:03}", type="string", name=str(i)) for i in range(257)]
+        for format in ("json", "csv"):
+            response = await self.client.get(self.roots+"/export", params={"format": format})
+            self.assertEqual(response.status_code, 413, response.text)
+            self.assertIn("too_many_attribute_columns", response.text)
+            self.assertNotIn("content-disposition", response.headers)
+        db.archive_task_attribute_definition(definitions[-1]["definition_id"], expected_version=1)
+        response = await self.read(format="json")
+        self.assertEqual(len(response.json()["columns"]), 261)
+        response = await self.client.get(self.roots+"/export", params={"attr_not_set": "cap_256"})
+        self.assertEqual(response.status_code, 413)
+        # 200 valid 4000-code-point scalars per row: encoded bytes govern.
+        for d in definitions[200:256]:
+            db.archive_task_attribute_definition(d["definition_id"], expected_version=1)
+        definitions = definitions[:200]
+        for i in range(4):
+            self.task(f"TASK-size-{i}", {d["key"]: ("雪"*4000 if i < 3 else "") for d in definitions})
+        below = await self.read(format="json", limit=4)
+        cap = 8*1024*1024
+        remaining = cap - len(below.content)
+        self.assertGreater(remaining, 0)
+        changes, values = [], {}
+        for d in definitions:
+            n = min(12000, remaining)
+            value = "雪"*(n//3) + ("é" if n % 3 == 2 else "x" if n % 3 else "")
+            self.assertLessEqual(len(value), 4000)
+            values[d["key"]] = value
+            changes.append({"definition_id": d["definition_id"], "expected_version": 1,
+                            "expected_revision": 1, "op": "set", "value": value})
+            remaining -= n
+        self.assertEqual(remaining, 0)
+        with db._lock, db._attribute_writer():
+            db._write_task_attribute_changes_uncommitted("TASK-size-3", changes, **ACTOR)
+        exact = await self.read(format="json", limit=4)
+        self.assertEqual(len(exact.content), cap)
+        spare = next(d for d in definitions if not values[d["key"]])
+        db.set_task_attribute("TASK-size-3", spare["definition_id"], "x", expected_version=1, expected_revision=2, **ACTOR)
+        response = await self.client.get(self.roots+"/export", params={"limit": 4})
+        self.assertEqual(response.status_code, 413, response.text[:500])
+        self.assertIn("encoded_body_too_large", response.text)
+        self.assertNotIn("content-disposition", response.headers)
+        # Fill the final row to exceed CSV's cap too.
+        with db._lock, db._attribute_writer():
+            changes = [{**c, "expected_revision": 3 if c["definition_id"] == spare["definition_id"] else 2, "value": "雪"*4000} for c in changes]
+            db._write_task_attribute_changes_uncommitted("TASK-size-3", changes, **ACTOR)
+        response = await self.client.get(self.roots+"/export", params={"format": "csv", "limit": 4})
+        self.assertEqual(response.status_code, 413, response.text[:500])
+        self.assertLessEqual(len((await self.read(format="csv", limit=3)).content), cap)
+
+    async def test_e08_csv_formula_safety(self):
+        import csv, io
+        await self.create("text", type="string")
+        await self.create("number")
+        await self.create("boolean", type="boolean")
+        controls = ("=1", "+1", "-1", "@x", "\tcell", "\rcell", "", " space", "'quoted", "safe")
+        for i, value in enumerate(controls):
+            self.task(f"TASK-{i:02}", {"text": value, "number": -5 if i == 0 else 0, "boolean": False}, brief=value)
+        response = await self.read(format="csv")
+        rows = list(csv.DictReader(io.StringIO(response.text, newline="")))
+        for row in rows:
+            i = int(row["task_id"].split("-")[-1])
+            expected = "'" + controls[i] if i < 6 else controls[i]
+            self.assertEqual((row["brief_excerpt"], row["attribute:text"]), (expected, expected))
+            self.assertEqual(row["attribute:number"], "'-5" if i == 0 else "0")
+            self.assertEqual(row["attribute:boolean"], "false")
+
+    async def test_e09_csv_roundtrip(self):
+        import csv, io
+        await self.create("text", type="string")
+        value = '=雪,"quoted"\r\nnext\n😀'
+        self.task("TASK-rfc", {"text": value}, brief=value)
+        response = await self.read(format="csv")
+        raw = response.content
+        self.assertEqual(response.headers["content-type"], "text/csv; charset=utf-8")
+        self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
+        self.assertTrue(raw.endswith(b"\r\n"))
+        self.assertIn(b'""quoted""', raw)
+        rows = list(csv.reader(io.StringIO(raw.decode("utf-8"), newline="")))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1], ["TASK-rfc", "'"+value, "pending", "worker", "2026-11-25T00:00:00+00:00", "'"+value])
+        self.assertEqual(raw.count(b"\r\n"), 4)  # header, two embedded CRLFs, record
+
+    async def test_e10_json_native(self):
+        for key, kind in (("text", "string"), ("number", "numeric"), ("ready", "boolean"), ("empty", "string"), ("absent", "string")):
+            await self.create(key, type=kind)
+        value = "=雪\t\r\n"
+        self.task("TASK-json", {"text": value, "number": 2**64+1, "ready": False, "empty": ""}, brief=value)
+        data = (await self.read(format="json")).json()["tasks"][0]
+        self.assertEqual(data["brief_excerpt"], value)
+        self.assertEqual(data["attribute_values"], {"text": {"present": True, "value": value},
+            "number": {"present": True, "value": 2**64+1}, "ready": {"present": True, "value": False},
+            "empty": {"present": True, "value": ""}, "absent": {"present": False}})
+        d = next(d for d in self.org.db.list_task_attribute_definitions() if d["key"] == "number")
+        self.org.db.set_task_attribute("TASK-json", d["definition_id"], -5, expected_version=1, expected_revision=1, **ACTOR)
+        self.assertEqual((await self.read(format="json")).json()["tasks"][0]["attribute_values"]["number"]["value"], -5)
+
+    async def test_e11_response_headers(self):
+        from runtime.daemon.routes.task_roots_export import export_headers
+        started = datetime(2026, 11, 25, 12, 15, 52, tzinfo=timezone.utc)
+        for format in ("json", "csv"):
+            for slug in ("alpha", '雪/\r\n"bad', "", "a"*100):
+                headers = export_headers(slug, format, 20, None, False, started)
+                disposition = headers["Content-Disposition"]
+                self.assertRegex(disposition, r'attachment; filename="task-roots-[A-Za-z0-9_-]{1,64}-20261125T121552Z\.'+format+r'"; filename\*=UTF-8')
+                self.assertNotIn("\r", disposition)
+                self.assertNotIn("\n", disposition)
+            response = await self.read(format=format)
+            self.assertEqual(response.headers["cache-control"], "no-store")
+            self.assertEqual(response.headers["X-HappyRanch-Export-Limit"], "20")
+            self.assertEqual(response.headers["X-HappyRanch-Page-Full"], "false")
+            self.assertNotIn("X-HappyRanch-Next-Cursor", response.headers)
+            self.assertIn("task-roots-alpha-", response.headers["content-disposition"])
+        self.task("TASK-header")
+        response = await self.read(format="json", limit=1)
+        self.assertEqual(response.headers["X-HappyRanch-Next-Cursor"], "TASK-header")
+        self.assertEqual(response.headers["content-type"], "application/json")
+
+
+    async def test_a01_roots_authority_parity(self):
+        await self.create()
+        self.task("TASK-authority", {"effort": 4}, status="in_progress", current_session_id="synthetic-worker")
+        self.org.sessions.set_active("TASK-authority", "worker", "synthetic-worker", org_slug="alpha")
+        state = self.client._transport.app.state.daemon
+        for authorization in ("", "Bearer synthetic-wrong-token", "Bearer synthetic-founder-token"):
+            for session in (None, "synthetic-worker"):
+                responses = [await self.client.get(self.roots+suffix, headers={"Authorization": authorization},
+                    params=[("attr_min", "effort=3"), *([("session_id", session)] if session else [])])
+                    for suffix in ("", "/export")]
+                self.assertEqual(responses[0].status_code, 200 if authorization.endswith("founder-token") else 401)
+                self.assertEqual(responses[1].status_code, responses[0].status_code)
+                if responses[0].status_code == 200:
+                    self.assertEqual(self.ids(responses[0]), ["TASK-authority"])
+                    self.assertEqual(self.ids(responses[1]), ["TASK-authority"])
+                else:
+                    self.assertEqual(responses[0].json(), responses[1].json())
+        for mode in ("unknown", "idle", "busy"):
+            runtime, pending = state.runtime, state._attachment_swap_pending
+            try:
+                if mode == "idle":
+                    state.runtime = None
+                if mode == "busy":
+                    state._attachment_swap_pending = True
+                url = self.roots.replace("/alpha/", "/missing/") if mode == "unknown" else self.roots
+                responses = [await self.client.get(url+suffix) for suffix in ("", "/export")]
+                self.assertEqual(responses[0].status_code, 404 if mode == "unknown" else 409)
+                self.assertEqual((responses[1].status_code, responses[1].json()),
+                                 (responses[0].status_code, responses[0].json()))
+            finally:
+                state.runtime, state._attachment_swap_pending = runtime, pending
+
+    async def test_a02_read_only(self):
+        d = await self.create()
+        self.task("TASK-readonly", {"effort": 4})
+        self.org.db.archive_task_attribute_definition(d["definition_id"], expected_version=1)
+        before = self.inventory()
+        queue = self.client._transport.app.state.daemon.queue
+        queued = queue._queue.qsize()
+        config = (self.org.root / "org/config.yaml").read_bytes()
+        for format in (None, "json", "csv"):
+            await self.read([("attr_set", "effort")], format=format)
+            await self.read([("attr_not_set", "effort")], format=format)
+            await self.read(format=format, status="failed")
+        await self.refused([("attr_set", "missing")], "attribute_filter_unknown_key")
+        response = await self.client.get(self.roots+"/export?limit=1001")
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.inventory(), before)
+        with self.org.db._lock, self.org.db._attribute_writer():
+            for i in range(257):
+                self.org.db._create_task_attribute_definition_uncommitted(key=f"readonly_{i}", type="boolean", name=str(i))
+        before = self.inventory()
+        response = await self.client.get(self.roots+"/export")
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(self.inventory(), before)
+        self.assertEqual(queue._queue.qsize(), queued)
+        self.assertEqual((self.org.root / "org/config.yaml").read_bytes(), config)
+
+    async def test_a03_failure_atomic_read(self):
+        await self.create()
+        self.task("TASK-read", {"effort": 4})
+        connection = self.org.db._conn
+        for format in (None, "json", "csv"):
+            connection.set_authorizer(lambda action, name, *_: sqlite3.SQLITE_DENY
+                if action == sqlite3.SQLITE_READ and name == "task_attribute_values" else sqlite3.SQLITE_OK)
+            try:
+                response = await self.client.get(self.roots+("/export" if format else ""),
+                    params={"attr_set": "effort", **({"format": format} if format else {})})
+                self.assertEqual((response.status_code, response.json()), (503, {"detail": {"code": "attribute_storage_unavailable"}}))
+                self.assertNotIn("content-disposition", response.headers)
+            finally:
+                connection.set_authorizer(None)
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(self.ids(await self.read([("attr_set", "effort")], format=format)), ["TASK-read"])
+            with patch("runtime.infrastructure.memory_collection.MAX_CENSUS_READ_ROWS", 0):
+                response = await self.client.get(self.roots+("/export" if format else ""))
+                self.assertEqual(response.status_code, 503, response.text)
+                self.assertIn("census_database_size_limit", response.text)
+            self.assertFalse(connection.in_transaction)
+            await self.read(format=format)
+
+    async def test_s01_served_contract(self):
+        schema = (await self.client.get("/openapi.json")).json()
+        prefix = "/api/v1/orgs/{slug}/tasks/roots"
+        for suffix in ("", "/export"):
+            op = schema["paths"][prefix+suffix]["get"]
+            parameters = {p["name"]: p["schema"] for p in op["parameters"]}
+            for key in ("attr_min", "attr_max", "attr_set", "attr_not_set"):
+                self.assertIn({"type": "array", "items": {"type": "string"}}, parameters[key]["anyOf"])
+            self.assertTrue({"401", "404", "409", "422", "503", "200"} <= op["responses"].keys())
+            self.assertIn("application/json", op["responses"]["200"]["content"])
+        op = schema["paths"][prefix+"/export"]["get"]
+        parameters = {p["name"]: p["schema"] for p in op["parameters"]}
+        self.assertEqual({k: parameters["limit"][k] for k in ("type", "minimum", "maximum", "default")},
+                         {"type": "integer", "minimum": 1, "maximum": 1000, "default": 20})
+        self.assertEqual(parameters["format"]["enum"], ["json", "csv"])
+        self.assertEqual(parameters["format"]["default"], "json")
+        self.assertIn("413", op["responses"])
+        self.assertIn("text/csv", op["responses"]["200"]["content"])
+        self.assertIn("X-HappyRanch-Next-Cursor", op["responses"]["200"]["headers"])
+        models = schema["components"]["schemas"]
+        self.assertIn("attribute_values", models["RootListRow"]["properties"])
+        self.assertEqual(set(models["ExportTask"]["properties"]),
+            {"task_id", "brief_excerpt", "status", "assigned_agent", "created_at", "attribute_values"})
+        self.assertIn("attribute_definitions", models["RootsExportRead"]["properties"])
+        classification = json.loads((Path(__file__).resolve().parents[1] / "tests/contract/route-classification.json").read_text())
+        self.assertEqual(classification["included"].count("GET "+prefix+"/export"), 1)
+        self.assertFalse(set(classification["included"]) & set(classification["excluded"]))
+
+
+class RootListExportCliTests(unittest.IsolatedAsyncioTestCase):
+    asyncSetUp = RootListExportTests.asyncSetUp
+    asyncTearDown = RootListExportTests.asyncTearDown
+    create = RouteTests.create
+    task = RootListExportTests.task
+    invoke = AttributeCliTests.invoke
+
+    async def test_c01_roots_opt_in(self):
+        await self.create()
+        self.task("TASK-root", {"effort": 4})
+        self.task("TASK-child", {"effort": 5}, parent_task_id="TASK-root")
+        for flags, expected, suffix in ((["--json"], ["TASK-root", "TASK-child"], "/tasks"),
+                                        (["--roots", "--json"], ["TASK-root"], "/tasks/roots")):
+            code, out, err, calls = await self.invoke("tasks", *flags)
+            self.assertEqual(code, 0, err)
+            self.assertEqual([row["task_id"] for row in json.loads(out)], expected)
+            self.assertTrue(any(path.endswith(suffix) for _, path, _, _ in calls))
+        code, out, err, _ = await self.invoke("tasks", "--roots", "--attr-min", "effort=3")
+        self.assertEqual(code, 0, err)
+        self.assertIn("effort=4", out)
+        self.assertNotIn("TASK-child", out)
+
+    async def test_c02_filters_and_pages(self):
+        for key in ("effort", "risk"):
+            await self.create(key)
+        for i in range(6):
+            self.task(f"TASK-{i}", {"effort": 100 if i % 2 else 0, "risk": 5},
+                      status="in_progress", block_kind="delegated")
+        response = await self.client.put(self.base+"/agents/worker/addressable-name",
+            json={"addressable_name": "Builder", "expected_name_revision": 1})
+        self.assertEqual(response.status_code, 200, response.text)
+        for address in ("Builder", "worker"):
+            code, out, err, calls = await self.invoke("tasks", "--roots", "--agent", address,
+                "--status", "in_progress", "--block-kind", "delegated", "--limit", "1", "--before", "TASK-5",
+                "--attr-min", "effort=1e+2", "--attr-min", "risk=3", "--attr-max", "risk=6",
+                "--attr-set", "effort", "--all-pages", "--json")
+            self.assertEqual(code, 0, err)
+            self.assertEqual([row["task_id"] for row in json.loads(out)], ["TASK-1", "TASK-3"])
+            root_calls = [c for c in calls if c[1].endswith("/tasks/roots")]
+            self.assertEqual([c[2]["params"]["before"] for c in root_calls], ["TASK-5", "TASK-3", "TASK-1"])
+            for call in root_calls:
+                self.assertEqual(call[2]["params"]["attr_min"], ["effort=1e+2", "risk=3"])
+                self.assertEqual(call[2]["params"]["assigned_agent"], "worker")
+
+    async def test_c03_option_conflicts(self):
+        for flags in (["--attr-min", "effort=3"], ["--before", "TASK-1"], ["--export", "csv"],
+                      ["--roots", "--export", "csv", "--all-pages"], ["--roots", "--export", "csv", "--json"],
+                      ["--roots", "--export", "csv", "--pause-overview"], ["--roots", "--pause-overview"],
+                      ["--attr-set", "ready", "--pause-overview"], ["--before", "TASK-1", "--pause-overview"],
+                      ["--output", str(Path(self.tmp.name)/"never")]):
+            with self.subTest(flags=flags):
+                code, out, err, calls = await self.invoke("tasks", *flags)
+                self.assertEqual(code, 2, err)
+                self.assertEqual((out, calls), ("", []))
+                self.assertIn("Error", err)
+        self.assertFalse((Path(self.tmp.name)/"never").exists())
+
+    async def test_c04_export_bytes(self):
+        await self.create("label", type="string")
+        self.task("TASK-bytes", {"label": '=雪,"x"\r\n😀'}, brief="-5")
+        for format in ("json", "csv"):
+            for output in (None, Path(self.tmp.name)/("export."+format)):
+                code, out, err, calls = await self.invoke("tasks", "--roots", "--export", format, "--limit", "1",
+                    *(["--output", str(output)] if output else []))
+                self.assertEqual(code, 0, err)
+                exports = [c for c in calls if c[1].endswith("/tasks/roots/export")]
+                self.assertEqual(len(exports), 1)
+                raw = exports[0][3].content
+                self.assertEqual(output.read_bytes() if output else out.encode("utf-8"), raw)
+                self.assertEqual(out if output else "", "")
+                self.assertIn("page_full=true", err)
+                self.assertIn("--before TASK-bytes", err)
+                self.assertFalse(any(c[1].endswith("/tasks/roots") for c in calls))
+
+    async def test_c05_export_refusal(self):
+        import httpx
+        from cli.client.client import DaemonNotRunning
+        await self.create()
+        self.task("TASK-refusal", {"effort": 4})
+        output = Path(self.tmp.name)/"preserved.csv"
+        output.write_bytes(b"keep")
+        for flags, reason in ((["--attr-set", "missing"], "attribute_filter_unknown_key"),
+                              (["--limit", "1001"], "task_export_invalid")):
+            code, out, err, calls = await self.invoke("tasks", "--roots", "--export", "csv", "--output", str(output), *flags)
+            self.assertEqual((code, out, output.read_bytes()), (1, "", b"keep"))
+            self.assertIn(reason, err)
+            self.assertEqual(sum(c[1].endswith("/tasks/roots/export") for c in calls), 1)
+        self.org.db._conn.set_authorizer(lambda action, name, *_: sqlite3.SQLITE_DENY
+            if action == sqlite3.SQLITE_READ and name == "task_attribute_values" else sqlite3.SQLITE_OK)
+        try:
+            code, out, err, _ = await self.invoke("tasks", "--roots", "--export", "csv", "--output", str(output))
+            self.assertEqual((code, out, output.read_bytes()), (1, "", b"keep"))
+            self.assertIn("attribute_storage_unavailable", err)
+        finally:
+            self.org.db._conn.set_authorizer(None)
+        with self.org.db._lock, self.org.db._attribute_writer():
+            for i in range(256):
+                self.org.db._create_task_attribute_definition_uncommitted(key=f"refuse_{i}", type="boolean", name=str(i))
+        code, out, err, _ = await self.invoke("tasks", "--roots", "--export", "csv", "--output", str(output))
+        self.assertEqual((code, out, output.read_bytes()), (1, "", b"keep"))
+        self.assertIn("task_export_too_large", err)
+        code, out, err, calls = await self.invoke("tasks", "--roots", "--export", "csv", "--output", str(output),
+            startup_error=DaemonNotRunning("synthetic unavailable"))
+        self.assertEqual((code, out, calls, output.read_bytes()), (1, "", [], b"keep"))
+        self.assertIn("synthetic unavailable", err)
+        transport = self.client._transport
+        original = transport.handle_async_request
+        async def unavailable(request):
+            if request.url.path.endswith("/tasks/roots/export"):
+                raise httpx.ConnectError("synthetic connection lost")
+            return await original(request)
+        with patch.object(transport, "handle_async_request", unavailable):
+            code, out, err, _ = await self.invoke("tasks", "--roots", "--export", "csv", "--output", str(output))
+            self.assertEqual((code, out, output.read_bytes()), (1, "", b"keep"))
+            self.assertIn("synthetic connection lost", err)
+
+
 if __name__ == "__main__":
     unittest.main()

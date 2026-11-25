@@ -58,6 +58,45 @@ def _version(value: int, field: str, minimum: int = 1) -> None:
 
 
 class TaskAttributesMixin:
+    @_synchronized
+    def root_attribute_definitions(self, keys: list[str], *, for_export: bool = False) -> list[dict]:
+        """Current key resolution; reservations are never aliases.
+
+        Export reads a bounded metadata-only union, including filtered archives.
+        The request owner holds coherent_read_view across selection and values.
+        """
+        if not keys and not for_export:
+            return []
+        selected = "v.key IN (" + ",".join("?" for _ in keys) + ")" if keys else "0"
+        where = f"(d.archived_at IS NULL OR {selected})" if for_export else selected
+        rows = self._conn.execute(
+            "SELECT v.key,v.definition_id,v.version,v.type,v.name,d.archived_at "
+            "FROM task_attribute_definitions d JOIN task_attribute_definition_versions v "
+            "ON v.definition_id=d.definition_id AND v.version=d.current_version "
+            f"WHERE {where} ORDER BY v.key LIMIT 257", tuple(keys),
+        ).fetchall()
+        return [{**{k: row[k] for k in ("key", "definition_id", "version", "type", "name")},
+                 "archived": row["archived_at"] is not None} for row in rows]
+
+    @_synchronized
+    def root_attribute_values(self, task_ids: list[str], definitions: list[dict]) -> dict[str, dict]:
+        """Batch current presence only; no initial estimates or history reads."""
+        result = {task_id: {d["key"]: {"present": False} for d in definitions} for task_id in task_ids}
+        if not task_ids or not definitions:
+            return result
+        by_id = {d["definition_id"]: d["key"] for d in definitions}
+        for offset in range(0, len(task_ids), 200):
+            chunk = task_ids[offset:offset + 200]
+            rows = self._conn.execute(
+                "SELECT task_id,definition_id,present,value_json FROM task_attribute_values "
+                f"WHERE task_id IN ({','.join('?' for _ in chunk)}) "
+                f"AND definition_id IN ({','.join('?' for _ in by_id)})",
+                (*chunk, *by_id),
+            )
+            for row in rows:
+                result[row["task_id"]][by_id[row["definition_id"]]] = _presence(row["present"], row["value_json"])
+        return result
+
     @contextmanager
     def _attribute_writer(self):
         # Never commit/rollback a transaction owned by another domain caller.

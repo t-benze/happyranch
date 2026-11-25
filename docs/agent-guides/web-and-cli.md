@@ -6365,9 +6365,80 @@ archives retain stable-ID/historical reads and refuse writes. Native scalar,
 initial/provenance/history and authority details are in the
 [attribute contract](../specs/2026-11-25-custom-task-attributes.md#pr2-http-routes).
 `api/taskAttributes.ts` and `taskAttributeTypes.ts` are handwritten mirrors.
-Plain creation and CLI ship in PR3 below; other creation producers, UI,
-filters/export and score seeds remain later slices.
+Plain creation and CLI ship in PR3 below; roots filters/export ship in PR5
+below. Other creation producers, UI and score seeds are separate slices.
 
+
+## Roots attribute filters and export (THR-390 PR5)
+
+`happyranch tasks --roots` opts into `GET /tasks/roots`. Plain `tasks`
+continues using `/tasks`, including descendants. Repeat `--attr-min KEY=NUMBER`,
+`--attr-max KEY=NUMBER`, `--attr-set KEY`, and `--attr-not-set KEY`.
+All attribute predicates AND with `--agent`, `--status`, `--block-kind`,
+`--before TASK-ID`, and `--limit`. Agent names resolve to permanent IDs as
+usual. Rows include current typed `attribute_values` for exactly the filtered
+keys; text prints sorted `key=value` or `key=<not-set>`.
+
+Keys match `[a-z][a-z0-9_]{0,63}` exactly. Bounds use finite JSON number syntax,
+at most 128 ASCII characters: no whitespace, leading `+`, leading zeros,
+NaN, infinity, booleans or quoted numbers. Integer precision is preserved;
+fractional bounds on integer-only definitions are valid. Ranges are inclusive
+and imply present; zero, false and empty strings are set. Never-supplied and
+cleared values are not-set. Each operator/key may occur once; min+max and
+set+range are allowed; inverted bounds and not-set+set/range refuse. At most
+16 distinct keys and 64 predicates. HTTP uses repeatable `attr_min`,
+`attr_max`, `attr_set`, `attr_not_set` arrays; encode once, including the
+`+` in exponents as `%2B`.
+
+Archived definitions' current keys remain filterable while the definition
+exists. Renamed-away reservation-only keys, unknown keys and other-org keys
+return 422 `attribute_filter_unknown_key`, even with no rows or a missing
+cursor. Other stable filter codes are `attribute_filter_invalid`,
+`attribute_filter_not_numeric` and `attribute_filter_inverted_range`.
+
+```bash
+happyranch tasks --org example --roots --attr-min effort=3 --attr-max effort=7 --status in_progress --agent worker --json
+happyranch tasks --org example --roots --attr-set ready --attr-not-set comment --limit 20
+happyranch tasks --org example --roots --attr-min effort=-5 --export csv --output /absolute/task-roots.csv
+happyranch tasks --org example --roots --attr-min effort=-5 --export json --before TASK-123 --limit 1000
+```
+
+`--export json|csv` reads one server page from
+`GET /tasks/roots/export?format=json|csv` (HTTP defaults to JSON).
+`--output PATH` saves exact successful response bytes; otherwise stdout
+receives those bytes with no added newline. Continuation hints use stderr.
+Export requires `--roots` and conflicts with `--all-pages`, `--json` and
+`--pause-overview`; roots/filter/before also conflict with pause-overview.
+`--output` without export and roots-only options without roots exit 2 before
+HTTP. Export server/transport failures exit 1 on stderr and preserve existing
+output files.
+
+Export-only caps: default20 rows, explicit integer1..1000 (else422
+`task_export_invalid`); max256 selected attribute columns and 8MiB encoded
+body (else atomic413 `task_export_too_large`). No silent column omission or
+partial attachment. Existing roots list limits remain unchanged. Full pages
+return their final ID as next cursor even if the next page is empty:
+`X-HappyRanch-Page-Full`, `X-HappyRanch-Export-Limit`, and conditional
+`X-HappyRanch-Next-Cursor` describe continuation. Repeat the same filters with
+`--before` to export another page. Ordinary roots `--all-pages` traverses
+pages; export never auto-pages. Each request has one coherent snapshot;
+separate pages can observe separate commits.
+
+Both exports contain task ID, first200 Unicode code points of brief, stored
+status/agent/created date, then every active attribute plus filtered archived
+keys in key order. JSON preserves native scalar/presence distinctions. CSV is
+UTF-8 without BOM, RFC4180 quoting and CRLF records; booleans are
+`true`/`false`, absence/null agent and present empty string produce empty
+cells. Every CSV cell beginning `=`, `+`, `-`, `@`, TAB or CR gains
+one leading apostrophe, including numeric negatives: -5 becomes `'-5`.
+JSON never receives that neutralization. Both formats are read-only attachments
+with the same bearer/org authority as roots and `Cache-Control: no-store`.
+
+The [list/export contract](../specs/2026-11-25-custom-task-attributes-list-export.md)
+defines response schemas, stable refusal reasons and L01–S01 cases. Focused
+checks extend `uv run --frozen python -B -m unittest scripts.test_task_attributes -v`.
+PR6/PR8 own the deferred handwritten TypeScript filter/value/export mirrors
+and browser UI; PR5 changes no `web/` files.
 
 ## Optional task attributes in the CLI (THR-390 PR3)
 
