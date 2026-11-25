@@ -150,6 +150,11 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       CancelTaskDialog: 'src/features/tasks/CancelTaskDialog.tsx',
       RevisitTaskDialog: 'src/features/tasks/RevisitTaskDialog.tsx',
       ResolveEscalationDialog: 'src/features/tasks/ResolveEscalationDialog.tsx',
+      // THR-390 PR8: list attribute filters and the bounded export (flag task_attributes_ui).
+      AttributeFilterClauses: 'src/features/tasks/attributes/AttributeFilterClauses.tsx',
+      AppliedFilterChips: 'src/features/tasks/attributes/AppliedFilterChips.tsx',
+      RowAttributeValues: 'src/features/tasks/attributes/RowAttributeValues.tsx',
+      ExportDialog: 'src/features/tasks/attributes/ExportDialog.tsx',
       // THR-390 PR7: Task detail › Attributes (flag task_attributes_ui).
       TaskAttributesCard: 'src/features/tasks/attributes/TaskAttributesCard.tsx',
       TaskAttributesEditorDialog: 'src/features/tasks/attributes/TaskAttributesEditorDialog.tsx',
@@ -165,6 +170,10 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       'CancelTaskDialog',
       'RevisitTaskDialog',
       'ResolveEscalationDialog',
+      'AttributeFilterClauses',
+      'AppliedFilterChips',
+      'RowAttributeValues',
+      'ExportDialog',
       'TaskAttributesCard',
       'TaskAttributesEditorDialog',
       'TaskAttributeHistoryDialog',

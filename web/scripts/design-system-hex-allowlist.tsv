@@ -32,5 +32,5 @@ features/skills/SkillAssignmentPanel.tsx	70	62	bg-transparent	legacy default Tai
 features/skills/SkillDetailPage.tsx	65	62	bg-transparent	legacy default Tailwind special colour utility
 features/skills/SkillValidationPage.tsx	61	62	bg-transparent	legacy default Tailwind special colour utility
 features/skills/SkillsPage.tsx	104	56	border-transparent	legacy default Tailwind special colour utility
-features/tasks/TaskListRow.tsx	123	62	bg-current	legacy default Tailwind special colour utility
-features/tasks/TasksPage.tsx	118	64	bg-current	legacy default Tailwind special colour utility
+features/tasks/TaskListRow.tsx	124	62	bg-current	legacy default Tailwind special colour utility
+features/tasks/TasksPage.tsx	133	64	bg-current	legacy default Tailwind special colour utility

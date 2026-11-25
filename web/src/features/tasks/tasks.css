@@ -6,12 +6,38 @@
 .tasks-row { padding: 13px 16px; }
 .tasks-column-header { padding: 0 16px 9px; font-size: 11px; }
 .tasks-heading { margin-bottom: 18px; }
+/* THR-390 PR8: the extra Export action wraps inside the page width on mobile. */
+.tasks-heading > div:last-child { max-width: 100%; }
 .tasks-group { margin-top: 18px; margin-bottom: 26px; }
 .tasks-group-heading { gap: 9px; }
 .tasks-group li:last-child > div { border-bottom: 0; }
 .tasks-id span { font-size: 11.5px; }
 .tasks-row .text-task-title, .tasks-group-heading .text-task-group { letter-spacing: -0.1px; }
 .tasks-status > span { font-size: 11px; gap: 5px; padding: 3px 8px; white-space: nowrap; max-width: 100%; }
+
+/* THR-390 PR8: attribute clause rows (design v1.2 frame F .clause) and the
+   export summary list (frame G .sumbox). */
+.tasks-attr-clause {
+  display: grid;
+  grid-template-columns: 2.125rem minmax(10rem, 1.3fr) minmax(8rem, 1fr) minmax(8.75rem, 1.2fr) auto;
+  gap: 0.5rem;
+  align-items: start;
+}
+.tasks-attr-clause .tasks-attr-and { padding-top: 0.6875rem; text-align: center; }
+.tasks-attr-clause .tasks-attr-error { grid-column: 2 / -1; }
+.tasks-export-summary { display: grid; grid-template-columns: auto minmax(0, 1fr); }
+@media (max-width: 767px) {
+  .tasks-attr-clause {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    border: 1px solid var(--color-border-default);
+    border-radius: var(--radius-sm, 0.375rem);
+    padding: 0.625rem;
+  }
+  .tasks-attr-clause .tasks-attr-and { grid-column: 1 / -1; text-align: left; padding: 0; }
+  .tasks-attr-clause .tasks-attr-key { grid-column: 1 / -1; }
+  .tasks-attr-clause .tasks-attr-remove { grid-column: 1 / -1; justify-self: start; }
+  .tasks-attr-clause .tasks-attr-error { grid-column: 1 / -1; }
+}
 
 /* THR-390 PR7: attribute history tables become labelled stacked cells under 640px. */
 @media (max-width: 639px) {
