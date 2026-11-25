@@ -147,12 +147,14 @@ function staticStream(owner: string, status: string, tasks: TaskRecord[]): TaskL
 /** Static prototype owners; they prove presentation only, never paging. */
 export function staticTaskListStreams(
   roots: TaskRecord[],
-  filters?: { status?: string; assigned_agent?: string },
+  filters?: { status?: string; assigned_agent?: string; statuses?: readonly string[] },
 ): TaskListStreams {
   const matches = (task: TaskRecord, status: string, agent?: string) =>
     task.status === status && (!agent || task.assigned_agent === agent) && !task.parent_task_id;
+  // Prototype fixtures carry no attribute values; `attributes` is not evaluated here.
+  const statusSet = filters?.statuses?.length ? filters.statuses : filters?.status ? [filters.status] : null;
   return {
-    ordinary: TASK_LIST_STATUSES.filter((status) => !filters?.status || filters.status === status)
+    ordinary: TASK_LIST_STATUSES.filter((status) => !statusSet || statusSet.includes(status))
       .map((status) => staticStream(status, status, roots.filter((task) => matches(task, status, filters?.assigned_agent)))),
     attention: staticStream('attention', 'escalated', roots.filter((task) => matches(task, 'escalated'))),
   };
@@ -171,6 +173,8 @@ export const mockTasksApi: TasksApi = {
       (!params?.status || task.status === params.status) &&
       (!params?.assigned_agent || task.assigned_agent === params.assigned_agent)), next_cursor: null }),
   useTasksListStreams: (filters) => staticTaskListStreams(ROOT_FIXTURES, filters),
+  // Prototypes have no export endpoint; the dialog shows its failure state.
+  useTaskRootsExport: () => async () => { throw new Error('task_roots_export_unavailable'); },
   useTask: (taskId) =>
     ok(FIXTURES.find((t) => t.task_id === taskId) ?? FIXTURES[0]),
   useTaskRecall: () => ({ ...ok(RECALL_TREE), isFetching: false, refetch: async () => undefined }),

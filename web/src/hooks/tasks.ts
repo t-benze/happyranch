@@ -12,7 +12,7 @@
 import { useData } from '@/design-system/providers/DataContext';
 
 export { TASK_LIST_STATUSES } from '@/design-system/providers/DataContext';
-export type { TaskListStream, TaskListStreams } from '@/design-system/providers/DataContext';
+export type { TaskListStream, TaskListStreamError, TaskListStreams } from '@/design-system/providers/DataContext';
 
 /**
  * Provider-aware route builder for the tasks feature. Compositions
@@ -44,6 +44,9 @@ export const useTasksRootsInfinite: ReturnType<typeof useData>['tasks']['useTask
 export const useTasksListStreams: ReturnType<typeof useData>['tasks']['useTasksListStreams'] = (
   filters,
 ) => useData().tasks.useTasksListStreams(filters);
+
+export const useTaskRootsExport: ReturnType<typeof useData>['tasks']['useTaskRootsExport'] = () =>
+  useData().tasks.useTaskRootsExport();
 
 export const useTask: ReturnType<typeof useData>['tasks']['useTask'] = (
   taskId,
