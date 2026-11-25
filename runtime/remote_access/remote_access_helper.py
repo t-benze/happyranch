@@ -141,7 +141,9 @@ class RemoteAccessHelper:
 
     @contextmanager
     def effect_guard(self, capture: LifecycleCapture) -> Iterator[None]:
-        if not self.lock.acquire(blocking=False):
+        # Workers may briefly lose to a main-context status/admission reader.
+        # The original operation budget is revalidated after this bounded wait.
+        if not self.lock.acquire(timeout=1.0):
             raise Refused('busy')
         try:
             if self.inflight is not capture:
@@ -678,8 +680,10 @@ class RemoteAccessHelper:
 
         def audited(step: str, component: object, effect: Callable[[float, Callable[[], None]], dict]) -> dict:
             result = {}
+            executed = False
             def execute(_: object, remaining: float) -> None:
-                nonlocal result
+                nonlocal result, executed
+                executed = True
                 label = '-'.join(str(byte) for byte in os.urandom(12))
                 kwargs = ({'component': component} if capture.method == 'Disable' else
                           {'phase': _home_audit.Phase.ACTIVATING})
@@ -710,6 +714,8 @@ class RemoteAccessHelper:
             previous = operation.outcome
             try:
                 operation.run_step(execute)
+                if not executed:
+                    raise Refused('unavailable')
             finally:
                 if capture.method == 'Disable':
                     operation.outcome = previous

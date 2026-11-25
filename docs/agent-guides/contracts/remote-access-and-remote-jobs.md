@@ -4640,3 +4640,10 @@ effect replay. Any key or node in that no-mint case refuses. A still-live unused
 key refuses as `activation-retry-later`, retaining the full original key window.
 A returned prepared rollover reports `activation-prepared-retry`, never Enable
 completed; the next fresh-auth Enable uses the new generation.
+
+
+THR-327 helper worker contention (TASK-19228): effect_guard waits at most one
+second for a transient main-context reader, then revalidates the unchanged
+operation deadline and capture before any effect. Admission and main-context
+status remain nonblocking. A lifecycle step that never executes is refused,
+never credited as successful revoke/stop/cleanup. No budget is renewed.

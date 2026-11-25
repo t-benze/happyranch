@@ -2420,3 +2420,47 @@ def test_thr327_closed_host_status(
         assert checkpoints == ['current before effect reload']
         assert v.receipts.current().phase == 'ready'
         assert v.calls.index(['enable', TIMER_NAME]) < v.calls.index(['start', home_activation_owner._TARGET])
+
+
+def test_thr327_worker_waits_for_transient_main_lock(mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    v = mount
+    queued = []
+    monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args, **kw:
+                        SimpleNamespace(start=lambda: queued.append((target, args))))
+    v.admit()
+    entered = threading.Event()
+    def work() -> None:
+        entered.set()
+        queued[0][0](*queued[0][1])
+    with v.helper.lock:
+        worker = REAL_THREAD(target=work)
+        worker.start()
+        assert entered.wait(2)
+        worker.join(.05)
+        assert not v.effects
+    worker.join(3)
+    assert not worker.is_alive()
+    assert v.effects == ['revoke', 'stop', 'cleanup']
+    assert v.helper.lifecycle_result == {'outcome': 'off', 'residue': []}
+    assert v.helper.inflight is None
+
+
+def test_thr327_skipped_revoke_is_partial(mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    v = mount
+    queued = []
+    monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args, **kw:
+                        SimpleNamespace(start=lambda: queued.append((target, args))))
+    v.admit()
+    operation = v.helper.lifecycle_operation
+    original = operation.run_step
+    skipped = []
+    def step(execute: Any) -> Any:
+        if not skipped:
+            skipped.append(True)
+            return operation.outcome
+        return original(execute)
+    operation.run_step = step
+    queued[0][0](*queued[0][1])
+    assert v.effects == ['stop', 'cleanup']
+    assert v.helper.lifecycle_result['outcome'] == 'partial_cleanup'
+    assert 'un-revoked connector trust state and persisted sidecar state' in v.helper.lifecycle_result['residue']
