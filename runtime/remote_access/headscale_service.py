@@ -54,9 +54,11 @@ def _attributes(data: bytes) -> dict[int, bytes]:
 def collect_lan_inventory() -> tuple[tuple[LANInterface, ...], tuple[LANDefaultRoute, ...]]:
     """Bounded kernel NETLINK_ROUTE dumps; no PATH, supplied address or probe.
 
-    Keep every unicast default, including IPv6 and every ECMP next hop, without
-    ranking tables/metrics. A missing RTA_PREFSRC is deliberately unresolved:
-    the selector refuses inventory rather than guessing from interface order.
+    Validate every unicast default and ECMP hop, including IPv6 and known
+    interface identity, without ranking tables/metrics. Preserve the table ID:
+    exactly four RTA_TABLE bytes override rtm_table; malformed attributes refuse.
+    Retain missing RTA_PREFSRC as empty; only a validated source-less non-main
+    default is ignored by the selector, with no interface-address fallback.
     Dumps are sampled observations, not an atomic network-change fence.
     """
     try:
@@ -123,10 +125,12 @@ def collect_lan_inventory() -> tuple[tuple[LANInterface, ...], tuple[LANDefaultR
         for body in messages[24]:
             if len(body) < 12:
                 raise ValueError
-            family, dst_len, src_len, _, _, _, _, kind, _ = struct.unpack_from("=BBBBBBBBI", body)
+            family, dst_len, src_len, _, table, _, _, kind, _ = struct.unpack_from("=BBBBBBBBI", body)
             if family not in (socket.AF_INET, socket.AF_INET6) or dst_len != 0 or kind != 1:
                 continue
             attrs = _attributes(body[12:])
+            if 15 in attrs:  # RTA_TABLE is an unsigned 32-bit native-endian ID.
+                table, = struct.unpack("=I", attrs[15])
             if src_len or 30 in attrs:  # Source-specific or unresolved nexthop object.
                 raise ValueError
             source = socket.inet_ntop(family, attrs[7]) if 7 in attrs else ""
@@ -141,11 +145,15 @@ def collect_lan_inventory() -> tuple[tuple[LANInterface, ...], tuple[LANDefaultR
                     if length < 8 or length > len(hops):
                         raise ValueError
                     _attributes(hops[8:length])
-                    routes.append(LANDefaultRoute(index, source))
+                    if index not in interfaces:
+                        raise ValueError
+                    routes.append(LANDefaultRoute(index, source, table))
                     hops = hops[(length + 3) & ~3:]
             else:
                 index, = struct.unpack("=I", attrs[4])
-                routes.append(LANDefaultRoute(index, source))
+                if index not in interfaces:
+                    raise ValueError
+                routes.append(LANDefaultRoute(index, source, table))
         return (tuple(LANInterface(index, up, loopback, tuple(addresses))
                       for index, (up, loopback, addresses) in interfaces.items()), tuple(routes))
     except (OSError, ValueError, KeyError, struct.error, OverflowError):

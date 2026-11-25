@@ -102,6 +102,9 @@ class Fixture:
         self.dial_ip = "192.168.1.40"
         self.preflights: list[str] = []
         self.kernel_case = "single"
+        self.kernel_policy_route: bytes | None = None
+        self.kernel_reverse = False
+        self.kernel_policy_only = False
         self.uid, self.gid = os.getuid(), os.getgid()
         self.user = SimpleNamespace(pw_name=home.ACCOUNT, pw_uid=self.uid, pw_gid=self.gid,
                                     pw_dir="/nonexistent", pw_shell="/usr/sbin/nologin")
@@ -251,6 +254,11 @@ def nla(kind: int, data: bytes) -> bytes:
     return struct.pack("=HH", length, kind) + data + bytes((-length) % 4)
 
 
+def policy_default(attrs: bytes, *, table: int = 252, src_len: int = 0) -> bytes:
+    """Encode a synthetic unicast default, without interpreting its attributes."""
+    return struct.pack("=BBBBBBBBI", socket.AF_INET, 0, src_len, 0, table, 4, 0, 1, 0) + attrs
+
+
 class KernelDump:
     """Synthetic Linux UAPI frames, never source-selection/publication logic."""
 
@@ -281,16 +289,40 @@ class KernelDump:
             route += nla(9, struct.pack("=HBBi", 8, 0, 0, 2) * 2)
         else:
             route += nla(4, struct.pack("=I", 99 if case == "unknown-interface" else 2))
+        if value.kernel_policy_route is not None or case in {"policy2022-unresolved", "policy2022-unresolved-ecmp"}:
+            route += nla(6, struct.pack("=I", 100))
         bodies = {16: [link], 20: [addr], 24: [] if case == "no-route" else [route]}
+        if value.kernel_policy_route is not None:
+            for index in (3, 4):
+                bodies[16].append(struct.pack("=BBHiII", 0, 0, 1, index, 1, 0))
+                for ip in ("198.18.0.1", "10.1.2.3", value.dial_ip):
+                    bodies[20].append(struct.pack("=BBBBI", socket.AF_INET, 24, 0, 0, index)
+                                      + nla(2, socket.inet_pton(socket.AF_INET, ip)))
+                bodies[20].append(struct.pack("=BBBBI", socket.AF_INET6, 64, 0, 0, index)
+                                  + nla(1, socket.inet_pton(socket.AF_INET6, "2001:db8::2")))
+            bodies[24] = ([] if value.kernel_policy_only else bodies[24]) + [value.kernel_policy_route]
         if case == "duplicate-interface": bodies[16].append(link)
         if case == "unresolved-second":
             bodies[24].append(struct.pack("=BBBBBBBBI", socket.AF_INET, 0, 0, 0, 254, 4, 0, 1, 0)
                               + nla(4, struct.pack("=I", 2)))
+        if case in {"policy2022-unresolved", "policy2022-unresolved-ecmp"}:
+            # Synthetic physical main default plus a policy-table TUN default.
+            # Tables above 255 use RT_TABLE_COMPAT and a four-byte RTA_TABLE.
+            bodies[16].append(struct.pack("=BBHiII", 0, 0, 1, 3, 1, 0))
+            bodies[20].append(struct.pack("=BBBBI", socket.AF_INET, 24, 0, 0, 3)
+                              + nla(2, socket.inet_pton(socket.AF_INET, "198.18.0.1")))
+            policy = (struct.pack("=BBBBBBBBI", socket.AF_INET, 0, 0, 0, 252, 4, 0, 1, 0)
+                      + nla(15, struct.pack("=I", 2022)))
+            policy += (nla(9, struct.pack("=HBBi", 8, 0, 0, 3) * 2)
+                       if case.endswith("-ecmp") else nla(4, struct.pack("=I", 3)))
+            bodies[24].append(policy)  # Deliberately no RTA_PREFSRC.
         if case == "ipv6":
             ipv6 = socket.inet_pton(socket.AF_INET6, "2001:db8::2")
             bodies[20].append(struct.pack("=BBBBI", socket.AF_INET6, 64, 0, 0, 2) + nla(1, ipv6))
             bodies[24].append(struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 254, 4, 0, 1, 0)
                               + nla(4, struct.pack("=I", 2)) + nla(7, ipv6))
+        if value.kernel_reverse:
+            bodies[24].reverse()
         def message(kind, body, flags=2):
             return struct.pack("=IHHII", 16 + len(body), kind, flags, self.sequence, 0) + body
         frames = b"".join(message(self.response, body) for body in bodies[self.response])
@@ -1026,21 +1058,98 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
     assert not any(args[0] == "systemctl" and args[1] in {"start", "enable", "restart"} for args in fixture.calls)
 
 
-@pytest.mark.parametrize("case,category", [
-    ("ecmp", "multiple_addresses"), ("ipv6", "dial_ip"),
-    ("unresolved", "inventory"), ("unresolved-second", "inventory"), ("unknown-interface", "inventory"),
-    ("down", "no_address"), ("loopback", "no_address"),
-    ("duplicate-interface", "inventory"), ("interrupted", "inventory"),
-    ("error", "inventory"), ("truncated", "inventory"), ("no-route", "no_address"),
-])
-def test_kernel_inventory_refuses_before_publication(fixture, monkeypatch, capsys, case, category) -> None:
+@pytest.mark.parametrize("reverse,metric", [(False, 1), (False, 200), (True, 1), (True, 200)])
+@pytest.mark.parametrize("case,category,policy_route", [
+    ("ecmp", "multiple_addresses", None), ("ipv6", "dial_ip", None),
+    ("unresolved", "inventory", None), ("unresolved-second", "inventory", None),
+    ("unknown-interface", "inventory", None), ("down", "no_address", None),
+    ("loopback", "no_address", None), ("duplicate-interface", "inventory", None),
+    ("interrupted", "inventory", None), ("error", "inventory", None),
+    ("truncated", "inventory", None), ("no-route", "no_address", None),
+    ("header254-no-source", "inventory", policy_default(nla(4, struct.pack("=I", 3)), table=254)),
+    ("attr254-over252", "inventory", policy_default(nla(4, struct.pack("=I", 3)) + nla(15, struct.pack("=I", 254)))),
+    *[(f"table-length-{length}", "inventory", policy_default(
+        nla(4, struct.pack("=I", 3)) + nla(15, bytes(length)))) for length in (0, 1, 3, 5, 8)],
+    ("duplicate-table", "inventory", policy_default(nla(4, struct.pack("=I", 3))
+        + nla(15, struct.pack("=I", 2022)) * 2)),
+    ("truncated-table", "inventory", policy_default(nla(4, struct.pack("=I", 3))
+        + struct.pack("=HH", 8, 15) + b"\xe6\x07\x00")),
+    ("policy-unknown-interface", "inventory", policy_default(nla(4, struct.pack("=I", 99)))),
+    *[(f"ecmp-unknown-{position}", "inventory", policy_default(nla(9,
+        struct.pack("=HBBi", 8, 0, 1, first) + struct.pack("=HBBi", 8, 0, 9, second))))
+      for position, first, second in (("first", 99, 4), ("last", 3, 99))],
+    ("empty-ecmp", "inventory", policy_default(nla(9, b""))),
+    ("malformed-ecmp", "inventory", policy_default(nla(9, struct.pack("=HBBi", 7, 0, 0, 3)))),
+    ("truncated-ecmp", "inventory", policy_default(nla(9, struct.pack("=HBBi", 12, 0, 0, 3)))),
+    ("malformed-hop-attrs", "inventory", policy_default(nla(9,
+        struct.pack("=HBBi", 12, 0, 0, 3) + struct.pack("=HH", 8, 5)))),
+    ("source-specific", "inventory", policy_default(nla(4, struct.pack("=I", 3)), src_len=24)),
+    ("nexthop-object", "inventory", policy_default(nla(4, struct.pack("=I", 3)) + nla(30, struct.pack("=I", 1)))),
+    ("bad-oif", "inventory", policy_default(nla(4, b"\x03"))),
+    ("bad-source", "inventory", policy_default(nla(4, struct.pack("=I", 3)) + nla(7, b"\x0a"))),
+    ("unassigned-source", "inventory", policy_default(nla(4, struct.pack("=I", 3))
+        + nla(7, socket.inet_pton(socket.AF_INET, "10.9.8.7")))),
+    ("policy-rfc1918", "multiple_addresses", policy_default(nla(4, struct.pack("=I", 3))
+        + nla(7, socket.inet_pton(socket.AF_INET, "10.1.2.3")))),
+    ("policy-identical-source", "multiple_addresses", policy_default(nla(4, struct.pack("=I", 3))
+        + nla(7, socket.inet_pton(socket.AF_INET, "192.168.1.40")))),
+    ("policy-non-rfc1918", "dial_ip", policy_default(nla(4, struct.pack("=I", 3))
+        + nla(7, socket.inet_pton(socket.AF_INET, "198.18.0.1")))),
+    ("policy-ipv6", "dial_ip", struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 252, 4, 0, 1, 0)
+        + nla(4, struct.pack("=I", 3)) + nla(7, socket.inet_pton(socket.AF_INET6, "2001:db8::2"))),
+    ("policy-only", "no_address", policy_default(nla(4, struct.pack("=I", 3)))),
+], ids=lambda value: value if isinstance(value, str) else "")
+def test_kernel_inventory_refuses_before_publication(fixture, monkeypatch, capsys, case, category, policy_route,
+                                                    reverse, metric) -> None:
     fixture.kernel_case = case
-    code, output = fixture.prepare(monkeypatch, capsys)
-    assert code == 1 and category in output
+    fixture.kernel_policy_route = None if policy_route is None else policy_route + nla(6, struct.pack("=I", metric))
+    fixture.kernel_policy_only = case == "policy-only"
+    fixture.kernel_reverse = reverse
+    with pytest.raises(home.HeadscaleServiceError) as error:
+        fixture.installer.prepare_headscale()
+    assert error.value.category == category
+    assert error.value.args == (category,)
+    assert fixture.prepare(monkeypatch, capsys) == (1, f"error: {category}\n")
     assert not fixture.preflights
     assert not fixture.receipt().exists()
     assert not (fixture.root / "etc/happyranch").exists()
     assert fixture.calls == []
+
+
+@pytest.mark.parametrize("reverse,metric", [(False, 1), (False, 200), (True, 1), (True, 200)])
+@pytest.mark.parametrize("case,policy_route,indices,tables", [
+    ("policy2022-unresolved", None, [2, 3], [254, 2022]),
+    ("policy2022-unresolved-ecmp", None, [2, 3, 3], [254, 2022, 2022]),
+    ("header252", policy_default(nla(4, struct.pack("=I", 3))), [2, 3], [254, 252]),
+    ("attr2022-over254", policy_default(nla(4, struct.pack("=I", 3))
+        + nla(15, struct.pack("=I", 2022)), table=254), [2, 3], [254, 2022]),
+    ("distinct-ecmp", policy_default(nla(15, struct.pack("=I", 2022)) + nla(9,
+        struct.pack("=HBBi", 8, 0, 1, 3) + struct.pack("=HBBi", 8, 0, 9, 4))), [2, 3, 4], [254, 2022, 2022]),
+], ids=lambda value: value if isinstance(value, str) else "")
+@pytest.mark.parametrize("boundary", ["selector", "preparation"])
+def test_thr327_policy_default_without_source_selects_main(fixture, case, boundary, policy_route, indices, tables,
+                                                         reverse, metric) -> None:
+    """Exercise the real collector and selector, without inspecting host routes."""
+    fixture.kernel_case = case
+    fixture.kernel_policy_route = None if policy_route is None else policy_route + nla(6, struct.pack("=I", metric))
+    fixture.kernel_reverse = reverse
+    interfaces, routes = home.collect_lan_inventory()
+    if boundary == "selector":
+        assert module.home_headscale.select_lan_dial_ip(interfaces, routes) == "192.168.1.40"
+    else:
+        assert fixture.installer.prepare_headscale()["state"] == "inert"
+        root = fixture.root / "etc/happyranch/headscale"
+        record = json.loads((fixture.receipt().parent / PUBLICATION).read_bytes())
+        assert record["dial_ip"] == "192.168.1.40"
+        assert b"listen_addr: 192.168.1.40:8443\n" in (root / "config.yaml").read_bytes()
+        assert b"stun_listen_addr: 192.168.1.40:3478\n" in (root / "config.yaml").read_bytes()
+        assert b"ipv4: 192.168.1.40\n" in (root / "derp.yaml").read_bytes()
+        assert fixture.preflights == ["192.168.1.40"]
+    expected = list(zip(indices, tables))
+    if reverse:
+        # Reverse routes, retaining the order of hops within one ECMP route.
+        expected = expected[1:] + expected[:1]
+    assert [(route.interface_index, route.table) for route in routes] == expected
 
 
 def test_config_publication_idempotency_and_address_change(fixture, monkeypatch, capsys) -> None:
