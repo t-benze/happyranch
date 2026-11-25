@@ -795,8 +795,10 @@ def venue(live_venue: Venue, monkeypatch: pytest.MonkeyPatch) -> Venue:
             if name == adapters._HEADSCALE and not v.active:
                 v.native.override.update(ActiveState="inactive", SubState="dead", MainPID="0")
             else:
-                v.native.override.update(ActiveState="active", SubState="running", MainPID=str(os.getpid()))
+                v.native.override.update(ActiveState="active", SubState=("waiting" if name == "happyranch-remote-access-policy-renew.timer" else "running"), MainPID=str(os.getpid()))
             v.native.override.update(ControlPID="0", ControlGroup="", Job="")
+            if name == "happyranch-remote-access-policy-renew.timer":
+                v.native.override["UnitFileState"] = "enabled"
         else:
             txn = v.transactions.read_optional()
             receipt_path = v.path(ACTIVATION_PATH)
@@ -1337,13 +1339,13 @@ def test_private_helper_enable_persists_ready_without_activation_replay(
         before = list(v.audit)
         policy_before = v.path('/etc/happyranch/policy.json').read_bytes()
         observed = lifecycle.capture('Enable', v.prepared.release_uid)
-        assert lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)['outcome'] == 'ready'
+        assert lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed, deadline=time.monotonic() + 480)['outcome'] == 'ready'
         assert v.receipts.read(expected_generation=0) == ready and v.audit == before
         assert v.path('/etc/happyranch/policy.json').read_bytes() == policy_before
         if case == 'ready':
             v.source.write_bytes(b'synthetic source-token rotation')
             with pytest.raises(h.EnablePreparationRefused) as caught:
-                lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)
+                lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed, deadline=time.monotonic() + 480)
             assert caught.value.category == 'ready-restart-failed-turn-off'
             assert v.receipts.read(expected_generation=0) == ready and v.audit == before
             return
@@ -1390,16 +1392,16 @@ def test_private_helper_enable_persists_ready_without_activation_replay(
         observed = lifecycle.capture('Enable', v.prepared.release_uid)
         if case == 'live-key-no-node':
             with pytest.raises(h.EnablePreparationRefused) as caught:
-                lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)
+                lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed, deadline=time.monotonic() + 480)
             assert caught.value.category == 'activation-retry-later'
             assert v.records() == records
         elif case in ('unmarked-joined', 'missing-txn', 'mismatched-operation'):
             with pytest.raises(ActivationRefused):
-                lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed)
+                lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed, deadline=time.monotonic() + 480)
             assert v.records() == records
         else:
             phase = 'prepared' if case == 'rollover' else 'ready'
-            assert lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed) == {
+            assert lifecycle.dispatch('Enable', v.prepared.release_uid, 'enable', observed, deadline=time.monotonic() + 480) == {
                 'outcome': phase, 'residue': []}
             recovered = v.receipts.read(expected_generation=1 if case == 'rollover' else 0)
             assert recovered.phase == phase
