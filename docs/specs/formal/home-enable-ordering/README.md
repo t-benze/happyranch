@@ -46,7 +46,8 @@ accepts active/inactive/activating/deactivating exact owned units (exact custody
 and fresh authentication are abstract admission assumptions). Each invocation
 resets ack; already-revoked generations require serving revoke again. Failed
 stop retains ready and admits another Disable. Unavailable revoke still stops;
-cleanup retains trust and enters partial with no modeled exit, matching the
+cleanup retains the ready receipt and trust, with a partial publication flag and
+no modeled exit, matching the
 unresolved B4 case. Successful cleanup alone admits fresh Enable, with expired
 policy requiring renewal. The inherited HomeEnable model owns detailed group 5
 renewal-before-start and timer-before-target ordering.
@@ -59,3 +60,7 @@ authentication, socket ownership or installed-host proof is implied. A failed
 ordinary start/joined verifier stutters with a named refusal. Receipt alone is
 not runtime availability. The never-ready-after-failed-stop requirement was
 withdrawn in TASK-19228; the model intentionally retains ready.
+
+The partial flag abstracts missing publication after B6, not a durable marker or
+revocation proof. It prevents the model from inventing an ordinary restart of
+the partially removed publication.

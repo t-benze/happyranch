@@ -5,7 +5,7 @@ Init == s = [receipt |-> "prepared", txn |-> "none", policy |-> "expired",
              units |-> "inactive", serving |-> FALSE, enabled |-> FALSE,
              trust |-> FALSE, revoked |-> FALSE, action |-> "idle",
              ack |-> FALSE, stopped |-> FALSE, mints |-> 0, readyMint |-> 0,
-             attempts |-> 0]
+             attempts |-> 0, partial |-> FALSE]
 Renew == /\ s.action = "idle" /\ s.receipt = "prepared" /\ s.txn = "none"
          /\ s' = [s EXCEPT !.policy = "current"]
 Enable == /\ s.action = "idle" /\ s.receipt = "prepared" /\ s.txn = "none"
@@ -22,13 +22,13 @@ WaitWindow == /\ s.action = "idle" /\ s.receipt = "failed" /\ s.txn = "live-key"
 Recover == /\ s.action = "idle" /\ s.receipt = "failed"
            /\ s.txn \in {"no-mint", "expired-key"}
            /\ s' = [s EXCEPT !.receipt = "prepared", !.txn = "none"]
-RuntimeDown == /\ s.action = "idle" /\ s.receipt = "ready"
+RuntimeDown == /\ s.action = "idle" /\ s.receipt = "ready" /\ ~s.partial
                /\ \E state \in {"inactive", "activating", "deactivating"}, serves \in BOOLEAN:
                     s' = [s EXCEPT !.units = state, !.serving = serves]
-OrdinaryStart == /\ s.action = "idle" /\ s.receipt = "ready" /\ s.txn = "joined"
+OrdinaryStart == /\ s.action = "idle" /\ s.receipt = "ready" /\ ~s.partial /\ s.txn = "joined"
                  /\ s.enabled /\ s.trust /\ s.policy = "current"
                  /\ s' = [s EXCEPT !.units = "active", !.serving = TRUE]
-BeginOff == /\ s.action = "idle" /\ s.receipt = "ready" /\ s.attempts < 2
+BeginOff == /\ s.action = "idle" /\ s.receipt = "ready" /\ ~s.partial /\ s.attempts < 2
             /\ s' = [s EXCEPT !.action = "revoke", !.ack = FALSE,
                      !.stopped = FALSE, !.attempts = @ + 1]
 Revoke == /\ s.action = "revoke" /\ s.serving
@@ -41,7 +41,8 @@ Stop == /\ s.action = "stop"
 StopFailed == /\ s.action = "stop"
               /\ s' = [s EXCEPT !.action = "idle", !.units = "activating"]
 Cleanup == /\ s.action = "cleanup" /\ s.stopped
-           /\ s' = [s EXCEPT !.receipt = IF s.ack THEN "off" ELSE "partial",
+           /\ s' = [s EXCEPT !.receipt = IF s.ack THEN "off" ELSE s.receipt,
+                    !.partial = ~s.ack,
                     !.txn = IF s.ack THEN "none" ELSE s.txn,
                     !.trust = ~s.ack, !.action = "idle"]
 Reenable == /\ s.action = "idle" /\ s.receipt = "off" /\ ~s.trust
@@ -52,6 +53,6 @@ Next == Renew \/ Enable \/ Interrupt \/ WaitWindow \/ Recover \/ RuntimeDown
 Spec == Init /\ [][Next]_s
 NoReadyMint == s.receipt = "ready" => s.mints = s.readyMint
 OffRequiresSameInvocationRevoke == s.receipt = "off" => s.ack /\ s.stopped /\ ~s.trust
-PartialRetainsTrust == s.receipt = "partial" => s.trust /\ ~s.ack
+PartialRetainsTrust == s.partial => s.receipt = "ready" /\ s.trust /\ ~s.ack
 NoReadyAfterBadPolicy == s.receipt = "ready" => s.policy = "current"
 =============================================================================
