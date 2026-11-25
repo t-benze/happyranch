@@ -12,6 +12,8 @@ from typing import Any, Callable, Iterator
 
 from runtime.infrastructure.db._shared import _task_move_admission, _late_database_now as _now, _synchronized
 from runtime.task_attribute_admission import validate_initial_attributes, write_initial_attributes_uncommitted
+from runtime.task_attributes import AttributeValidationError
+
 from runtime.infrastructure.db.task_reconciliation import (
     ReconciliationError, TaskReconciliation, strict_json,
 )
@@ -27,6 +29,9 @@ from runtime.models import (
     ThreadInvocationStatus,
     ThreadMessageKind,
 )
+
+
+_ATTRIBUTES_ABSENT = object()
 
 
 class LineageTooDeep(Exception):
@@ -2853,15 +2858,44 @@ class TasksMixin:
         finally:
             self._conn.rollback()
 
+    def _validate_decision_attributes(
+        self, targets: list[tuple[str, Any]], actor_id: str | None,
+    ) -> dict[str, dict]:
+        """Inventory every map under the caller's writer, before allocation.
+
+        Only omission becomes {}. PR3 owns all value/definition validation.
+        Future maps are proposals: this read neither admits nor freezes them.
+        """
+        errors: dict[str, list[str]] = {}
+        values: dict[str, dict] = {}
+        for path, raw in targets:
+            if not isinstance(actor_id, str) or not actor_id:
+                errors[path] = ["missing_provenance"]
+                continue
+            if raw is _ATTRIBUTES_ABSENT:
+                raw = {}
+            if not isinstance(raw, dict):
+                errors[path] = ["expected_object"]
+                continue
+            try:
+                validate_initial_attributes(self, raw)
+            except AttributeValidationError as exc:
+                errors.update({f"{path}.{key}": reasons for key, reasons in exc.errors.items()})
+            values[path] = raw
+        if errors:
+            raise AttributeValidationError(errors)
+        return values
+
     @_task_move_admission
     @_synchronized
     def try_delegate_many(
-        self, parent_id: str, children: list, *, parent_note: str,
+        self, parent_id: str, children: list | Callable[[], dict], *, parent_note: str = "",
         active_fanout_json: str | None = None,
         children_attachments: list[list[dict] | None] | None = None,
         carrier_chains: list[dict] | None = None,
         uploaded_by: str = "orchestrator",
         expected_claim: RetryClaim,
+        attribute_targets: list[tuple[str, Any]] | None = None,
     ) -> SpawnOutcome:
         """Atomic CAS: insert N child tasks + transition parent to
         IN_PROGRESS(DELEGATED) under a single explicit SQL transaction.
@@ -2891,12 +2925,22 @@ class TasksMixin:
         LostClaim carry no writes; the original claim is checked before
         lineage. BEGIN IMMEDIATE precedes both authoritative rereads.
 
-        Children must already have their IDs allocated (caller calls
-        next_task_id() N times before invoking this method). Carrier first
-        leg IDs must also be pre-allocated.
+        Callable batches allocate records/ID-derived metadata only after the
+        original claim and complete attribute inventory have been checked.
         """
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            if parent_id != expected_claim.task_id or not self._retry_claim_matches(expected_claim):
+                self._conn.rollback()
+                return LostClaim()
+            attribute_values = (self._validate_decision_attributes(attribute_targets, expected_claim.assigned_agent)
+                                if attribute_targets is not None else None)
+            if callable(children):
+                batch = children()
+                children = batch["children"]
+                parent_note = batch["parent_note"]
+                active_fanout_json = batch["active_fanout_json"]
+                carrier_chains = batch["carrier_chains"]
             refusal = self._retry_spawn_check(
                 parent_id, children, expected_claim,
 
@@ -2937,6 +2981,10 @@ class TasksMixin:
                     ),
                 )
                 self._insert_task_owner_uncommitted(child.id)
+                if attribute_values is not None:
+                    write_initial_attributes_uncommitted(self, child.id,
+                        attribute_values[f"children[{i}].attributes"],
+                        actor_id=expected_claim.assigned_agent, actor_kind="agent")
                 self._record_task_overrides_uncommitted(child)
                 # Insert attachment links for this child if present.
                 child_atts = None
@@ -2990,6 +3038,10 @@ class TasksMixin:
                         ),
                     )
                     self._insert_task_owner_uncommitted(fl["id"])
+                    if attribute_values is not None:
+                        write_initial_attributes_uncommitted(self, fl["id"],
+                            attribute_values[f"children[{ci}].first_leg.attributes"],
+                            actor_id=expected_claim.assigned_agent, actor_kind="agent")
                     self._record_task_overrides_uncommitted(children[ci].model_copy(update={"id": fl["id"]}))
             self._conn.execute(
                 """UPDATE tasks
@@ -3007,13 +3059,15 @@ class TasksMixin:
     @_task_move_admission
     @_synchronized
     def try_delegate(
-        self, parent_id: str, child: TaskRecord, *, parent_note: str,
+        self, parent_id: str, child: TaskRecord | Callable[[], TaskRecord], *,
+        parent_note: str | Callable[[TaskRecord], str],
         attachments: list[dict] | None = None,
         active_chain_json: str | None = None,
         uploaded_by: str = "orchestrator",
         expected_claim: RetryClaim,
         revision_delta: int = 0,
         revision_cap: int = 0,
+        attribute_targets: list[tuple[str, Any]] | None = None,
     ) -> SpawnOutcome:
         """Commit the child, attachments, chain and ordinary revision atomically.
 
@@ -3025,6 +3079,15 @@ class TasksMixin:
         """
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            if parent_id != expected_claim.task_id or not self._retry_claim_matches(expected_claim):
+                self._conn.rollback()
+                return LostClaim()
+            attribute_values = (self._validate_decision_attributes(attribute_targets, expected_claim.assigned_agent)
+                                if attribute_targets is not None else None)
+            if callable(child):
+                child = child()
+            if callable(parent_note):
+                parent_note = parent_note(child)
             refusal = self._retry_spawn_check(
                 parent_id, [child], expected_claim,
                 revision_delta, revision_cap, ordinary=True,
@@ -3067,6 +3130,9 @@ class TasksMixin:
                 ),
             )
             self._insert_task_owner_uncommitted(child.id)
+            if attribute_values is not None:
+                write_initial_attributes_uncommitted(self, child.id, attribute_values["attributes"],
+                    actor_id=expected_claim.assigned_agent, actor_kind="agent")
             self._record_task_overrides_uncommitted(child)
             if attachments:
                 self._insert_task_attachments_txn(
@@ -3482,9 +3548,38 @@ class TasksMixin:
             raise
 
     @_synchronized
-    def try_clear_chain(self, parent_id: str, expected_active_chain_json: str) -> bool:
-        """Clear only the same uncancelled, delegated parent's chain."""
+    def try_clear_chain(
+        self, parent_id: str, expected_active_chain_json: str, *,
+        attributes_refusal: str | None = None,
+        expected_owner: TaskRecord | None = None,
+        expected_outer_owner: TaskRecord | None = None,
+    ) -> bool:
+        """Clear the exact chain; attribute refusal/failure commits with it.
+
+        A carrier never exposes a committed cleared-but-live refusal state.
+        The caller alone runs terminal effects and the outer barrier after commit.
+        Default callers keep their existing chain-clear behavior.
+        """
         with self._task_owner_mutation(parent_id):
+            current = self.get_task(parent_id)
+            if attributes_refusal is not None:
+                if (current is None or expected_owner is None
+                        or RetryClaim.from_task(current) != RetryClaim.from_task(expected_owner)
+                        or current.task_type != expected_owner.task_type
+                        or current.parent_task_id != expected_owner.parent_task_id):
+                    return False
+                if expected_outer_owner is not None:
+                    from runtime.orchestrator.fanout import FanoutState
+                    outer = self.get_task(expected_outer_owner.id)
+                    if (outer is None or current.task_type != "subtask"
+                            or current.parent_task_id != outer.id
+                            or RetryClaim.from_task(outer) != RetryClaim.from_task(expected_outer_owner)
+                            or outer.status != TaskStatus.IN_PROGRESS
+                            or outer.block_kind != BlockKind.DELEGATED or outer.cancelled_at is not None
+                            or outer.active_fanout is None
+                            or current.id not in FanoutState.deserialize(outer.active_fanout).children_ids):
+                        return False
+                    self._guard_coding_task_mutation_uncommitted(outer.id)
             cursor = self._conn.execute(
                 """UPDATE tasks SET active_chain = NULL, updated_at = ?
                    WHERE id = ? AND status = ? AND block_kind = ?
@@ -3498,6 +3593,21 @@ class TasksMixin:
             if cursor.rowcount != 1:
                 self._conn.rollback()
                 return False
+            if attributes_refusal is not None:
+                if expected_outer_owner is None:
+                    self._insert_task_result(task_id=parent_id, agent=current.assigned_agent,
+                        session_id="", status="completed", confidence_score=0,
+                        output_summary=attributes_refusal, risks_flagged=[])
+                self.insert_audit_log_uncommitted(parent_id, "orchestrator", "orchestration_step", {
+                    "step_number": current.orchestration_step_count,
+                    "decision": {"action": "feedback", "reason": attributes_refusal},
+                })
+                if expected_outer_owner is not None:
+                    self._conn.execute("UPDATE tasks SET active_fanout = NULL WHERE id = ?", (parent_id,))
+                    self.update_task_uncommitted(parent_id, status=TaskStatus.FAILED, block_kind=None,
+                        note=attributes_refusal, completed_at=datetime.now(timezone.utc).isoformat())
+                else:
+                    self.update_task_uncommitted(parent_id, note=attributes_refusal)
             self._conn.commit()
             return True
 
@@ -3507,11 +3617,13 @@ class TasksMixin:
         self,
         parent_id: str,
         active_chain_json: str,
-        next_child: "TaskRecord",
+        next_child: TaskRecord | Callable[[], TaskRecord],
         *,
         expected_active_chain_json: str,
         attachments: list[dict] | None = None,
         uploaded_by: str = "orchestrator",
+        attribute_targets: list[tuple[str, Any]] | None = None,
+        attributes_actor_id: str | None = None,
     ) -> bool | None:
         """Atomically update parent active_chain + insert next child +
         attachment links/audit in a single explicit transaction.
@@ -3521,13 +3633,24 @@ class TasksMixin:
         or child/link/audit write failure rolls back the chain advance.
 
         Returns True on success (parent chain advanced, child exists,
-        attachments linked), False on admission/write failure, or None when
+        attachments linked), False on write failure, or None when
         the parent is no longer uncancelled/in_progress/delegated with the
         expected prior chain. Both unsuccessful outcomes roll back all writes;
         a lost race must not trigger parent wake or terminal changes.
+        AttributeValidationError propagates its keyed refusal after rollback.
         """
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            parent = self.get_task(parent_id)
+            if (parent is None or parent.status != TaskStatus.IN_PROGRESS
+                    or parent.block_kind != BlockKind.DELEGATED or parent.cancelled_at is not None
+                    or parent.active_chain != expected_active_chain_json):
+                self._conn.rollback()
+                return None
+            attribute_values = (self._validate_decision_attributes(attribute_targets, attributes_actor_id)
+                                if attribute_targets is not None else None)
+            if callable(next_child):
+                next_child = next_child()
             cursor = self._conn.execute(
                 """UPDATE tasks SET active_chain = ?
                    WHERE id = ? AND status = ? AND block_kind = ?
@@ -3574,6 +3697,10 @@ class TasksMixin:
                 ),
             )
             self._insert_task_owner_uncommitted(next_child.id)
+            if attribute_values is not None:
+                write_initial_attributes_uncommitted(self, next_child.id,
+                    next(iter(attribute_values.values())),
+                    actor_id=attributes_actor_id, actor_kind="agent")
             self._record_task_overrides_uncommitted(next_child)
             if attachments:
                 self._insert_task_attachments_txn(
@@ -3581,9 +3708,9 @@ class TasksMixin:
                 )
             self._conn.commit()
             return True
-        except Exception as exc:
+        except BaseException as exc:
             from runtime.orchestrator.team_move import DeferredTeamMove
-            if isinstance(exc, DeferredTeamMove):
+            if not isinstance(exc, Exception) or isinstance(exc, (DeferredTeamMove, AttributeValidationError)):
                 self._conn.rollback()
                 raise
             self._conn.rollback()

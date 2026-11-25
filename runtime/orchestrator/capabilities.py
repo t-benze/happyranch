@@ -46,6 +46,20 @@ def build_capabilities_prompt(
             'BLOCK, PASS and missing verdict never advance.\n'
         )
 
+    attributes_guidance = (
+        "Optional `attributes` is a native JSON object on delegate, each fanout/parallel child, "
+        "and each then leg. Discover current keys/rubrics with `happyranch attributes list/show`. "
+        "Supply each task's OWN values; omission/{} means empty admission, null/non-objects refuse. "
+        "No parent, sibling, carrier or linked-retry values are inherited; re-supply retry values. "
+        "All child and saved-leg maps validate before any child allocation; one bad map rejects "
+        "the whole decision with keyed feedback. Saved legs revalidate current definitions at creation; "
+        "refusal creates no leg and wakes the owning manager. The original deciding agent is the actor. "
+        "A pipeline child's map belongs to its carrier; its implicit first executable leg has empty "
+        "attributes, and each later leg uses its own map. Example: "
+        '`{"action":"delegate","agent":"<target_agent_id>","prompt":"...","attributes":{"effort":4},'
+        '"then":[{"agent":"<next_agent_id>","prompt":"...","attributes":{"effort":2}}]}`.\n'
+    )
+
     pretty = manager_name.replace("_", " ").title()  # "content_manager" -> "Content Manager"
     if self_only:
         me = manager_name
@@ -81,6 +95,7 @@ def build_capabilities_prompt(
             "width 2–8) is a team-manager-only capability. "
             "If you need parallel work, delegate sequentially or escalate to "
             "your parent.\n",
+            attributes_guidance,
             "### Reviewer configuration\n",
             reviewer_notice,
             "### Constraints\n",
@@ -169,13 +184,14 @@ def build_capabilities_prompt(
         ' ]}',
         "```",
         "",
-        "Each leg in `then` has `agent`, `prompt`, and optional `expect_verdict`, `model`, `reasoning_effort`.",
+        "Each leg in `then` has `agent`, `prompt`, and optional `expect_verdict`, `model`, `reasoning_effort`, `attributes`.",
+        attributes_guidance,
         "`delegate` and each fanout/parallel child (including nested then legs) also accept",
         "optional `model` / `reasoning_effort`, validated for the TARGET agent's current CLI.",
         "Unset uses the target's defaults; your task override is never inherited.",
         "Invalid choices anywhere reject the whole decision before any child and return",
         "feedback naming the leg, reason and valid options. Correct it next session.",
-        "Linked retries carry omitted fields; explicit null clears each field independently.",
+        "Linked retries carry omitted model/effort fields; explicit null clears each independently.",
         "The orchestrator auto-advances on verdict match; mismatches, blocked subtasks,",
         "or final-leg matches wake you. Full shape: the **start-task** skill.\n",
         "### Reviewer configuration\n",

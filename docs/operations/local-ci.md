@@ -17,7 +17,7 @@ observes capped size walking, exhausted time, unavailable roots/reads and an
 unchanged successful sweep outcome. No daemon, provider, scheduled sweep or
 new CI trigger is run. Existing active-task/root/job keepers remain unchanged.
 
-## Focused custom task attributes (THR-390 PR1/PR2/PR3)
+## Focused custom task attributes (THR-390 PR1/PR2/PR3/PR4)
 
 ```bash
 uv run --frozen python -B -m unittest scripts.test_task_attributes -v
@@ -41,6 +41,12 @@ design; A01/A03 observe the served create schema and existing route inventory.
 C09 separately uses a task-owned disposable runtime job and real CLI processes,
 with isolated daemon home and ephemeral loopback port; retain its transcript,
 exact source identity, port/process custody and teardown receipt.
+PR4 extends the same command with real manager decision consumption, delegate/
+attachment and whole-fanout admission, carrier empty-first maps, saved-leg current
+revalidation, original actor, raw material preservation, durable refusal context,
+transaction faults and outer sibling barrier cases. The accepted design's case
+25 is a separate independent disposable CLI/API transcript; in-process or static
+checks do not substitute for it. No new lane or trigger is added.
 No daemon lifespan, provider or live state in the focused in-process cases.
 OpenAPI generation remains
 `uv run --frozen python scripts/generate_openapi_snapshot.py --write`, followed

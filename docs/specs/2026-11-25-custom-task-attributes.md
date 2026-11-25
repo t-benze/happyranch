@@ -1,6 +1,6 @@
-# Custom Task Attributes — storage, HTTP, plain creation and CLI
+# Custom Task Attributes — storage, HTTP, creation, decisions and CLI
 
-Status: PR1 foundation, PR2 HTTP adapters and PR3 plain creation/CLI;
+Status: PR1 foundation, PR2 HTTP adapters, PR3 plain creation/CLI and PR4 manager decisions;
 THR-390 / TASK-19073 / TASK-19160. Other creation producers and UI remain
 subsequent slices. No definitions are seeded.
 The source contract is `runtime/task_attributes.py`,
@@ -302,7 +302,9 @@ attribute row, first-use marker or successful mutation audit. Existing unrelated
 owner/attachment/model refusals remain in place.
 
 `runtime/task_attribute_admission.py` is the shared PR3/PR4 creation adapter.
-Creators own the org async lock, move gate, DB RLock and `BEGIN IMMEDIATE`.
+HTTP creators own the org async lock, move gate, DB RLock and `BEGIN IMMEDIATE`.
+Synchronous manager transitions retain move-gate → DB-RLock ordering and
+`BEGIN IMMEDIATE`; they add no asyncio lock or await beneath these leases.
 `validate_initial_attributes` reuses PR1's read-only whole-set validator before
 ID/row allocation inside that writer. Insert the task, then call
 `write_initial_attributes_uncommitted` with the same raw map and caller-trusted
@@ -314,7 +316,8 @@ back the entire creation on any failure, including binding, audit and COMMIT,
 commit once, then enqueue. The adapter never awaits, commits, enqueues, looks up
 parent values or supplies defaults. Preflight/cache results never authorize a
 later writer. PR4 must validate every leg's explicit raw map before allocation
-and preserve its producer's whole-operation rollback; no PR4 producer ships here.
+and preserve its producer's whole-operation rollback. PR3 shipped the adapter;
+PR4 wires manager decision producers as described below.
 
 The attachment wrapper accepts lazy task allocation so its writer validates
 before task ID allocation and commits task, ownership, links, attributes and
@@ -340,3 +343,38 @@ CI gate or Product E2E trigger is added. C09 is a separate disposable runtime
 process transcript. The normalized OpenAPI snapshot pins status/parameter
 inventory; full served schema owns the optional create field. Web API mirrors
 are reserved for serial PR6 follow-up; PR3 makes no `web/` edit.
+
+
+## PR4 — per-target manager decision attributes
+
+Implementation follows the accepted TASK-19186 v2 design (SHA-256
+`7c38a41b5a6e3be3352e55e4a3ad540edc34e210c5e6e1e5d4f5138de9a4b9ee`),
+including EM R1 raw/presence-preserving parsing, R2 atomic carrier refusal and R3
+implicit-first inventory and Inline Delegation Chains pointer. See the
+[shipping handoff contract](../agent-guides/contracts/task-orchestration.md#manager-task-attribute-handoffs-thr-390-pr4).
+
+NextStep, FanoutChild and ChainLeg preserve raw optional attributes until owned
+admission. The existing delegate, fanout and then writers validate all maps under
+BEGIN IMMEDIATE before lazy task allocation and reuse
+`validate_initial_attributes`/`write_initial_attributes_uncommitted`; they own the
+single final commit/whole-operation rollback. Attachment-carrying children share
+the same writer. Fanout admission includes all nested saved maps and separate
+empty implicit-first maps before any allocation. A child/carrier owns only its
+map; first executable carrier legs are empty. No inheritance or retry carry.
+
+New saved chains record trusted deciding-agent provenance. Future maps validate
+without freezing/reserving definitions, then revalidate current definitions at
+creation. Old unmarked/no-map chains retain unsupported/unknown semantics;
+explicit maps missing provenance refuse. A refused normal then leg records durable
+feedback with chain clear; a refused carrier leg commits feedback/reason, clear
+and FAILED together, followed by existing terminal effects/outer sibling barrier.
+Current ownership/cancel/exact-chain/native workflow checks remain authoritative.
+PR1880 terminal readers and manager-branch barrier remain unchanged.
+
+Focused evidence uses the existing standalone attributes command in
+[local CI](../operations/local-ci.md#focused-custom-task-attributes-thr-390-pr1pr2pr3pr4).
+The 25 accepted cases separate in-process production-boundary coverage from a
+later independent disposable CLI/API transcript. Lint is not behavioral proof.
+No new route, status or parameter is introduced; the completion decision remains
+raw HTTP data, so no OpenAPI snapshot change is expected. List/export, web and
+org scoring/configuration belong to later slices.

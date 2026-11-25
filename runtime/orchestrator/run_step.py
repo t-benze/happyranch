@@ -40,6 +40,8 @@ from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 from runtime.infrastructure.database import (
     AttachmentCorrectionStopped, Committed, InvalidLineage, LostClaim, PendingRetry, RetryClaim, SpawnOutcome,
 )
+from runtime.infrastructure.db.tasks import _ATTRIBUTES_ABSENT
+from runtime.task_attributes import AttributeValidationError
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator.org_config import load_org_config, OrgConfigError
 from runtime.orchestrator.executors import _meaningful_stderr
@@ -3644,7 +3646,7 @@ def _consume_completion_report_body(
         children_payload = []
         for c in decision.children:
             cd = {"agent": c.agent, "prompt": c.prompt}
-            cd.update(c.model_dump(include={"model", "reasoning_effort"}, exclude_unset=True))
+            cd.update(c.model_dump(include={"model", "reasoning_effort", "attributes"}, exclude_unset=True))
             if c.revisit_of_task_id is not None:
                 cd["revisit_of_task_id"] = c.revisit_of_task_id
             if c.expect_verdict is not None:
@@ -3657,7 +3659,7 @@ def _consume_completion_report_body(
                      "expect_verdict": l.expect_verdict,
                      **({"attachments": [ref.model_dump(exclude_none=True) for ref in l.attachments]}
                         if l.attachments else {}),
-                     **l.model_dump(include={"model", "reasoning_effort"}, exclude_unset=True)}
+                     **l.model_dump(include={"model", "reasoning_effort", "attributes"}, exclude_unset=True)}
                     for l in c.then
                 ]
             children_payload.append(cd)
@@ -3672,6 +3674,9 @@ def _consume_completion_report_body(
                 expected_claim=expected_claim,
                 selections=selections,
             )
+        except AttributeValidationError as exc:
+            _feedback_and_reenqueue(orch, expected_claim, f"Invalid task attributes: {exc}")
+            return
         except _PreChildDecisionAttachmentError as exc:
             _attachment_feedback_and_reenqueue(
                 orch, expected_claim, exc.detail, location=exc.location,
@@ -3818,23 +3823,22 @@ def _consume_completion_report_body(
                     _maybe_post_thread_escalation(orch, task_id, reason=reason)
                     return
                 revision_delta = 1
-        child_id = db.next_task_id()
-        child = TaskRecord(
-            id=child_id,
-            team=task.team,
-            brief=decision.prompt or "",
-            assigned_agent=decision.agent,
-            parent_task_id=task_id,
-            status=TaskStatus.PENDING,
-            session_timeout_seconds=task.session_timeout_seconds,
-            task_type="subtask",
-            # THR-078: carry revisit_of_task_id from the owner's decision
-            # so the fan-out barrier can derive per-slice retry count
-            # from existing DB lineage (no schema migration).
-            revisit_of_task_id=decision.revisit_of_task_id,
-            **selections[0],
-        )
-
+        def build_child() -> TaskRecord:
+            return TaskRecord(
+                id=db.next_task_id(),
+                team=task.team,
+                brief=decision.prompt or "",
+                assigned_agent=decision.agent,
+                parent_task_id=task_id,
+                status=TaskStatus.PENDING,
+                session_timeout_seconds=task.session_timeout_seconds,
+                task_type="subtask",
+                # THR-078: carry revisit_of_task_id from the owner's decision
+                # so the fan-out barrier can derive per-slice retry count
+                # from existing DB lineage (no schema migration).
+                revisit_of_task_id=decision.revisit_of_task_id,
+                **selections[0],
+            )
         # THR-109: validate and prepare decision attachments.
         # Run validation when ANY leg (direct or chain) declares attachments.
         delegate_attachment_params: list[dict] | None = None
@@ -3887,17 +3891,28 @@ def _consume_completion_report_body(
                 first_leg_expect_verdict=decision.expect_verdict,
                 legs=list(decision.then),
                 step_audit_id=_step_audit_id,
+                attributes_actor_id=agent,
             )
             chain_json = chain.serialize()
-        outcome = db.try_delegate(
-            task_id, child,
-            parent_note=f"Delegated to {decision.agent} (child={child_id})",
-            attachments=delegate_attachment_params,
-            active_chain_json=chain_json,
-            uploaded_by=agent,
-            expected_claim=expected_claim,
-            revision_delta=revision_delta, revision_cap=cap,
-        )
+        attribute_targets = [("attributes", decision.attributes
+                              if "attributes" in decision.model_fields_set else _ATTRIBUTES_ABSENT)]
+        attribute_targets.extend((f"then[{i}].attributes", leg.attributes
+                                  if "attributes" in leg.model_fields_set else _ATTRIBUTES_ABSENT)
+                                 for i, leg in enumerate(decision.then))
+        try:
+            outcome = db.try_delegate(
+                task_id, build_child,
+                parent_note=lambda child: f"Delegated to {decision.agent} (child={child.id})",
+                attachments=delegate_attachment_params,
+                active_chain_json=chain_json,
+                uploaded_by=agent,
+                expected_claim=expected_claim,
+                revision_delta=revision_delta, revision_cap=cap,
+                attribute_targets=attribute_targets,
+            )
+        except AttributeValidationError as exc:
+            _feedback_and_reenqueue(orch, expected_claim, f"Invalid task attributes: {exc}")
+            return
         if isinstance(outcome, InvalidLineage):
             _reject_retry_link_decision(orch, task_id, agent, next_count, outcome.reason,
                                         expected_claim=expected_claim)
@@ -3910,6 +3925,7 @@ def _consume_completion_report_body(
             return
         if not isinstance(outcome, Committed):
             raise TypeError(f"Unexpected spawn outcome: {type(outcome).__name__}")
+        child_id = outcome.child_ids[0]
         logger.debug("run_step %s: try_delegate SUCCEEDED, child=%s", task_id, child_id)
         _enqueue_task_generation_aware(orch, child_id)
         return
@@ -5289,7 +5305,8 @@ def _advance_chain_for_completed_child(
     """Inspect the parent's active_chain against the just-completed subtask's
     report, distinguishing a normal wake from failed next-leg admission.
 
-    Returns "advance", "complete", "wake", "admission_failed" or "lost_race".
+    Returns "advance", "complete", "wake", "admission_failed", "carrier_refused"
+    or "lost_race". "carrier_refused" already committed carrier failure.
     Only a matched final-leg report can select "complete". A failed leg or
     next-leg admission clears the current chain and must fail a carrier.
     A lost race leaves the parent untouched and must not wake or terminate it.
@@ -5390,34 +5407,66 @@ def _advance_chain_for_completed_child(
     # attachment links/audit in a single transaction. A crash or write failure
     # rolls back everything — no orphan chain state, no orphan child, no
     # orphan link/audit/claim, no queue side effect.
-    next_child_id = orch._db.next_task_id()
     chain.step_index = action.next_step_index
     chain_json = chain.serialize()
 
-    next_child = TaskRecord(
-        id=next_child_id,
-        team=parent.team,
-        brief=full_brief,
-        parent_task_id=parent_task_id,
-        assigned_agent=action.next_leg.agent,
-        status=TaskStatus.PENDING,
-        session_timeout_seconds=parent.session_timeout_seconds,
-        task_type="subtask",
-        model_override=action.next_leg.model,
-        reasoning_effort_override=action.next_leg.reasoning_effort,
-        # Admission validated the saved selection. PR1 rechecks it against
-        # CURRENT options immediately before executor construction at start.
-        override_source=("manager" if action.next_leg.model is not None
-                         or action.next_leg.reasoning_effort is not None else None),
-    )
-    advanced = orch._db.try_advance_chain(
-        parent_id=parent_task_id,
-        active_chain_json=chain_json,
-        next_child=next_child,
-        expected_active_chain_json=expected_active_chain_json,
-        attachments=chain_att_params,
-        uploaded_by="orchestrator",
-    )
+    next_child: TaskRecord | None = None
+
+    def build_next_child() -> TaskRecord:
+        nonlocal next_child
+        next_child = TaskRecord(
+            id=orch._db.next_task_id(),
+            team=parent.team,
+            brief=full_brief,
+            parent_task_id=parent_task_id,
+            assigned_agent=action.next_leg.agent,
+            status=TaskStatus.PENDING,
+            session_timeout_seconds=parent.session_timeout_seconds,
+            task_type="subtask",
+            model_override=action.next_leg.model,
+            reasoning_effort_override=action.next_leg.reasoning_effort,
+            # Admission validated the saved selection. PR1 rechecks it against
+            # CURRENT options immediately before executor construction at start.
+            override_source=("manager" if action.next_leg.model is not None
+                             or action.next_leg.reasoning_effort is not None else None),
+        )
+        return next_child
+
+    outer = orch._db.get_task(parent.parent_task_id) if _is_carrier(orch, parent) else None
+    prefix = ""
+    if outer is not None:
+        from runtime.orchestrator.fanout import FanoutState
+        prefix = f"children[{FanoutState.deserialize(outer.active_fanout).children_ids.index(parent.id)}]."
+    path = f"{prefix}then[{action.next_step_index - 1}].attributes"
+    # Old unmarked/no-map chains remain unsupported. Explicit material without
+    # trusted provenance must fail closed instead of inventing an actor.
+    supports_attributes = chain.attributes_actor_id is not None or any(
+        "attributes" in leg.model_fields_set for leg in chain.legs)
+    attribute_targets = ([(path, action.next_leg.attributes
+                          if "attributes" in action.next_leg.model_fields_set else _ATTRIBUTES_ABSENT)]
+                         if supports_attributes else None)
+    try:
+        advanced = orch._db.try_advance_chain(
+            parent_id=parent_task_id,
+            active_chain_json=chain_json,
+            next_child=build_next_child,
+            expected_active_chain_json=expected_active_chain_json,
+            attachments=chain_att_params,
+            uploaded_by="orchestrator",
+            attribute_targets=attribute_targets,
+            attributes_actor_id=chain.attributes_actor_id,
+        )
+    except AttributeValidationError as exc:
+        reason = f"Invalid task attributes: {exc}; no next leg created"
+        cleared = orch._db.try_clear_chain(parent_task_id, expected_active_chain_json,
+            attributes_refusal=reason, expected_owner=parent, expected_outer_owner=outer)
+        if not cleared:
+            return "lost_race"
+        if outer is not None:
+            _fail_terminal_tail(orch, parent_task_id, expected_note=reason)
+            _enqueue_parent_if_waiting(orch, parent_task_id)
+            return "carrier_refused"
+        return "wake"
     if advanced is None:
         return "lost_race"
     if not advanced:
@@ -5425,6 +5474,7 @@ def _advance_chain_for_completed_child(
         # Clear only the same chain; a concurrent cancellation/change wins.
         return clear_chain("admission_failed")
 
+    next_child_id = next_child.id
     orch._audit.log_chain_auto_advance(
         parent_task_id=parent_task_id,
         leg_index=action.next_step_index,
@@ -5901,7 +5951,7 @@ def _enqueue_parent_if_waiting(
                     expected_active_chain_json=chain_snapshot,
                     report=authenticated_report,
                 )
-                if outcome in ("advance", "lost_race"):
+                if outcome in ("advance", "lost_race", "carrier_refused"):
                     return  # spawned next leg, or parent ownership/state changed
                 if outcome == "complete":
                     # Only the matched final-leg chain-clear winner can
@@ -6502,40 +6552,6 @@ def _spawn_fanout_children(
 
     db = orch._db
 
-    # Allocate sequential child IDs.
-    child_records: list[TaskRecord] = []
-    children_ids: list[str] = []
-    base_id = db.next_task_id()
-    base_num = int(base_id.split("-")[-1])
-    for i, child_info in enumerate(children):
-        cid = f"TASK-{base_num + i:03d}"
-        children_ids.append(cid)
-        has_pipeline = bool(child_info.get("then")) or child_info.get("expect_verdict") is not None
-        # THR-056 option 3: mutating fan-out — children targeted at a team
-        # manager are task_type='task' so their delegate-chain decisions are
-        # parsed and can spawn implementation children. Pipeline carriers
-        # (has_pipeline=True) never run agent sessions themselves, so their
-        # task_type does not affect decision parsing; keep them as subtask.
-        is_manager = (
-            not has_pipeline
-            and orch.teams is not None
-            and bool(orch.teams.is_team_manager(child_info["agent"]))
-        )
-        child_task_type = "task" if is_manager else "subtask"
-        child_records.append(TaskRecord(
-            id=cid,
-            team=parent.team,
-            brief=child_info["prompt"] or "",
-            assigned_agent=child_info["agent"],
-            parent_task_id=task_id,
-            status=TaskStatus.IN_PROGRESS if has_pipeline else TaskStatus.PENDING,
-            block_kind=BlockKind.DELEGATED if has_pipeline else None,
-            session_timeout_seconds=parent.session_timeout_seconds,
-            task_type=child_task_type,
-            revisit_of_task_id=child_info.get("revisit_of_task_id"),
-            **selections[i],
-        ))
-
     # THR-109: validate attachment refs per-child (count limit, per-child
     # duplicates) and globally (cross-sibling duplicate keys, existence,
     # claim status). Pipeline carriers own their declared refs; their first
@@ -6643,82 +6659,135 @@ def _spawn_fanout_children(
     else:
         children_att_params = [None] * len(children)
 
-    # Build FanoutState BEFORE the atomic insert so it's ready to persist.
-    fanout_state = FanoutState(
-        children_ids=children_ids,
-        children_details=children,
-        width=width,
-        manager_agent=manager_agent,
-        join_summary=join_summary,
-        status="spawned",
-    )
-    parent_note = (
-        f"Fan-out to {width} children: "
-        + ", ".join(
-            f"{c['agent']}={cid}"
-            for c, cid in zip(children, children_ids)
-        )
-    )
-
-    # Build pipeline carrier chain data BEFORE the atomic transaction.
-    # Carrier chains are materialized inside try_delegate_many so active_chain
-    # + first leg are atomic with the fanout spawn — no partial carrier state.
+    child_records: list[TaskRecord] = []
+    children_ids: list[str] = []
     carrier_chains_data: list[dict] | None = None
     pipeline_indices: set[int] = set()
-    # First leg IDs start after the last child ID. Use base_num + len(children)
-    # (not another next_task_id() call — children aren't inserted yet so MAX
-    # hasn't moved).
-    carrier_leg_offset = 0
-    for i, child_info in enumerate(children):
-        has_pipeline = bool(child_info.get("then")) or child_info.get("expect_verdict") is not None
-        if not has_pipeline:
-            continue
-        pipeline_indices.add(i)
-        # Build the carrier chain and first leg data.
-        from runtime.orchestrator.chain import ChainState
-        from runtime.models import ChainLeg, TaskAttachmentRef
-        then_legs = [
-            ChainLeg(
-                agent=leg["agent"], prompt=leg["prompt"],
-                expect_verdict=leg.get("expect_verdict"),
-                attachments=[TaskAttachmentRef(
-                    storage_key=a["storage_key"],
-                    display_name=a.get("display_name"),
-                ) for a in leg.get("attachments", []) or []],
-                **{key: leg[key] for key in ("model", "reasoning_effort") if key in leg},
+
+    def build_batch() -> dict:
+        nonlocal child_records, children_ids, carrier_chains_data, pipeline_indices
+        # Allocate sequential child IDs.
+        child_records = []
+        children_ids = []
+        base_id = db.next_task_id()
+        base_num = int(base_id.split("-")[-1])
+        for i, child_info in enumerate(children):
+            cid = f"TASK-{base_num + i:03d}"
+            children_ids.append(cid)
+            has_pipeline = bool(child_info.get("then")) or child_info.get("expect_verdict") is not None
+            # THR-056 option 3: mutating fan-out — children targeted at a team
+            # manager are task_type='task' so their delegate-chain decisions are
+            # parsed and can spawn implementation children. Pipeline carriers
+            # (has_pipeline=True) never run agent sessions themselves, so their
+            # task_type does not affect decision parsing; keep them as subtask.
+            is_manager = (
+                not has_pipeline
+                and orch.teams is not None
+                and bool(orch.teams.is_team_manager(child_info["agent"]))
             )
-            for leg in child_info.get("then", []) or []
-        ]
-        carrier_chain = ChainState(
-            step_index=0,
-            first_leg_expect_verdict=child_info.get("expect_verdict"),
-            legs=then_legs,
-            step_audit_id=step_audit_id or 0,
+            child_task_type = "task" if is_manager else "subtask"
+            child_records.append(TaskRecord(
+                id=cid,
+                team=parent.team,
+                brief=child_info["prompt"] or "",
+                assigned_agent=child_info["agent"],
+                parent_task_id=task_id,
+                status=TaskStatus.IN_PROGRESS if has_pipeline else TaskStatus.PENDING,
+                block_kind=BlockKind.DELEGATED if has_pipeline else None,
+                session_timeout_seconds=parent.session_timeout_seconds,
+                task_type=child_task_type,
+                revisit_of_task_id=child_info.get("revisit_of_task_id"),
+                **selections[i],
+            ))
+
+        # Build FanoutState BEFORE the atomic insert so it's ready to persist.
+        fanout_state = FanoutState(
+            children_ids=children_ids,
+            children_details=children,
+            width=width,
+            manager_agent=manager_agent,
+            join_summary=join_summary,
+            status="spawned",
         )
-        first_leg_id = f"TASK-{base_num + len(children) + carrier_leg_offset:03d}"
-        carrier_leg_offset += 1
-        first_leg_data = {
-            "id": first_leg_id,
-            "team": parent.team,
-            "brief": child_info["prompt"] or "",
-            "assigned_agent": child_info["agent"],
-            "status": TaskStatus.PENDING,
-            "session_timeout_seconds": parent.session_timeout_seconds,
-            "model_override": child_records[i].model_override,
-            "reasoning_effort_override": child_records[i].reasoning_effort_override,
-            "override_source": child_records[i].override_source,
-            "task_type": "subtask",
-            "revision_count": 0,
-            "orchestration_step_count": 0,
-        }
-        if carrier_chains_data is None:
-            carrier_chains_data = []
-        carrier_chains_data.append({
-            "child_index": i,
-            "active_chain_json": carrier_chain.serialize(),
-            "first_leg": first_leg_data,
-            "first_leg_id": first_leg_id,
-        })
+        parent_note = (
+            f"Fan-out to {width} children: "
+            + ", ".join(
+                f"{c['agent']}={cid}"
+                for c, cid in zip(children, children_ids)
+            )
+        )
+
+        # Build ID-derived carrier metadata after complete writer admission.
+        # Carrier chains are materialized inside try_delegate_many so active_chain
+        # + first leg are atomic with the fanout spawn — no partial carrier state.
+        carrier_chains_data = None
+        pipeline_indices = set()
+        # First leg IDs start after the last child ID. Use base_num + len(children)
+        # (not another next_task_id() call — children aren't inserted yet so MAX
+        # hasn't moved).
+        carrier_leg_offset = 0
+        for i, child_info in enumerate(children):
+            has_pipeline = bool(child_info.get("then")) or child_info.get("expect_verdict") is not None
+            if not has_pipeline:
+                continue
+            pipeline_indices.add(i)
+            # Build the carrier chain and first leg data.
+            from runtime.orchestrator.chain import ChainState
+            from runtime.models import ChainLeg, TaskAttachmentRef
+            then_legs = [
+                ChainLeg(
+                    agent=leg["agent"], prompt=leg["prompt"],
+                    expect_verdict=leg.get("expect_verdict"),
+                    attachments=[TaskAttachmentRef(
+                        storage_key=a["storage_key"],
+                        display_name=a.get("display_name"),
+                    ) for a in leg.get("attachments", []) or []],
+                    **{key: leg[key] for key in ("model", "reasoning_effort", "attributes") if key in leg},
+                )
+                for leg in child_info.get("then", []) or []
+            ]
+            carrier_chain = ChainState(
+                step_index=0,
+                first_leg_expect_verdict=child_info.get("expect_verdict"),
+                legs=then_legs,
+                step_audit_id=step_audit_id or 0,
+                attributes_actor_id=manager_agent,
+            )
+            first_leg_id = f"TASK-{base_num + len(children) + carrier_leg_offset:03d}"
+            carrier_leg_offset += 1
+            first_leg_data = {
+                "id": first_leg_id,
+                "team": parent.team,
+                "brief": child_info["prompt"] or "",
+                "assigned_agent": child_info["agent"],
+                "status": TaskStatus.PENDING,
+                "session_timeout_seconds": parent.session_timeout_seconds,
+                "model_override": child_records[i].model_override,
+                "reasoning_effort_override": child_records[i].reasoning_effort_override,
+                "override_source": child_records[i].override_source,
+                "task_type": "subtask",
+                "revision_count": 0,
+                "orchestration_step_count": 0,
+            }
+            if carrier_chains_data is None:
+                carrier_chains_data = []
+            carrier_chains_data.append({
+                "child_index": i,
+                "active_chain_json": carrier_chain.serialize(),
+                "first_leg": first_leg_data,
+                "first_leg_id": first_leg_id,
+            })
+
+        return {"children": child_records, "parent_note": parent_note,
+                "active_fanout_json": fanout_state.serialize(), "carrier_chains": carrier_chains_data}
+
+    attribute_targets = []
+    for i, child in enumerate(children):
+        attribute_targets.append((f"children[{i}].attributes", child.get("attributes", _ATTRIBUTES_ABSENT)))
+        for j, leg in enumerate(child.get("then") or []):
+            attribute_targets.append((f"children[{i}].then[{j}].attributes", leg.get("attributes", _ATTRIBUTES_ABSENT)))
+        if child.get("then") or child.get("expect_verdict") is not None:
+            attribute_targets.append((f"children[{i}].first_leg.attributes", {}))
 
     # Atomic insert-N + parent transition under a single explicit SQL
     # transaction. active_fanout, carrier active_chain, and first-leg inserts
@@ -6726,11 +6795,10 @@ def _spawn_fanout_children(
     # attachment links/audit — no crash gap between spawn and metadata
     # persistence. Any failure rolls back everything.
     outcome = db.try_delegate_many(
-        task_id, child_records, parent_note=parent_note,
-        active_fanout_json=fanout_state.serialize(),
+        task_id, build_batch,
         children_attachments=children_att_params,
-        carrier_chains=carrier_chains_data,
         uploaded_by=manager_agent,
+        attribute_targets=attribute_targets,
         expected_claim=expected_claim,
     )
     if not isinstance(outcome, Committed):
