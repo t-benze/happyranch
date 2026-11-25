@@ -34,6 +34,7 @@ from urllib.parse import urlsplit
 
 from runtime.remote_access import headscale_service as headscale
 from runtime.remote_access import home_headscale
+from runtime.remote_access.helper_lifecycle import log_lifecycle_failure
 from runtime.remote_access.service_manager import ServiceManagerError, SystemdServiceManager
 from runtime.remote_access.systemd_unit import (
     VERIFIER_FILESYSTEM_HARDENING,
@@ -2879,7 +2880,35 @@ class ManagedInstaller:
                                 check()
                                 parent_check()
                                 partial = True
-                                os.rmdir(relative.name, dir_fd=parent)
+                                try:
+                                    os.rmdir(relative.name, dir_fd=parent)
+                                except OSError as error:
+                                    # ProtectSystem=strict leaves these parents read-only.
+                                    # PID 1 removes only the same fixed, checked empty directory;
+                                    # the helper's namespace and capabilities stay unchanged.
+                                    if error.errno != errno.EROFS or str(relative.parent) not in ("var/lib", "run"):
+                                        raise
+                                    try:
+                                        code, _ = self._run(
+                                            ["/usr/bin/systemd-run", "--quiet", "--wait", "--collect",
+                                             "-p", "CapabilityBoundingSet=", "-p", "AmbientCapabilities=",
+                                             "-p", "NoNewPrivileges=yes", "-p", "PrivateNetwork=yes",
+                                             "-p", "ProtectHome=yes", "-p", "PrivateTmp=yes",
+                                             "-p", "RuntimeMaxSec=20s", "-p", "TimeoutStartSec=20s",
+                                             "/usr/bin/rmdir", "--", str(self.root / relative)], timeout=30.0)
+                                    except OSError:
+                                        # Do not let the surrounding absent-directory handler
+                                        # turn a missing native tool into successful cleanup.
+                                        raise InstallerError("custody rmdir uncertain") from None
+                                    if code:
+                                        raise InstallerError("custody rmdir uncertain")
+                                    parent_check()
+                                    try:
+                                        os.stat(relative.name, dir_fd=parent, follow_symlinks=False)
+                                    except FileNotFoundError:
+                                        pass
+                                    else:
+                                        raise InstallerError("custody remains")
                                 os.fsync(parent)
                     except FileNotFoundError:
                         pass
@@ -2919,7 +2948,6 @@ class ManagedInstaller:
                         "home_ca": "removed"}
         except (OSError, InstallerError, ValueError, UnicodeError, ServiceManagerError,
                 headscale.HeadscaleServiceError, home_audit.AuditRefused) as error:
-            from runtime.remote_access.helper_lifecycle import log_lifecycle_failure
             log_lifecycle_failure(error, action='disable',
                 step='cleanup-directory' if cleanup_directory else 'cleanup', item=cleanup_directory)
         finally:

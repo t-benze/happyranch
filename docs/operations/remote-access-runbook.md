@@ -793,6 +793,20 @@ docker compose exec headscale headscale nodes list
 
 ---
 
+
+### Home Turn off directory removal
+
+Turn off keeps the helper sandbox unchanged. For EROFS only beneath `/var/lib`
+or `/run`, it asks PID 1 to remove the same checked empty fixed custody directory
+with a capability-less transient `/usr/bin/rmdir` unit, bounded to 20 seconds
+(30-second caller timeout). It then proves absence via the pinned parent.
+Missing tools, command failure, timeout, retained entries or custody drift keep
+partial cleanup. Never widen ReadWritePaths or remove directories manually to
+bypass this refusal. Local `remote-access-lifecycle-failure` warnings identify
+only exception class, shipped source-relative file:line, fixed stage/reason and
+cleanup ordinal; they include no user paths, contents or credentials.
+
+
 ## Appendix A: Directory layout
 
 ```

@@ -10,6 +10,7 @@ import re
 import time
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Callable, ContextManager, Protocol, TypeVar
 
 AUTH_DEADLINE = 120.0
@@ -84,12 +85,23 @@ def log_lifecycle_failure(error: Exception, *, action: str, step: str, item: int
                  '_account', '_read_file', '_record', '_parent', 'main', 'begin_replacement',
                  '_stop_policy', '_policy_quiescence', 'revoke', '_run_lifecycle'}
         stage, seen = 'unverified', set()
+        source = 'unverified'
+        root = Path(__file__).parent.parent
         for _ in range(8):
             seen.add(id(error))
             trace = error.__traceback__
             for _ in range(32):
                 if trace is None:
                     break
+                if action == 'disable' and step in ('cleanup', 'cleanup-directory'):
+                    try:
+                        relative = Path(trace.tb_frame.f_code.co_filename).relative_to(root).as_posix()
+                    except ValueError:
+                        pass
+                    else:
+                        if (len(relative) <= 152 and
+                                re.fullmatch(r'(?:[a-z_][a-z0-9_]*/)*[a-z_][a-z0-9_]*\.py', relative)):
+                            source = f'runtime/{relative}:{trace.tb_lineno}'
                 if trace.tb_frame.f_code.co_name in names:
                     stage = trace.tb_frame.f_code.co_name
                 trace = trace.tb_next
@@ -121,8 +133,9 @@ def log_lifecycle_failure(error: Exception, *, action: str, step: str, item: int
         name = type(error).__name__
         name = name if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', name) else 'Exception'
         item = item if type(item) is int and 0 <= item <= 8 else 0
+        position = f' source={source}' if action == 'disable' and step in ('cleanup', 'cleanup-directory') else ''
         syslog.syslog(syslog.LOG_WARNING, f'remote-access-lifecycle-failure action={action} '
-            f'step={step} item={item} stage={stage} exception={name} reason={json.dumps(reason)}')
+            f'step={step} item={item} stage={stage} exception={name} reason={json.dumps(reason)}{position}')
     except Exception:
         pass  # Journal loss never alters effects, retained evidence or refusal.
 

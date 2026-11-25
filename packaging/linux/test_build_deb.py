@@ -745,7 +745,7 @@ class DebPackageTests(unittest.TestCase):
                     self.assertIn(field, fields)
                 self.assertEqual(subprocess.check_output(['dpkg-deb', '-f', deb, 'Depends'], text=True).strip(),
                                  'python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1 (>= 2.40), gir1.2-secret-1, '
-                                 'git, ca-certificates, libc6 (>= 2.35), libgcc-s1')
+                                 'git, ca-certificates, systemd, coreutils, libc6 (>= 2.35), libgcc-s1')
                 listing = subprocess.check_output(['dpkg-deb', '-c', deb], text=True)
                 self.assertTrue(all(' root/root ' in line for line in listing.splitlines()))
                 installed = self.work / ('installed-' + debarch)

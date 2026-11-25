@@ -239,7 +239,7 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-') as temporary:
         'Homepage: https://github.com/t-benze/happyranch\n'
         f'Installed-Size: {installed_size}\n'
         'Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1 (>= 2.40), gir1.2-secret-1, '
-        'git, ca-certificates, libc6 (>= 2.35), libgcc-s1\n'
+        'git, ca-certificates, systemd, coreutils, libc6 (>= 2.35), libgcc-s1\n'
         'Description: desktop and command-line workspace\n'
         ' Native GTK and WebKit window for the local HappyRanch web interface,\n'
         ' with a private Python runtime and an application-owned local daemon.\n'

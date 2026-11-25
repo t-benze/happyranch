@@ -3323,7 +3323,18 @@ Retaining user-create beyond the DB lifetime would permanently refuse a later
 fresh CreateUser. Fresh Enable still requires a new activation G/O CAS.
 
 Fixed custody directories otherwise follow existing D/custody rules: rmdir only
-when empty. Without a valid activation receipt D still refuses DB/Noise/socket
+when empty. If descriptor-relative rmdir returns EROFS only for a fixed custody
+path whose parent is exactly `/var/lib` or `/run`, ask PID 1 through fixed
+`/usr/bin/systemd-run` to execute `/usr/bin/rmdir -- <same fixed path>` in a
+transient unit: empty CapabilityBoundingSet/AmbientCapabilities, NoNewPrivileges,
+PrivateNetwork, ProtectHome and PrivateTmp, with 20-second start/runtime bounds
+and a 30-second caller timeout. The native package declares systemd and coreutils.
+The empty scan, owner/mode/signature checks, pinned parents, require/inventory
+checks and userdel order remain mandatory. Prove absence through the pinned
+parent before proceeding. Missing tools, nonzero exit, timeout or a remaining
+directory retain partial cleanup. Other parents and non-EROFS errors refuse;
+helper unit hardening, ReadWritePaths and capabilities remain unchanged.
+Without a valid activation receipt D still refuses DB/Noise/socket
 and unreceipted entries; no-argument callers remain unchanged. Unknown/extra or
 unsafe objects remain and report incomplete cleanup; no recursive deletion.
 Explicitly destroy the owned CA private key on Turn off. B16 audit survives.
@@ -4797,7 +4808,9 @@ journals the same redacted failure dimensions; a suppressed flock
 `BlockingIOError(EAGAIN)` is named `lock-busy`, and still exits unsuccessfully.
 No failure or skipped work is marked successful.
 
-B6 records the failing directory ordinal with `step=cleanup-directory` and a
+B6 records the innermost shipped source-relative file:line (including suppressed
+transaction error context), exception class and failing directory ordinal with
+`step=cleanup-directory` and a
 fixed internal reason (or a closed native errno reason). The unchanged order is
 1 Headscale configuration, 2 Headscale persistent state, 3 Headscale runtime,
 4 home CA staging, 5 sidecar runtime, and, only after successful serving revoke,

@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import socket
 import ssl
 import struct
@@ -2344,9 +2345,121 @@ def test_b6_cleanup_directory_journal(
     with pytest.raises(home.HeadscaleServiceError, match='partial-cleanup-uncertain'):
         fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
     reason = 'permission-denied' if failure == 'errno' else 'unsafe directory ownership or mode'
-    sent.assert_called_once_with(syslog.LOG_WARNING,
+    assert sent.call_count == 1
+    level, message = sent.call_args.args
+    assert level == syslog.LOG_WARNING
+    assert re.fullmatch(
         f'remote-access-lifecycle-failure action=disable step=cleanup-directory item={index} '
         f'stage=_cleanup_home_headscale exception={"PermissionError" if failure == "errno" else "InstallerError"} '
-        f'reason={json.dumps(reason)}')
+        + re.escape(f'reason={json.dumps(reason)}')
+        + r' source=runtime/remote_access/installer.py:[1-9][0-9]*', message)
     assert target.exists() and activation.exists() and fixture.receipt().exists()
     assert all(token not in str(sent.call_args) for token in (str(fixture.root), 'private-key', '/private/', 'https://'))
+
+
+@pytest.mark.parametrize('directory', ['var/lib/happyranch-headscale', 'run/happyranch-headscale',
+    'run/happyranch-tsnet-sidecar', 'var/lib/happyranch-connector', 'var/lib/happyranch-tsnet-sidecar'])
+@pytest.mark.parametrize('result', ['removed', 'nonzero', 'missing-tool', 'still-present'])
+def test_b6_readonly_parent_removal(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    directory: str, result: str,
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    for state in module._STATE_DIRS:
+        (fixture.root / state).mkdir(mode=0o700, exist_ok=True)
+    target = fixture.root / directory
+    native, command = os.rmdir, fixture.installer._run
+    attempts, transient = [], []
+    def remove(name: str, *, dir_fd: int | None = None) -> None:
+        path = Path(os.readlink('/proc/self/fd/' + str(dir_fd))) / name
+        if path == target:
+            attempts.append(path)
+            raise OSError(errno.EROFS, 'synthetic-private-path')
+        native(name, dir_fd=dir_fd)
+    def run(args: list[str], **kw: object) -> tuple[int, str]:
+        if args[0] != '/usr/bin/systemd-run':
+            return command(args, **kw)
+        transient.append(args)
+        assert args == ['/usr/bin/systemd-run', '--quiet', '--wait', '--collect',
+            '-p', 'CapabilityBoundingSet=', '-p', 'AmbientCapabilities=',
+            '-p', 'NoNewPrivileges=yes', '-p', 'PrivateNetwork=yes',
+            '-p', 'ProtectHome=yes', '-p', 'PrivateTmp=yes',
+            '-p', 'RuntimeMaxSec=20s', '-p', 'TimeoutStartSec=20s',
+            '/usr/bin/rmdir', '--', str(target)]
+        assert kw == {'timeout': 30.0}
+        assert attempts == [target] and not fixture.present and not fixture.group_present
+        if result == 'missing-tool':
+            raise FileNotFoundError('synthetic-private-tool')
+        if result == 'removed':
+            native(target)
+        return (1 if result == 'nonzero' else 0), 'synthetic-private-command-output'
+    monkeypatch.setattr(os, 'rmdir', remove)
+    fixture.installer._run = run
+    if result == 'removed':
+        assert fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)['state'] == 'removed'
+        assert not activation.exists() and not fixture.receipt().exists() and not target.exists()
+    else:
+        with pytest.raises(home.HeadscaleServiceError, match='^partial-cleanup-uncertain$'):
+            fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
+        assert target.exists() and activation.exists() and fixture.receipt().exists()
+    assert attempts == [target] and len(transient) == 1
+
+
+@pytest.mark.parametrize('directory,code', [
+    ('etc/happyranch/headscale', errno.EROFS),
+    ('var/lib/happyranch-remote-access/home-ca', errno.EROFS),
+    ('var/lib/happyranch-headscale', errno.EACCES),
+    ('run/happyranch-headscale', errno.EIO)])
+def test_b6_other_removal_errors_never_escape_sandbox(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    directory: str, code: int,
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    target = fixture.root / directory
+    native, command = os.rmdir, fixture.installer._run
+    attempts = []
+    def remove(name: str, *, dir_fd: int | None = None) -> None:
+        if Path(os.readlink('/proc/self/fd/' + str(dir_fd))) / name == target:
+            attempts.append(name)
+            raise OSError(code, 'synthetic-private-path')
+        native(name, dir_fd=dir_fd)
+    def run(args: list[str], **kw: object) -> tuple[int, str]:
+        assert args[0] != '/usr/bin/systemd-run'
+        return command(args, **kw)
+    monkeypatch.setattr(os, 'rmdir', remove)
+    fixture.installer._run = run
+    with pytest.raises(home.HeadscaleServiceError, match='^partial-cleanup-uncertain$'):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
+    assert attempts == [target.name] and target.exists() and activation.exists() and fixture.receipt().exists()
+
+
+@pytest.mark.parametrize('bad', ['nonempty', 'wrong-owner'])
+def test_b6_unsafe_directory_precedes_any_removal(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], bad: str,
+) -> None:
+    activation, _ = b6_setup(fixture, monkeypatch, capsys)
+    target = fixture.root / 'var/lib/happyranch-headscale'
+    if bad == 'nonempty':
+        (target / 'foreign').write_bytes(b'synthetic')
+    else:
+        native_stat, native_fstat = os.stat, os.fstat
+        inode = target.stat().st_ino
+        def wrong(info: os.stat_result) -> os.stat_result:
+            if info.st_ino == inode:
+                fields = list(info)
+                fields[4] += 1
+                return os.stat_result(fields)
+            return info
+        monkeypatch.setattr(os, 'stat', lambda *a, **kw: wrong(native_stat(*a, **kw)))
+        monkeypatch.setattr(os, 'fstat', lambda *a, **kw: wrong(native_fstat(*a, **kw)))
+    command = fixture.installer._run
+    def run(args: list[str], **kw: object) -> tuple[int, str]:
+        assert args[0] not in ('/usr/bin/systemd-run', 'userdel', 'groupdel')
+        return command(args, **kw)
+    fixture.installer._run = run
+    def refuse_remove(*a: object, **kw: object) -> None:
+        pytest.fail('unsafe directory admitted to removal')
+    monkeypatch.setattr(os, 'rmdir', refuse_remove)
+    with pytest.raises(home.HeadscaleServiceError, match='^cleanup-uncertain$'):
+        fixture.installer.cleanup_headscale(**_HOME_EXPECTED, revoke_succeeded=True)
+    assert target.exists() and activation.exists() and fixture.receipt().exists()
