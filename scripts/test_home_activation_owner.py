@@ -171,7 +171,7 @@ def venue(tmp_path, monkeypatch):
     (v.root / "var/lib/happyranch-tsnet-sidecar").mkdir(mode=0o700)
     for path in v.root.rglob("*"):
         if path.is_dir(): path.chmod(0o755)
-    for relative in ("etc/credstore", "var/lib/happyranch-remote-access", "var/lib/happyranch-tsnet-sidecar"):
+    for relative in ("etc/credstore", "etc/happyranch/headscale", "var/lib/happyranch-remote-access", "var/lib/happyranch-tsnet-sidecar"):
         (v.root / relative).chmod(0o700)
     return v
 
