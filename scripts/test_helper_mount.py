@@ -1103,6 +1103,29 @@ def test_disable_order_slot_audit_and_r7(mount: Any, revoke: str, cleanup: str) 
     assert v.helper.control.revoke_all.call_count == (2 if revoke == 'changed' else 1)
 
 
+@pytest.mark.parametrize('partial', [False, True])
+def test_thr327_disable_terminal_before_slot_release(mount: Any, partial: bool) -> None:
+    v, sent = mount, []
+    v.message.get_serial = lambda: 17
+    v.helper.connection.get_unique_name = lambda: ':1.100'
+    def signal(destination: str, path: str, interface: str, member: str, body: Any) -> None:
+        assert v.helper.inflight is not None
+        sent.append((destination, path, interface, member, json.loads(body.unpack()[0])))
+    v.helper.connection.emit_signal = signal
+    if partial:
+        v.helper.control.revoke_all.side_effect = v.h.Refused('unavailable')
+    v.admit()
+    frame = dict(method='Disable', correlation=dict(serial=17, owner=':1.100'),
+                 outcome='failed' if partial else 'completed')
+    if partial:
+        frame['category'] = 'partial_cleanup'
+    assert sent == [(':1.42', v.h.OBJECT_PATH, v.h.INTERFACE, 'LifecycleCompleted', frame)]
+    assert v.helper.inflight is None
+    assert v.helper.lifecycle_result['outcome'] == ('partial_cleanup' if partial else 'off')
+    assert v.effects == ([] if partial else ['revoke']) + ['stop', 'cleanup']
+    assert 'residue' not in frame  # No host paths or private diagnostics on this channel.
+
+
 @pytest.mark.parametrize('change', ['generation', 'operation', 'uid', 'owner', 'denied', 'deadline'])
 def test_native_capture_action_and_cas_before_effect(mount: Any, monkeypatch: pytest.MonkeyPatch, change: str) -> None:
     v = mount

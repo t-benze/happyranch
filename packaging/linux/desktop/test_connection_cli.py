@@ -174,6 +174,35 @@ class Bus:
 
 
 class ConnectionCLITests(unittest.TestCase):
+    def test_turn_off_settled_receipt_returns_without_timeout(self) -> None:
+        for outcome in ('completed', 'partial_cleanup'):
+            for early in (False, True):
+                with self.subTest(outcome=outcome, early=early):
+                    host, bus, seen = native.Host(), Bus(), []
+                    host.connection, bus.hold, bus.early = bus, True, early
+                    frame = dict(method='Disable', correlation=dict(serial=17, owner=':1.100'),
+                                 outcome='completed' if outcome == 'completed' else 'failed')
+                    if outcome == 'partial_cleanup':
+                        frame['category'] = outcome
+                    # An Enable receipt with the same serial must never settle Disable.
+                    bus.terminal_frames = [terminal_frame(), json.dumps(frame), json.dumps(frame)]
+                    try:
+                        native.contract.request_host(host, 'Disable', lambda *a: seen.append(a),
+                            lambda: True, lambda _: None, cli_lifecycle=True)
+                        while bus.held:
+                            bus.held.pop(0)()
+                        context = GLib.MainContext.default()
+                        while context.pending():
+                            context.iteration(False)
+                        expected = (dict(code='turnOffCompleted', effect='unknown', recovery='refresh'),) if outcome == 'completed' else (
+                            None, dict(code='turnOffFailed', category='partial_cleanup',
+                                       effect='unknown', recovery='nativeRecovery'), 'unknown')
+                        self.assertEqual(seen, [expected])
+                        self.assertEqual([call[3] for call in bus.calls], ['Disable'])
+                        self.assertEqual((bus.filters, bus.subscriptions, bus.handlers), ({}, {}, {}))
+                    finally:
+                        host.close()
+
     def test_enable_preparation_cli_terminal(self) -> None:
         for token in PREPARATION_TOKENS:
             for early in (False, True):
@@ -712,8 +741,8 @@ class ConnectionCLITests(unittest.TestCase):
                 self.assertEqual(call[:6], ("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
                                            "ai.happyranch.RemoteAccess1", method, None, "(s)"))
                 self.assertEqual(call[6], Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION)
-                if method == "Enable":
-                    self.assertEqual(call[7], 122000)  # Admission timeout; separate original 482s observer timer.
+                if method in ("Enable", 'Disable'):
+                    self.assertEqual(call[7], 122000)  # Admission only; original operation budget stays held separately.
                 else:
                     self.assertGreater(call[7], budget)
                 self.assertEqual((code, result["effect"]), (0, "confirmed") if method == "IssueInvite" else (1, "unknown"))

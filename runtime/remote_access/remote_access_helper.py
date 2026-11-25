@@ -599,7 +599,7 @@ class RemoteAccessHelper:
         """One receive-only receipt, still held by the original worker/slot."""
         capture = operation.capture
         budget = operation.budget
-        if (capture.method != 'Enable' or not operation.accepted or self.cancelled
+        if (capture.method not in ('Enable', 'Disable') or not operation.accepted or self.cancelled
                 or self.inflight is not capture or budget.remaining() <= 2.0):
             return
         # _uid retains its fixed 2s authentication read. Never start it with less
@@ -612,10 +612,13 @@ class RemoteAccessHelper:
         budget.remaining()
         if self.cancelled or self.inflight is not capture:
             return
-        frame = dict(method='Enable', correlation=dict(serial=capture.message.get_serial(),
+        frame = dict(method=capture.method, correlation=dict(serial=capture.message.get_serial(),
             owner=self.connection.get_unique_name()), outcome='failed')
         if category is not None:
             frame['category'] = category
+        elif capture.method == 'Disable' and outcome != _helper_lifecycle.SetupPhase.OFF:
+            frame['category'] = ('partial_cleanup' if outcome == _helper_lifecycle.SetupPhase.PARTIAL_CLEANUP
+                                 else 'uncertain' if outcome == _helper_lifecycle.SetupPhase.UNCERTAIN else 'failed')
         elif outcome not in (_helper_lifecycle.SetupPhase.FAILED, _helper_lifecycle.SetupPhase.UNCERTAIN):
             frame['outcome'] = 'completed'
         raw = json.dumps(frame, separators=(',', ':'))
@@ -670,7 +673,7 @@ class RemoteAccessHelper:
 
         def deliver(settled: object) -> None:
             nonlocal send_attempted
-            if send_attempted or capture.method != 'Enable':
+            if send_attempted or capture.method not in ('Enable', 'Disable'):
                 return
             send_attempted = True
             try:
@@ -789,7 +792,7 @@ class RemoteAccessHelper:
             # all effects return, so transient contention cannot strand its slot.
             with self.lock:
                 try:
-                    settled = (operation.complete(outcome, before_release=deliver) if capture.method == 'Enable'
+                    settled = (operation.complete(outcome, before_release=deliver) if capture.method in ('Enable', 'Disable')
                                else operation.complete(outcome))
                     self.lifecycle_result = {'outcome': settled.value, 'residue': residue}
                 except Exception:

@@ -3649,13 +3649,23 @@ status at most 2 seconds. B15 conveys progress/terminal outcomes using
 `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`.
 Transport loss after dispatch never means no change.
 
-Enable alone adds a destination-addressed `LifecycleCompleted(s)` signal on
+Enable and Disable send a destination-addressed `LifecycleCompleted(s)` signal on
 `ai.happyranch.RemoteAccess1`, before captured slot/name release, to the original
 unique caller only. Its sole method reply stays JSON `"accepted"` (admission).
-The closed, duplicate-free, 512-byte frame has method=Enable,
+The closed, duplicate-free, 512-byte frame has method=Enable|Disable,
 correlation={serial:original call serial,owner:authenticated helper unique name},
 outcome=failed|completed, and optional category on failed only. No broadcast,
 cache, lookup, replay, cross-caller transfer or automatic Enable follows.
+Disable's failed receipt has only `partial_cleanup`, `failed` or `uncertain`
+as its category; it never sends residue paths. Only a settled Off produces its
+completed receipt. CLI Turn off subscribes before admission on the same
+connection and consumes only its own method/serial/unique-owner receipt within
+the original 300s budget (302s caller fallback). It returns immediately with
+`turnOffCompleted`/exit 0 or `turnOffFailed` plus that category/exit 1. Both retain
+unknown effect; the receipt supplies no reusable revoke or cleanup authority.
+Lost receipt retains `outcomeUnknown`; no poll, reconnect or mutation replay is
+added. GUI Disable still uses its admission and fresh Status observations;
+it cannot consume the Enable-only window event.
 
 Only HeadscaleServiceError.category at the actual prepare_headscale call mints
 preparation provenance. The private child emits one exact preparationFailure

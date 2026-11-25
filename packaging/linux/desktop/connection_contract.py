@@ -41,13 +41,14 @@ PREPARATION_CATEGORIES = frozenset({
 })
 HELPER_NAME = "ai.happyranch.RemoteAccess1"
 HELPER_PATH = "/ai/happyranch/RemoteAccess1"
+DISABLE_CATEGORIES = frozenset({'partial_cleanup', 'failed', 'uncertain'})
 
 
 def enable_terminal_frame(raw: str) -> dict:
     value = parse_json(raw, 512)
     if (type(value) is not dict or set(value) not in (
             {"method", "correlation", "outcome"}, {"method", "correlation", "outcome", "category"})
-            or value["method"] != "Enable" or value["outcome"] not in ("failed", "completed")):
+            or value["method"] not in ("Enable", "Disable") or value["outcome"] not in ("failed", "completed")):
         raise ValueError("invalid terminal frame")
     correlation = value["correlation"]
     if (type(correlation) is not dict or set(correlation) != {"serial", "owner"}
@@ -56,7 +57,8 @@ def enable_terminal_frame(raw: str) -> dict:
             or re.fullmatch(r":[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+", correlation["owner"]) is None):
         raise ValueError("invalid terminal correlation")
     if "category" in value and (value["outcome"] != "failed"
-            or type(value["category"]) is not str or value["category"] not in PREPARATION_CATEGORIES):
+            or type(value["category"]) is not str or value["category"] not in (
+                PREPARATION_CATEGORIES if value['method'] == 'Enable' else DISABLE_CATEGORIES)):
         raise ValueError("invalid terminal category")
     return value
 
@@ -65,7 +67,10 @@ class EnableTerminalObserver:
     """One original connection/request/incarnation; never a result store."""
 
     def __init__(self, host: object, complete: object, failed: object, current: object,
-                 terminal: object, *, cli: bool, admission_current: object) -> None:
+                 terminal: object, *, cli: bool, admission_current: object, method: str = 'Enable') -> None:
+        if method != 'Enable' and not (cli and method == 'Disable'):
+            raise ValueError('invalid terminal method')
+        self.method = method
         self.host, self.connection = host, host.connection
         self.complete, self.failed, self.current, self.terminal = complete, failed, current, terminal
         self.cli = cli
@@ -77,8 +82,9 @@ class EnableTerminalObserver:
         self.pending = None
         self.subscription = self.owners = self.filter_id = self.timer = self.closed_handler = None
         self.started = time.monotonic()
-        self.cutoff, self.deadline = self.started + 480, self.started + 482
-        self.message = host.Gio.DBusMessage.new_method_call(HELPER_NAME, HELPER_PATH, HELPER_NAME, "Enable")
+        budget = 480 if method == 'Enable' else 300
+        self.cutoff, self.deadline = self.started + budget, self.started + budget + 2
+        self.message = host.Gio.DBusMessage.new_method_call(HELPER_NAME, HELPER_PATH, HELPER_NAME, method)
         self.message.set_flags(host.Gio.DBusMessageFlags.ALLOW_INTERACTIVE_AUTHORIZATION)
 
     def start(self) -> None:
@@ -121,7 +127,7 @@ class EnableTerminalObserver:
                         return message
                     raw, = message.get_body().unpack()
                     frame = enable_terminal_frame(raw)
-                    if frame["correlation"]["serial"] == self.message.get_serial():
+                    if frame['method'] == self.method and frame["correlation"]["serial"] == self.message.get_serial():
                         self.host.GLib.idle_add(self._arrived, message.get_sender(), frame)
                 except (ValueError, TypeError, UnicodeError, AttributeError):
                     pass
@@ -193,14 +199,19 @@ class EnableTerminalObserver:
         if time.monotonic() >= self.cutoff:
             return False
         owner = self.owner if self.admitted else self.arrival_owner
-        if (sender != owner or frame["correlation"]["owner"] != owner
+        if (frame['method'] != self.method or sender != owner or frame["correlation"]["owner"] != owner
                 or frame["correlation"]["serial"] != self.message.get_serial()):
             return False
         if not self.admitted:
             if self.pending is None:
                 self.pending = (sender, frame)
             return False
-        if frame["outcome"] == "completed":
+        if self.method == 'Disable':
+            projection = (dict(code='turnOffCompleted', effect='unknown', recovery='refresh')
+                if frame['outcome'] == 'completed' else dict(code='turnOffFailed',
+                    category=frame.get('category', 'uncertain'), effect='unknown', recovery='nativeRecovery'))
+            raw = None  # Disable CLI has no host.enableFinished event.
+        elif frame["outcome"] == "completed":
             projection = dict(code="enableCompleted", effect="unknown", recovery="refresh")
             event = dict(version=1, operationId=self.operation_id, method="Enable", outcome="completed", result=projection)
         else:
@@ -208,9 +219,10 @@ class EnableTerminalObserver:
             if "category" in frame:
                 projection.update(code="enablePreparationFailed", category=frame["category"])
             event = dict(version=1, operationId=self.operation_id, method="Enable", outcome="failed", error=projection)
-        self.host.protocol.validate(event, self.host.protocol.events["host.enableFinished"])
-        raw = json.dumps(event, separators=(",", ":"))
-        parse_json(raw, 1024)
+        if self.method == 'Enable':
+            self.host.protocol.validate(event, self.host.protocol.events["host.enableFinished"])
+            raw = json.dumps(event, separators=(",", ":"))
+            parse_json(raw, 1024)
         if not self._current():
             self.close()
             return False
@@ -713,12 +725,12 @@ def request_host(self: object, method: str, complete: object, current: object, o
     def call(called: str) -> None:
         nonlocal deadline
         try:
-            if called == "Enable":
+            if called == "Enable" or called == 'Disable' and cli_lifecycle:
                 previous = getattr(self, "enable_observer", None)
                 if previous is not None:
                     previous.close()
                 self.enable_observer = EnableTerminalObserver(self, complete, failed,
-                    terminal_current or current, terminal, cli=cli_lifecycle, admission_current=current)
+                    terminal_current or current, terminal, cli=cli_lifecycle, admission_current=current, method=called)
                 self.enable_observer.start()
                 return
             if lifecycle and deadline is None:

@@ -27,8 +27,9 @@ class ClosedError(Exception):
         self.value = dict(code=code, effect=effect, recovery=recovery)
         if code == "hostStateUnrecognized":
             self.value['category'] = category if category in contract.HOST_STATE_CATEGORIES else 'unknown'
-        elif code == "enablePreparationFailed":
-            if (type(category) is str and category in contract.PREPARATION_CATEGORIES
+        elif code in ("enablePreparationFailed", 'turnOffFailed'):
+            categories = contract.PREPARATION_CATEGORIES if code == 'enablePreparationFailed' else contract.DISABLE_CATEGORIES
+            if (type(category) is str and category in categories
                     and effect == "unknown" and recovery == "nativeRecovery"):
                 self.value['category'] = category
             else:
