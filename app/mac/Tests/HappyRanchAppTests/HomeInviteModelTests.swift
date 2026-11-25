@@ -1078,6 +1078,8 @@ final class HomeCandidateOwnershipTests: XCTestCase {
         let toolbar = MainToolbarController()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
                               styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { toolbar.detach(window); window.close() }
         toolbar.attach(window)
         func warningVisible() -> Bool { window.toolbar?.items.contains { $0.itemIdentifier.rawValue == "access-unsaved" } == true }
         scheme.statusChanged = { toolbar.refresh($0) }
@@ -1129,6 +1131,8 @@ final class HomeCandidateOwnershipTests: XCTestCase {
         let toolbar = MainToolbarController()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
                               styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { toolbar.detach(window); window.close() }
         toolbar.attach(window)
         let (root, scheme, _, _) = try AppSchemeSwitchTests().fixture()
         defer { scheme.close(); try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: root.appendingPathExtension("json")) }

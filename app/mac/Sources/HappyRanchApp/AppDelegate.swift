@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// Set on each launch; used to guard stale exit callbacks by identity.
     /// Internal to allow tests to inject a handle for termination-path coverage.
     var currentHandle: (any ProcessHandle)?
+    /// Shorter values are injected only by fake-child fixtures.
+    var managedStopGrace = ManagedProcessStop.Grace()
 
     /// Selected native endpoint/owner identity, never the WebKit page URL.
     @Published var webViewURL: String?
@@ -956,7 +958,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
 
         try? supervisor.stop()
         refreshDerivedState()
-        let outcome = ManagedProcessStop.stop(handle)
+        let outcome = ManagedProcessStop.stop(handle, grace: managedStopGrace)
         switch outcome {
         case .exited(let status, let signal):
             diagnostics.recordLaunchLog("Managed Stop: exited, status=\(status), signal=\(signal.map(String.init) ?? "none")")

@@ -8,7 +8,7 @@ import Darwin
 @main
 enum AppEntry {
     @MainActor
-    static func main() {
+    static func main() async {
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments.first?.hasPrefix("--qualify-app-scheme") == true {
             guard arguments.first == "--qualify-app-scheme" else { exit(2) }
@@ -28,8 +28,7 @@ enum AppEntry {
         NSApp.setActivationPolicy(.accessory)
         signal(SIGPIPE, SIG_IGN) // output loss must still run native cleanup
         let client = ConnectionCLI()
-        var exitCode: Int32?
-        let operation = Task { exitCode = await client.execute(arguments[1]) }
+        let operation = Task { await client.execute(arguments[1]) }
         let signals = [SIGINT, SIGTERM].map { number in
             signal(number, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
@@ -37,10 +36,9 @@ enum AppEntry {
             source.resume()
             return source
         }
-        while exitCode == nil {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        }
+        // Yield MainActor so the CLI operation and cancellation can run.
+        let exitCode = await operation.value
         for source in signals { source.cancel() }
-        exit(exitCode ?? 1)
+        exit(exitCode)
     }
 }

@@ -11,6 +11,9 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
     private let candidate = NSTextField(labelWithString: "")
     private var unsaved = false
     private var retryDialog: String?
+    private var attaching = false
+    private var reconciling = false
+    private var reconciliationPending = false
     private static let summary = NSToolbarItem.Identifier("summary")
     private static let connection = NSToolbarItem.Identifier("connection")
     private static let settings = NSToolbarItem.Identifier("settings")
@@ -33,11 +36,23 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
     }
 
     func attach(_ window: NSWindow) {
+        guard !attaching else { return }
+        attaching = true
+        defer { attaching = false; reconcileOptionalItems() }
+        if let previous = self.window, previous !== window, previous.toolbar === toolbar {
+            previous.toolbar = nil
+        }
+        self.window = window
         if window.toolbar !== toolbar {
-            self.window = window
             window.toolbar = toolbar; window.toolbarStyle = .unified
             window.titleVisibility = .hidden
         }
+    }
+
+    func detach(_ window: NSWindow) {
+        guard self.window === window else { return }
+        self.window = nil
+        if window.toolbar === toolbar { window.toolbar = nil }
     }
 
     @discardableResult
@@ -47,11 +62,7 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
         // it on subscription/readiness/recovery or from a state refresh.
         let delivered = request?(dialog) == true
         retryDialog = delivered ? nil : dialog
-        optionalItem(Self.retry, visible: retryDialog != nil)
-        if let item = toolbar.items.first(where: { $0.itemIdentifier == Self.retry }) {
-            item.label = retryLabel; item.toolTip = retryLabel
-            (item.view as? NSButton)?.title = retryLabel
-        }
+        reconcileOptionalItems()
         return delivered
     }
 
@@ -82,11 +93,30 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
         candidate.stringValue = pending.map { "\($0["name"] as? String ?? "") · \(phases[$0["phase"] as? String ?? ""] ?? "")" } ?? ""
         candidate.toolTip = candidate.stringValue; candidate.isHidden = pending == nil
         if let value = state["access_unsaved"] as? Bool { unsaved = value }
-        optionalItem(Self.warning, visible: unsaved)
+        reconcileOptionalItems()
+    }
+
+    /// Defaults own only fixed items. This is the sole optional-item writer.
+    /// AppKit can enter us again while attaching/populating/inserting items;
+    /// retain the latest state and reconcile it after the active pass finishes.
+    private func reconcileOptionalItems() {
+        reconciliationPending = true
+        guard !attaching, !reconciling, window?.toolbar === toolbar else { return }
+        reconciling = true
+        defer { reconciling = false }
+        repeat {
+            reconciliationPending = false
+            optionalItem(Self.warning, visible: unsaved)
+            optionalItem(Self.retry, visible: retryDialog != nil)
+            if let item = toolbar.items.first(where: { $0.itemIdentifier == Self.retry }) {
+                item.label = retryLabel; item.toolTip = retryLabel
+                (item.view as? NSButton)?.title = retryLabel
+            }
+        } while reconciliationPending && window?.toolbar === toolbar
     }
 
     private func optionalItem(_ id: NSToolbarItem.Identifier, visible: Bool) {
-        guard window != nil else { return }
+        guard window?.toolbar === toolbar else { return }
         if let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == id }) {
             if !visible { toolbar.removeItem(at: index) }
         } else if visible { toolbar.insertItem(withItemIdentifier: id, at: toolbar.items.count) }
@@ -97,7 +127,7 @@ final class MainToolbarController: NSObject, NSToolbarDelegate {
     @objc private func retryAction() { if let retryDialog { open(retryDialog) } }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.summary, .flexibleSpace, Self.connection, Self.settings] + (unsaved ? [Self.warning] : []) + (retryDialog != nil ? [Self.retry] : [])
+        [Self.summary, .flexibleSpace, Self.connection, Self.settings]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [Self.summary, .flexibleSpace, Self.connection, Self.settings, Self.warning, Self.retry]
@@ -135,8 +165,11 @@ struct MainToolbarAttachment: NSViewRepresentable {
     let controller: MainToolbarController
     final class Anchor: NSView {
         weak var controller: MainToolbarController?
+        weak var attachedWindow: NSWindow?
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            if let previous = attachedWindow, previous !== window { controller?.detach(previous) }
+            attachedWindow = window
             if let window { controller?.attach(window) }
         }
     }
@@ -144,5 +177,9 @@ struct MainToolbarAttachment: NSViewRepresentable {
     func updateNSView(_ view: Anchor, context: Context) {
         view.controller = controller
         if let window = view.window { controller.attach(window) }
+    }
+    static func dismantleNSView(_ view: Anchor, coordinator: ()) {
+        if let window = view.attachedWindow { view.controller?.detach(window) }
+        view.controller = nil; view.attachedWindow = nil
     }
 }

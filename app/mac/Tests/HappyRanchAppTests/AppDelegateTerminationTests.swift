@@ -3,7 +3,7 @@ import AppKit
 @testable import HappyRanchApp
 import HappyRanchSupervisor
 
-@Suite("AppDelegate process termination")
+@Suite("AppDelegate process termination", .timeLimit(.minutes(2)))
 @MainActor
 struct AppDelegateTerminationTests {
 

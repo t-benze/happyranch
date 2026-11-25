@@ -73,6 +73,11 @@ The delegate creates its toolbar lazily when Main binds, attaches or receives
 an explicit dialog entry. Constructing a delegate for process supervision alone
 does not initialize AppKit toolbar controls. Existing synchronous Stop/Quit
 signal waits, restart cancellation and observed-exit settlement are unchanged.
+Fixed toolbar defaults contain only the always-present entries. One guarded
+reconciliation path adds/removes the warning and manual Retry, including state
+received before attachment, repeated refresh and attachment to a new window.
+Detaching Main releases its toolbar attachment; native tests close their windows
+and retire WebKit navigation/script handlers even when an assertion throws.
 
 The native status/candidate pill and **Access wasn't saved / 访问权限未保存**
 warning read the existing Main status projection. The warning opens Connection,
@@ -1003,6 +1008,17 @@ restart it. The callback can still record captured output. If the
 child survives again, the outcome remains
 Stop incomplete and ownership is retained; Quit never fabricates an exit.
 External daemons remain untouched.
+
+The Stop/Quit/Restart Swift Testing suites apply a two-minute limit per test
+case (including each dev/bundled invocation). Fake children which deliberately
+survive TERM/KILL use injected 0.01s/0.01s grace; shipping defaults remain 60s/2s,
+and the real TERM-ignoring-child test retains the production grace and SIGKILL
+assertions. The Quit-during-Restart test proves synchronous Quit settlement,
+then awaits an actor job instead of pumping a nested run loop for a queued
+MainActor settlement. Swift Testing cancellation is cooperative: these traits
+name overruns but cannot preempt an unreturning native synchronous call.
+The CLI entry point likewise awaits its MainActor operation and keeps the
+existing signal cancellation sources alive until that operation finishes.
 
 Switching from HOME to CLIENT stops the managed child before changing the role.
 If it survives, the switch is refused: the effective and saved role stay HOME,

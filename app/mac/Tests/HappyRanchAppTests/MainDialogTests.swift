@@ -43,6 +43,7 @@ final class MainDialogTests: XCTestCase {
         let coordinator = owner.makeCoordinator(); coordinator.scheme = scheme
         let configuration = WKWebViewConfiguration(); scheme.configure(configuration)
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 760, height: 500), configuration: configuration)
+        defer { view.navigationDelegate = nil; view.stopLoading() }
         view.navigationDelegate = coordinator
         scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
         let loaded = await eventually { loads == 1 }; XCTAssertTrue(loaded, "\(coordinator.callbackURLs)")
@@ -112,6 +113,7 @@ final class MainDialogTests: XCTestCase {
         let coordinator = owner.makeCoordinator(); coordinator.scheme = scheme
         let configuration = WKWebViewConfiguration(); scheme.configure(configuration)
         let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 760, height: 500), configuration: configuration)
+        defer { view.navigationDelegate = nil; view.stopLoading() }
         view.navigationDelegate = coordinator
         scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
         let loaded = await eventually { loads == 1 }; XCTAssertTrue(loaded, "\(coordinator.callbackURLs)")
@@ -205,9 +207,24 @@ final class MainDialogTests: XCTestCase {
         let controller = MainToolbarController()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
                               styleMask: [.titled], backing: .buffered, defer: false)
+        let replacement = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+                                   styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; replacement.isReleasedWhenClosed = false
+        defer {
+            controller.request = nil
+            controller.detach(replacement); controller.detach(window)
+            window.close(); replacement.close()
+        }
+        // Retained state must not become a second source of default items
+        // when AppKit lazily populates a newly attached toolbar.
+        controller.refresh(#"{"access_unsaved":true}"#)
+        XCTAssertFalse(controller.open("settings"))
         controller.attach(window)
         let toolbar = try XCTUnwrap(window.toolbar)
         func button(_ id: String) -> NSButton? { toolbar.items.first { $0.itemIdentifier.rawValue == id }?.view as? NSButton }
+        func count(_ id: String) -> Int { toolbar.items.filter { $0.itemIdentifier.rawValue == id }.count }
+        XCTAssertEqual(count("access-unsaved"), 1)
+        XCTAssertEqual(count("dialog-retry"), 1)
         var requests: [String] = []
         var available = false
         controller.request = { requests.append($0); return available }
@@ -217,6 +234,20 @@ final class MainDialogTests: XCTestCase {
         controller.refresh(#"{"state":"ready","target":{"kind":"local"},"candidate":null,"access_unsaved":true}"#)
         XCTAssertEqual(requests, ["settings"], "State refresh cannot replay a dropped entry")
         XCTAssertNotNil(button("access-unsaved"))
+        for _ in 0..<3 {
+            controller.refresh(#"{"access_unsaved":true}"#)
+            controller.attach(window)
+        }
+        XCTAssertEqual(count("access-unsaved"), 1)
+        XCTAssertEqual(count("dialog-retry"), 1)
+        controller.attach(replacement)
+        controller.attach(replacement)
+        XCTAssertNil(window.toolbar)
+        XCTAssertTrue(replacement.toolbar === toolbar)
+        controller.refresh("{}")
+        XCTAssertEqual(count("access-unsaved"), 1)
+        XCTAssertEqual(count("dialog-retry"), 1)
+        XCTAssertEqual(requests, ["settings"], "Attachment and refresh cannot retry")
         available = true
         try XCTUnwrap(button("dialog-retry")).performClick(nil)
         XCTAssertEqual(requests, ["settings", "settings"])
