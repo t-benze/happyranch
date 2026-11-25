@@ -1625,6 +1625,7 @@ class ReplyDeliveryMixin:
         resolution_teams: TeamsRegistry | None = None,
         resolution_agents: set[str] | None = None,
         _addresses: MessageAddresses | None = None,
+        guest_token: str | None = None,
     ) -> tuple[int, list[ThreadReplyArrival]]:
         """Atomic conversational-arrival: append the message, raise the
         obligation watermark for EVERY recipient (U0 — full-recipient
@@ -1642,6 +1643,8 @@ class ReplyDeliveryMixin:
         arrivals: list[ThreadReplyArrival] = []
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            if guest_token is not None:
+                self._admit_thread_guest_post_uncommitted(guest_token, thread_id, speaker, body_markdown, recipients)
             self.validate_thread_message(_addresses)
             if resolve:
                 if not body_markdown or not body_markdown.strip():

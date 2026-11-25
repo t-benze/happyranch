@@ -40,7 +40,7 @@ the focused cases because the snapshot pins only params/statuses. Native Swift
 surface checks require the documented Mac venue; no access policy is changed.
 
 
-## Focused thread guest seats (THR-362 slice 1)
+## Focused thread guest seats (THR-362 slices 1–2)
 
 ```bash
 uv run --frozen python -B -m unittest scripts.test_thread_guests -v
@@ -52,6 +52,10 @@ tables/data, the per-org counter, non-roster guest wake routing, seat routes and
 credential projections, expiry/lapse/archive endings, CLI/transcript labels,
 and bearer/human/loopback and remote default-deny boundaries. This is outside
 the retired Python suite and skipped integration suite; it adds no CI check.
+Slice-2 tests bind C01–C17 to actual MCP admission/redemption/read/post/wait,
+private-state reconstruction, owned setup/CLI and full/resumed/delta prompt
+boundaries. Waits exercise actual 1s timeout and bounded arrival/revoke, with
+observed pending ownership before the trigger; all state/config is synthetic.
 
 ## Focused job receipt diagnostics
 

@@ -214,6 +214,8 @@
     "GET /api/v1/runtime/workflow-setup/orgs/{slug}"
   ],
   "excluded": {
+    "POST /api/v1/orgs/{slug}/guests/mcp": "loopback external-app MCP only; never browser-consumed or remotely allowed",
+    "POST /api/v1/orgs/{slug}/guests/setup/{app_id}": "founder loopback CLI setup only; web displays config text and never calls setup",
     "POST /api/v1/runtime/custom-cli/connect": "registration-token-only direct custom-CLI ingress; secret token route, never browser-consumed",
     "POST /api/v1/runtime/adapters/{adapter_id}/approve": "THR-107 slice 3: pending-approval UI removed from the normal Settings/onboarding flow (superseded by direct-connect Connect->Connected); preserved as operator-only disposition tooling, no browser consumer",
     "POST /api/v1/runtime/adapters/{adapter_id}/reject": "THR-107 slice 3: pending-approval UI removed from the normal Settings/onboarding flow; preserved as operator-only disposition tooling, no browser consumer",

@@ -5,6 +5,7 @@ import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
 import secrets
 from typing import Any
 
@@ -45,7 +46,7 @@ def _invite_result(row: Any, subject: str, code: str) -> dict:
     # The only returned copy of the code; nothing persists this prompt.
     prompt = (
         f'You are joining HappyRanch thread {row["thread_id"]} ({json.dumps(subject, ensure_ascii=False)}) as a guest.\n'
-        f'1. Call the happyranch tool join_thread with thread_id "{row["thread_id"]}" and\n'
+        f'1. Call the happyranch tool join_thread with thread_id "{row["thread_id"]}", guest_id "{row["guest_id"]}" and\n'
         f'   invite_code "{code}".\n'
         "2. Keep the guest_token it returns and pass it to every later happyranch tool call.\n"
         "3. Call read_thread, then tell me what the thread is about and wait for my instruction.\n"
@@ -232,3 +233,157 @@ class ThreadGuestsMixin:
         except BaseException:
             self._conn.rollback()
             raise
+
+    @_synchronized
+    def join_thread_guest(self, thread_id: str, guest_id: str, invite_code: str,
+                          client_info: dict) -> dict:
+        """Redeem only the selected seat, with a persisted single-use transition."""
+        now = datetime.now(timezone.utc)
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT * FROM thread_guests WHERE thread_id=? AND guest_id=?", (thread_id, guest_id),
+            ).fetchone()
+            if row is None or row["state"] == "ended":
+                logging.getLogger(__name__).warning("Guest join refused: no active selected seat")
+                raise ThreadGuestError(400, "this invite is not valid")
+            reason = None
+            count = row["invite_wrong_count"]
+            if row["state"] == "joined":
+                reason = "already_used"
+            elif datetime.fromisoformat(row["invite_expires_at"]) <= now or datetime.fromisoformat(row["expires_at"]) <= now:
+                reason = "lapsed"
+                cause = "expired" if datetime.fromisoformat(row["expires_at"]) <= now else "invite_lapsed"
+                self._end_thread_guest_uncommitted(row, cause, "daemon", now)
+            elif count >= 5:
+                reason = "locked"
+            elif not secrets.compare_digest(hashlib.sha256(invite_code.encode()).hexdigest(), row["invite_sha256"] or ""):
+                reason = "wrong_code"
+                count += 1
+                self._conn.execute("UPDATE thread_guests SET invite_wrong_count=? WHERE guest_id=?", (count, guest_id))
+            if reason:
+                self.insert_audit_log_uncommitted(thread_id, "daemon", "thread_guest_join_refused",
+                    {"guest_id": guest_id, "app_id": row["app_id"], "reason": reason, "wrong_count": count})
+                self._conn.commit()
+                message = {"wrong_code": "this invite is not valid", "lapsed": "this invite has lapsed",
+                           "already_used": "this invite was already used", "locked": "this invite is locked"}[reason]
+                raise ThreadGuestError(400, message)
+            thread = self._guest_thread_uncommitted(thread_id)
+            token = "hrguest_" + base64.b32encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
+            self._conn.execute(
+                "UPDATE thread_guests SET state='joined', invite_sha256=NULL, token_sha256=?, joined_at=?, "
+                "last_seen_at=?, client_info=? WHERE guest_id=?",
+                (hashlib.sha256(token.encode()).hexdigest(), now.isoformat(), now.isoformat(), json.dumps(client_info), guest_id),
+            )
+            self.insert_audit_log_uncommitted(thread_id, f"guest:{guest_id}", "thread_guest_joined",
+                {"guest_id": guest_id, "app_id": row["app_id"], "client_info": client_info})
+            label = guest_label(row["app_id"], row["label_ordinal"])
+            seq = self._append_thread_message_uncommitted(thread_id=thread_id, speaker=f"guest:{guest_id}",
+                kind=ThreadMessageKind.SYSTEM,
+                body_markdown=f"{label} joined. It can read and post in this thread until {row['expires_at']}. It only acts when someone uses the app.",
+                system_payload={"kind_tag": "thread_guest_joined", "guest_id": guest_id, "label": label})
+            self._conn.commit()
+            return {"guest_token": token, "label": label, "thread_subject": thread["subject"],
+                    "expires_at": row["expires_at"], "last_seq": seq}
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def _joined_thread_guest(self, token: str) -> Any:
+        """Caller holds the database lock; never stores raw credentials."""
+        row = self._conn.execute("SELECT * FROM thread_guests WHERE token_sha256=? AND state='joined'",
+            (hashlib.sha256(token.encode()).hexdigest(),)).fetchone() if token.startswith("hrguest_") else None
+        if row is None:
+            raise ThreadGuestError(400, "this guest seat has ended")
+        return row
+
+    @_synchronized
+    def authenticate_thread_guest(self, token: str) -> dict:
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._joined_thread_guest(token)
+            now = datetime.now(timezone.utc)
+            thread = self._conn.execute("SELECT status FROM threads WHERE id=?", (row["thread_id"],)).fetchone()
+            cause = "expired" if datetime.fromisoformat(row["expires_at"]) <= now else (
+                "thread_archived" if thread is None or thread["status"] != "open" else None)
+            if cause:
+                self._end_thread_guest_uncommitted(row, cause, "daemon", now)
+                self._conn.commit()
+                raise ThreadGuestError(400, "this guest seat has ended")
+            self._conn.execute("UPDATE thread_guests SET last_seen_at=? WHERE guest_id=?", (now.isoformat(), row["guest_id"]))
+            self._conn.commit()
+            return dict(row)
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def _admit_thread_guest_post_uncommitted(self, token: str, thread_id: str, speaker: str,
+                                            body: str | None, recipients: list[str]) -> None:
+        # Invoked inside the existing arrival transaction, after naming capture.
+        row = self._joined_thread_guest(token)
+        if row["thread_id"] != thread_id or speaker != f"guest:{row['guest_id']}" or datetime.fromisoformat(row["expires_at"]) <= datetime.now(timezone.utc):
+            raise ThreadGuestError(400, "this guest seat has ended")
+        if not body or not body.strip() or len(body.encode("utf-8")) > 32768:
+            raise ThreadGuestError(400, "message must contain text and be at most 32 KiB")
+        roster = {p.agent_name for p in self.list_thread_participants(thread_id)}
+        if set(recipients) != roster or any(name.startswith("guest:") for name in recipients):
+            raise ThreadGuestError(400, "invalid recipients")
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        count = self._conn.execute(
+            "SELECT COUNT(*) FROM thread_messages WHERE thread_id=? AND speaker=? AND kind='message' AND created_at>?",
+            (thread_id, speaker, cutoff),
+        ).fetchone()[0]
+        if count >= 30:
+            raise ThreadGuestError(400, "this guest seat has reached 30 posts per hour")
+
+    @_synchronized
+    def read_thread_guest(self, token: str, since_seq: int | None = None, limit: int = 50) -> dict:
+        # Authentication, projection and cursor update share the RLock. Expiry is
+        # committed by the existing end owner before returning any thread data.
+        row = self.authenticate_thread_guest(token)
+        floor = row["read_from_seq"] - 1
+        cursor = max(floor, row["last_read_seq"] if since_seq is None else since_seq)
+        bound = 262144
+        candidates = self._conn.execute(
+            "SELECT seq,speaker,kind,created_at,length(CAST(COALESCE(body_markdown,'') AS BLOB)) AS body_bytes "
+            "FROM thread_messages WHERE thread_id=? AND seq>? ORDER BY seq LIMIT ?",
+            (row["thread_id"], cursor, limit + 1),
+        ).fetchall()
+        messages = []
+        used = 0
+        for m in candidates[:limit]:
+            if messages and used + m["body_bytes"] > bound:
+                break
+            raw = self._conn.execute(
+                "SELECT substr(CAST(COALESCE(body_markdown,'') AS BLOB),1,?) FROM thread_messages WHERE thread_id=? AND seq=?",
+                (bound, row["thread_id"], m["seq"]),
+            ).fetchone()[0]
+            body = bytes(raw).decode("utf-8", errors="ignore")
+            truncated = m["body_bytes"] > bound
+            used += len(body.encode("utf-8"))
+            speaker = m["speaker"]
+            kind = "system" if m["kind"] == "system" else (
+                "founder" if speaker == "founder" else "guest" if speaker.startswith("guest:") else "agent")
+            label = speaker
+            if speaker.startswith("guest:"):
+                guest = self._conn.execute("SELECT app_id,label_ordinal FROM thread_guests WHERE guest_id=? AND thread_id=?",
+                    (speaker.removeprefix("guest:"), row["thread_id"])).fetchone()
+                if guest:
+                    label = guest_label(guest["app_id"], guest["label_ordinal"])
+            messages.append({"seq": m["seq"], "speaker_label": label, "speaker_kind": kind,
+                "kind": m["kind"], "sent_at": m["created_at"], "body_markdown": body,
+                "attachments": [], "truncated": truncated})
+            cursor = m["seq"]
+            if truncated:
+                break
+        attachments = self._attachments_for_messages(row["thread_id"], [m["seq"] for m in messages])
+        for m in messages:
+            m["attachments"] = [{"ref": (f"thread:{a.thread_attachment_id}" if a.thread_attachment_id else f"artifact:{a.artifact_name}"),
+                "name": a.display_name, "size": a.size_bytes} for a in attachments.get(m["seq"], [])]
+        # Empty reads with a cursor beyond the tail must not skip future arrivals.
+        tail = self.get_thread_max_message_seq(row["thread_id"])
+        saved = min(cursor, tail)
+        self._conn.execute("UPDATE thread_guests SET last_read_seq=MAX(last_read_seq,?) WHERE guest_id=?",
+            (saved, row["guest_id"]))
+        self._conn.commit()
+        return {"messages": messages, "next_since_seq": cursor, "has_more": len(candidates) > len(messages)}

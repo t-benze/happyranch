@@ -45,6 +45,7 @@ from cli.commands import (
     tasks,
     teams,
     threads,
+    guests,
     workflows,
     work_hours,
 )
@@ -184,6 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     executors.register(sub)
     executor_binaries.register(sub)
     threads.register(sub)
+    guests.register(sub)
     workflows.register(sub)
 
     return parser

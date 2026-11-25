@@ -16,7 +16,11 @@ The three POST seat routes (`/threads/{id}/guests`,
 Each additionally requires a loopback peer, the master bearer and the existing
 human-only gate. Remote GET thread detail can display safe seat metadata,
 never codes/tokens/hashes. Founder decision 13 denies even remote Revoke.
-No remote authority or policy entry is added; guest MCP/setup are later slices.
+Slice 2 also keeps POST `/guests/mcp` and `/guests/setup/{app_id}` absent from
+the remote policy and denied. MCP accepts only local tool-argument credentials
+and rejects non-loopback peer/Host, wrong port, every Origin and HTTP credentials.
+Setup requires the existing founder bearer/human gate and loopback peer. Neither
+route is browser-consumed. No remote authority or policy entry is added.
 
 > Extracted from the repository-root `AGENTS.md` on 2026-10-30 and maintained
 > here. The THR-327 shipped Linux lifecycle and bounded M1 receipt below extend

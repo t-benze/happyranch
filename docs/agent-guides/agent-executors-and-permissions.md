@@ -26,13 +26,18 @@ This fallback grants no shared-temp cleanup authority. Tools that hard-code
 
 Founder-approved thread guest seats introduce the `hrinv_` invite-code class:
 128 random bits encoded as base32, SHA-256 only at rest, valid ten minutes and
-single-use for one future join. Founder loopback routes create/replace unused
+single-use for one join. Founder loopback routes create/replace unused
 codes and revoke seats, using the existing master bearer and human-only gate.
 Codes return once in the invite prompt, never in detail reads or audit.
 Seat lifetime is fixed at invite (1h/24h(default)/7d); revoke, lapse, expiry and
 archive clear hashes. No existing route accepts an invite or guest credential.
-Slice 2 adds the exchange for a thread-scoped `hrguest_` credential and guest
-tools, after the required attended check. No executor or allow rule changes.
+Slice 2 exchanges `(thread_id, guest_id, invite_code)` for a `hrguest_`
+credential (32 random bytes, SHA-256 only at rest), one seat/thread, fixed
+invite-time lifetime. Only the loopback JSON MCP route accepts it as a tool
+argument; master/other credentials and Authorization headers are refused there.
+Read/post/wait recheck expiry/revoke; restart preserves the digest. Setup writes
+no secret and never edits founder ~/.codex. The attended kit check passed; first
+product join/read/post remains pending. No executor or allow rule changes.
 Only the founder invites: this remains an instruction/audited action under
 decision 16, since possession of the shared local bearer does not prove a human.
 

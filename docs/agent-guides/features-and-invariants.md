@@ -3086,7 +3086,14 @@ See [threads and naming](contracts/threads-and-naming.md#explicit-resolution-and
 decisions 1–16. Seats live only in additive `thread_guests`, never participants
 or wake targets. Internal `guest:G-n` speakers use the same conversational
 arrival/wake rules as agents, without opening founder exchanges or recording
-usage. No public guest post/join route exists yet. Founder loopback invite,
+usage. Slice 2 adds the loopback-only JSON MCP join/read/text-post/wait route,
+scoped digest-only credentials and founder `guests setup codex_desktop`. The
+three-argument join selects one seat, locks after five wrong codes and retains
+its invite-time expiry. Reads enforce per-seat floor/cursor and byte bound;
+posts use agent-only recipients, 32 KiB and 30/hour limits; waits are 1..50s,
+one per seat, checking end/expiry every one-second poll. Full/resumed/delta
+prompts and bundled thread instructions mark guest content untrusted and keep
+the active guest roster separate. Files and Web UI remain deferred. Founder loopback invite,
 new-code and revoke return no persistent secret; detail reads expose safe guest
 metadata. SHA-256-only invite codes expire after ten minutes; seats last
 1h/24h(default)/7d. The existing five-second thread-breaker tick sweeps expiry
