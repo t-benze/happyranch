@@ -3739,8 +3739,11 @@ completed worker path. Category-free failed/lost results keep outcomeUnknown.
 Older peers keep fallback. Completion never means Ready, Off or cleanup.
 GUI retains its translated failure reason while starting a genuinely
 post-terminal Status read. Earlier reads/events cannot confirm state; only a
-fresh known applicable status can display Off/Ready. Unavailable/off absence
-evidence stays unconfirmed. Read failure cannot erase a known failure or enable
+fresh known applicable status can display Off/Ready. Native Status completions
+from an earlier terminal epoch return unavailable; newer-epoch waiters start or
+join a fresh Status after the older slot completes. Same-epoch coalescing, the
+waiter cap, mutation ownership and native timeouts remain unchanged.
+Unavailable/off absence evidence stays unconfirmed. Read failure cannot erase a known failure or enable
 unsafe actions. Check current status is read-only. Close drops component
 observation; reopening rereads without replay.
 Post-dispatch loss/timeout/cancellation/late reply stays unknown with one dispatch

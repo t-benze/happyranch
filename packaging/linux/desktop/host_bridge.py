@@ -215,7 +215,7 @@ class HostBridge:
                      current: object, window: object, terminal_current: object = None) -> None:
         if self.busy:
             if method == "Status" and self.host_status_waiters is not None and len(self.host_status_waiters) < 8:
-                self.host_status_waiters.append(finish)
+                self.host_status_waiters.append((self.host_epoch, finish, owner, current, window))
             else:
                 finish(None, "busy")
             return
@@ -239,6 +239,8 @@ class HostBridge:
         observation_epoch = self.host_epoch
 
         def complete(*outcome: object) -> None:
+            if method == "Status" and observation_epoch != self.host_epoch:
+                outcome = (None, "unavailable")
             self.busy, self.operation_owner = False, None
             self.cancel_request = None
             self.active_operation = None
@@ -247,8 +249,16 @@ class HostBridge:
             self.host_status_waiters = None
             finish(*outcome)
             if waiters is not None:
-                for waiter in waiters:
-                    waiter(*outcome)
+                for epoch, waiter, waiter_owner, waiter_current, waiter_window in waiters:
+                    if epoch == observation_epoch:
+                        waiter(*outcome)
+                    elif waiter_current():
+                        # Keep the older operation's slot and deadline intact;
+                        # a newer epoch needs its own native observation.
+                        self.host_request("Status", waiter, owner=waiter_owner,
+                                          current=waiter_current, window=waiter_window)
+                    else:
+                        waiter(None, "unavailable")
                 waiters.clear()
 
         self.cancel_request = lambda: complete(None, "outcomeUnknown", "unknown", "nativeRecovery")

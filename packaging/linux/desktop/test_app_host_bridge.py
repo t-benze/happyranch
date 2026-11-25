@@ -211,6 +211,16 @@ class MainHostTests(unittest.TestCase):
 
 class SharedHostTests(unittest.TestCase):
     def test_enable_observer_survives_admission(self):
+        for old_setup in ('off', 'ready'):
+            for old_reply_first in (False, True):
+                for fresh_setup in ('off', 'ready', 'failed'):
+                    with self.subTest(old_setup=old_setup, old_reply_first=old_reply_first,
+                                      fresh_setup=fresh_setup):
+                        self.assert_enable_observer_survives_admission(
+                            old_setup, old_reply_first, fresh_setup)
+
+    def assert_enable_observer_survives_admission(self, old_setup: str, old_reply_first: bool,
+                                                fresh_setup: str) -> None:
         import host_bridge
         from test_connection_cli import Bus, terminal_frame
         with tempfile.TemporaryDirectory() as directory:
@@ -222,12 +232,25 @@ class SharedHostTests(unittest.TestCase):
             client = SimpleNamespace(prompt=None, model=SimpleNamespace(confirming_target=False, host_prompt_document=None))
             bridge = host_bridge.HostBridge(client, prefix, lambda en, zh: en)
             bus = bridge.connection = Bus()
+            bus.snapshot = dict(phase=old_setup, ready=old_setup == 'ready', devices=[], pending=None, selected=None)
             bus.hold = True
             parent = SimpleNamespace(get_display=lambda: SimpleNamespace(is_closed=lambda: False))
             owner, other = object(), object()
             current, events, strangers, admissions = [True], [], [], []
-            bridge.subscribe_enable(owner, current=lambda: current[0], emit=events.append)
+            fresh, joined, before, before_joined = [], [], [], []
+            def terminal(raw):
+                events.append(raw)
+                # The real GUI asks for Status from terminal delivery. Both
+                # direct callers must receive a genuinely post-terminal read.
+                bridge.host_request('Status', lambda *a: fresh.append(a), owner=owner,
+                                    current=lambda: current[0], window=parent)
+                bridge.host_request('Status', lambda *a: joined.append(a), owner=other,
+                                    current=lambda: current[0], window=parent)
+            bridge.subscribe_enable(owner, current=lambda: current[0], emit=terminal)
             bridge.subscribe_enable(other, current=lambda: True, emit=strangers.append)
+            self.addCleanup(bridge.unsubscribe_enable, owner)
+            self.addCleanup(bridge.unsubscribe_enable, other)
+            self.addCleanup(bridge.unsubscribe, other)
             context = GLib.MainContext.default()
             def drain():
                 while bus.held:
@@ -248,8 +271,19 @@ class SharedHostTests(unittest.TestCase):
                 context.iteration(False)
             state_events.clear()
             # A separate Status may own the active operation at terminal arrival.
-            bridge.host_request('Status', lambda *a: None, owner=other, current=lambda: True, window=parent)
+            bridge.host_request('Status', lambda *a: before.append(a), owner=other, current=lambda: True, window=parent)
+            bridge.host_request('Status', lambda *a: before_joined.append(a), owner=other,
+                                current=lambda: True, window=parent)
+            old_operation = bridge.active_operation
+            old_reply = bus.held.pop(0)
+            # Bus captured the older bytes at dispatch. Change only the next
+            # physical read's IO result, never the production projection.
+            bus.snapshot = dict(phase=fresh_setup, ready=fresh_setup == 'ready', devices=[], pending=None, selected=None)
+            if fresh_setup == 'failed':
+                bus.status_error = 'ai.happyranch.RemoteAccess1.Error.unavailable'
             bus.signal(terminal_frame())
+            if old_reply_first:
+                old_reply()
             while context.pending():
                 context.iteration(False)
             self.assertEqual(len(events), 1)
@@ -257,8 +291,39 @@ class SharedHostTests(unittest.TestCase):
             self.assertEqual(json.loads(events[0])["error"]["effect"], "unknown")
             self.assertEqual(strangers, [])
             self.assertEqual(len(admissions), 1)
-            drain()
+            self.assertEqual(fresh, [], 'terminal refresh must await a new native read')
+            self.assertEqual(joined, [])
+            if not old_reply_first:
+                self.assertIs(bridge.active_operation, old_operation)
+                self.assertEqual([call[3] for call in bus.calls], ['Enable', 'Status'])
+                old_reply()
+            self.assertEqual(fresh, [], 'an older Status cannot satisfy the post-terminal direct caller')
+            self.assertEqual(joined, [], 'an older Status cannot satisfy a post-terminal coalescing waiter')
+            self.assertEqual(before, before_joined)
+            self.assertEqual(len(before), 1)
+            if not old_reply_first:
+                self.assertEqual(before, [(None, 'unavailable')])
+            self.assertEqual([call[3] for call in bus.calls], ['Enable', 'Status', 'Status'])
+            self.assertEqual([call[7] for call in bus.calls if call[3] == 'Status'], [3000, 3000])
+            self.assertEqual(len(bus.held), 1, 'new-epoch callers still share one native Status operation')
+            self.assertTrue(bridge.busy)
+            self.assertIsNot(bridge.active_operation, old_operation)
+            self.assertEqual(bridge.host_snapshot['observation'], 'unavailable')
             self.assertEqual(state_events, [], "a Status begun before terminal cannot publish fresh state")
+            drain()
+            self.assertEqual(len(fresh), 1)
+            self.assertEqual(fresh, joined)
+            self.assertEqual(len(state_events), 1)
+            if fresh_setup == 'failed':
+                self.assertEqual(fresh, [(None, 'unavailable')])
+                self.assertEqual(bridge.host_snapshot['observation'], 'unavailable')
+                self.assertEqual(bridge.host_snapshot['setup'], 'unknown')
+            else:
+                self.assertEqual(fresh[0][0]['observation'], 'known')
+                self.assertEqual(fresh[0][0]['setup'], fresh_setup)
+                self.assertEqual(bridge.host_snapshot, fresh[0][0])
+            self.assertEqual(json.loads(state_events[0])['snapshot'], bridge.host_snapshot)
+            self.assertFalse(bridge.busy)
             bus.signal(terminal_frame())
             while context.pending():
                 context.iteration(False)
