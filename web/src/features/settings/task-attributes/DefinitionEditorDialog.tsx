@@ -853,7 +853,7 @@ function Compare({ draft, latest }: { draft: DefinitionFields; latest: Attribute
   ];
   const shown = rows.filter((r) => r.mine !== r.theirs);
   const list = (side: 'mine' | 'theirs'): JSX.Element => (
-    <dl className="flex flex-col gap-1 text-sm">
+    <dl className="flex flex-col gap-1 text-xs">
       {shown.map((r) => (
         <div key={r.label} className="flex min-w-0 flex-wrap gap-x-3">
           <dt className="text-text-secondary shrink-0">{r.label}</dt>
