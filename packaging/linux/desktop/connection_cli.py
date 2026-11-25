@@ -183,7 +183,10 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except ClosedError as error:
-        if error.value["code"] == "hostStateUnrecognized":
+        if error.value.get("category") == "not_applicable":
+            print("This action does not apply to the current remote access setup. No change was made. "
+                  "Category: not_applicable.", file=sys.stderr)
+        elif error.value["code"] == "hostStateUnrecognized":
             print("Remote access files or the release runtime owner could not be verified. "
                   "Check the local installation. Category: " + error.value['category'] + ".", file=sys.stderr)
         print(json.dumps(error.value))

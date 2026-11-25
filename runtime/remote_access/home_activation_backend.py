@@ -31,7 +31,7 @@ from runtime.remote_access.home_observer import HomeObserver
 from runtime.remote_access.installer import ManagedInstaller, UNITS
 from runtime.remote_access.helper_owner import bootstrap_owner
 from runtime.remote_access.helper_lifecycle import log_enable_refusal
-from runtime.remote_access.helper_generation import PREPARATION_CATEGORIES
+from runtime.remote_access.helper_generation import PREPARATION_CATEGORIES, GenerationUnavailable
 from runtime.remote_access.headscale_service import HeadscaleServiceError
 
 
@@ -303,7 +303,7 @@ class HelperLifecycleBackend:
         if receipt.release_uid != uid:
             raise ActivationRefused()
         if receipt.phase != 'ready':
-            return {'setup': 'failed_uncertain' if receipt.phase == 'failed_uncertain' else 'pending'}
+            return {'setup': 'failed_uncertain' if receipt.phase == 'failed_uncertain' else 'setup_unverified'}
         preparing = self.io._headscale_preparing
         try:
             self.io._service_owner = self.io._account(create=False)
@@ -399,12 +399,27 @@ class HelperLifecycleBackend:
                         sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             generation = 0
         if method == 'ReplaceFailed':
+            if receipt is not None:
+                # Home activation has its own recovery; it is never an installer
+                # replacement candidate. This refuses before admission/effects.
+                raise GenerationUnavailable('not_applicable')
             candidate = self.io.replacement_inventory()
             replacement = candidate.journal_generation or candidate.inventory_generation
-            if candidate.installation.state != 'known-failed-or-partial' or replacement is None:
-                raise ActivationRefused()
+            if candidate.installation.state != 'known-failed-or-partial':
+                if candidate.installation.state in ('clean', 'modern', 'owned', 'owned-activated', 'healthy-manual'):
+                    raise GenerationUnavailable('not_applicable')
+                # Exact prepared home staging may be deliberately rejected by
+                # the installer replacement inventory. The existing Enable
+                # capture can recognize it without executing anything.
+                self.capture('Enable', uid)
+                raise GenerationUnavailable('not_applicable')
+            if replacement is None:
+                raise GenerationUnavailable('inventory')
         if method == 'Disable' and receipt is None:
-            raise ActivationRefused()
+            # Prove recognized absence/preparation through the existing strict
+            # capture. Unsafe leftovers retain their own refusal category.
+            self.capture('Enable', uid)
+            raise GenerationUnavailable('not_applicable')
         result = dict(uid=uid, activation=activation, generation=generation,
                       replacement=replacement, configuration=configuration)
         if method == 'Enable' and receipt is None:
@@ -764,7 +779,7 @@ def helper_main() -> int:
         print(json.dumps(result, sort_keys=True, separators=(',', ':')))
         return 0
     except Exception as error:
-        if (type(request) is dict and request.get('method') == 'Enable'
+        if (type(request) is dict and request.get('method') in ('Enable', 'Disable', 'ReplaceFailed')
                 and request.get('step') == 'capture'):
             log_enable_refusal(error, child=True)
             from runtime.remote_access.helper_generation import host_state_category

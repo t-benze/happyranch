@@ -756,7 +756,7 @@ class ConnectionCLITests(unittest.TestCase):
         for category in ("host_state_unrecognized", "owner_unknown", "owner_ambiguous",
                          "owner_unsupported", "owner_mismatch", "release_home_invalid",
                          *("host_state_unrecognized_" + part for part in (
-                             "residue", "owner", "provenance", "custody", "inventory", "quiescence", "timeout", "unknown", "unverified"))):
+                             "residue", "owner", "provenance", "custody", "inventory", "quiescence", "timeout", "unknown", "unverified", "not_applicable"))):
             with self.subTest(category=category):
                 self.bus.status_error = "ai.happyranch.RemoteAccess1.Error." + category
                 # Keep the exact CLI transcript assertion independent of the
@@ -771,8 +771,22 @@ class ConnectionCLITests(unittest.TestCase):
                         else "unverified" if category == "host_state_unrecognized" else "owner")
                 if part == "unknown": part = "unverified"
                 self.assertEqual(result, dict(code="hostStateUnrecognized", category=part, effect="none", recovery="refresh"))
-                self.assertEqual(message.strip(), "Remote access files or the release runtime owner could not be verified. "
-                                 "Check the local installation. Category: " + part + ".")
+                expected_message = ("This action does not apply to the current remote access setup. No change was made. "
+                                    "Category: not_applicable." if part == 'not_applicable' else
+                                    "Remote access files or the release runtime owner could not be verified. "
+                                    "Check the local installation. Category: " + part + ".")
+                self.assertEqual(message.strip(), expected_message)
+        self.bus.status_error = None
+        self.bus.error = 'ai.happyranch.RemoteAccess1.Error.host_state_unrecognized_not_applicable'
+        for action in ('enable', 'turn-off', 'replace-failed'):
+            with self.subTest(action=action):
+                self.bus.calls.clear()
+                code, result, message = self.run_native(action, choices='yes\n')
+                self.assertEqual(code, 1)
+                self.assertEqual(result, dict(code='hostStateUnrecognized', category='not_applicable',
+                                             effect='none', recovery='refresh'))
+                self.assertIn('No change was made.', message)
+                self.assertEqual([call[3] for call in self.bus.calls], [native.METHODS[action]])
 
     def test_headless_unavailable(self) -> None:
         import gi

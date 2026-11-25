@@ -522,7 +522,8 @@
                 "quiescence",
                 "timeout",
                 "unknown",
-                "unverified"
+                "unverified",
+                "not_applicable"
               ]
             },
             "code": {

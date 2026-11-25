@@ -4762,3 +4762,24 @@ remain unchanged. This is display only, with no new ownership or cleanup proof.
 The Linux handbook's checked status projection records success, refusal and
 named unavailable evidence before atomic file replacement; it does not assert
 that every CLI response is a success object or treat file-write success as READY.
+
+
+### Attributed lifecycle refusals
+
+Enable, Turn off and replace-failed capture refusals retain the same closed
+host-state category through the fixed child, D-Bus, native CLI and both Host
+views. Recognized inapplicable actions use `not_applicable` with `effect=none`
+before admission. Turn off with no activation receipt first proves recognized
+absence or preparation through strict Enable capture. Replace-failed accepts
+only the existing `known-failed-or-partial` installer candidate and its exact
+inventory/journal generation; a home activation receipt never qualifies. It is
+not home activation recovery. Unsafe inventory retains its attributed refusal.
+No replacement, cleanup, mint, replay or authentication gate is widened.
+
+A prepared activation receipt which has not reached ready is displayed as
+`setup_unverified`, rather than an unqualified pending state. Prepared staging
+without an activation receipt remains `prepared_no_receipt`. Attributed capture
+failures default to `unverified`, with fixed custody, publication/residue and
+inventory stages preserved. Transport loss and effects already dispatched
+retain unknown effect; the no-change copy applies only to pre-admission
+`not_applicable` refusals. B4 and pre-Headscale R7 remain terminal limits.

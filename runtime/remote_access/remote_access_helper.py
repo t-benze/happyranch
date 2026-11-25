@@ -518,7 +518,11 @@ class RemoteAccessHelper:
             if isinstance(self.inflight, Capture) and self.inflight.message == message:
                 self._cancel('unavailable')
             else:
-                self._error(message, error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable')
+                if isinstance(error, _helper_generation.GenerationUnavailable) and message.get_member() in ('Enable', 'Disable', 'ReplaceFailed'):
+                    category = 'unverified' if error.category == 'unknown' else error.category
+                    self._error(message, 'host-state-unrecognized-' + category)
+                else:
+                    self._error(message, error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable')
             if message.get_member() in LIFECYCLE_ACTIONS and self.inflight is None:
                 self.exit_requested = True
         return False

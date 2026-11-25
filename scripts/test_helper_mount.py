@@ -517,6 +517,61 @@ def test_thr327_capture_refusal_transport(composition: Any, monkeypatch: pytest.
         assert failure.value.category == 'unknown'
 
 
+@pytest.mark.parametrize('method', ['Enable', 'Disable', 'ReplaceFailed'])
+@pytest.mark.parametrize('category', ['custody', 'unverified', 'not_applicable'])
+def test_thr327_lifecycle_capture_refusal_dbus(mount: Any, method: str, category: str) -> None:
+    m = mount
+    m.message.get_member = lambda: method
+    m.reader.current_generation.side_effect = m.h._helper_generation.GenerationUnavailable(category)
+    m.helper._dispatch(m.message)
+    m.helper._error.assert_called_once_with(m.message, 'host-state-unrecognized-' + category)
+    assert not m.reader.effect.called and not m.helper.authority.call.called
+    assert m.helper.inflight is None
+
+
+@pytest.mark.parametrize('method,prestate,category', [
+    ('Disable', 'clean', 'not_applicable'), ('Disable', 'prepared', 'not_applicable'),
+    ('ReplaceFailed', 'clean', 'not_applicable'), ('ReplaceFailed', 'prepared', 'not_applicable'),
+    ('ReplaceFailed', 'ready', 'not_applicable'), ('ReplaceFailed', 'failed', 'not_applicable'),
+    ('Enable', 'partial', 'custody'),
+])
+def test_thr327_lifecycle_capture_named_child(composition: Any, monkeypatch: pytest.MonkeyPatch,
+                                             method: str, prestate: str, category: str) -> None:
+    from dataclasses import replace
+    from runtime.remote_access import helper_generation as generation
+    v, uid = composition, os.getuid()
+    if prestate == 'prepared':
+        with v.transactions.locked() as directory:
+            v.lifecycle._enable_staging(uid, 'clean', directory, time.monotonic() + 480)
+    elif prestate != 'clean':
+        v.lifecycle.dispatch('Enable', uid, 'enable', v.lifecycle.capture('Enable', uid),
+                             deadline=time.monotonic() + 480)
+        v.observers.close()
+        if prestate == 'partial':
+            v.path('/etc/happyranch/headscale').chmod(0o777)
+        if prestate == 'failed':
+            v.path('/var/lib/happyranch-remote-access/home-activation.json').write_bytes(
+                replace(v.receipts.current(), phase='failed_uncertain').to_bytes())
+    before, calls, mints = staged_inventory(v.fixture), list(v.calls), list(v.mints)
+    monkeypatch.setattr(backend, 'ManagedInstaller', lambda **kw: v.io)
+    frames = []
+    def child(command: tuple, **kwargs: Any) -> Any:
+        output = io.StringIO()
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'argv', ['home_activation_backend.py'])
+            patch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(kwargs['input'])))
+            patch.setattr(sys, 'stdout', output)
+            code = backend.helper_main()
+        frames.append(output.getvalue())
+        return SimpleNamespace(returncode=code, stdout=frames[-1].encode())
+    monkeypatch.setattr(generation.subprocess, 'run', child)
+    with pytest.raises(generation.GenerationUnavailable) as failure:
+        generation.HomeLifecycleClient(method, uid).current_generation(30)
+    assert failure.value.category == category
+    assert json.loads(frames[0]) == {'refusal': category}
+    assert staged_inventory(v.fixture) == before and v.calls == calls and v.mints == mints
+
+
 @pytest.mark.parametrize('category', ['residue', 'owner', 'provenance', 'custody', 'inventory',
     'quiescence', 'timeout', 'unknown', 'unverified'])
 def test_thr327_status_category_dbus(mount: Any, monkeypatch: pytest.MonkeyPatch, category: str) -> None:
@@ -2336,7 +2391,7 @@ def test_issue_error_uses_closed_category_without_secret(issue_mount: Any, caplo
 @pytest.mark.parametrize('case,setup', [('ready', 'ready'), ('inactive', 'runtime_unavailable'),
     ('activating', 'setup_unverified'), ('deactivating', 'setup_unverified'),
     ('partial', 'partial_cleanup'), ('failed', 'failed_uncertain'), ('prepared', 'prepared_no_receipt'),
-    ('renewal', 'renewal_failed')])
+    ('renewal', 'renewal_failed'), ('prepared-receipt', 'setup_unverified')])
 def test_thr327_live_setup_status(composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch,
                                  method: str, case: str, setup: str, serving: bool) -> None:
     from dataclasses import replace
@@ -2353,9 +2408,10 @@ def test_thr327_live_setup_status(composition: Any, mount: Any, monkeypatch: pyt
             v.states['happyranch-connector.service'] = case
         elif case == 'renewal':
             v.states['happyranch-remote-access-policy-renew.timer'] = 'inactive'
-        elif case == 'failed':
+        elif case in ('failed', 'prepared-receipt'):
             v.path('/var/lib/happyranch-remote-access/home-activation.json').write_bytes(
-                replace(v.receipts.current(), phase='failed_uncertain').to_bytes())
+                replace(v.receipts.current(), phase=('failed_uncertain' if case == 'failed' else 'prepared'),
+                        local_node_stable_id=None, home_endpoint=None).to_bytes())
         elif case == 'partial':
             expected = v.lifecycle.capture('Disable', uid)
             assert v.lifecycle.dispatch('Disable', uid, 'stop', expected)['outcome'] == 'in_progress'

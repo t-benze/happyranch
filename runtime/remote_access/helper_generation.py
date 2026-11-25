@@ -12,7 +12,7 @@ from typing import Callable
 COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
            'runtime.remote_access.home_activation')
 HOST_STATE_CATEGORIES = frozenset({'residue', 'owner', 'provenance', 'custody',
-                                    'inventory', 'quiescence', 'timeout', 'unknown', 'unverified'})
+                                    'inventory', 'quiescence', 'timeout', 'unknown', 'unverified', 'not_applicable'})
 SETUP_STATES = frozenset({'off', 'ready', 'pending', 'prepared_no_receipt', 'failed_uncertain',
                           'partial_cleanup', 'runtime_unavailable', 'setup_unverified', 'renewal_failed'})
 PREPARATION_CATEGORIES = frozenset({
@@ -48,6 +48,8 @@ def host_state_category(error: Exception) -> str:
     """Project shipped refusal stages, never exception text or host metadata."""
     if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
         return 'timeout'
+    if type(error) is GenerationUnavailable:
+        return 'unverified' if error.category == 'unknown' else error.category
     stages = {
         '_account': 'owner', '_headscale_shape': 'owner', '_check_release_record': 'owner',
         '_release_record': 'owner', '_home_unit_provisioning': 'provenance',
@@ -58,9 +60,10 @@ def host_state_category(error: Exception) -> str:
         '_home_unit_inventory': 'inventory', '_inventory': 'inventory',
         '_replacement_snapshot': 'inventory', '_home_staging_residue': 'residue',
         '_headscale_inventory': 'residue', '_issuer_inventory': 'residue',
+        '_headscale_publication': 'residue', '_headscale_receipt': 'provenance',
         '_refuse_install_transaction': 'residue', '_headscale_ca_sources': 'residue',
     }
-    category = 'unknown'
+    category = 'unverified'
     trace = error.__traceback__
     for _ in range(32):
         if trace is None:
@@ -151,9 +154,9 @@ class HomeLifecycleClient:
                         and value['preparationFailure'] in PREPARATION_CATEGORIES):
                     raise PreparationFailed(value['preparationFailure'])
                 raise GenerationUnavailable()
-            value = json.loads(result.stdout)
+            value = json.loads(result.stdout, object_pairs_hook=_unique_pairs)
             if result.returncode:
-                if (self.method == 'Enable' and step == 'capture' and result.returncode == 1
+                if (self.method in ('Enable', 'Disable', 'ReplaceFailed') and step == 'capture' and result.returncode == 1
                         and type(value) is dict and set(value) == {'refusal'}):
                     raise GenerationUnavailable(value['refusal'])
                 raise GenerationUnavailable()
