@@ -51,6 +51,7 @@ import {
   MAIN_CONTENT_ID,
 } from '@/features/desktop-dialogs/DesktopDialogs';
 import { isDesktopShell } from '@/features/desktop-dialogs/desktopShell';
+import { DesktopHeader } from '@/features/desktop-dialogs/DesktopHeader';
 import { OwnerGateProvider } from '@/shared/owners';
 import { ThreadsPage } from '@/features/threads/ThreadsPage';
 import { TodosPage } from '@/features/todos/TodosPage';
@@ -129,7 +130,12 @@ function AppShell(): JSX.Element {
   const recoverySettingsRoute = useMatch('/settings/*') !== null;
   const settingsRoute = orgSettingsRoute || recoverySettingsRoute;
   return (
-    <div className="flex h-full flex-row">
+    <div className="flex h-full flex-col">
+      {/* THR-387 seq146: desktop only (native v2 bridge). The whole window is
+          the web view; this header replaces the native header bar. Browser
+          mode renders nothing here. */}
+      <DesktopHeader />
+    <div className="flex min-h-0 flex-1 flex-row">
       <Sidebar />
       {/* THR-376 r2 PR-S1: pages portal their status chip / primary action
           into the AppBar through TopbarStatus / TopbarActions. */}
@@ -149,6 +155,7 @@ function AppShell(): JSX.Element {
           </main>
         </div>
       </TopbarSlotsProvider>
+    </div>
     </div>
   );
 }

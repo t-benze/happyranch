@@ -817,6 +817,49 @@ owner gate may retain the current presentation.
 
 Linux S7-L1 routes both header destinations and the Access wasn't saved badge through app.dialogRequested on admitted Main. Unavailable delivery exposes the named manual Retry without replay. Main's single-dialog owner gate decides whether a request can change the presentation. No separate native Connection fallback remains.
 
+**THR-387 seq146: web header replaces the native header (Linux/web).** The whole
+window is the web view; no native header bar or toolbar controls sit inside the
+window. The packaged web app renders the top header instead
+([DesktopHeader](../../web/src/features/desktop-dialogs/DesktopHeader.tsx),
+mounted above Main by `AppShell` in `web/src/routes.tsx`). It renders only
+behind the detected v2 bridge (`isNativeTarget()`: document at
+`happyranch-app://app` with the `happyranchConnection` facade); browser mode
+renders nothing and is unchanged. It carries the former GTK `MainHeader`
+entries and EN/ZH copy:
+
+- **Connection** and **Settings** buttons open the existing web dialogs through
+  the same in-document open request as `app.dialogRequested`
+  (`openDesktopDialog` with `nativeDialogRequest`), so the single-dialog owner
+  gate decides every transition. They are web entry actions; they emit and
+  call nothing on the bridge.
+- The **target/status pill** is derived only from `app.status` /
+  `app.stateChanged`: name = live-locale "This computer" for `kind:"local"`,
+  else the target name; detail by state (`no_target` No connection selected,
+  `target_starting` Starting, `ready` Connected, `unreachable` Unavailable,
+  `busy` Busy, `incompatible` by side: host Update Host, app Update app,
+  unknown Check compatibility). A non-null `candidate` adds a line
+  "*name* · Signing in / Awaiting approval / Ready to switch / Connection
+  failed / Cancelled". With no usable status the pill reads "Interface
+  unavailable".
+- While `access_unsaved` is true a persistent labelled **Access wasn't saved**
+  warning is shown (accessible description and tooltip: "Access wasn't saved.
+  Open Connection to retry saving; a new invite may be needed."); it opens
+  Connection.
+- **"Connection unavailable · Retry" / "Settings unavailable · Retry"** appears
+  only after a failed open and is retried only by an explicit click, never
+  automatically. Inside the web an open *fails* when (a) the open request
+  throws (host missing or its transition handler errors) or (b) on the next
+  animation frame after the request neither the requested dialog
+  (`[data-desktop-dialog]`) nor the owner gate (`[data-owner-gate]`) is
+  presented. An owner-gate prompt or hold (including Keep editing) and a
+  dialog that opens but shows its own data-load error are not open failures.
+
+No bridge command, event or payload is added by this change. The native
+`app.dialogRequested` event and its rules above stay unchanged for remaining
+native entry points (for example Mac app-menu items). Removing the GTK header
+bar controls is the Linux leg of the same PR; Mac toolbar removal is MAC-2b
+(#1863).
+
 `#/$defs/dialogRequested` in the [v2 schema](../../protocol/native-connection-bridge.v2.json)
 requires both keys and rejects extra keys. In addition to the status/error
 payload kinds above, the root `oneOf` now accepts this third kind. Adapters

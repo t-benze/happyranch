@@ -404,9 +404,15 @@ answer supersedes the readmission. Nothing retries or replays a mutation.
 The Connection
 dialog body is `features/connection/ConnectionDialogBody.tsx`, composed by
 `routes.tsx` through `renderConnectionBody` exactly like Settings (see
-“Connection dialog contents” below). Linux S7-L1 routes the header Connection
-button and Access wasn't saved badge through `app.dialogRequested`, with explicit
-Retry when delivery is unavailable. S6-W3-L's reviewed v1 Host/client commands
+“Connection dialog contents” below). THR-387 seq146: the desktop window header
+is web UI, not native chrome. `features/desktop-dialogs/DesktopHeader.tsx`
+(mounted by `AppShell` only behind the detected native bridge; browser mode is
+unchanged) renders the Connection and Settings buttons, the `app.status`-derived
+target/status pill and candidate line, the persistent Access wasn't saved
+warning (opens Connection) and the explicit "… unavailable · Retry" action after
+a failed open; see the bridge spec “v2 dialog request event” for the exact copy
+and what counts as a failed open. Its buttons use the same `openDesktopDialog`
+request and owner gate as native `app.dialogRequested`. S6-W3-L's reviewed v1 Host/client commands
 and `host.stateChanged` remain admitted on Main, using the existing shared
 `host_bridge.py` and ClientUI/model owners. The native Connection window and
 its Linux payload are retired. On CSP/frame revocation or `pagehide`, pending
