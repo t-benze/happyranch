@@ -1714,7 +1714,11 @@ preferred source. Source-less main IPv4 defaults refuse `inventory`; only
 ignored defaults left gives `no_address`.
 Never guess from secondary/primary interface addresses, rank metrics/weights,
 filter device names/types or suppress sourced non-main defaults. Source-specific
-defaults and unresolved nexthop objects also refuse `inventory`. This is a fail-closed limitation for
+defaults and unresolved nexthop objects also refuse `inventory`. A resolved
+single-interface IPv6 default with `RTA_NH_ID` (30), `RTA_OIF` (4) and no
+`RTA_MULTIPATH` (9) is inventoried like any IPv6 default and cannot select the
+IPv4 dial address. IPv4 nexthop objects, IPv6 groups/multipath or missing OIF,
+and source-specific defaults in either family still refuse. This is a fail-closed limitation for
 kernels/routes without an explicit preferred source, not full network support.
 Malformed/error/interrupted/truncated dumps, missing identities, I/O, a six-second
 observation deadline or shared 4 MiB/65,536-message-per-dump exhaustion refuse

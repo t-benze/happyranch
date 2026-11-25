@@ -1087,6 +1087,16 @@ def test_cleanup_receipted_transitions(fixture, monkeypatch, capsys, command, ca
         struct.pack("=HBBi", 12, 0, 0, 3) + struct.pack("=HH", 8, 5)))),
     ("source-specific", "inventory", policy_default(nla(4, struct.pack("=I", 3)), src_len=24)),
     ("nexthop-object", "inventory", policy_default(nla(4, struct.pack("=I", 3)) + nla(30, struct.pack("=I", 1)))),
+    ("ipv6-nexthop-multipath", "inventory",
+        struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 254, 9, 0, 1, 0)
+        + nla(4, struct.pack("=I", 3)) + nla(30, struct.pack("=I", 42))
+        + nla(9, struct.pack("=HBBi", 8, 0, 0, 3))),
+    ("ipv6-nexthop-unresolved", "inventory",
+        struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 254, 9, 0, 1, 0)
+        + nla(30, struct.pack("=I", 42))),
+    ("ipv6-source-specific", "inventory",
+        struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 64, 0, 254, 9, 0, 1, 0)
+        + nla(4, struct.pack("=I", 3))),
     ("bad-oif", "inventory", policy_default(nla(4, b"\x03"))),
     ("bad-source", "inventory", policy_default(nla(4, struct.pack("=I", 3)) + nla(7, b"\x0a"))),
     ("unassigned-source", "inventory", policy_default(nla(4, struct.pack("=I", 3))
@@ -1127,6 +1137,11 @@ def test_kernel_inventory_refuses_before_publication(fixture, monkeypatch, capsy
         struct.pack("=HBBi", 8, 0, 1, 3) + struct.pack("=HBBi", 8, 0, 9, 4))), [2, 3, 4], [254, 2022, 2022]),
     ("ipv6", None, [2, 2], [254, 254]),
     ("ipv6-no-source", None, [2, 2], [254, 254]),
+    # Captured RA shape: attrs 4,5,6,12,15,20,30 (metric6 is appended below).
+    ("ipv6-ra-nexthop", struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 254, 9, 0, 1, 0)
+        + nla(4, struct.pack("=I", 3)) + nla(5, socket.inet_pton(socket.AF_INET6, "fe80::2"))
+        + nla(12, bytes(32)) + nla(15, struct.pack("=I", 254))
+        + nla(20, bytes(1)) + nla(30, struct.pack("=I", 3745389597)), [2, 3], [254, 254]),
     ("policy-ipv6", struct.pack("=BBBBBBBBI", socket.AF_INET6, 0, 0, 0, 252, 4, 0, 1, 0)
         + nla(4, struct.pack("=I", 3)) + nla(7, socket.inet_pton(socket.AF_INET6, "2001:db8::2")),
         [2, 3], [254, 252]),
@@ -1156,7 +1171,7 @@ def test_thr327_policy_default_without_source_selects_main(fixture, case, bounda
         expected = expected[::-1] if case == "policy2022-unresolved" else expected[1:] + expected[:1]
     assert [(route.interface_index, route.table) for route in routes] == expected
     assert sum(route.family == socket.AF_INET6 for route in routes) == (
-        1 if case in {"ipv6", "ipv6-no-source", "policy-ipv6", "policy2022-unresolved"} else 0)
+        1 if case in {"ipv6", "ipv6-no-source", "policy-ipv6", "policy2022-unresolved", "ipv6-ra-nexthop"} else 0)
 
 
 def test_config_publication_idempotency_and_address_change(fixture, monkeypatch, capsys) -> None:

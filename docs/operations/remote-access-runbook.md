@@ -237,7 +237,10 @@ non-main defaults without a preferred source; source-less main defaults still
 refuse `inventory`. Only ignored routes left gives `no_address`. Sourced defaults
 remain candidates across all tables: two assigned RFC1918 sources (even the same
 address) give `multiple_addresses`, and a non-RFC1918/IPv6 source gives `dial_ip`.
-Down/loopback, source-specific and nexthop refusals remain unchanged. No metric
+Source-specific defaults in either family, IPv4 nexthop-object defaults and
+IPv6 nexthop groups/multipath or objects without a resolved output interface
+refuse. A single-interface IPv6 RA nexthop-object default is inventoried and
+excluded from IPv4 selection. Down/loopback refusals remain unchanged. No metric
 ranking, device-name/type filter, interface-address fallback or supplied address
 is accepted.
 Port preflight precedes all publication. Unchanged address/config reruns are

@@ -134,7 +134,9 @@ def collect_lan_inventory() -> tuple[tuple[LANInterface, ...], tuple[LANDefaultR
             attrs = _attributes(body[12:])
             if 15 in attrs:  # RTA_TABLE is an unsigned 32-bit native-endian ID.
                 table, = struct.unpack("=I", attrs[15])
-            if src_len or 30 in attrs:  # Source-specific or unresolved nexthop object.
+            if src_len or (30 in attrs and (family != socket.AF_INET6 or 9 in attrs or 4 not in attrs)):
+                # Only a resolved single-interface IPv6 nexthop object is inventoried.
+                # Source-specific, IPv4, groups and unresolved objects remain refused.
                 raise ValueError
             source = socket.inet_ntop(family, attrs[7]) if 7 in attrs else ""
             if 9 in attrs:  # RTA_MULTIPATH: do not preselect by weight or metric.
