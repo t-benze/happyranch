@@ -1218,7 +1218,10 @@
             "dial_ip",
             "dial-ip",
             "occupied-port",
-            "port-check-uncertain"
+            "port-check-uncertain",
+            "ready-restart-failed-turn-off",
+            "activation-retry-later",
+            "activation-prepared-retry"
           ]
         },
         "effect": {

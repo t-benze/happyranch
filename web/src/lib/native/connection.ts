@@ -145,7 +145,8 @@ export type PreparationCategory =
   | 'foreign-unit' | 'foreign-custody' | 'publication-uncertain' | 'address-changed'
   | 'account-create-uncertain' | 'cleanup-uncertain' | 'materializer-uncertain' | 'custody-uncertain'
   | 'inventory' | 'no_address' | 'multiple_addresses' | 'dial_ip' | 'dial-ip'
-  | 'occupied-port' | 'port-check-uncertain';
+  | 'occupied-port' | 'port-check-uncertain'
+  | 'ready-restart-failed-turn-off' | 'activation-retry-later' | 'activation-prepared-retry';
 
 export interface EnableFinished {
   operationId: string;
@@ -158,6 +159,7 @@ const PREPARATION_CATEGORIES: readonly string[] = [
   'foreign-unit', 'foreign-custody', 'publication-uncertain', 'address-changed',
   'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain', 'custody-uncertain',
   'inventory', 'no_address', 'multiple_addresses', 'dial_ip', 'dial-ip', 'occupied-port', 'port-check-uncertain',
+  'ready-restart-failed-turn-off', 'activation-retry-later', 'activation-prepared-retry',
 ];
 
 type Obj = Record<string, unknown>;

@@ -1682,3 +1682,21 @@ def test_thr327_failed_enable_recovery_without_replay(composition: Any, monkeypa
                                     deadline=time.monotonic() + 480)['outcome'] == 'prepared'
     assert v.receipts.current().phase == ('failed_uncertain' if minted else 'prepared')
     assert (len(v.mints), v.calls) == before
+
+
+def test_thr327_failed_revoke_retained_state_has_no_existing_exit(composition: Any) -> None:
+    v = composition
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    v.observers.close()
+    expected = v.lifecycle.capture('Disable', os.getuid())
+    assert v.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)['outcome'] == 'in_progress'
+    with pytest.raises(adapters.headscale_service.HeadscaleServiceError):
+        v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected, revoke_succeeded=False)
+    before, calls = staged_inventory(v.fixture), list(v.calls)
+    for method in ('Enable', 'ReplaceFailed'):
+        with pytest.raises(Exception):
+            v.lifecycle.capture(method, os.getuid())
+    with pytest.raises(Exception):
+        v.io.uninstall(purge=True)
+    assert staged_inventory(v.fixture) == before and v.calls == calls

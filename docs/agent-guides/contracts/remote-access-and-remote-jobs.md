@@ -4647,3 +4647,13 @@ second for a transient main-context reader, then revalidates the unchanged
 operation deadline and capture before any effect. Admission and main-context
 status remain nonblocking. A lifecycle step that never executes is refused,
 never credited as successful revoke/stop/cleanup. No budget is renewed.
+
+
+The ready restart / retry-later / prepared-retry categories are carried through
+the existing Enable terminal channel and its closed native/schema/web parsers,
+with English and Simplified Chinese recovery hints. This category extension is
+not completion of G: durable Status projection, Disable terminal delivery,
+issuer-journal invitation projection, network cleanup and client revocation
+display remain unimplemented in TASK-19228. The #1876 channel only wraps typed
+preparation-stage errors and Enable completion; later activation/recovery/stop
+errors do not enter that wrapper, explaining their absent preparation reason.

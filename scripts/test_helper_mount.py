@@ -37,7 +37,8 @@ PREPARATION_TOKENS = ('deb-layout-required', 'issuer-state-uncertain', 'account-
     'account-receipt-uncertain', 'foreign-unit', 'foreign-custody', 'publication-uncertain',
     'address-changed', 'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain',
     'custody-uncertain', 'inventory', 'no_address', 'multiple_addresses', 'dial_ip', 'dial-ip',
-    'occupied-port', 'port-check-uncertain')
+    'occupied-port', 'port-check-uncertain',
+    'ready-restart-failed-turn-off', 'activation-retry-later', 'activation-prepared-retry')
 
 
 @pytest.mark.parametrize('category', PREPARATION_TOKENS)
@@ -142,7 +143,7 @@ def test_enable_preparation_private_frame_rejected(
         assert code == 0 and value == {'preparationFailure': 'inventory'}
 
 
-@pytest.mark.parametrize('outcome', ['typed', 'completed', 'generic', 'audit', 'settlement', 'uid', 'owner',
+@pytest.mark.parametrize('outcome', ['prepared', 'typed', 'completed', 'generic', 'audit', 'settlement', 'uid', 'owner',
     'late', 'auth_deadline', 'disconnect', 'absent_to_new', 'success_audit', 'success_settlement', 'intent', 'flush_error'])
 def test_enable_completion_unicast_envelope(
         mount: Any, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
@@ -196,7 +197,7 @@ def test_enable_completion_unicast_envelope(
             raise m.h._helper_generation.PreparationFailed('inventory')
         if outcome == 'generic':
             raise RuntimeError('inventory SYNTHETIC_PRIVATE_CANARY')
-        return {'outcome': 'ready', 'residue': []}
+        return {'outcome': 'prepared' if outcome == 'prepared' else 'ready', 'residue': []}
     m.reader.effect.side_effect = effect
     if outcome == 'audit':
         m.helper.audit.uncertain = Mock(side_effect=OSError('SYNTHETIC_PRIVATE_CANARY'))
@@ -215,10 +216,12 @@ def test_enable_completion_unicast_envelope(
                         outcome='completed' if outcome in ('completed', 'absent_to_new') else 'failed')
         if outcome in ('typed', 'audit', 'settlement', 'auth_deadline', 'flush_error'):
             expected['category'] = 'inventory'
+        if outcome == 'prepared':
+            expected['category'] = 'activation-prepared-retry'
         assert sent == [(':1.42', m.h.OBJECT_PATH, m.h.INTERFACE, 'LifecycleCompleted', expected)]
         assert order.index('signal') < order.index('flush') < order.index('release')
     assert m.helper.inflight is None
-    assert m.helper.lifecycle_result['outcome'] == ('ready' if outcome in ('completed', 'uid', 'owner', 'disconnect', 'absent_to_new') else 'uncertain')
+    assert m.helper.lifecycle_result['outcome'] == ('ready' if outcome in ('completed', 'uid', 'owner', 'disconnect', 'absent_to_new') else 'in_progress' if outcome == 'prepared' else 'uncertain')
     if outcome == 'audit':
         assert json.loads(m.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
 
@@ -2464,3 +2467,16 @@ def test_thr327_skipped_revoke_is_partial(mount: Any, monkeypatch: pytest.Monkey
     assert v.effects == ['stop', 'cleanup']
     assert v.helper.lifecycle_result['outcome'] == 'partial_cleanup'
     assert 'un-revoked connector trust state and persisted sidecar state' in v.helper.lifecycle_result['residue']
+
+
+@pytest.mark.parametrize('category', ['ready-restart-failed-turn-off', 'activation-retry-later', 'activation-prepared-retry'])
+def test_thr327_native_terminal_preserves_lifecycle_category(category: str) -> None:
+    path = Path(__file__).resolve().parents[1] / 'packaging/linux/desktop/connection_contract.py'
+    spec = importlib.util.spec_from_file_location('thr327_native_contract', path)
+    native = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(native)
+    frame = dict(method='Enable', correlation=dict(serial=1, owner=':1.100'), outcome='failed', category=category)
+    assert native.enable_terminal_frame(json.dumps(frame)) == frame
+    protocol = native.Protocol(path.parents[3] / 'protocol/native-connection-bridge.v1.json')
+    failure = dict(code='enablePreparationFailed', effect='unknown', recovery='nativeRecovery', category=category)
+    protocol.validate(failure, protocol.schema['$defs']['preparationError'])

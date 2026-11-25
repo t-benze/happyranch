@@ -403,7 +403,7 @@ APP_RELAY = r"""(() => {
           'account-receipt-uncertain','foreign-unit','foreign-custody','publication-uncertain',
           'address-changed','account-create-uncertain','cleanup-uncertain','materializer-uncertain',
           'custody-uncertain','inventory','no_address','multiple_addresses','dial_ip','dial-ip',
-          'occupied-port','port-check-uncertain'];
+          'occupied-port','port-check-uncertain','ready-restart-failed-turn-off','activation-retry-later','activation-prepared-retry'];
         if (Object.keys(detail).sort().join(',') === 'category,code,effect,recovery'
             && categories.includes(detail.category) && detail.effect === 'unknown'
             && detail.recovery === 'nativeRecovery') result.category = detail.category;
