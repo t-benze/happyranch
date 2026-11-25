@@ -1409,8 +1409,9 @@ def test_status_v2_stopped_connector_and_unreadable_store(venue: Any, monkeypatc
     monkeypatch.setattr(helper.generations, 'current_generation', unavailable)
     monkeypatch.setattr(HELPER._helper_generation.HomeLifecycleClient, 'current_generation', lambda *a: unavailable(1))
     monkeypatch.setattr(HELPER._helper_generation.HomeLifecycleClient, 'setup_status', lambda *a: unavailable(1))
-    Call(client, 'StatusV2').finish('host-state-unrecognized-unknown')
+    Call(client, 'StatusV2').finish('host-state-unrecognized-unverified')
     assert not authority.calls and not operations.effects
+    assert not helper.cursors and not helper.audit.path.exists()
 
 
 @pytest.mark.parametrize('policy', ['current', 'renewing', 'expired', 'renewal_failed', 'uncertain'])

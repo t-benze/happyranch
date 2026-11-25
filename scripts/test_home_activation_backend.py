@@ -237,7 +237,8 @@ def test_enable_effect_failure_journals_only_type_source_step(
     emitted = str(sent.call_args)
     assert all(value not in emitted for value in (secret, 'synthetic-secret', 'private-user',
                                                   'https://', '12345', 'synthetic-journal-secret'))
-    assert capsys.readouterr() == ('', '')
+    # The only child output is the closed generic category, even if journaling fails.
+    assert capsys.readouterr() == ('{"preparationFailure":"activation-unverified"}\n', '')
     assert v.receipts.current() is None and not v.calls
 
 
