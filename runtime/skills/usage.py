@@ -165,23 +165,57 @@ def _claude_signals(
 
 def _read_paths(command: str) -> list[str]:
     """Recognize only simple read commands, never arbitrary shell substrings."""
-    if any(c in command for c in ";|&`$<>\n#()"):
+    if any(c in command for c in "`$\n#()"):
         return []
-    words = shlex.split(command)
+
+    def split(text: str) -> list[str]:
+        lexer = shlex.shlex(text, posix=True, punctuation_chars=";|&<>")
+        lexer.whitespace_split = True
+        return list(lexer)
+
+    words = split(command)
     if len(words) == 3 and Path(words[0]).name in {"bash", "sh", "zsh"} and words[1] in {"-c", "-lc"}:
-        words = shlex.split(words[2])
-    if not words or any(any(c in word for c in ";|&`$<>\n") for word in words):
+        words = split(words[2])
+    if not words:
         return []
     name = Path(words[0]).name
+    args = words[1:]
     if name == "cat":
-        paths = words[1:]
-    elif name == "sed" and len(words) == 4 and words[1] == "-n" and re.fullmatch(r"\d+(?:,\d+)?p", words[2]):
-        paths = words[3:]
-    elif name == "head" and len(words) == 4 and words[1] == "-n" and words[2].isdigit():
-        paths = words[3:]
+        paths = args
+    elif name == "sed" and args[:1] == ["-n"]:
+        args = args[1:]
+        expressions = []
+        if args[:1] == ["-e"]:
+            while len(args) >= 2 and args[0] == "-e":
+                expressions.append(args[1])
+                args = args[2:]
+        elif args:
+            expressions.append(args.pop(0))
+        if not expressions or not all(re.fullmatch(r"\d+(?:,\d+)?p(?:;\d+(?:,\d+)?p)*", e) for e in expressions):
+            return []
+        paths = args
+    elif name in {"head", "tail"}:
+        if args and args[0] in {"-n", "-c"}:
+            if len(args) < 2 or not re.fullmatch(r"[+-]?\d+", args[1]) or int(args[1]) == 0:
+                return []
+            args = args[2:]
+        elif args and args[0].startswith("-") and args[0] != "--":
+            count = re.fullmatch(r"(?:-[nc]?|--(?:lines|bytes)=)([+-]?\d+)", args[0])
+            if not count or int(count[1]) == 0:
+                return []
+            args = args[1:]
+        paths = args
+    elif name == "nl":
+        if args[:1] == ["-ba"]:
+            args = args[1:]
+        elif args[:2] == ["-b", "a"]:
+            args = args[2:]
+        paths = args
     else:
         return []
-    return paths if all(not p.startswith("-") for p in paths) else []
+    if paths[:1] == ["--"]:
+        paths = paths[1:]
+    return paths if all(not p.startswith("-") and not any(c in p for c in ";|&<>") for p in paths) else []
 
 
 def _codex_signals(
@@ -201,21 +235,34 @@ def _codex_signals(
         item_id, command = item.get("id"), item.get("command")
         if not isinstance(item_id, str) or not _PROVIDER_ID.fullmatch(item_id) or not isinstance(command, str):
             raise ValueError("skill use command shape")
+        # exec --json currently omits cwd. Honor explicit metadata if supplied
+        # by a provider version; unknown/foreign cwd never gets a relative read.
+        relative_cwd = all(
+            isinstance(record[key], str) and Path(record[key]).is_absolute()
+            and ".." not in Path(record[key]).parts and Path(record[key]) == workspace
+            for record in (event, item) for key in ("cwd", "workdir") if key in record
+        )
+        seen = set()
         for raw_path in _read_paths(command):
             path = Path(raw_path)
-            if not path.is_absolute():
-                # The launch workspace does not establish a command's cwd.
-                # Existing command events supply no verified cwd here.
+            if ".." in path.parts:
                 continue
+            if not path.is_absolute():
+                # Observational fallback: literal workspace skill paths only,
+                # corroborated by an existing file; never resolve symlink roots.
+                if not relative_cwd or not (workspace / path).is_file():
+                    continue
+                path = workspace / path
             for root in (".agents", ".claude"):
                 try:
                     parts = path.relative_to(workspace / root / "skills").parts
                 except ValueError:
                     continue
-                if len(parts) == 2 and parts[1] == "SKILL.md" and _SLUG.fullmatch(parts[0]):
+                if len(parts) == 2 and parts[1] == "SKILL.md" and _SLUG.fullmatch(parts[0]) and parts[0] not in seen:
                     if len(signals) >= MAX_SIGNALS:
                         raise ValueError("skill use signal bound")
                     signals.append(SkillUseSignal(parts[0], "opened_skill_file", f"codex:{item_id}"))
+                    seen.add(parts[0])
     return signals
 
 

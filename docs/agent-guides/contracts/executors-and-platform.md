@@ -52,7 +52,7 @@ missing table and then its index idempotently; no table rebuild or backfill.
 | Executor | Signal and seam | Coverage limits |
 | --- | --- | --- |
 | Claude | `invoked`: assistant `tool_use` named `Skill`, read after return from `~/.claude/projects/<cwd-slug>/<provider-session-id>.jsonl` | Exact submitted user prompt must occur once; only subsequent assistant entries before the next user text count. Provider identity must match. This distinguishes resumed provider history from the runtime invocation. |
-| Codex | `opened_skill_file`: successful completed `command_execution` in existing `exec --json` stdout | Only simple `cat`, `sed -n N[,N]p`, or `head -n N` reads using absolute paths under the workspace's `.agents/skills/<slug>/SKILL.md` or `.claude/skills/<slug>/SKILL.md`, optionally wrapped in `sh/bash/zsh -c/-lc`. Relative paths are unobserved because the command's cwd is not verified; the launch workspace is insufficient evidence. Complex shell, other read tools, external roots and rollout-only reads are gaps. This records an open, not invocation/compliance. |
+| Codex | `opened_skill_file`: successful completed `command_execution` in existing `exec --json` stdout | Simple named-file `cat`, numeric-print `sed -n` (including multiple ranges or `-e` expressions), `head`/`tail` (default, numeric lines/bytes), and `nl` (default or all-line numbering), optionally wrapped in `sh/bash/zsh -c/-lc`. Only workspace `.agents/skills/<slug>/SKILL.md` or `.claude/skills/<slug>/SKILL.md` paths count, once per slug per command, including several files in one read. Search/listing, compound shell, pipelines, substitutions, globs, traversal, external roots and unrecognized readers remain unobserved. This records an open, not invocation/compliance. |
 | OpenCode | No signal recorded | Existing JSON output is used for usage/session identity; no verified skill-specific observation seam is implemented. |
 | Pi | No signal recorded | No verified skill-specific observation seam is implemented. |
 
@@ -65,6 +65,19 @@ repeated identical prompts may prevent attribution and discard the observation.
 Custom IDs are resolved by org/slug at observation time (including historical
 retired rows); release package paths identify bundled slugs, otherwise unknown.
 These rows establish neither delivered version nor eligibility.
+
+Codex's published `exec --json` command items omit cwd/workdir, although native
+rollouts retain cwd. A relative named-file read therefore assumes the launch
+workspace and requires that file to exist there when observed. This inference
+cannot prove the historical command cwd; a different cwd with the same relative
+file is an attribution risk when the provider omits it. Any explicit `cwd` or
+`workdir` on the event or item must be an absolute path equal to the workspace
+for relative attribution; foreign, invalid or conflicting values refuse it.
+Absolute workspace skill paths count regardless of cwd. Paths are matched
+lexically, preserving canonical-store symlinks; shell variables and catalog
+short-root aliases are never expanded. Missing/moved files can lose relative
+observations. Source references remain `codex:<item_id>`; slug is already part
+of the unique identity, so multi-skill commands need no schema change.
 
 The optional observer runs in at most two daemon threads, with no join on the
 session path. Busy workers/DB, shutdown and missing/unreadable inputs lose the
