@@ -228,6 +228,8 @@ export async function runTaskAttrListCases(h, { org, only }) {
   const overflow = (page) => evaluate(page, 'document.documentElement.scrollWidth > document.documentElement.clientWidth');
   const settle = async (page, expr, label, ms = 10000) => { const ok = await waitTrue(page, expr, label, ms); await pause(300); return ok; };
   const hasText = (s) => `document.body.innerText.includes(${q(s)})`;
+  // Rendered (non-hidden, laid-out) attention-scope notes and their text.
+  const visibleScopeNotes = `[...document.querySelectorAll('[data-testid="tasks-attention-scope"]')].filter((e) => e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden').map((e) => e.innerText.trim())`;
   const viewports = [1440, 390];
   const locales = ['en', 'zh-CN'];
   const F05 = '?status=in_progress&agent=agent-a&attr_min=fx_delta%3D0&attr_set=comment&attr_set=ready&attr_set=risk';
@@ -494,17 +496,26 @@ export async function runTaskAttrListCases(h, { org, only }) {
       fixture.reset();
       const from = ledger.length;
       const page = await open('?attr_min=effort%3D3', { locale, width });
-      await settle(page, hasText(tr(locale, 'tasks.filters.attr.attentionScope')), 'scope note');
+      const noteSettled = await settle(page, `${visibleScopeNotes}.length > 0`, 'scope note');
       const att = rootsRows(from).filter((r) => sp(r).get('status') === 'escalated' && sp(r).get('limit') === '50');
       check(`ATT01 ${locale} ${width} one escalated request without attr (attention) and one with (ordinary)`, att.map((r) => attrs(r).length).sort(), [0, 1]);
-      check(`ATT01 ${locale} ${width} note visible`, true, true);
+      check(`ATT01 ${locale} ${width} note visible`, { settled: noteSettled, notes: await evaluate(page, visibleScopeNotes) }, { settled: true, notes: [tr(locale, 'tasks.filters.attr.attentionScope')] });
       check(`ATT01 ${locale} ${width} no overflow`, await overflow(page), false);
       await capture(page, `att01-${locale}-${width}`, { case: 'ATT01', locale, viewport: width });
       await closePage(page);
     }
+    fixture.reset();
+    const pageR = await open('?attr_min=effort%3D3');
+    const before = await settle(pageR, `${visibleScopeNotes}.length > 0`, 'scope note before chip removal');
+    await clickSrc(pageR, `document.querySelector('[data-testid="tasks-attr-chips"] button')`);
+    const removed = await settle(pageR, `!location.search.includes('attr_min')`, 'chip removed');
+    await settle(pageR, `${visibleScopeNotes}.length === 0`, 'scope note removed');
+    check('ATT01 note removed when the last clause is cleared', { before, removed, notes: await evaluate(pageR, visibleScopeNotes), text: await evaluate(pageR, hasText(tr('en', 'tasks.filters.attr.attentionScope'))) }, { before: true, removed: true, notes: [], text: false });
+    await closePage(pageR);
+    fixture.reset();
     const page = await open('');
-    await settle(page, `document.querySelectorAll('[data-tasks-responsive-list] section li').length > 0`, 'rows');
-    check('ATT01 note absent without clauses', await evaluate(page, hasText(tr('en', 'tasks.filters.attr.attentionScope'))), false);
+    const rowsSettled = await settle(page, `document.querySelectorAll('[data-tasks-responsive-list] section li').length > 0`, 'rows');
+    check('ATT01 note absent without clauses', { rowsSettled, notes: await evaluate(page, visibleScopeNotes), text: await evaluate(page, hasText(tr('en', 'tasks.filters.attr.attentionScope'))) }, { rowsSettled: true, notes: [], text: false });
     await closePage(page);
     endCase();
     beginCase('EMP01', 'filtered empty: f.zero + body + Clear filters; export enabled');
