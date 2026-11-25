@@ -73,7 +73,7 @@ export function createFeatureFlagsFixture(settings, org) {
       // Settings needs the real list shape.
       if (request.method === 'GET' && path === `/api/v1/orgs/${org}/identities`) { json(response, 200, { identities: [] }); return true; }
       // THR-390 PR7: one synthetic task and its (empty) attribute projection for FF-*-TASKATTR.
-      if (request.method === 'GET' && path === `/api/v1/orgs/${org}/tasks/${FF_TASK_ID}`) { json(response, 200, ffTaskRecord()); return true; }
+      if (request.method === 'GET' && path === `/api/v1/orgs/${org}/tasks/${FF_TASK_ID}`) { json(response, 200, { task: ffTaskRecord(), results: null, audit_log: [], revisit_chain: [], direct_revisits: [], predecessor_prior_status: null, active_chain: null }); return true; }
       if (request.method === 'GET' && path === `/api/v1/orgs/${org}/tasks/${FF_TASK_ID}/attributes`) {
         json(response, 200, { task_id: FF_TASK_ID, editability: { can_edit: true, refusal_reason: null }, attributes: [] });
         return true;
@@ -382,7 +382,7 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
       check(`${id} task detail settled`, await waitTrue(page, textIn(tr('en', 'tasks.rail.heading')), 'task detail settle'), true);
       await pause(1500);
       const rows = await observe(from);
-      check(`${id} Attributes card $absent`, await evaluate(page, "Boolean(document.querySelector('[data-testid=task-attributes-card]'))"), false);
+      check(`${id} Attributes card absent`, await evaluate(page, "Boolean(document.querySelector('[data-testid=task-attributes-card]'))"), false);
       check(`${id} attributes GET count`, rows.filter((row) => row.path === `/api/v1/orgs/${org}/tasks/${FF_TASK_ID}/attributes`).length, 0);
       check(`${id} no attribute writes`, rows.filter((row) => row.method !== 'GET' && /\/attributes/.test(row.path)).map(brief), []);
       await capture(page, id, meta({ locale: 'en', viewport: '1440x900', state: 'task-detail' }));
@@ -480,7 +480,7 @@ export async function runFeatureFlagsCases(h, { org, expectProfile, buildLog, di
       check(`${id} task detail settled`, await waitTrue(page, textIn(tr('en', 'tasks.rail.heading')), 'task detail settle'), true);
       check(`${id} card settled`, await waitTrue(page, textIn(tr('en', 'tasks.attributes.card.noDefs')), 'card settle'), true);
       const rows = await observe(from);
-      check(`${id} Attributes card $present`, await evaluate(page, "Boolean(document.querySelector('[data-testid=task-attributes-card]'))"), true);
+      check(`${id} Attributes card present`, await evaluate(page, "Boolean(document.querySelector('[data-testid=task-attributes-card]'))"), true);
       check(`${id} attributes GET count`, rows.filter((row) => row.path === `/api/v1/orgs/${org}/tasks/${FF_TASK_ID}/attributes`).length, 1);
       check(`${id} no attribute writes`, rows.filter((row) => row.method !== 'GET' && /\/attributes/.test(row.path)).map(brief), []);
       await capture(page, id, meta({ locale: 'en', viewport: '1440x900', state: 'task-detail' }));
