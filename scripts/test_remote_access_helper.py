@@ -440,7 +440,9 @@ def test_no_secret_in_logs_or_replies(venue: Any, caplog: Any) -> None:
     def broken() -> Any:
         raise ValueError(marker)
     operations.status = broken
-    Call(client).finish('unavailable')
+    refusal = Call(client)
+    refusal.finish('host-state-unrecognized-unverified')
+    assert marker not in refusal.reply.get_error_name()
     operations.status = original
     Call(client, body=GLib.Variant('(s)', (marker,))).finish('invalid-request')
     assert marker not in json.dumps(status) + caplog.text
