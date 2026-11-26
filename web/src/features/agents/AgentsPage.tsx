@@ -14,7 +14,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * NO autonomy toggle (founder ruling). NO permission-model changes.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, Users } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
 import { useThreadRoutes } from '@/hooks/threads';
@@ -58,7 +58,13 @@ export function AgentsPage(): JSX.Element {
   const identityPresentation = useIdentityPresentation();
   const { density } = useDensity();
   const rowPad = density === 'compact' ? 'py-1.5' : 'py-2.5';
+  // THR-402: Create team and Create agent open the ONE shared form in its two modes.
   const [addOpen, setAddOpen] = useState(false);
+  const [addMode, setAddMode] = useState<'team' | 'agent'>('agent');
+  const openCreate = (mode: 'team' | 'agent') => {
+    setAddMode(mode);
+    setAddOpen(true);
+  };
 
   // Start Thread dialog state
   const threadRoutes = useThreadRoutes();
@@ -99,7 +105,10 @@ export function AgentsPage(): JSX.Element {
   // Direction-A `a-agents` reference). A ref latches this to fire once — so
   // closing the detail pane (→ inbox) still returns to the calm empty state
   // instead of immediately re-selecting. Deep-links, the empty roster, and
-  // the pending view are all left untouched.
+  // the pending view are all left untouched. THR-402: while Create team /
+  // Create agent is open the settle still consumes the latch but issues no
+  // navigation — a dirty draft's owner gate would block it and its prompt
+  // would intercept Create — and closing creation later does not replay it.
   const didAutoSelect = useRef(false);
   const selectedOrgSlug = useRef<string | undefined>(slug);
   useEffect(() => {
@@ -111,7 +120,7 @@ export function AgentsPage(): JSX.Element {
     if (agentsQuery.isLoading || agentsQuery.isError) return;
     if (['pending', 'terminated'].includes(searchParams.get('view') ?? '')) return;
     didAutoSelect.current = true;
-    if (!selectedAgent && agents.length > 0) {
+    if (!addOpen && !selectedAgent && agents.length > 0) {
       navigate(routes.detail(agents[0].name), { replace: true });
     }
   }, [
@@ -123,6 +132,7 @@ export function AgentsPage(): JSX.Element {
     navigate,
     routes,
     slug,
+    addOpen,
   ]);
 
   const handleStartThread = (agent: AgentSummary) => {
@@ -142,11 +152,16 @@ export function AgentsPage(): JSX.Element {
           title={t('agents.page.title')}
           lede={t('agents.page.meta')}
         />
-        {/* AGENTS-03 / THR-376 r2 A1b: "+ New agent" lives in the AppBar. */}
+        {/* AGENTS-03 / THR-376 r2 A1b: the creation actions live in the AppBar.
+            THR-402 A1: Create team and Create agent are explicit actions. */}
         <TopbarActions>
-          <Button size="sm" onClick={() => setAddOpen(true)}>
+          <Button size="sm" variant="secondary" onClick={() => openCreate('team')}>
+            <Users aria-hidden="true" />
+            {t('agents.page.createTeam')}
+          </Button>
+          <Button size="sm" onClick={() => openCreate('agent')}>
             <Plus aria-hidden="true" />
-            {t('agents.page.newAgent')}
+            {t('agents.page.createAgent')}
           </Button>
         </TopbarActions>
         {/* THR-376 r2 Ag4: the roster switch uses the SegmentedControl look
@@ -199,14 +214,7 @@ export function AgentsPage(): JSX.Element {
                 </div>
               ) : agents.length === 0 ? (
                 <div className="p-4">
-                  <EmptyState
-                    title={t('agents.empty.title')}
-                    body={t('agents.empty.body')}
-                    cta={{
-                      label: t('agents.empty.cta'),
-                      onClick: () => setAddOpen(true),
-                    }}
-                  />
+                  <EmptyState title={t('agents.empty.title')} body={t('agents.empty.body')} />
                 </div>
               ) : (
                 <div className="p-2">
@@ -309,13 +317,26 @@ export function AgentsPage(): JSX.Element {
                     ? t('agents.select.body')
                     : t('agents.empty.body')}
                 </p>
+                {/* THR-402 A1: the empty roster offers both creation actions
+                    here, where they stay visible at every width (the roster
+                    rail is height-capped below md). */}
+                {agents.length === 0 && !agentsQuery.isLoading && !agentsQuery.isError && (
+                  <div className="mt-4 flex flex-wrap justify-center gap-2">
+                    <Button size="sm" variant="secondary" onClick={() => openCreate('team')}>
+                      {t('agents.page.createTeam')}
+                    </Button>
+                    <Button size="sm" onClick={() => openCreate('agent')}>
+                      {t('agents.page.createAgent')}
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
           )}
         </main>
       </div>
 
-      <AddAgentDialog open={addOpen} onOpenChange={setAddOpen} />
+      <AddAgentDialog open={addOpen} mode={addMode} onOpenChange={setAddOpen} />
 
       <NewThreadDialog
         open={showStartThread}

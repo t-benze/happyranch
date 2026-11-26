@@ -12,6 +12,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { agents as agentsApi, tasks as tasksApi } from '@/lib/api';
 import type { AgentSummary, TaskRecord } from '@/lib/api/types';
+import { refreshAfterMutation } from '@/lib/freshReads';
 import type {
   AgentsApi,
   ApproveAgentArgs,
@@ -128,11 +129,10 @@ export const realAgentsApi: AgentsApi = {
       mutationFn: (body: CreateAgentArgs): Promise<CreateAgentResult> =>
         agentsApi.createAgent(slug, body),
       onSuccess: async () => {
-        await qc.cancelQueries({ queryKey: ['identities', slug] }, { revert: false });
-        qc.invalidateQueries({ queryKey: ['agents', slug] });
-        qc.invalidateQueries({ queryKey: ['agent-enrollments', slug] });
-        qc.invalidateQueries({ queryKey: ['teams', slug] });
-        await qc.invalidateQueries({ queryKey: ['identities', slug] });
+        // THR-402: settle every readback before the create resolves, so the
+        // form can tell "Created; refresh unavailable" from a roster read
+        // issued AFTER the create (in-flight earlier reads are retired first).
+        await refreshAfterMutation(qc, [['agents', slug], ['agent-enrollments', slug], ['teams', slug], ['identities', slug]]);
       },
     });
   },
