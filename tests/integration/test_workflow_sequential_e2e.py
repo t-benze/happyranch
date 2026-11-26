@@ -112,6 +112,18 @@ def _counts(root: Path) -> dict:
     return {name: _rows(root, "SELECT count(*) AS n FROM " + name)[0]["n"] for name in tables}
 
 
+def _policy_refusals(private: Path, root: Path, payload: dict, decision: dict, assessment: dict) -> None:
+    before = _counts(root)
+    for variant in ("omitted", "mismatch"):
+        rejected = dict(payload, decision=decision)
+        rejected.pop("manager_self_evaluation", None)
+        if variant == "mismatch":
+            rejected["manager_self_evaluation"] = dict(assessment, manager_session_id="foreign-synthetic-SID")
+        _callback(private, rejected, name=payload["session_id"] + "-" + decision["action"] + "-" + variant,
+                  expected=False)
+        assert _counts(root) == before, "refused ordinary policy evidence allocated state"
+
+
 def _source_actor(private: Path, root: Path, case: dict, payload: dict, prompt: str) -> None:
     task, sid = payload["task_id"], payload["session_id"]
     assert POLICY_BEGIN in prompt and POLICY_END in prompt, "ordinary initiating manager policy missing"
@@ -127,13 +139,7 @@ def _source_actor(private: Path, root: Path, case: dict, payload: dict, prompt: 
         assert decision["action"] == "workflow_start"
         # Actual workflow_start requires ordinary policy evidence. Refusals must
         # precede all native/workflow allocation, then the same SID may correct.
-        before = _counts(root)
-        for variant in ("omitted", "mismatch"):
-            rejected = dict(payload, decision=decision)
-            if variant == "mismatch":
-                rejected["manager_self_evaluation"] = dict(assessment, manager_session_id="foreign-synthetic-SID")
-            _callback(private, rejected, name=sid + "-" + variant, expected=False)
-            assert _counts(root) == before, "refused ordinary policy evidence allocated state"
+        _policy_refusals(private, root, payload, decision, assessment)
         payload.update(decision=decision, manager_self_evaluation=assessment)
         _callback(private, payload, name=sid + "-start")
         return
@@ -144,12 +150,22 @@ def _source_actor(private: Path, root: Path, case: dict, payload: dict, prompt: 
         controls = _rows(root, "SELECT * FROM workflow_seq_controls WHERE run_id=?", (run["id"],))
         action = case["exhaustion_action"] if controls else case["recovery"]
     elif run["state"] == "finished" and all(r["state"] == "finished" for r in runs):
-        payload.update(decision=dict(action="done", summary="Synthetic workflow returned once"),
+        delivered = _rows(root, "SELECT notification_id FROM workflow_seq_inbox_deliveries d "
+            "WHERE initiator_task_id=? AND session_id=? AND NOT EXISTS "
+            "(SELECT 1 FROM workflow_seq_consumed_notifications c WHERE c.initiator_task_id=d.initiator_task_id "
+            "AND c.notification_id=d.notification_id)", (task, sid))
+        # Consume the actual delivered return through its real receipt before
+        # a later initiating turn submits done. A return alone cannot finish it.
+        decision = (dict(action="workflow_wait", run_ids=[],
+                         consume_notifications=[r["notification_id"] for r in delivered]) if delivered else
+                    dict(action="done", summary="Synthetic workflow returned once"))
+        payload.update(decision=decision,
                        manager_self_evaluation=assessment)
-        _callback(private, payload, name=sid + "-done")
+        _callback(private, payload, name=sid + ("-consume" if delivered else "-done"))
         return
     else:
-        payload.update(decision=dict(action="workflow_wait"), manager_self_evaluation=assessment)
+        payload.update(decision=dict(action="workflow_wait", run_ids=[r["id"] for r in runs if r["state"] != "finished"]),
+                       manager_self_evaluation=assessment)
         _callback(private, payload, name=sid + "-wait")
         return
     command = dict(format="workflow-sequential-control@2", run_id=run["id"],
@@ -162,6 +178,8 @@ def _source_actor(private: Path, root: Path, case: dict, payload: dict, prompt: 
     payload.update(decision=dict(action="workflow_control", workflow=command), manager_self_evaluation=assessment)
     controls = _rows(root, "SELECT * FROM workflow_seq_controls WHERE run_id=?", (run["id"],))
     exhausted = bool(controls) and action != "cancel"
+    if not controls and not (action == "reassign" and case.get("coding")):
+        _policy_refusals(private, root, payload, payload["decision"], assessment)
     before = _counts(root)
     result = _callback(private, payload, name=sid + "-control",
                        expected=None if action == "reassign" and case.get("coding") else not exhausted)
@@ -270,6 +288,22 @@ def _assert_recovery_prompt(root: Path, private: Path, visit: dict, raw: bytes, 
              predecessor_visit_id=held["source_visit_id"], prompt_sha256=hashlib.sha256(raw).hexdigest(),
              readonly=True, supplement=case["recovery"] == "rebrief", lineage=lineage,
              restriction_excerpt=system[system.index("Trusted recovery restriction:"):].splitlines()[0])
+
+
+def _assert_control_actor(root: Path, control: dict, source: str) -> None:
+    result, = _rows(root, "SELECT * FROM task_results WHERE id=?", (control["actor_result_id"],))
+    assert (result["task_id"], result["agent"], result["session_id"], result["status"]) == (
+        source, control["actor_principal"], control["actor_session_id"], "completed")
+    decision = json.loads(result["decision_json"])
+    assert decision["action"] == "workflow_control"
+    command = decision["workflow"]
+    assert (command["run_id"], command["action"], command["expected_held_event_id"], command["expected_cas"]) == (
+        control["run_id"], control["action"], control["expected_held_event_id"], control["expected_cas"])
+    _assessment(root, source, control["actor_session_id"])
+    attempt, = _rows(root, "SELECT * FROM authority_policy_v2_attempts WHERE result_id=?", (result["id"],))
+    assert (attempt["root_task_id"], attempt["manager_session_id"]) == (source, control["actor_session_id"])
+    run, = _rows(root, "SELECT * FROM workflow_seq_runs WHERE id=?", (control["run_id"],))
+    assert control["actor_session_id"] != run["source_session_id"], "control reused the start turn"
 
 
 class Lifecycle:
@@ -408,6 +442,7 @@ def test_real_block_control(lifecycle, action: str) -> None:
     assert run["recovery_count"] == 1 and run["visit_count"] == 3
     control, = lifecycle.rows("SELECT * FROM workflow_seq_controls")
     assert control["action"] == action and control["actor_task_id"] == lifecycle.source
+    _assert_control_actor(lifecycle.root, control, lifecycle.source)
     replacement, = lifecycle.rows("SELECT * FROM workflow_seq_visits WHERE id=?", (control["new_visit_id"],))
     assert replacement["principal"] == ("payment_agent" if action == "reassign" else "dev_agent")
     original, = lifecycle.rows("SELECT * FROM task_results WHERE task_id=(SELECT task_id FROM workflow_seq_visits WHERE ordinal=1)")
@@ -476,6 +511,7 @@ def test_real_final_recovery(lifecycle, action: str, exhaustion: str, success: b
     run = lifecycle.run()
     controls = lifecycle.rows("SELECT * FROM workflow_seq_controls")
     assert len(controls) == 1 and controls[0]["actor_task_id"] == lifecycle.source
+    _assert_control_actor(lifecycle.root, controls[0], lifecycle.source)
     original, replacement = lifecycle.rows("SELECT * FROM workflow_seq_visits WHERE node_id='finalize' ORDER BY ordinal")
     assert original["task_id"] != replacement["task_id"] and original["session_id"] != replacement["session_id"]
     assert original["run_id"] == replacement["run_id"] == run["id"] and original["result_id"] is None
@@ -544,11 +580,24 @@ def test_real_native_failure(lifecycle, fault: str, held: bool | None) -> None:
             assert {r["kind"] for r in lifecycle.rows("SELECT * FROM workflow_seq_evidence")} >= {"terminal", "outer"}
     if held:
         lifecycle.wait_run("held")
+    else:
+        _wait(lambda: lifecycle.rows("SELECT payload FROM audit_log WHERE action='workflow_seq_native_launch_failure' ORDER BY id"),
+              lambda rows: bool(rows) and json.loads(rows[-1]["payload"])["stage"] == "unsettled",
+              label="original native unsettled disposition committed")
     before = lifecycle.rows("SELECT task_id,payload FROM audit_log WHERE action='workflow_seq_native_launch_failure' ORDER BY id")
     observed = lifecycle.mailbox()
     assert len(observed["snapshots"]) == 5
-    assert all(s == observed["snapshots"][0] for s in observed["snapshots"]), \
+    assert all(s == observed["initial"] for s in observed["snapshots"]), \
         "five discovery cycles changed original native identities, journal, reservation or failure disposition"
+    initial = observed["initial"]
+    assert len(initial["preparations"]) == 1, "original visit prepared more than once"
+    preparation = initial["preparations"][0]
+    assert len({r["prospective_session_id"] for r in initial["failure_identities"]}) == int(bool(before))
+    assert all((r["invocation_id"], r["prospective_session_id"]) ==
+               (preparation["invocation_id"], preparation["session_id"])
+               for r in initial["failure_identities"])
+    if held and fault != "U5-after-spawn":
+        assert initial["journal_count"] == 0 and not initial["reservations"] and not initial["failure_owners"]
     after = lifecycle.rows("SELECT task_id,payload FROM audit_log WHERE action='workflow_seq_native_launch_failure' ORDER BY id")
     assert before == after and len(after) <= 2, "five redeliveries grew native dispositions"
     assert not lifecycle.rows("SELECT * FROM task_results WHERE task_id IN (SELECT task_id FROM workflow_seq_visits)")
@@ -580,6 +629,10 @@ def test_real_render_refusal(lifecycle) -> None:
     assert not lifecycle.rows("SELECT * FROM audit_log WHERE action='session_start' AND task_id IN (SELECT task_id FROM workflow_seq_visits)")
     assert not lifecycle.rows("SELECT * FROM workflow_seq_evidence")
     assert not lifecycle.rows("SELECT * FROM task_results WHERE task_id IN (SELECT task_id FROM workflow_seq_visits)")
+    refusals = lifecycle.rows("SELECT payload FROM audit_log WHERE action='workflow_sequential_preparation_free_refusal' ORDER BY id")
+    assert [json.loads(r["payload"])["count"] for r in refusals] == [1, 2, 3]
+    assert len({json.loads(r["payload"])["session_id"] for r in refusals}) == 3
+    assert '"kind": "prepare-entry"' not in observations
     lifecycle.assert_inbox(1)
     lifecycle.assert_history()
 
@@ -592,6 +645,8 @@ def test_real_cancel_before_launch(lifecycle) -> None:
     # supplies a genuine source continuation for the cancel control.
     _wait(lambda: lifecycle.rows("SELECT * FROM workflow_seq_controls WHERE action='cancel'"),
           label="genuine initiating cancellation")
+    control, = lifecycle.rows("SELECT * FROM workflow_seq_controls WHERE action='cancel'")
+    _assert_control_actor(lifecycle.root, control, lifecycle.source)
     lifecycle.update(fault="none")
     lifecycle.wait_run("finished")
     lifecycle.mailbox()

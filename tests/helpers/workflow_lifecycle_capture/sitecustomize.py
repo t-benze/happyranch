@@ -72,7 +72,7 @@ def export_case(binding: dict, destination: Path) -> None:
                     "stdout_sha256", "stderr_sha256", "prompt_bytes", "prompt_sha256", "run_id", "visit_id",
                     "control_id", "held_event_id", "predecessor_visit_id", "readonly", "supplement", "lineage",
                     "restriction_excerpt", "synthetic", "effect", "head", "merge", "sid", "count", "before", "after",
-                    "action", "actor_task_id", "actor_sid", "positive_reassignment_lifecycle", "snapshots", "completed"}
+                    "action", "actor_task_id", "actor_sid", "positive_reassignment_lifecycle", "initial", "snapshots", "completed"}
                 metadata = {key: item for key, item in value.items() if key in fields}
             except ValueError:
                 pass  # JSONL observer stream is retained only as a bounded excerpt.
@@ -192,6 +192,8 @@ def _install_capture() -> None:
     @functools.wraps(prepare)
     def prepare_window(self):
         fault = case().get("fault") if self.owner == "sequential" else None
+        if self.owner == "sequential":
+            record("prepare-entry", task_id=self.task.id, invocation_id=self.identity, session_id=self.session_id)
         if fault == "P0":
             record("P0", task_id=self.task.id, invocation_id=self.identity, session_id=self.session_id)
             raise RuntimeError("U3 before reservation")
@@ -359,6 +361,41 @@ def _install_capture() -> None:
                 seen.add(nonce)
                 async def observe():
                     snapshots = []
+                    def snapshot():
+                        with self._reader() as conn:
+                            visit_tasks = {r[0] for r in conn.execute("SELECT task_id FROM workflow_seq_visits")}
+                            journals = []
+                            for row in conn.execute("SELECT admission_journal_json FROM task_pause_controls"):
+                                journals.extend(e for e in json.loads(row[0])["entries"] if e["task_id"] in visit_tasks)
+                            native = [tuple(r) for r in conn.execute("SELECT id,status,current_session_id,orchestration_step_count FROM tasks "
+                                "WHERE id IN (SELECT task_id FROM workflow_seq_visits) ORDER BY id")]
+                            dispositions = [tuple(r) for r in conn.execute("SELECT id,payload FROM audit_log "
+                                "WHERE action='workflow_seq_native_launch_failure' ORDER BY id")]
+                            identities = {table: [tuple(r) for r in conn.execute(sql)] for table, sql in {
+                                "visits": "SELECT id,task_id,session_id,result_id FROM workflow_seq_visits ORDER BY id",
+                                "starts": "SELECT id FROM audit_log WHERE action='session_start' AND task_id IN (SELECT task_id FROM workflow_seq_visits) ORDER BY id",
+                                "results": "SELECT id,session_id FROM task_results WHERE task_id IN (SELECT task_id FROM workflow_seq_visits) ORDER BY id",
+                                "bindings": "SELECT binding_id FROM authority_policy_v2_session_bindings WHERE root_task_id IN (SELECT task_id FROM workflow_seq_visits) ORDER BY binding_id",
+                                "custody": "SELECT id,evidence_digest FROM workflow_seq_evidence ORDER BY id",
+                            }.items()}
+                        preparations = [value for line in (private / "observer.receipt.json").read_text().splitlines()
+                            if (value := json.loads(line)).get("kind") == "prepare-entry" and value["task_id"] in visit_tasks]
+                        entries = [dict(task_id=json.loads(path.read_bytes())["task_id"], session_id=path.name.split("-entry.receipt.json")[0])
+                            for path in sorted(private.glob("*-entry.receipt.json"))
+                            if json.loads(path.read_bytes())["task_id"] in visit_tasks]
+                        reservations = {key: dict(task_id=value.task_id, possible_launch=value.possible_launch,
+                            cleanup_failed=value.cleanup_failed, owner_live=value.owner_live)
+                            for key, value in org.orchestrator._team_moves._reservations.items()
+                            if value.task_id in visit_tasks}
+                        return dict(native=native, journal_count=len(journals), journal_digest=hashlib.sha256(
+                            json.dumps(journals, sort_keys=True).encode()).hexdigest(), reservations=reservations,
+                            disposition_digest=hashlib.sha256(json.dumps(dispositions, sort_keys=True).encode()).hexdigest(),
+                            failure_identities=[{key: json.loads(row[1])[key] for key in
+                                ("invocation_id", "prospective_session_id")} for row in dispositions],
+                            preparations=preparations, process_entries=entries, identities=identities,
+                            failure_owners={key: value.identity for key, value in self._launch_failure_owners.items()
+                                            if key in visit_tasks})
+                    initial = snapshot()
                     if command["action"] == "alarm":
                         # Replace only this observer module's clock reference.
                         # No deadlines, reaper clocks or ownership are changed.
@@ -371,6 +408,7 @@ def _install_capture() -> None:
                             offset[0] = 301
                             settlement.observe_stalls(org)
                             settlement.observe_stalls(org)
+                            assert org.db._conn.total_changes == before, "stall observation wrote business state"
                             record("alarm", writes=org.db._conn.total_changes - before)
                         finally:
                             settlement.time = saved
@@ -383,26 +421,9 @@ def _install_capture() -> None:
                                 self.notify_queued(task_id, org.orchestrator._queue)
                             record("discovery-cycle", cycle=cycle + 1)
                             await asyncio.sleep(.25)
-                            with self._reader() as conn:
-                                visit_tasks = {r[0] for r in conn.execute("SELECT task_id FROM workflow_seq_visits")}
-                                journals = []
-                                for row in conn.execute("SELECT admission_journal_json FROM task_pause_controls"):
-                                    journals.extend(e for e in json.loads(row[0])["entries"] if e["task_id"] in visit_tasks)
-                                native = [tuple(r) for r in conn.execute("SELECT id,status,current_session_id FROM tasks "
-                                    "WHERE id IN (SELECT task_id FROM workflow_seq_visits) ORDER BY id")]
-                                dispositions = [tuple(r) for r in conn.execute("SELECT id,payload FROM audit_log "
-                                    "WHERE action='workflow_seq_native_launch_failure' ORDER BY id")]
-                            reservations = {key: dict(task_id=value.task_id, possible_launch=value.possible_launch,
-                                cleanup_failed=value.cleanup_failed, owner_live=value.owner_live)
-                                for key, value in org.orchestrator._team_moves._reservations.items()
-                                if value.task_id in visit_tasks}
-                            snapshots.append(dict(native=native, journal_digest=hashlib.sha256(
-                                json.dumps(journals, sort_keys=True).encode()).hexdigest(), reservations=reservations,
-                                disposition_digest=hashlib.sha256(json.dumps(dispositions, sort_keys=True).encode()).hexdigest(),
-                                failure_owners={key: value.identity for key, value in self._launch_failure_owners.items()
-                                                if key in visit_tasks}))
+                            snapshots.append(snapshot())
                     _write(private / (nonce + ".receipt.json"), dict(nonce=nonce, action=command["action"], completed=True,
-                                                                   snapshots=snapshots))
+                                                                   initial=initial, snapshots=snapshots))
                 try:
                     asyncio.run_coroutine_threadsafe(observe(), loop).result(timeout=15)
                 except Exception as exc:
