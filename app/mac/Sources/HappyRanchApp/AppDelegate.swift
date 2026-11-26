@@ -1123,7 +1123,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         guard let handle = currentHandle, handle.isRunning, supervisor.isManagedBySelf,
               let port = supervisor.observedPort else { return false }
         let transport = LocalAppAPITransport(port: port, credential: LocalTokenCredentialProvider(homeDir: Self.daemonHome()))
-        let health = try? await AppAPIHealth.read(from: transport)
+        let health: AppAPIHealth?
+        do { health = try await AppAPIHealth.read(from: transport) }
+        catch is CancellationError { return false }
+        catch let error as AppAPIError where error == .cancelled { return false }
+        catch { health = nil }
         guard currentHandle === handle, handle.isRunning, localMutationAvailable else { return false }
         mainScheme?.localServiceDidChange(transport: transport,
             promptURL: localTransport.baseURL(for: port) + "/api/v1", health: health, revision: revision)
@@ -1184,7 +1188,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         guard supervisor.isManagedBySelf, let handle = currentHandle, handle.isRunning,
               [.running, .unhealthy].contains(supervisor.state), let port = supervisor.observedPort else { throw AppAPIError.unavailable }
         let transport = LocalAppAPITransport(port: port, credential: LocalTokenCredentialProvider(homeDir: Self.daemonHome()))
-        let health = try? await AppAPIHealth.read(from: transport)
+        let health: AppAPIHealth?
+        do { health = try await AppAPIHealth.read(from: transport) }
+        catch is CancellationError { throw AppAPIError.cancelled }
+        catch let error as AppAPIError where error == .cancelled { throw error }
+        catch { health = nil }
         guard currentHandle === handle, handle.isRunning, localMutationAvailable else { throw AppAPIError.unavailable }
         mainScheme?.localServiceDidChange(transport: transport,
             promptURL: localTransport.baseURL(for: port) + "/api/v1", health: health, revision: revision)
