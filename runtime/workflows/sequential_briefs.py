@@ -268,8 +268,10 @@ def recovery_context(conn: object, run: dict, visit: dict, budget: object, *, he
             closure = body.get('closure', {})
             readonly |= closure.get('kind') == 'settled' and closure.get('result_id') is None
             if lineage:
+                # Reducer-held transitions carry the authenticated decision,
+                # while separate held events carry a cause and closure.
                 lineage[-1].update(held_event_id=held[0]['id'], closure_kind=closure.get('kind'),
-                    cause_kind=body['cause'])
+                    cause_kind=body['cause'] if held[0]['kind'] == 'held' else body['decision']['reason'])
         if current['predecessor_event_id'] is None:
             return readonly, supplement, tuple(lineage)
         events = _engine_rows(conn, 'workflow_seq_events', budget, 'id=? AND run_id=?', (current['predecessor_event_id'], run['id']))

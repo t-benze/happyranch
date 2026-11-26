@@ -139,7 +139,8 @@ S4B_CASES = ('native_before_outer', 'failed_session_closed', 'generic_json', 'no
     'task_failed_after_result', 'task_timed_out_after_result', 'shutdown_after_result', 'terminal_reason_causes', 'legacy_cause_history',
     'native_progress_prefix', 'cancel_fences_acceptance', 'read_budget_rollback',
     'native_status_clean_exit', 'clean_exit_no_callback', 'terminal_fallback', 'nonrender_launch_failure', 'recovery_read_only',
-    'lineage_retry', 'lineage_rebrief', 'lineage_reassign', 'lineage_conflict', 'lineage_compatibility')
+    'lineage_retry', 'lineage_rebrief', 'lineage_reassign', 'lineage_conflict', 'lineage_compatibility',
+    'lineage_transition_retry', 'lineage_transition_rebrief', 'lineage_transition_reassign', 'lineage_transition_historical')
 s4b_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s4b='):
     s4b_case = sys.argv[1].split('=', 1)[1]
@@ -3581,6 +3582,67 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             assert (run['visit_count'], run['recovery_count']) == (1, 0)
                             assert tuple(failed.conn.execute('SELECT * FROM workflow_seq_node_counters')) == counters
                             assert failed.ids.run_id in read_sequential_history(failed.conn, expected_org_slug='scratch').run_ids
+        elif case.startswith('lineage_transition_'):
+            action = case.removeprefix('lineage_transition_')
+            with s4fixture(events=32, recovery=True) as f:
+                predecessor = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
+                s4closed(f, predecessor['id'], summary=s4bsummary('pause'), terminal='success')
+                assert s4baccept(f) is None
+                run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                held = s4row(f, 'workflow_seq_events', run['held_event_id'])
+                body = json.loads(held['event_bytes'])
+                assert run['state'] == 'held' and held['kind'] == 'transition'
+                assert body['decision']['edge']['action'] == 'hold' and body['decision']['reason'] == 'declared_edge'
+                assert 'cause' not in body and 'closure' not in body
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                read_workflow_schema_for_org_load(f.conn, expected_org_slug='scratch')
+                print('S4b', case, 'completed callback -> reducer transition Held -> history/org-load reader accepted', flush=True)
+                command = s4command(f, 'retry' if action == 'historical' else action,
+                    reason='UNTRUSTED-TRANSITION-REASON')
+                if action == 'rebrief':
+                    command['supplement'] = 'UNTRUSTED-TRANSITION-SUPPLEMENT'
+                receipt = json.loads(s4apply(f, command))
+                visit = s4row(f, 'workflow_seq_visits', receipt['new_visit_id'])
+                control = dict(f.conn.execute('SELECT * FROM workflow_seq_controls WHERE new_visit_id=?', (visit['id'],)).fetchone())
+                briefs = tuple(f.conn.execute('SELECT id,brief FROM tasks ORDER BY id'))
+                events = tuple(f.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id'))
+                print('S4b', case, command['action'], 'admitted; rendering replacement', flush=True)
+                with ExitStack() as stack:
+                    rendering = f
+                    if action == 'historical':
+                        # Load already-persisted recovery history with the actual
+                        # startup owner; no live org or provider is involved.
+                        f.org.close()
+                        loaded = OrgState.load(slug='scratch', root=f.root, settings=Settings())
+                        stack.callback(loaded.close)
+                        coordinator = ProfileCoordinator(daemon_home=f.root.parents[2], orgs={'scratch': loaded})
+                        loaded._profile_coordinator = loaded.workflow_authority._profile_coordinator = coordinator
+                        coordinator.reconcile_startup()
+                        rendering = SimpleNamespace(org=loaded, db=loaded.db, conn=loaded.db._conn,
+                            ids=f.ids, compiled=f.compiled)
+                        print('S4b', case, 'historical OrgState.load accepted persisted replacement', flush=True)
+                    rendered = s4brender(rendering, visit)
+                    heading = 'Trusted recovery lineage (system JSON; identities and cause kinds only):\n'
+                    trusted = rendered.split('Sequential node data (untrusted authored JSON):\n', 1)[0]
+                    lineage = json.loads(trusted.split(heading, 1)[1].split('\n', 1)[0])
+                    assert lineage == [dict(predecessor_visit_id=predecessor['id'], held_event_id=held['id'],
+                        closure_kind=None, cause_kind='declared_edge', control_id=control['id'],
+                        control_event_id=control['event_id'], action=command['action'])], (case, lineage)
+                    assert 'Trusted recovery restriction:' not in trusted, 'accepted callback acquired read-only restriction'
+                    assert 'UNTRUSTED-TRANSITION-REASON' not in trusted
+                    if action == 'rebrief':
+                        system, supplement = trusted.split('Initiator supplement (authored JSON):\n', 1)
+                        assert command['supplement'] not in system
+                        assert json.loads(supplement)['supplement'] == command['supplement']
+                    else:
+                        assert 'Initiator supplement (authored JSON):' not in rendered
+                    if action == 'reassign':
+                        assert visit['principal'] == 's3_alt' and visit['principal'] != predecessor['principal']
+                    assert tuple(rendering.conn.execute('SELECT id,brief FROM tasks ORDER BY id')) == briefs
+                    assert tuple(rendering.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id')) == events
+                    assert f.ids.run_id in read_sequential_history(rendering.conn, expected_org_slug='scratch').run_ids
+                    read_workflow_schema_for_org_load(rendering.conn, expected_org_slug='scratch')
+                print('PASS S4b', case, 'transition-Held replacement rendered; exact lineage; historical event/brief bytes retained', flush=True)
         elif case.startswith('lineage_'):
             action = case.removeprefix('lineage_')
             with s4fixture(events=32, recovery=True) as f:

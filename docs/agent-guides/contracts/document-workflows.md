@@ -771,6 +771,8 @@ The trusted recovery lineage section beside that restriction lists each
 predecessor visit, causal Held event and closure/cause kind, and applied control
 ID/event/action, newest first. These identities come from the same authenticated
 immutable rows and bounded read, including for a plain retry with no supplement.
+Separate `held` events supply their cause/closure; reducer-held `transition`
+events supply the authenticated decision reason with a null absent closure kind.
 Authored reasons and supplements remain task data. Rendering changes neither
 persisted task briefs/control digests nor historical event bytes. A live invocation
 keeps its instruction frozen before preparation; restart does not adopt or
