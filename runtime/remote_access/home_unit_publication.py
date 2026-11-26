@@ -22,6 +22,15 @@ def publish_home_unit(io: ManagedInstaller, name: str, *, legacy: bytes, home: b
         if legacy != render_previous_service().encode() or home != render_service().encode():
             raise ActivationRefused()
         relative = "usr/lib/systemd/system"
+    elif name == "happyranch-connector.service":
+        from runtime.remote_access.installer import UNITS, managed_units, previous_connector_unit
+        with io._publication_parent() as (parent, check):
+            config = io._json(io._read_file(parent, "connector.json",
+                owner=(io.root_owner[0], io._service_owner[1]), mode=0o640))
+            check()
+        current = managed_units(io.layout, connector_config=config)[UNITS[0]]
+        if home != current.encode() or legacy != previous_connector_unit(current).encode():
+            raise ActivationRefused()
     elif name not in ("happyranch-headscale.service", "happyranch-tsnet-sidecar.service"):
         raise ActivationRefused()
     with io._publication_parent(relative) as (parent, check):

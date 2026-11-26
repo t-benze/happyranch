@@ -174,7 +174,8 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-') as temporary:
     unit.parent.mkdir(parents=True)
     shutil.copyfile(packaging / 'systemd/happyranch-daemon.service', unit)
     unit.chmod(0o644)
-    # Register activation/policy only. No maintainer script starts a service.
+    # Register activation/policy; configure reloads the system manager only.
+    # No maintainer script starts a service.
     for source, destination in (
         ('dbus/ai.happyranch.RemoteAccess1.conf', 'usr/share/dbus-1/system.d/ai.happyranch.RemoteAccess1.conf'),
         ('dbus/ai.happyranch.RemoteAccess1.service', 'usr/share/dbus-1/system-services/ai.happyranch.RemoteAccess1.service'),
@@ -256,7 +257,14 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-') as temporary:
         hashlib.md5(path.read_bytes()).hexdigest() + '  ' + str(path.relative_to(stage)) + '\n'
         for path in files))
     (control / 'md5sums').chmod(0o644)
-    # No maintainer scripts: desktop-file-utils/hicolor-icon-theme own triggers.
+    # dpkg supplies the maintainer-script PATH; match dh_installsystemd's reload.
+    # desktop-file-utils/hicolor-icon-theme still own their cache triggers.
+    (control / 'postinst').write_bytes(
+        b'#!/bin/sh\nset -e\n'
+        b'if [ "$1" = "configure" ] && [ -d /run/systemd/system ]; then\n'
+        b'    systemctl daemon-reload >/dev/null || true\n'
+        b'fi\n')
+    (control / 'postinst').chmod(0o755)
     built = work / filename
     subprocess.run(['dpkg-deb', '--root-owner-group', '--build', str(stage), str(built)], check=True)
     with built.open('rb') as source, (dist / filename).open('xb') as target:

@@ -111,7 +111,10 @@ Keep every existing connector/sidecar system hardening directive, including `NoN
 capability/ambient sets, `ProtectSystem=strict`, `ProtectHome=yes`, private tmp/devices,
 kernel/control-group protections, address-family restrictions, SUID/realtime/personality
 restrictions, `MemoryDenyWriteExecute`, native syscall architecture and `UMask=0077`. Keep
-notify/watchdog, restart/start-limit and target/bind/uphold relationships. The verifier retains its
+notify/watchdog, restart-on-failure and target/bind/uphold relationships. The managed-identity
+connector start-rate limit is the later exception described in
+[the contract’s renewal unit upgrade section](../agent-guides/contracts/remote-access-and-remote-jobs.md#thr-327-renewal-unit-upgrade-task-19228);
+sidecar and legacy/other connector limits stay unchanged. The verifier retains its
 separate existing root capability budget and read-only home/proc proof. No user-mode substitution,
 broad filesystem access, new connector LAN listener or weakening for Python is permitted. Item D (bundled
 Python PT_GNU_STACK/MDWE) is delivered in **merged PR #1568, `1a8efca4`**; installation and packaged
@@ -417,6 +420,30 @@ mutation. The helper communicates with a fixed private connector control socket 
 connector checks kernel peer credentials before any trust mutation.
 
 ## 4. Generated inventory and custody
+
+TASK-19401 daemon outage retry: only the managed Linux identity connector's
+`StartLimitIntervalSec` changes from 300 to 0. Restart-on-failure, one-second
+restart delay, each 120-second start attempt, the watchdog, hardening and full
+pre-listener readiness remain. Daemon absence is never readiness or permission
+to serve; after restoration the connector retries without a button and its
+unchanged Upholds/BindsTo sidecar dependency recovers. Allow the existing two
+startup budgets plus polling/delay (250 seconds) with all other gates healthy;
+installed-systemd validation is separate.
+
+For an already-READY d05afaac/98a87688 host, package upgrade alone retains the
+old connector unit and old failure behaviour. The new package's configure-only
+postinst reloads the system manager after replacing packaged renewal fragments
+(also when the old package had no postinst), without touching user managers,
+unit activation or state. It tolerates reload failure; strict
+`NeedDaemonReload=no` admission is unchanged. After a successful package reload,
+fresh-auth Turn on again republishes only its exact previous rendering through
+the existing pinned-parent unit publisher under ready receipt/G/O/custody/deadline checks, reloads, then
+uses the existing reset/start/joined path. No receipt or transaction rewrite,
+mint, replay or new recovery admission. A renewal-unit property mismatch still
+refuses, now using syslog to emit only the fixed unit kind and property name.
+TASK-19410 proved package replacement left `NeedDaemonReload=yes`; no helper-side
+pre-inventory reload or stale-property admission is added. Acceptance of the
+postinst's installed upgrade behavior remains in the manager's VM lane.
 
 All persistent writes use literal no-follow parents, bounded regular single-link files, exclusive
 temporary writes, fsync + descriptor-relative rename. Existing unsafe metadata refuses, never
