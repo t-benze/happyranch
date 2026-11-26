@@ -319,7 +319,12 @@ class Lifecycle:
         self.script = Path(__file__).resolve().parents[2] / "scripts/daemon.sh"
 
     def request(self, method: str, path: str, body: dict | None = None, *, status: int = 200) -> dict:
-        response = httpx.request(method, self.base + path, json=body, headers=self.headers, timeout=10)
+        # Settings consumes canonical JSON bytes, as the public CLI does.
+        headers = dict(self.headers)
+        if body is not None:
+            headers["content-type"] = "application/json"
+        response = httpx.request(method, self.base + path, content=_bytes(body) if body is not None else None,
+                                 headers=headers, timeout=10)
         assert response.status_code == status, (method, path, response.status_code, response.text[:2048])
         return response.json()
 

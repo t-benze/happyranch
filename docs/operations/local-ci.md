@@ -2639,8 +2639,14 @@ including its ordinary pause and reviewer-policy defaults. Other integration
 fixtures retain their existing setup. Hosted run `45870419709` at
 `bd27a4e9a187b434b92266ebb929fa6f7b0c459e` collected four unchanged chain
 tests and failed all four on each Python with `404 unknown_org`; the workflow
-module did not run. This scoped fixture correction still needs hosted
-qualification; that failure is neither lifecycle RED proof nor PASS.
+module did not run. Run `45871925099` at
+`e49ad28a475d3b1ef56cc6cc12d5c19de03fe145` then passed all four chain
+cases on each Python (zero errors/skips), qualifying the scoped fixture.
+All 32 lifecycle cases failed at the first settings request with
+`422 sequential_settings_request_invalid`: the test used noncanonical JSON.
+The module now sends the public settings contract's canonical bytes with
+`application/json`; that correction still needs hosted execution. These setup
+failures are neither intended lifecycle RED proof nor lifecycle PASS.
 
 The workflow executes these commands on each provisioned, frozen interpreter:
 
@@ -2670,7 +2676,8 @@ Artifacts are uploaded on failure too and retained seven days.
 | E8 | A sibling Held supplies an authentic initiating continuation while the pristine target stays behind a pre-preparation barrier. The initiating cancel wins, and stale delivery cannot bind a SID or spawn. |
 | Populated history | `--start2=populated_long_batch`, native bounds and catalog/startup schema-shell keepers remain **P-only**. Populated real-daemon lifecycle is **NOT RUN**; this module does not establish capacity or pilot acceptance. |
 
-At authoring, chain qualification and hosted RED/GREEN are **NOT RUN**. Record
+Chain qualification passed on both Pythons at the head above; lifecycle
+RED/GREEN remain **NOT VERIFIED**. Record
 the actual run IDs, exact heads, per-Python job conclusions, assertion failures,
 restored source hashes and artifact digests in the PR/task evidence before
 claiming executed proof. Renderer sensitivity must fail at the captured actual
