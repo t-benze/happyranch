@@ -289,6 +289,8 @@ jobs:
           mkdir -m 700 "$root/evidence" "$root/private"
           echo "QA_ROOT=$root" >> "$GITHUB_ENV"
           echo "QA_EVIDENCE=$root/evidence" >> "$GITHUB_ENV"
+          export UV_PROJECT_ENVIRONMENT="$root/venv"
+          export UV_CACHE_DIR="$root/uv-cache"
           echo "UV_PROJECT_ENVIRONMENT=$root/venv" >> "$GITHUB_ENV"
           echo "UV_CACHE_DIR=$root/uv-cache" >> "$GITHUB_ENV"
           printf '%s\n' "$EXPECTED_SHA" > "$root/evidence/source-sha.txt"
