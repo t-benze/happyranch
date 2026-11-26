@@ -16,7 +16,7 @@ STALE_AFTER_SECONDS = 30
 MAX_AGE_SECONDS = 2_147_483_647
 MAX_DEADLINE_UTC_SECONDS = 9_223_372_036_854_775_807
 FIREWALL_PORT_STATES = frozenset({'added', 'preexisting_not_owned', 'blocked_by_existing',
-    'skipped_ufw_absent', 'skipped_ufw_inactive', 'skipped_subnet_rejected',
+    'skipped_ufw_absent', 'skipped_ufw_inactive', 'skipped_ufw_lock_unavailable', 'skipped_subnet_rejected',
     'pending', 'add_intent', 'remove_intent', 'removed', 'unverified'})
 
 

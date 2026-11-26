@@ -21,7 +21,7 @@ from runtime.remote_access.home_audit import AUDIT_PATH, Component, Event, HomeA
 # a separate CLI process would deadlock or introduce a rule-replacement race.
 # runpy runs only the fixed distro CLI with fixed-action argv; no shell/API writes.
 _WORKER = r'''
-import contextlib, gettext, io, json, os, runpy, stat, sys
+import contextlib, errno, gettext, io, json, os, runpy, stat, sys
 from ipaddress import ip_address, ip_network
 gettext.install('ufw')
 from ufw.common import UFWRule
@@ -36,6 +36,24 @@ private = ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7')
 assert str(network) == subnet and str(address) == dial_ip and address in network and network.prefixlen >= 16
 assert any(network.version == ip_network(n).version and network.subnet_of(ip_network(n)) for n in private)
 ports = ((8443, 'tcp'), (3478, 'udp'))
+# UFW validates the actual CLI path during frontend startup. Python -c's argv
+# is not a file; retain all distro security checks against its fixed CLI.
+sys.argv = ['/usr/sbin/ufw']
+# The optional systemd file bind is absent if the lock did not exist at unit
+# start. Never create it: without that bind /run remains read-only. Probe before
+# either port can acquire a rule, including when `ufw status` also failed.
+try:
+    probe = os.open('/run/ufw.lock', os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+except OSError as error:
+    if error.errno not in (errno.ENOENT, errno.EROFS, errno.EACCES, errno.EPERM):
+        raise
+    print(json.dumps({'skipped': 'ufw lock unavailable'}))
+    raise SystemExit(0)
+try:
+    info = os.fstat(probe)
+    assert stat.S_ISREG(info.st_mode) and info.st_uid == 0
+finally:
+    os.close(probe)
 lock = create_lock('/run/ufw.lock')
 try:
     # Bound the distro reader's inputs before constructing its frontend.
@@ -80,6 +98,10 @@ finally:
 '''
 
 
+class _UFWLockUnavailable(HomeActivationError):
+    """No native effect occurred; retained ownership still requires cleanup."""
+
+
 def selected_subnet(dial_ip: str) -> str | None:
     """Same selector and exact kernel address/prefix, never interface fallback."""
     try:
@@ -111,6 +133,8 @@ def _ufw(action: str, subnet: str, dial_ip: str, index: int, *, timeout: float =
     if result.returncode != 0 or len(result.stdout) > 1024:
         raise HomeActivationError('firewall')
     value = json.loads(result.stdout)
+    if value == {'skipped': 'ufw lock unavailable'}:
+        raise _UFWLockUnavailable('firewall')
     if (type(value) is not dict or value.keys() != {'active', 'states', 'mutated'}
             or type(value['active']) is not bool or type(value['mutated']) is not bool
             or type(value['states']) is not list or len(value['states']) != 2
@@ -177,19 +201,27 @@ class HomeLANFirewall:
         observation = host_firewall.observe_ufw(timeout=self._budget(2.0))
         if 'remove_intent' in txn.firewall.states:
             raise HomeActivationError()
-        skipped = ('pending', 'skipped_ufw_absent', 'skipped_ufw_inactive')
+        skipped = ('pending', 'skipped_ufw_absent', 'skipped_ufw_inactive', 'skipped_ufw_lock_unavailable')
         settled = (None, None)
+        lock_unavailable = False
         if observation.availability in ('absent', 'inactive'):
             # Preserve acquired ownership when UFW is later disabled/removed.
             # Turn off still needs the retained add intent/spec to clean it up.
             if any(state not in skipped for state in txn.firewall.states):
                 return
             settled = ('skipped_ufw_' + observation.availability,) * 2
-        elif observation.availability == 'active' and any(state in (
-                'added', 'preexisting_not_owned', 'blocked_by_existing') for state in txn.firewall.states):
-            live = _ufw('inspect', txn.firewall.subnet, txn.dial_ip, 0, timeout=self._budget(8.0))
-            if live['active']:
-                settled = tuple('added' if state == 'owned' else state for state in live['states'])
+        else:
+            try:
+                live = _ufw('inspect', txn.firewall.subnet, txn.dial_ip, 0, timeout=self._budget(8.0))
+            except _UFWLockUnavailable:
+                if any(state not in skipped for state in txn.firewall.states):
+                    raise  # Never erase an acquired rule or an uncertain add.
+                lock_unavailable = True
+                settled = ('skipped_ufw_lock_unavailable',) * 2
+            else:
+                if live['active'] and any(state in ('added', 'preexisting_not_owned', 'blocked_by_existing')
+                                          for state in txn.firewall.states):
+                    settled = tuple('added' if state == 'owned' else state for state in live['states'])
         for index in range(2):
             previous = txn.firewall.states[index]
             if previous == settled[index]:
@@ -197,7 +229,9 @@ class HomeLANFirewall:
             txn = self._state(txn, index, 'add_intent')
             audit, intent = self._audit(index, remove=False)
             try:
-                if observation.availability in ('absent', 'inactive'):
+                if lock_unavailable:
+                    state = 'skipped_ufw_lock_unavailable'
+                elif observation.availability in ('absent', 'inactive'):
                     state = 'skipped_ufw_' + observation.availability
                 elif observation.availability != 'active':
                     raise HomeActivationError('firewall')
@@ -223,7 +257,8 @@ class HomeLANFirewall:
         for index in range(2):
             if txn.firewall.states[index] == 'removed':
                 continue
-            skipped = txn.firewall.states[index] in ('skipped_ufw_absent', 'skipped_ufw_inactive', 'pending')
+            skipped = txn.firewall.states[index] in (
+                'skipped_ufw_absent', 'skipped_ufw_inactive', 'skipped_ufw_lock_unavailable', 'pending')
             txn = self._state(txn, index, 'remove_intent')
             audit, intent = self._audit(index, remove=True)
             try:
@@ -243,7 +278,8 @@ class HomeLANFirewall:
         if txn is None or txn.firewall is None:
             return None
         states = txn.firewall.states
-        if txn.firewall.subnet is not None and any(s not in ('removed', 'skipped_ufw_absent', 'skipped_ufw_inactive') for s in states):
+        if txn.firewall.subnet is not None and any(s not in (
+                'removed', 'skipped_ufw_absent', 'skipped_ufw_inactive', 'skipped_ufw_lock_unavailable') for s in states):
             try:
                 live = _ufw('inspect', txn.firewall.subnet, txn.dial_ip, 0, timeout=timeout)
                 states = (tuple('added' if s == 'owned' else 'unverified' if s == 'missing' else s

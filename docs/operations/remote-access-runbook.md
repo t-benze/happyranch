@@ -35,7 +35,7 @@ subnet to the Headscale listener IP and commented `happyranch-home-headscale`.
 The same dial-IP selector supplies the interface/address; its kernel prefix
 must yield an unambiguous private network no wider than /16. Otherwise Status
 reports `skipped_subnet_rejected` and F2's advisory remains available. Absent or
-inactive UFW is a no-op. Firewalld and raw nftables receive no mutation.
+inactive UFW is a no-op. Firewalld/raw nftables: advisory only, no mutation.
 The helper never enables/disables/resets/reorders UFW or issues a separate reload.
 
 Existing hand-added rules coexist: an identical untagged/differently commented
@@ -44,6 +44,21 @@ existing rule); a different action/log collision is left untouched
 (`blocked_by_existing`: your existing rule blocks this port). Turn off does not
 remove either. An exact tagged HappyRanch rule is adopted. Only no-match adds.
 The helper holds UFW's own lock across matching and its fixed rule command.
+
+The helper service's narrow sandbox carve-out is
+`ReadWritePaths=-/run/ufw.lock`, because UFW needs a writable lock even for
+inspection. `/run` stays read-only; all existing hardening remains enabled.
+The `-` means systemd ignores an absent file at service start, so availability
+is checked without creating the lock before either rule can be added. Do not
+assume `ufw.service` creates it at boot: its distro startup script differs from
+the UFW CLI, and boot-time availability needs disposable-VM evidence.
+If absent or read-only, both ports show `skipped_ufw_lock_unavailable`
+("skipped: ufw lock unavailable"); Enable adds neither rule. Check the lock and
+the helper's effective mount policy before retrying through the normal action.
+Never make `/run` writable or run UFW outside the helper to bypass this skip.
+If rules were already acquired, unavailable cleanup retains its intent and
+reports uncertainty instead of claiming removal. Existing rules remain owned
+until a later verified cleanup.
 
 Turn off and failed-Enable rollback remove only the
 fixed comment AND exact allow/source/destination/port/protocol specification.
@@ -61,7 +76,8 @@ for an activation with a retained firewall plan.
 `StatusV2` exposes per-port `firewall.ports`; the host CLI Status JSON exposes
 `firewallPorts` with `8443/tcp` and `3478/udp`. Expected states include `added`,
 `preexisting_not_owned`, `blocked_by_existing`, `skipped_ufw_absent`,
-`skipped_ufw_inactive`, `skipped_subnet_rejected`, `removed`; pending intents or
+`skipped_ufw_inactive`, `skipped_ufw_lock_unavailable`, `skipped_subnet_rejected`,
+`removed`; pending intents or
 `unverified` require recovery/inspection. These do not prove packet reachability.
 
 For manual inspection, run `sudo ufw status numbered` and `sudo ufw show added`.

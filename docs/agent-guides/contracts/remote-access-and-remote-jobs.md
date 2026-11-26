@@ -5036,8 +5036,9 @@ client's generic home-network-unavailable explanation therefore needs a new
 protocol field and remains follow-up; this change adds none to that snapshot.
 
 The F2 inspector never changes firewall rules. Founder THR-327 seq722 authorizes
-only the F3 effects below. Service user, sandbox, capabilities, ReadWritePaths,
-R2 custody, home-only trust and authentication/authorization remain unchanged.
+only the F3 effects and exact lock-file sandbox carve-out below. Service user,
+capabilities, R2 custody, home-only trust and authentication/authorization
+remain unchanged.
 Installed-package/UFW and cross-device qualification remain separate from the
 standalone temporary-file/native-simulation venue.
 
@@ -5054,6 +5055,21 @@ IPv6 selection. The exact unique network must contain the dial IP, be private
 RFC1918/ULA, and be no wider than /16. Missing/ambiguous, public or wider
 prefixes skip the effect and retain F2 advice. Absent/inactive UFW is a no-op.
 Firewalld and raw nftables remain advisory-only: no mutation through either.
+
+The packaged root helper retains `ProtectSystem=strict`, `ProtectHome=read-only`,
+`PrivateTmp=yes` and `NoNewPrivileges=yes`. Its only F3 sandbox carve-out is
+`ReadWritePaths=-/run/ufw.lock`: UFW must write its own lock even to inspect rules.
+The leading `-` skips a missing file at unit start; it grants no writable `/run`
+directory. The worker checks the existing lock without creating it before any
+rule effect. If missing or read-only, both ports record
+`skipped_ufw_lock_unavailable` ("skipped: ufw lock unavailable") in the journal
+and Status. Enable can complete without firewall effects; Turn off has no F3
+rule to remove. Repeating Enable after lock access returns can acquire the rules.
+Previously acquired or uncertain ownership never becomes a skip: unavailable
+cleanup remains uncertain with its intent retained. UFW startup security checks
+remain enabled against the fixed `/usr/sbin/ufw` CLI path before its frontend is
+constructed. No directory-wide grant, out-of-sandbox UFW execution, capability,
+user or dependency change is permitted by this carve-out.
 
 UFW's `UFWRule.match` is authoritative: 0 adopts our tagged exact allow; -2
 leaves the existing differently tagged/untagged allow untouched; -1 leaves a
@@ -5084,7 +5100,8 @@ StatusV2 optionally carries `firewall.ports`; native/CLI Status projects it as
 `firewallPorts`, exactly `8443/tcp` and `3478/udp`. States are `added`,
 `preexisting_not_owned` (already allowed by your existing rule),
 `blocked_by_existing` (your existing rule blocks this port),
-`skipped_ufw_absent`, `skipped_ufw_inactive`, `skipped_subnet_rejected`, plus
+`skipped_ufw_absent`, `skipped_ufw_inactive`, `skipped_ufw_lock_unavailable`,
+`skipped_subnet_rejected`, plus
 `pending`, `add_intent`, `remove_intent`, `removed`, `unverified` during recovery.
 These are display diagnostics, not packet-reachability or setup-readiness proof.
 F2 advice and the original Status deadline remain independent; observation

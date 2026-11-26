@@ -4254,8 +4254,9 @@ system bus or service is changed. Cases cover tagged add/adoption, untagged,
 deny/log collisions, exact cleanup, add-before-commit interruption, failed-Enable
 rollback, absent/inactive UFW, rejected subnets, kernel prefix retention, old
 journals, Status projection, unchanged repeated Enable, retained cleanup after
-UFW becomes inactive, and admission-refusal preservation. Keep the F2 checks
-below. Neither suite is added to CI; required checks stay lint/static only.
+UFW becomes inactive, admission-refusal preservation, the real CLI startup
+identity, exact-file sandbox shape, missing/read-only lock skips before either
+rule, and uncertain cleanup with retained ownership. Keep the F2 checks below. Neither suite is added to CI; required checks stay lint/static only.
 
 F2 firewall fixtures and the real helper admission/status mount extend the
 existing standalone script selection:

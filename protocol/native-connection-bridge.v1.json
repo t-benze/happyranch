@@ -16,7 +16,7 @@
   "$defs": {
     "firewallPortState": {
       "enum": ["added", "preexisting_not_owned", "blocked_by_existing",
-        "skipped_ufw_absent", "skipped_ufw_inactive", "skipped_subnet_rejected",
+        "skipped_ufw_absent", "skipped_ufw_inactive", "skipped_ufw_lock_unavailable", "skipped_subnet_rejected",
         "pending", "add_intent", "remove_intent", "removed", "unverified"]
     },
     "runtime": {

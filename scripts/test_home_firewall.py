@@ -29,11 +29,26 @@ Four answers (no test-only production seams in any case):
   rules/journal unchanged on backend admission refusal; regression = run cleanup
   before activation admission from an unguarded exception
   handler. Existing auth tests have no firewall side effect to protect.
+* test_worker_cli_identity: worker constructs the distro frontend with the real
+  CLI path, so UFW's security checks can stat it. Regression = leave Python -c
+  argv until mutation. Existing fake frontend never observes startup argv.
+* test_lock_unavailable [missing/readonly, active/unverified]: real worker lock-open failure yields
+  durable per-port skip, public Status, unchanged rules and successful Turn off;
+  next Enable can acquire rules after access returns. Regression = allow UFW
+  to create a missing lock or treat EROFS as activation failure. Existing
+  absent/inactive rows do not execute the worker or model sandbox lock access.
+* test_owned_lock_unavailable: retained ownership refuses successful cleanup
+  when the lock becomes unavailable, with durable remove intent. Regression =
+  classify every lock failure as a skip. Inactive row retains a usable lock.
+* test_packaged_lock_mount: externally consumed systemd shape grants precisely
+  the optional UFW lock while retaining hardening. Regression = omit the file
+  grant or replace it with a directory. Existing unit cases cover state dirs.
 """
 from __future__ import annotations
 
 import builtins
 import contextlib
+import errno
 import io
 import json
 import os
@@ -69,6 +84,9 @@ class NativeUFW:
         self.Rule = UFWRule
         self.v, self.rules, self.commands = v, [], []
         self.active, self.locked, self.crash_after_add = True, False, False
+        self.lock_error = None
+        self.frontend_argv = []
+        self.lock_opens = []
         monkeypatch.setattr(f, 'host_firewall', SimpleNamespace(observe_ufw=lambda **kw:
             host_firewall.UFWObservation('clear', 'active' if self.active else 'inactive')))
         monkeypatch.setattr(f.subprocess, 'run', self.run)
@@ -120,14 +138,27 @@ class NativeUFW:
     def run(self, argv: tuple, **kwargs: Any) -> Any:
         assert argv == ('/usr/bin/python3', '-I', '-c', f._WORKER)
         assert kwargs['cwd'] == '/' and kwargs['env'] == {'LC_ALL': 'C', 'LANG': 'C'}
-        self.worker_sys = SimpleNamespace(stdin=io.StringIO(kwargs['input'].decode()), argv=[])
+        self.worker_sys = SimpleNamespace(stdin=io.StringIO(kwargs['input'].decode()), argv=['-c'])
         ui = SimpleNamespace(get_status=lambda: 'Status: active' if self.active else 'Status: inactive',
             backend=SimpleNamespace(get_rules_ipv4=lambda: self.rules, get_rules_ipv6=lambda: []))
+        def frontend(dryrun: bool) -> Any:
+            self.frontend_argv.append(list(self.worker_sys.argv))
+            return ui
+        def open_lock(path: str, flags: int) -> int:
+            assert path == '/run/ufw.lock' and not flags & os.O_CREAT
+            self.lock_opens.append(path)
+            if self.lock_error is not None:
+                raise OSError(self.lock_error, 'synthetic lock unavailable', path)
+            return 123
         modules = {'sys': self.worker_sys,
             'ufw.common': SimpleNamespace(UFWRule=self.Rule),
-            'ufw.frontend': SimpleNamespace(UFWFrontend=lambda dryrun: ui),
+            'ufw.frontend': SimpleNamespace(UFWFrontend=frontend),
             'ufw.util': SimpleNamespace(create_lock=self.lock, release_lock=self.unlock),
-            'os': SimpleNamespace(stat=lambda *a, **kw: SimpleNamespace(st_mode=stat.S_IFREG, st_size=100)),
+            'os': SimpleNamespace(stat=lambda *a, **kw: SimpleNamespace(st_mode=stat.S_IFREG, st_size=100),
+                open=open_lock, close=lambda fd: None,
+                fstat=lambda fd: SimpleNamespace(st_mode=stat.S_IFREG, st_uid=0),
+                O_WRONLY=os.O_WRONLY, O_NOFOLLOW=os.O_NOFOLLOW, O_CLOEXEC=os.O_CLOEXEC,
+                O_NONBLOCK=os.O_NONBLOCK),
             'runpy': SimpleNamespace(run_path=self.cli),
             'gettext': SimpleNamespace(install=lambda domain: None)}
         importing = builtins.__import__
@@ -135,7 +166,10 @@ class NativeUFW:
             return modules[name] if name in modules else importing(name, *args, **kw)
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            exec(f._WORKER, {'__builtins__': {**vars(builtins), '__import__': isolated_import}})
+            try:
+                exec(f._WORKER, {'__builtins__': {**vars(builtins), '__import__': isolated_import}})
+            except SystemExit as result:
+                assert result.code in (None, 0)
         return SimpleNamespace(returncode=0, stdout=output.getvalue().encode())
 
 
@@ -143,6 +177,71 @@ def start(v: Any) -> None:
     expected = v.lifecycle.capture('Enable', os.getuid())
     assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+
+
+def test_worker_cli_identity(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    native = NativeUFW(composition, monkeypatch)
+    start(composition)
+    assert native.frontend_argv and all(args == ['/usr/sbin/ufw'] for args in native.frontend_argv)
+
+
+@pytest.mark.parametrize('lock_error', [errno.ENOENT, errno.EROFS], ids=['missing', 'readonly'])
+@pytest.mark.parametrize('availability', ['active', 'unverified'])
+def test_lock_unavailable(composition: Any, monkeypatch: pytest.MonkeyPatch, lock_error: int,
+                          availability: str) -> None:
+    v = composition
+    native = NativeUFW(v, monkeypatch)
+    native.lock_error = lock_error
+    # A missing lock makes even UFW's read-only status command fail in the
+    # packaged namespace. Do not rely on an active observation to handle it.
+    native_observer = f.host_firewall.observe_ufw
+    monkeypatch.setattr(f.host_firewall, 'observe_ufw', lambda **kw:
+        host_firewall.UFWObservation('unverified', availability))
+    unrelated = native.rule(22, 'tcp', comment='unrelated')
+    native.rules.append(unrelated)
+    start(v)
+    assert native.rules == [unrelated] and native.commands == []
+    assert native.lock_opens and native.frontend_argv == []
+    assert v.transactions.read_optional().firewall.states == ('skipped_ufw_lock_unavailable',) * 2
+    assert set(v.lifecycle.dispatch('Enable', os.getuid(), 'firewall', None)['ports'].values()) == {
+        'skipped_ufw_lock_unavailable'}
+    before = v.transactions.read_optional().to_bytes(), v.path(str(AUDIT_PATH)).read_bytes()
+    start(v)
+    assert (v.transactions.read_optional().to_bytes(), v.path(str(AUDIT_PATH)).read_bytes()) == before
+    v.observers.close()
+    expected = v.lifecycle.capture('Disable', os.getuid())
+    v.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)
+    assert v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected, revoke_succeeded=True)['outcome'] == 'off'
+    assert native.rules == [unrelated] and native.commands == []
+    native.lock_error = None
+    monkeypatch.setattr(f.host_firewall, 'observe_ufw', native_observer)
+    start(v)
+    assert v.transactions.read_optional().firewall.states == ('added',) * 2
+    assert len(native.commands) == 2
+
+
+def test_owned_lock_unavailable(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    v = composition
+    native = NativeUFW(v, monkeypatch)
+    start(v)
+    before = [dict(rule.__dict__) for rule in native.rules]
+    native.lock_error = errno.EROFS
+    owner = f.HomeLANFirewall(v.transactions)
+    with pytest.raises(ValueError):
+        owner.cleanup()
+    assert [rule.__dict__ for rule in native.rules] == before
+    assert v.transactions.read_optional().firewall.states == ('remove_intent', 'added')
+    assert set(owner.status(timeout=1).values()) == {'unverified'}
+
+
+def test_packaged_lock_mount() -> None:
+    unit = (Path(__file__).parents[1] / 'packaging/linux/systemd/happyranch-remote-access-helper.service').read_text()
+    entries = [line.partition('=')[2] for line in unit.splitlines() if line.startswith('ReadWritePaths=')]
+    assert '-/run/ufw.lock' in entries
+    assert all(path.lstrip('-') not in ('/run', '/var/run', '/run/') for entry in entries for path in entry.split())
+    for directive in ('ProtectSystem=strict', 'ProtectHome=read-only', 'PrivateTmp=yes',
+                      'NoNewPrivileges=yes', 'User=root'):
+        assert directive in unit.splitlines()
 
 
 @pytest.mark.parametrize('collision', ['none', 'untagged', 'deny', 'log', 'owned', 'inactive'])
@@ -291,13 +390,16 @@ def test_legacy_journal() -> None:
     assert HomeActivationTransaction.parse(updated.to_bytes()) == updated
 
 
-def test_status_ports() -> None:
+@pytest.mark.parametrize('ports', [
+    {'8443/tcp': 'preexisting_not_owned', '3478/udp': 'blocked_by_existing'},
+    {'8443/tcp': 'skipped_ufw_lock_unavailable', '3478/udp': 'skipped_ufw_lock_unavailable'},
+], ids=['collision', 'lock-unavailable'])
+def test_status_ports(ports: dict[str, str]) -> None:
     from importlib.util import module_from_spec, spec_from_file_location
     spec = spec_from_file_location('connection_f3', Path(__file__).parents[1] / 'packaging/linux/desktop/connection_contract.py')
     module = module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    ports = {'8443/tcp': 'preexisting_not_owned', '3478/udp': 'blocked_by_existing'}
     value = status_v2.StatusV2(setup=status_v2.SetupObservation(status_v2.SetupPhase.READY, 0),
         firewall=status_v2.FirewallObservation(status_v2.FirewallState.UNVERIFIED, 0, ports))
     raw = status_v2.encode(value)

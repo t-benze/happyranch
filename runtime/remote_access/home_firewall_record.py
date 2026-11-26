@@ -9,7 +9,7 @@ from runtime.remote_access.home_activation import HomeActivationError
 COMMENT = 'happyranch-home-headscale'
 PORTS = ((8443, 'tcp'), (3478, 'udp'))
 STATES = frozenset({'pending', 'add_intent', 'added', 'preexisting_not_owned',
-    'blocked_by_existing', 'skipped_ufw_absent', 'skipped_ufw_inactive',
+    'blocked_by_existing', 'skipped_ufw_absent', 'skipped_ufw_inactive', 'skipped_ufw_lock_unavailable',
     'skipped_subnet_rejected', 'remove_intent', 'removed', 'unverified'})
 _PRIVATE = tuple(ip_network(net) for net in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7'))
 
@@ -61,7 +61,7 @@ def validate_firewall_transition(before: FirewallRecord | None, after: FirewallR
     if new == 'add_intent' and old not in ('remove_intent', 'skipped_subnet_rejected'):
         return
     if old == 'add_intent' and new in ('added', 'preexisting_not_owned', 'blocked_by_existing',
-                                      'skipped_ufw_absent', 'skipped_ufw_inactive'):
+                                      'skipped_ufw_absent', 'skipped_ufw_inactive', 'skipped_ufw_lock_unavailable'):
         return
     if new == 'remove_intent' and old != 'skipped_subnet_rejected':
         return

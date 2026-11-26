@@ -616,7 +616,7 @@ class Protocol:
                 ports = firewall['ports']
                 if (type(ports) is not dict or set(ports) != {'8443/tcp', '3478/udp'}
                         or any(type(s) is not str or s not in {'added', 'preexisting_not_owned',
-                            'blocked_by_existing', 'skipped_ufw_absent', 'skipped_ufw_inactive',
+                            'blocked_by_existing', 'skipped_ufw_absent', 'skipped_ufw_inactive', 'skipped_ufw_lock_unavailable',
                             'skipped_subnet_rejected', 'pending', 'add_intent', 'remove_intent',
                             'removed', 'unverified'} for s in ports.values())):
                     raise ValueError('invalid firewall ports')
