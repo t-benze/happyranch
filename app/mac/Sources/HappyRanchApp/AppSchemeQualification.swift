@@ -358,7 +358,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     }
 
     private func dialogStep<T>(_ name: String, fields: [String: Any],
-                               operation: () async throws -> T) async throws -> T {
+                               operation: @MainActor () async throws -> T) async throws -> T {
         let step = AppSchemeCaptureStep(log, name: name, fields: fields, timeout: 2)
         do {
             let value = try await operation()
