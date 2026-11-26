@@ -10,6 +10,7 @@ import json
 import os
 import pwd
 import ssl
+import syslog
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,7 +36,9 @@ from scripts.test_home_activation_txn import Venue, put
 @pytest.mark.parametrize(('unit', 'key'), [(unit, key) for unit in (SERVICE_NAME, TIMER_NAME)
     for key in ('FragmentPath', 'DropInPaths', 'Names', 'NeedDaemonReload', 'LoadState', 'Unit')
     if key != 'Unit' or unit == TIMER_NAME])
-def test_renewal_property_diagnostic_preserves_refusal(venue, unit, key, caplog):
+def test_renewal_property_diagnostic_preserves_refusal(venue, unit, key, monkeypatch):
+    messages = []
+    monkeypatch.setattr(syslog, 'syslog', lambda priority, message: messages.append((priority, message)))
     v = venue
     v.native.override[key] = 'synthetic-private-value'
     # Limit the altered observation to the packaged renewal unit.
@@ -51,8 +54,9 @@ def test_renewal_property_diagnostic_preserves_refusal(venue, unit, key, caplog)
     v.production._io.manager = SystemdServiceManager(system=True, run=run)
     with pytest.raises(ActivationRefused):
         v.production._managed_fragments()
-    assert f'unit={"timer" if unit == TIMER_NAME else "service"} property={key}' in caplog.text
-    assert 'synthetic-private-value' not in caplog.text
+    assert messages == [(syslog.LOG_WARNING,
+        f'remote-access-renewal-unit-mismatch unit={"timer" if unit == TIMER_NAME else "service"} property={key}')]
+    assert 'synthetic-private-value' not in repr(messages)
     assert all(args[1] == 'show' for args in v.native.calls)
 
 

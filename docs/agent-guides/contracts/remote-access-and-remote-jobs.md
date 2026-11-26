@@ -4563,9 +4563,12 @@ No new method: fresh-auth `Enable()` repairs only a positively classified
 Close admission/quiesce → same recorded release UID/home → same-FD token read
 → transactional exact-file/digest update → loaded-unit/READY revalidation →
 reopen. Preserve installation IDs, pins, epochs and revocations. Package postinst
-never repairs; after upgrade classify only a listed known prior profile version
-as repair_required for one Enable with devices retained. Unknown/torn versions
-remain closed with a fixed category, never automatic migration or trust reset.
+never repairs; its only action is a configure-time system-manager daemon-reload
+when systemd is running (failure tolerated), so the strict renewal-unit
+`NeedDaemonReload=no` check can pass after package replacement. It never touches
+user managers or protected state. After upgrade classify only a listed known
+prior profile version as repair_required for one Enable with devices retained.
+Unknown/torn versions remain closed with a fixed category, never automatic migration or trust reset.
 Why no founder: the approved authenticated repair/keep-devices upgrade behavior.
 
 ### Unwired home join-key adapter (THR-327 slice 3b-2c)
@@ -4752,20 +4755,26 @@ readiness. Sidecar rate limiting remains unchanged.
 
 An already-READY d05afaac/98a87688 host retains its exact previous connector
 unit across package upgrade. With **no button**, it retains the old retry
-behaviour, including a terminal failure already reached. Authenticated **Turn on
-again** uses the existing ready receipt/ordinary admission and activation lock
-to atomically republish only those exact previous bytes, then daemon-reloads
+behaviour, including a terminal failure already reached. The new package's
+configure-only postinst reloads the system manager after replacing packaged
+renewal fragments, including upgrades from packages with no postinst; it does
+not republish the connector unit. After a successful reload, authenticated
+**Turn on again** uses the existing ready receipt/ordinary admission and
+activation lock to atomically republish only those exact previous bytes, then daemon-reloads
 before the existing failed-unit reset/start/joined checks. Capture and Status
 only recognize the previous rendering; they never publish or repair. Receipt,
 transaction, G/O, token source, enabled-link, custody and deadline checks remain;
 no mint or activation replay occurs. Unknown bytes refuse.
 
 The renewal-unit loaded-property comparison remains strict. A refusal now
+uses the same syslog warning path as the neighboring activation failure and
 journals `remote-access-renewal-unit-mismatch unit=service|timer property=<fixed
-property name>` without the observed value. A package-upgrade refusal at that
-comparison is not proof of `NeedDaemonReload=yes`; a stale manager or other
-property mismatch is not automatically repaired by this change. Turn on again
-can still refuse `ready-restart-failed-turn-off`. Transitional-unit admission,
+property name>` without the observed value. TASK-19410 proved package replacement
+left `NeedDaemonReload=yes` before this postinst existed. The helper never
+reloads before inventory or admits stale loaded properties; if the package's
+best-effort reload fails or another property mismatches, Turn on again still
+refuses `ready-restart-failed-turn-off`. Installed upgrade acceptance of this
+postinst remains the manager's VM lane. Transitional-unit admission,
 partial-cleanup recovery and richer waiting-for-daemon Status are unchanged.
 
 The fixed renewal oneshot uses User=root, Group=root and

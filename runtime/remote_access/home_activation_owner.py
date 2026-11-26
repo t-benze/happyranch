@@ -6,10 +6,10 @@ The coordinator owns serialization/intents; these adapters never retry effects.
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
 import re
 import ssl
+import syslog
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
@@ -259,9 +259,11 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
                     if props.get(key) != value:
                         # Fixed labels only: never journal manager values,
                         # paths, file contents or exception text.
-                        logging.getLogger(__name__).warning(
-                            "remote-access-renewal-unit-mismatch unit=%s property=%s",
-                            "timer" if name == TIMER_NAME else "service", key)
+                        try:
+                            syslog.syslog(syslog.LOG_WARNING,
+                                f'remote-access-renewal-unit-mismatch unit={"timer" if name == TIMER_NAME else "service"} property={key}')
+                        except Exception:
+                            pass  # Diagnostic loss preserves the original refusal.
                         raise ActivationRefused()
             check()
         return units

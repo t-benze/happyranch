@@ -752,7 +752,16 @@ class DebPackageTests(unittest.TestCase):
                 subprocess.run(['dpkg-deb', '-x', deb, installed], check=True)
                 control = self.work / ('control-' + debarch)
                 subprocess.run(['dpkg-deb', '-e', deb, control], check=True)
-                self.assertEqual({p.name for p in control.iterdir()}, {'control', 'md5sums'})
+                self.assertEqual({p.name for p in control.iterdir()}, {'control', 'md5sums', 'postinst'})
+                postinst = control / 'postinst'
+                self.assertEqual(postinst.read_bytes(),
+                                 b'#!/bin/sh\nset -e\n'
+                                 b'if [ "$1" = "configure" ] && [ -d /run/systemd/system ]; then\n'
+                                 b'    systemctl daemon-reload >/dev/null || true\n'
+                                 b'fi\n')
+                self.assertEqual(postinst.stat().st_mode & 0o7777, 0o755)
+                self.assertNotRegex(postinst.read_text(),
+                                    r'\b(?:enable|start|stop|restart|reset-failed)\b|--user')
                 subprocess.run(['md5sum', '--quiet', '-c', control / 'md5sums'], cwd=installed, check=True)
                 self.assertFalse((installed / 'opt/happyranch').exists())
                 self.assertFalse((installed / 'etc').exists())

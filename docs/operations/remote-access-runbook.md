@@ -12,14 +12,20 @@ continue. This change does not eliminate that apt delay/message.
 
 Upgrading a READY d05afaac/98a87688 host does **not** replace its helper-published
 connector unit automatically. With no button it keeps the old failure behaviour.
-Authenticated **Turn on again**, on an intact admitted ready publication,
+The new package's configure-only postinst reloads the system manager after
+replacing packaged renewal fragments, including upgrades from old packages
+without a postinst. It never activates units, touches user managers or repairs
+state, and tolerates reload failure. After a successful package reload,
+authenticated **Turn on again**, on an intact admitted ready publication,
 republishes the exact previous connector bytes and reloads before ordinary
 restart. It does not mint, replay activation, or repair unknown/stale inventory.
 If it refuses, stop and retain the journal's fixed
 `remote-access-renewal-unit-mismatch unit=service|timer property=...` line.
-Do not infer a stale reload, manually modify units, or promise Turn off recovery;
-the existing partial-cleanup limit remains. The manager must establish the
-actual mismatching property and separately resolve any recovery-admission change.
+TASK-19410 proved the pre-fix package replacement left `NeedDaemonReload=yes`;
+the strict check remains and still refuses when reload fails or any property
+mismatches. Do not manually modify units or promise Turn off recovery; the
+existing partial-cleanup limit remains. The manager must rerun the failed and
+healthy upgrade cases with the postinst package before founder upgrade acceptance.
 
 For the fixed outside-home test server, follow the founder-run [test-server hardening guide](remote-access-test-server-hardening.md) (PR-A; version/relay/ACL decisions remain deferred).
 
