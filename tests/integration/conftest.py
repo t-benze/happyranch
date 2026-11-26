@@ -48,6 +48,33 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
                           sections=report.sections)
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    outcome = yield
+    if item.path.name != "test_workflow_sequential_e2e.py":
+        return
+    report = outcome.get_result()
+    xml = item.config.getoption("xmlpath")
+    if not xml or not Path(xml).is_absolute():
+        return  # The lifecycle fixture reports the missing evidence binding.
+    path = Path(xml).with_suffix(".phases.jsonl")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Retain the original failed phase before later fixture/process loss.
+    # Across setup/call/teardown, at most 1KiB of traceback is exported.
+    previous = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+    used = sum(len(row.get("traceback", "").encode()) for row in previous)
+    row = dict(phase=report.when, outcome=report.outcome, duration=report.duration)
+    if not previous:
+        row["nodeid"] = item.nodeid
+    if report.failed:
+        from tests.helpers.workflow_lifecycle_capture.sitecustomize import _sanitize
+        row["traceback"] = _sanitize(report.longreprtext.encode()).encode()[:max(0, 1024 - used)].decode(errors="ignore")
+    with path.open("a") as stream:
+        stream.write(json.dumps(row, sort_keys=True) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 def pytest_configure(config):
     """Warn if a production daemon is running — it will inflate RSS during tests.
 
@@ -136,6 +163,21 @@ def runtime(runtime_container: Path, request: pytest.FixtureRequest) -> Path:
     # NOTE: artifacts/ is intentionally NOT created here.
     # tests/integration/test_artifacts_e2e.py::test_lifespan_creates_artifacts_dir_for_existing_org
     # depends on this absence to exercise the daemon's startup mkdir. Do not add it.
+    if request.node.path.name in ("test_chain_e2e.py", "test_workflow_sequential_e2e.py"):
+        # These scoped hosted modules own this freshly created skeleton.
+        # Match explicit org creation: observing an absent DB at startup is
+        # not fresh-creation authority. Never synthesize lifecycle state.
+        from runtime.infrastructure.workflow_schema import initialize_fresh_org_database
+        from runtime.infrastructure.task_pause_controls import install_pause_schema
+        from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+        from runtime.orchestrator._paths import OrgPaths
+
+        database = initialize_fresh_org_database(org_root / "happyranch.db", expected_org_slug=DEFAULT_TEST_SLUG)
+        try:
+            install_pause_schema(database, org_slug=DEFAULT_TEST_SLUG)
+            initialize_fresh_reviewer_agents(OrgPaths(org_root), database)
+        finally:
+            database.close()
     return org_root
 
 
