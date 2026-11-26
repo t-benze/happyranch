@@ -92,6 +92,14 @@ uncertain it retains the intent and refuses successful cleanup.
 Repeating Enable with unchanged firewall facts leaves settled journal/audit
 bytes untouched. Making UFW inactive later retains ownership so Turn off still
 removes the exact tagged rules from its persisted configuration.
+UFW's normal success messages are captured separately from the helper's strict
+JSON result, including messages bound to stdout during UFW import. A completed
+rule add must not become `activation-unverified` merely because `Rule added`
+preceded that result. For preservation evidence, retain `ufw show added` and
+`ufw status numbered` before Enable and after Turn off, comparing normalized
+rules in their original order. A changed rules-file hash alone does not prove
+a changed rule: UFW may rewrite headers or formatting. Keep both hashes and
+the normalized comparison, including unrelated and identical untagged rules.
 Replace failed remains installer-only: its existing pre-admission refusal for
 home activation is unchanged. That path cannot acquire F3 rules; use Turn off
 for an activation with a retained firewall plan.

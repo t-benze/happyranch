@@ -4258,6 +4258,11 @@ UFW becomes inactive, admission-refusal preservation, the real CLI startup
 identity, exact-file sandbox shape, missing/read-only lock skips before either
 rule, and uncertain cleanup with retained ownership. Keep the F2 checks below. Neither suite is added to CI; required checks stay lint/static only.
 
+The existing `test_worker_cli_identity` also fresh-loads the real distro
+message formatter and checks the worker's JSON output, lifecycle READY and both
+recorded rules. This covers UFW's import-time stdout binding and binary writes;
+the CLI effect remains synthetic and no host rule is touched.
+
 The existing F2 subprocess table and F3 native fixture assert the fixed
 `PATH=/usr/sbin:/usr/bin:/sbin:/bin` used by UFW and its sysctl child.
 `/usr/bin/python3 -B packaging/linux/test_build_deb.py -v` also checks the

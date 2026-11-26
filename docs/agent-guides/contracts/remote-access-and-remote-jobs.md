@@ -5090,6 +5090,11 @@ and execution of `/usr/sbin/ufw` with fixed-action argv in the same process,
 closing the inspection/add race. UFW already supplies its Python modules; no
 new dependency or privilege model is added. No shell, ufw enable/disable/reset,
 insert, reorder or separate reload is issued.
+UFW imports and CLI output use a binary-capable capture, including its
+import-time stdout binding. Success messages such as `Rule added` cannot
+prefix the worker's single strict JSON reply or turn a completed add into an
+unverified activation. Command failures still refuse success and retain the
+existing rollback/recovery behavior.
 
 The existing protected activation journal has an optional nonsecret `firewall`
 record: exact subnet and two ordered port states. Older journals omit it and

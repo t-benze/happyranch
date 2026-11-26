@@ -24,9 +24,14 @@ _WORKER = r'''
 import contextlib, errno, gettext, io, json, os, runpy, stat, sys
 from ipaddress import ip_address, ip_network
 gettext.install('ufw')
-from ufw.common import UFWRule
-from ufw.frontend import UFWFrontend
-from ufw.util import create_lock, release_lock
+# UFW's msg() binds stdout at import time and writes through its binary buffer.
+# Capture that original binding as well as later stdout/stderr lookups, keeping
+# normal "Rule added/deleted" messages out of the worker's strict JSON reply.
+quiet = io.TextIOWrapper(io.BytesIO(), encoding='utf-8')
+with contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
+    from ufw.common import UFWRule
+    from ufw.frontend import UFWFrontend
+    from ufw.util import create_lock, release_lock
 request = json.load(sys.stdin)
 assert request.keys() == {'action', 'subnet', 'dial_ip', 'index'}
 action, subnet, dial_ip, index = (request[k] for k in ('action', 'subnet', 'dial_ip', 'index'))
@@ -60,7 +65,7 @@ try:
     for path in ('/etc/ufw/user.rules', '/etc/ufw/user6.rules'):
         info = os.stat(path, follow_symlinks=False)
         assert stat.S_ISREG(info.st_mode) and info.st_size <= 1048576
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    with contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
         ui = UFWFrontend(False)
         active = ui.get_status().splitlines()[0] == 'Status: active'
         states = []

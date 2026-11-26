@@ -36,8 +36,11 @@ Four answers (no test-only production seams in any case):
   before activation admission from an unguarded exception
   handler. Existing auth tests have no firewall side effect to protect.
 * test_worker_cli_identity: worker constructs the distro frontend with the real
-  CLI path, so UFW's security checks can stat it. Regression = leave Python -c
-  argv until mutation. Existing fake frontend never observes startup argv.
+  CLI path, so UFW's security checks can stat it, and returns one JSON document
+  when the real distro formatter emits success messages. Regression = leave
+  Python -c argv until mutation or import UFW before redirecting its bound
+  stdout. The former fake CLI never emitted the real formatter's output.
+  The test observes lifecycle READY and both recorded rules; no production seam.
   The shared NativeUFW fixture also checks the fixed subprocess PATH in
   test_worker_cli_identity, test_lock_unavailable, test_owned_lock_unavailable,
   test_lifecycle_rules, test_interrupted_add, test_failed_enable_rolls_back,
@@ -64,6 +67,7 @@ from __future__ import annotations
 import builtins
 import contextlib
 import errno
+import importlib.util
 import io
 import json
 import os
@@ -100,6 +104,8 @@ class NativeUFW:
         self.v, self.rules, self.commands = v, [], []
         self.active, self.locked, self.crash_after_add = True, False, False
         self.lock_error = None
+        self.distro_messages = False
+        self.worker_outputs = []
         self.frontend_argv = []
         self.lock_opens = []
         monkeypatch.setattr(f, 'host_firewall', SimpleNamespace(observe_ufw=lambda **kw:
@@ -148,6 +154,8 @@ class NativeUFW:
             if self.crash_after_add:
                 self.crash_after_add = False
                 raise Crash()
+        if self.distro_messages:
+            self.worker_util.msg('Rule deleted' if remove else 'Rule added')
         raise SystemExit(0)
 
     def run(self, argv: tuple, **kwargs: Any) -> Any:
@@ -178,14 +186,28 @@ class NativeUFW:
             'gettext': SimpleNamespace(install=lambda domain: None)}
         importing = builtins.__import__
         def isolated_import(name: str, *args: Any, **kw: Any) -> Any:
+            if name == 'ufw.util' and self.distro_messages:
+                # Fresh process semantics: msg's output default is bound when
+                # the worker imports the real distro formatter, not by pytest.
+                from ufw import util
+                spec = importlib.util.spec_from_file_location('f3_distro_util', util.__file__)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                module.create_lock, module.release_lock = self.lock, self.unlock
+                self.worker_util = module
+                return module
             return modules[name] if name in modules else importing(name, *args, **kw)
-        output = io.StringIO()
+        buffer = io.BytesIO()
+        output = io.TextIOWrapper(buffer, encoding='utf-8')
         with contextlib.redirect_stdout(output):
             try:
                 exec(f._WORKER, {'__builtins__': {**vars(builtins), '__import__': isolated_import}})
             except SystemExit as result:
                 assert result.code in (None, 0)
-        return SimpleNamespace(returncode=0, stdout=output.getvalue().encode())
+        output.flush()
+        wire = buffer.getvalue()
+        self.worker_outputs.append(wire)
+        return SimpleNamespace(returncode=0, stdout=wire)
 
 
 def start(v: Any) -> None:
@@ -196,8 +218,22 @@ def start(v: Any) -> None:
 
 def test_worker_cli_identity(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     native = NativeUFW(composition, monkeypatch)
-    start(composition)
+    native.distro_messages = True
+    try:
+        start(composition)
+        assert composition.transactions.read_optional().firewall.states == ('added', 'added')
+        composition.observers.close()
+        expected = composition.lifecycle.capture('Disable', os.getuid())
+        composition.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)
+        assert composition.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected,
+            revoke_succeeded=True)['outcome'] == 'off'
+    finally:
+        # Inspect the worker's actual output even when the lifecycle has
+        # already rolled its failed add back and refused READY.
+        for wire in native.worker_outputs:
+            assert type(json.loads(wire)) is dict
     assert native.frontend_argv and all(args == ['/usr/sbin/ufw'] for args in native.frontend_argv)
+    assert native.rules == [] and len(native.commands) == 4
 
 
 @pytest.mark.parametrize('lock_error', [errno.ENOENT, errno.EROFS], ids=['missing', 'readonly'])
