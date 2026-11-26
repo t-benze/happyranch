@@ -28,7 +28,7 @@ from runtime.remote_access import home_activation_backend as backend
 from scripts.test_home_activation import store, put_pair, put, encoded, receipt_record, RECEIPT  # noqa: F401
 from scripts.test_headscale_custody import fixture as custody, b6_setup, b6_minters  # noqa: F401
 from scripts.test_installer_token_custody import fixture as renewal_fixture, renewal_intent, renewal_setup  # noqa: F401
-from scripts.test_home_activation_backend import composition, corrupt_composition  # noqa: F401
+from scripts.test_home_activation_backend import composition, corrupt_composition, ufw_rules  # noqa: F401
 from scripts.test_installer_token_custody import staged_inventory
 
 REAL_THREAD = threading.Thread
@@ -2913,3 +2913,62 @@ def test_thr327_firewall_ambiguous_does_not_veto(mount: Any, state: str) -> None
     assert v.helper.inflight is not None and v.helper.authority.call.called
     assert not v.helper._error.called and not v.reader.effect.called
     assert not v.helper.audit.path.exists()
+
+
+@pytest.mark.parametrize('case', [
+    'stock', 'before-lan', 'after-lan', 'multiport', 'broad', 'other-chain',
+    'unreadable-before', 'unreadable-after', 'oversized-before', 'oversized-after',
+])
+def test_thr327_firewall_rule_files_enable(mount: Any, ufw_rules: dict[str, Path],
+                                         monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    """The public Enable admission must use the supplemental real file evidence."""
+    from runtime.remote_access.host_firewall import inspect_ufw
+    v = mount
+    if case in ('before-lan', 'after-lan', 'multiport', 'broad', 'other-chain'):
+        name = 'after.rules' if case == 'after-lan' else 'before.rules'
+        chain = 'ufw-after-input' if case == 'after-lan' else 'ufw-before-input'
+        if case == 'multiport':
+            rules = f'-A {chain} -p tcp -m multiport --dports 443,8443 -j ACCEPT\n'
+        elif case == 'broad':
+            rules = f'-A {chain} -j ACCEPT\n'
+        elif case == 'other-chain':
+            rules = ':custom-input - [0:0]\n-A custom-input -j ACCEPT\n'
+        else:
+            rules = (f'-A {chain} -s 192.168.1.0/24 -p tcp --dport 8443 -j ACCEPT\n'
+                     f'-A {chain} -s 192.168.1.0/24 -p udp --dport 3478 -j ACCEPT\n')
+        path = ufw_rules[name]
+        path.write_text(path.read_text().replace('COMMIT', rules + 'COMMIT'))
+    elif case.startswith('oversized-'):
+        ufw_rules[case.split('-')[1] + '.rules'].write_bytes(b'#' + b'x' * 65536)
+    elif case.startswith('unreadable-'):
+        unreadable = '/etc/ufw/' + case.split('-')[1] + '.rules'
+        native_open = os.open
+        def deny_read(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+            if str(path) == unreadable:
+                raise PermissionError('synthetic private diagnostic')
+            return native_open(path, flags, *args, **kwargs)
+        monkeypatch.setattr(os, 'open', deny_read)
+    def run(argv: tuple, **kwargs: Any) -> Any:
+        assert argv == ('/usr/sbin/ufw', 'status', 'verbose')
+        return SimpleNamespace(returncode=0,
+            stdout=b'Status: active\nDefault: deny (incoming), allow (outgoing), deny (routed)\n')
+    monkeypatch.setattr(subprocess, 'run', run)
+    observed = []
+    def firewall_status(remaining: float) -> str:
+        state = inspect_ufw(timeout=remaining)
+        observed.append(state)
+        return state
+    v.reader.firewall_status = firewall_status
+    v.message.get_member = lambda: 'Enable'
+    before = {name: path.read_bytes() for name, path in ufw_rules.items()}
+    v.helper._dispatch(v.message)
+    if case == 'stock':
+        assert observed == ['host_firewall_blocks_home']
+        v.helper._error.assert_called_once_with(v.message, 'host-state-unrecognized-host_firewall_blocks_home')
+        assert v.helper.inflight is None and not v.helper.authority.call.called
+    else:
+        assert observed == ['unverified']
+        assert v.helper.inflight is not None and v.helper.authority.call.called
+        assert not v.helper._error.called
+    assert {name: path.read_bytes() for name, path in ufw_rules.items()} == before
+    assert not v.reader.effect.called and not v.effects and not v.helper.audit.path.exists()

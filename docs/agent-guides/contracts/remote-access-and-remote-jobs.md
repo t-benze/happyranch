@@ -4354,10 +4354,11 @@ observations, and I4b-2 reads policy/timer state through the same fixed bundled
 child into the existing policy dimension; address remains unknown. Observation ages measure time
 since the reads with a monotonic clock and pass through the existing stale normalization.
 No device data, IDs or receipt fields cross StatusV2. Status v1 serialization is unchanged.
-The frozen `StatusV2` has exactly
+`StatusV2` requires the six dimensions
 `setup`, `runtime`, `invite`, `address`, `policy`, `cleanup`; wire JSON additionally
-has integer `version: 2`. Each dimension has exactly `state` and `age_seconds`;
-invite additionally has `deadline_utc_seconds`. All vocabularies include
+has integer `version: 2` and may include the optional `firewall` observation
+specified in the THR-327 F2 amendment below. Each dimension has exactly `state`
+and `age_seconds`; invite additionally has `deadline_utc_seconds`. All vocabularies include
 `unknown` and `stale`, plus only:
 
 - setup: `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`,
@@ -4931,6 +4932,17 @@ with a fixed C locale and a bounded timeout. Enable refuses with
 The child rechecks before setup effects; a newly detected block there uses the
 existing `enablePreparationFailed` terminal with unknown effect (earlier audit
 or concurrent setup work is not erased).
+
+A blocking conclusion also requires bounded, read-only inspection of the fixed
+IPv4 before/after rules files in the existing root child. Only pinned stock UFW
+templates (ignoring comments and whitespace) support a blocking claim; **any**
+customization is unverified, including LAN port allows, multiport rules, broad
+ACCEPTs or custom chains. Missing, unreadable, non-regular, symlinked,
+non-ASCII or oversized files are also unverified and cannot veto Enable. Each
+file is limited to 64 KiB, opened read-only without following symlinks, shell
+execution or caller-supplied paths. This deliberately favors a non-blocking
+warning on unrecognized UFW versions/configurations over refusing a working
+host. No file contents or paths cross the public boundary.
 
 A blocking conclusion requires recognized active UFW output, default incoming
 deny/reject, and no IPv4 allow covering the named port(s). LAN-scoped source

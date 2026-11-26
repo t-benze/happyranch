@@ -4073,8 +4073,12 @@ F2 firewall fixtures and the real helper admission/status mount extend the
 existing standalone script selection:
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_home_activation_backend.py scripts/test_helper_mount.py -k thr327_firewall -q --tb=short`.
 They cover UFW active-deny/reject, both/single/LAN/range/v6 rules, inactivity,
-ambiguous profiles/rate limits and malformed output; refusal before setup or
-audit, fail-open ambiguity, and READY plus a separate Status warning. Command
+ambiguous profiles/rate limits and malformed output; stock UFW IPv4 before/after
+rules, LAN/multiport/broad/custom-chain allows and unreadable/oversized files;
+refusal before setup or audit, fail-open ambiguity, and READY plus a separate
+Status warning. Stock templates in `scripts/fixtures/ufw/` come from the UFW
+package's `usr/share/ufw/iptables` defaults; supplemental files are redirected to
+temporary copies while the production inspector and public Enable run. Command
 output is synthetic; no host firewall, system bus or services are touched.
 The existing Linux `test_connection.py`, `test_connection_cli.py`,
 `test_app_events.py` and Node `connection-dialog.test.mjs` selections cover the

@@ -1985,6 +1985,22 @@ def test_thr327_failed_restart_turn_off_enable(composition: Any, monkeypatch: py
     assert len(v.mints) == 2
 
 
+@pytest.fixture
+def ufw_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+    """Real stock UFW IPv4 files; redirect only the two fixed production reads."""
+    paths = {}
+    for name in ('before.rules', 'after.rules'):
+        path = tmp_path / name
+        path.write_bytes((Path(__file__).parent / 'fixtures' / 'ufw' / name).read_bytes())
+        paths[name] = path
+    native_open = os.open
+    def open_rules(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        fixed = {'/etc/ufw/' + name: fixture for name, fixture in paths.items()}
+        return native_open(fixed.get(str(path), path), flags, *args, **kwargs)
+    monkeypatch.setattr(os, 'open', open_rules)
+    return paths
+
+
 @pytest.mark.parametrize('case,output,state', [
     ('deny-no-rule', '', 'host_firewall_blocks_home'),
     ('both', '8443/tcp  ALLOW IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n', 'clear'),
@@ -2000,7 +2016,7 @@ def test_thr327_failed_restart_turn_off_enable(composition: Any, monkeypatch: py
     ('limit', '8443/tcp  LIMIT IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n', 'unverified'),
     ('reject', 'Default: reject (incoming), allow (outgoing), deny (routed)\n', 'host_firewall_blocks_home'),
 ])
-def test_thr327_firewall_read_only_child(composition: Any, monkeypatch: pytest.MonkeyPatch,
+def test_thr327_firewall_read_only_child(composition: Any, ufw_rules: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
                                        case: str, output: str, state: str) -> None:
     import subprocess
     v = composition
@@ -2026,7 +2042,7 @@ def test_thr327_firewall_read_only_child(composition: Any, monkeypatch: pytest.M
     assert '192.168' not in json.dumps(result)
 
 
-def test_thr327_firewall_refuses_enable_before_effects(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_thr327_firewall_refuses_enable_before_effects(composition: Any, ufw_rules: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
     import subprocess
     v = composition
     expected = v.lifecycle.capture('Enable', os.getuid())

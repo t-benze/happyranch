@@ -1,12 +1,40 @@
 """Read-only UFW evidence for IPv4 home dial ports; never manages rules."""
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+import stat
 import subprocess
 
 BLOCKED = frozenset({'host_firewall_blocks_home', 'host_firewall_blocks_tcp_8443',
                      'host_firewall_blocks_udp_3478'})
 _PORTS = ((8443, 'tcp'), (3478, 'udp'))
+# Stock UFW IPv4 templates (scripts/fixtures/ufw), normalized only for comments
+# and whitespace. Any customization, even one we could consider harmless,
+# makes status verbose insufficient evidence for a blocking conclusion.
+_STOCK_RULES = (
+    ('/etc/ufw/before.rules', '9bfb66e22065371713ecca5c5b5bb067724ccdf389e4eb2fb45e5d6abfd0fcce'),
+    ('/etc/ufw/after.rules', 'f65aef81967a426cf4ae8ddfcc2da32ef0471fef1608d778a742891976002ea0'),
+)
+
+
+def _stock_rule_files() -> bool:
+    """Bounded fixed-path reads in the existing root child; never expose data."""
+    for path, expected in _STOCK_RULES:
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+                return False
+            raw = stream.read(65537)
+        if len(raw) > 65536:
+            return False
+        normalized = '\n'.join(' '.join(line.split()) for line in raw.decode('ascii').splitlines()
+                               if line.strip() and not line.lstrip().startswith('#'))
+        if hashlib.sha256(normalized.encode('ascii')).hexdigest() != expected:
+            return False
+    return True
 
 
 def _covers(destination: str, port: int, protocol: str) -> bool | None:
@@ -30,7 +58,7 @@ def _covers(destination: str, port: int, protocol: str) -> bool | None:
 
 
 def parse_ufw(raw: bytes) -> str:
-    """Only positive, fully recognized active/default-deny evidence can veto.
+    """Parse candidate UFW blocks; inspect_ufw must also check supplemental rules.
 
     Any IPv4 allow for a port (including a source-scoped LAN rule) prevents a
     blocking claim for that port. Profiles/interfaces/unknown forms are not
@@ -94,8 +122,14 @@ def inspect_ufw(*, timeout: float = 2.0) -> str:
         result = subprocess.run(('/usr/sbin/ufw', 'status', 'verbose'),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             env={'LC_ALL': 'C', 'LANG': 'C'}, cwd='/', timeout=min(2.0, timeout), check=False)
-        return parse_ufw(result.stdout) if result.returncode == 0 else 'unverified'
     except FileNotFoundError:
-        return 'unknown'  # No UFW evidence; other firewall engines are not inferred.
+        return 'unknown'  # No UFW command; other firewall engines are not inferred.
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return 'unverified'
+    state = parse_ufw(result.stdout) if result.returncode == 0 else 'unverified'
+    try:
+        if state in BLOCKED and not _stock_rule_files():
+            return 'unverified'
+    except (OSError, ValueError, UnicodeError):
+        return 'unverified'
+    return state
