@@ -37,6 +37,7 @@ private final class CLITerminalPTY {
             guard tcgetattr(slave, &mode) == 0 else { throw TerminalFixtureError.systemCall }
             // Start with both echo flags enabled so restoration cannot pass vacuously.
             mode.c_lflag |= tcflag_t(ECHO | ECHONL | ICANON)
+            mode.c_iflag &= ~tcflag_t(ICRNL | INLCR | IGNCR)
             guard tcsetattr(slave, TCSAFLUSH, &mode) == 0 else { throw TerminalFixtureError.systemCall }
             for fd in [master, slave] {
                 let flags = fcntl(fd, F_GETFL)
@@ -119,20 +120,174 @@ private final class CLITerminalPTY {
     }
 }
 
+private final class CLITestBundleMarker: NSObject {}
+
+/// script owns the isolated controlling PTY and relays stdin to its master.
+/// The observer opens /dev/tty with production flags, then execs the built CLI.
+/// No invite is passed through argv, environment, or a typescript file.
+@MainActor
+private final class CLIControllingTerminalChild {
+    let process = Process()
+    private let input = Pipe()
+    private let output = Pipe()
+    private var transcript = Data()
+
+    init(app: URL? = nil) throws {
+        let observer = #"""
+        import ctypes, json, os, signal, sys, termios
+        signal.alarm(10)  # survives exec; bounds the child even if intake stalls
+        fd = os.open('/dev/tty', os.O_RDWR | os.O_CLOEXEC | os.O_NONBLOCK)
+        original = termios.tcgetattr(fd)
+        original[3] |= termios.ECHO | termios.ECHONL | termios.ICANON
+        termios.tcsetattr(fd, termios.TCSAFLUSH, original)
+        mode = termios.tcgetattr(fd)
+        mode[3] &= ~(termios.ICANON | termios.ECHO | termios.ECHONL)
+        class PollFD(ctypes.Structure):
+            _fields_ = [('fd', ctypes.c_int), ('events', ctypes.c_short),
+                        ('revents', ctypes.c_short)]
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.poll.argtypes = [ctypes.POINTER(PollFD), ctypes.c_uint, ctypes.c_int]
+        libc.poll.restype = ctypes.c_int
+        try:
+            termios.tcsetattr(fd, termios.TCSAFLUSH, mode)
+            descriptor = PollFD(fd, 1, 0)  # Darwin POLLIN
+            ctypes.set_errno(0)
+            ready = libc.poll(ctypes.byref(descriptor), 1, 100)
+            error = ctypes.get_errno()
+            print('TTY_POLL ' + json.dumps(dict(ready=ready, revents=descriptor.revents,
+                  errno=error, tty=int(os.isatty(fd)),
+                  foreground=int(os.tcgetpgrp(fd) == os.getpgrp()))), flush=True)
+        finally:
+            termios.tcsetattr(fd, termios.TCSAFLUSH, original)
+            os.close(fd)
+        if len(sys.argv) > 1:
+            os.execv(sys.argv[1], [sys.argv[1], '--connection-client', 'accept-invite'])
+        """#
+        let reader = output.fileHandleForReading.fileDescriptor
+        let flags = fcntl(reader, F_GETFL)
+        guard flags >= 0, fcntl(reader, F_SETFL, flags | O_NONBLOCK) == 0,
+              fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+            throw TerminalFixtureError.systemCall
+        }
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+        process.arguments = ["-q", "/dev/null", "/usr/bin/python3", "-I", "-B", "-c", observer]
+            + (app.map { [$0.path] } ?? [])
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+    }
+
+    func stop() {
+        if process.isRunning { process.terminate() }
+        try? input.fileHandleForWriting.close()
+        try? output.fileHandleForReading.close()
+    }
+
+    private func drain() throws -> String {
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while transcript.count < 16_384 {
+            let count = buffer.withUnsafeMutableBytes {
+                Darwin.read(output.fileHandleForReading.fileDescriptor, $0.baseAddress, $0.count)
+            }
+            if count > 0 { transcript.append(contentsOf: buffer.prefix(count)); continue }
+            if count == 0 || (count < 0 && errno == EAGAIN) {
+                return String(decoding: transcript, as: UTF8.self)
+            }
+            if errno == EINTR { continue }
+            throw TerminalFixtureError.systemCall
+        }
+        throw TerminalFixtureError.systemCall
+    }
+
+    func awaitPrompt() async throws -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while ContinuousClock.now < deadline {
+            if try drain().replacingOccurrences(of: "\r\n", with: "\n").contains("Paste invite (hidden):\n") {
+                return true
+            }
+            if !process.isRunning { return false }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        throw TerminalFixtureError.timeout
+    }
+
+    func type(_ value: String) throws {
+        let bytes = Array((value + "\n").utf8)
+        while true {
+            let count = bytes.withUnsafeBytes {
+                Darwin.write(input.fileHandleForWriting.fileDescriptor, $0.baseAddress, $0.count)
+            }
+            if count == bytes.count { return }
+            // Old poll can exit immediately after the prompt. Still collect
+            // its JSON so invalidInvite vs unavailable is the regression check.
+            if count < 0, errno == EPIPE { return }
+            if count < 0, errno == EINTR { continue }
+            throw TerminalFixtureError.systemCall
+        }
+    }
+
+    func finish() async throws -> [String] {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
+        while process.isRunning, ContinuousClock.now < deadline {
+            _ = try drain()
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard !process.isRunning else { throw TerminalFixtureError.timeout }
+        var lines = try drain().replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        if lines.last == "" { lines.removeLast() }
+        return lines // preserve extra blank lines so ECHONL cannot pass unnoticed
+    }
+
+    static func pollObservation(_ lines: [String]) throws -> [String: Int] {
+        let line = try #require(lines.first { $0.hasPrefix("TTY_POLL ") })
+        let observation = try #require(try JSONSerialization.jsonObject(with:
+            Data(line.dropFirst("TTY_POLL ".count).utf8)) as? [String: Int])
+        print("Controlling /dev/tty poll observation: \(observation)")
+        #expect(observation["tty"] == 1)
+        #expect(observation["foreground"] == 1)
+        return observation
+    }
+}
+
 @Suite("Mac foreground connection CLI")
 @MainActor
 struct ConnectionCLITests {
-    @Test("Darwin poll reports POLLNVAL for a PTY slave")
-    func pollPTYCharacterization() throws {
-        let pty = try CLITerminalPTY()
-        var mode = try pty.mode()
-        mode.c_lflag &= ~tcflag_t(ICANON | ECHO | ECHONL)
-        #expect(tcsetattr(pty.slave, TCSAFLUSH, &mode) == 0)
-        #expect(isatty(pty.slave) == 1)
-        var input = pollfd(fd: pty.slave, events: Int16(POLLIN), revents: 0)
-        let ready = Darwin.poll(&input, 1, 100)
-        #expect(ready == 1)
-        #expect(input.revents & Int16(POLLNVAL) != 0)
+    @Test("Darwin poll characterizes the controlling /dev/tty path")
+    func pollControllingTerminalCharacterization() async throws {
+        let child = try CLIControllingTerminalChild()
+        defer { child.stop() }
+        let observation = try CLIControllingTerminalChild.pollObservation(await child.finish())
+        #expect(child.process.terminationReason == .exit)
+        #expect(child.process.terminationStatus == 0)
+        #expect(observation["ready"] == 1, "Observed /dev/tty poll: \(observation)")
+        let revents = try #require(observation["revents"])
+        #expect(revents & Int(POLLNVAL) != 0, "Observed /dev/tty poll: \(observation)")
+    }
+
+    @Test("Built CLI reads a hidden malformed invite from controlling /dev/tty")
+    func hiddenInviteControllingTerminalCLI() async throws {
+        let app = Bundle(for: CLITestBundleMarker.self).bundleURL.deletingLastPathComponent()
+            .appendingPathComponent("HappyRanchApp")
+        try #require(FileManager.default.isExecutableFile(atPath: app.path), "Missing built CLI: \(app.path)")
+        let child = try CLIControllingTerminalChild(app: app)
+        defer { child.stop() }
+        let prompted = try await child.awaitPrompt()
+        let malformed = "hrinvite2:malformed-ctty-canary!"
+        if prompted { try child.type(malformed) }
+        let lines = try await child.finish()
+        _ = try CLIControllingTerminalChild.pollObservation(lines)
+        #expect(child.process.terminationReason == .exit)
+        #expect(child.process.terminationStatus == 1)
+        #expect(prompted)
+        #expect(!lines.joined().contains(malformed))
+        // Only the observer, production prompt and closed CLI result may be
+        // visible on the master. Partial echo is unexpected output too.
+        try #require(lines.count == 3)
+        #expect(lines[1] == "Paste invite (hidden):")
+        let result = try #require(try JSONSerialization.jsonObject(with: Data(lines[2].utf8)) as? [String: String])
+        #expect(result["code"] == "invalidInvite")
+        #expect(result == ["code": "invalidInvite", "effect": "none"])
     }
 
     @Test("Hidden PTY input accepts the full invite byte limit without echo and restores mode")

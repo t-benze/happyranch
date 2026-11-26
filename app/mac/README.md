@@ -561,10 +561,20 @@ read/action or cancellation, 1 a closed error, 2 invalid grammar without argumen
 echo. No GUI/other CLI session control or new IPC/service is provided.
 
 Focused native tests: from `app/mac`, `swift test --filter ConnectionCLITests`.
-They include Darwin `poll`/PTY characterization and real PTY input, echo/restoration,
-editing, byte-limit, Ctrl-D, cancellation and deadline regressions. The internal
-descriptor/timeout seam uses private PTYs; production still opens only `/dev/tty`
-with a 120-second deadline. These tests are NOT RUN on the Linux maker host;
+They use `/usr/bin/script -q /dev/null` to create an isolated controlling PTY.
+An embedded `/usr/bin/python3` observer opens `/dev/tty` with the production flags
+and records actual `poll` ready/revents/errno before executing the adjacent built
+`HappyRanchApp --connection-client accept-invite`. The cause case requires
+`POLLNVAL`; a different native result is reported and fails that characterization.
+The CLI regression sends a synthetic malformed invite through the PTY master
+after the hidden prompt, requires `invalidInvite` instead of `unavailable`, and
+rejects echoed or unexpected terminal output. It adds no production test entry.
+Xcode's `/usr/bin/python3` and the SwiftPM-built product are required; missing
+prerequisites fail. Additional direct-slave PTY cases cover echo/restoration,
+editing (with CR/LF translation disabled), cancellation, deadline, Ctrl-D,
+byte limits and UTF-8 through the approved internal descriptor/timeout seam.
+Production still opens only `/dev/tty` with a 120-second deadline. Native tests
+and fail-before/pass-after proof are NOT RUN on the Linux maker host;
 reviewed-head QA uses the existing `app-scheme` venue described above.
 The existing unsigned
 `build-mac-app.yml` builds release app sources only and does not compile or run
