@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 import HappyRanchSupervisor
 @testable import HappyRanchApp
@@ -18,9 +19,213 @@ private actor CLIStore: SavedHomeCredentialStore {
     }
 }
 
+private enum TerminalFixtureError: Error { case systemCall, timeout }
+
+/// A private PTY, never the test runner's controlling terminal. All input is synthetic.
+@MainActor
+private final class CLITerminalPTY {
+    let master: Int32
+    let slave: Int32
+    let original: termios
+
+    init() throws {
+        var master: Int32 = -1
+        var slave: Int32 = -1
+        guard openpty(&master, &slave, nil, nil, nil) == 0 else { throw TerminalFixtureError.systemCall }
+        do {
+            var mode = termios()
+            guard tcgetattr(slave, &mode) == 0 else { throw TerminalFixtureError.systemCall }
+            // Start with both echo flags enabled so restoration cannot pass vacuously.
+            mode.c_lflag |= tcflag_t(ECHO | ECHONL | ICANON)
+            guard tcsetattr(slave, TCSAFLUSH, &mode) == 0 else { throw TerminalFixtureError.systemCall }
+            for fd in [master, slave] {
+                let flags = fcntl(fd, F_GETFL)
+                guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
+                    throw TerminalFixtureError.systemCall
+                }
+            }
+            self.master = master
+            self.slave = slave
+            self.original = mode
+        } catch {
+            Darwin.close(master)
+            Darwin.close(slave)
+            throw error
+        }
+    }
+
+    deinit { Darwin.close(master); Darwin.close(slave) }
+
+    func terminal(readTimeout: Duration = .seconds(5)) throws -> ConnectionTerminal {
+        try ConnectionTerminal(descriptor: Darwin.dup(slave), readTimeout: readTimeout)
+    }
+
+    func mode() throws -> termios {
+        var mode = termios()
+        guard tcgetattr(slave, &mode) == 0 else { throw TerminalFixtureError.systemCall }
+        return mode
+    }
+
+    func expectRestored() throws {
+        let actual = try mode()
+        #expect(actual.c_lflag == original.c_lflag)
+        #expect(actual.c_iflag == original.c_iflag)
+        #expect(actual.c_oflag == original.c_oflag)
+        #expect(actual.c_cflag == original.c_cflag)
+    }
+
+    func availableOutput() throws -> [UInt8] {
+        var output = [UInt8]()
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { Darwin.read(master, $0.baseAddress, $0.count) }
+            if count > 0 { output.append(contentsOf: buffer.prefix(count)); continue }
+            if count == 0 { return output }
+            if errno == EINTR { continue }
+            if errno == EAGAIN { return output }
+            throw TerminalFixtureError.systemCall
+        }
+    }
+
+    func awaitPrompt() async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        var output = [UInt8]()
+        while ContinuousClock.now < deadline {
+            output += try availableOutput()
+            if output.contains(10) {
+                #expect(String(decoding: output, as: UTF8.self).contains("Paste invite (hidden):"))
+                let active = try mode()
+                #expect(active.c_lflag & tcflag_t(ECHO | ECHONL | ICANON) == 0)
+                return
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        throw TerminalFixtureError.timeout
+    }
+
+    func type(_ input: [UInt8]) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        var offset = 0
+        while offset < input.count, ContinuousClock.now < deadline {
+            let count = input.withUnsafeBytes {
+                Darwin.write(master, $0.baseAddress!.advanced(by: offset), $0.count - offset)
+            }
+            if count > 0 { offset += count; continue }
+            if count < 0, errno == EINTR { continue }
+            guard count < 0, errno == EAGAIN else { throw TerminalFixtureError.systemCall }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard offset == input.count else { throw TerminalFixtureError.timeout }
+    }
+}
+
 @Suite("Mac foreground connection CLI")
 @MainActor
 struct ConnectionCLITests {
+    @Test("Darwin poll reports POLLNVAL for a PTY slave")
+    func pollPTYCharacterization() throws {
+        let pty = try CLITerminalPTY()
+        var mode = try pty.mode()
+        mode.c_lflag &= ~tcflag_t(ICANON | ECHO | ECHONL)
+        #expect(tcsetattr(pty.slave, TCSAFLUSH, &mode) == 0)
+        #expect(isatty(pty.slave) == 1)
+        var input = pollfd(fd: pty.slave, events: Int16(POLLIN), revents: 0)
+        let ready = Darwin.poll(&input, 1, 100)
+        #expect(ready == 1)
+        #expect(input.revents & Int16(POLLNVAL) != 0)
+    }
+
+    @Test("Hidden PTY input accepts the full invite byte limit without echo and restores mode")
+    func hiddenInvitePTY() async throws {
+        let pty = try CLITerminalPTY()
+        let terminal = try pty.terminal()
+        let operation = Task { try await terminal.read("Paste invite (hidden):", hidden: true, limit: 5500) }
+        defer { operation.cancel() }
+        try await pty.awaitPrompt()
+        let invite = "hrinvite2:" + String(repeating: "a", count: 5490)
+        try await pty.type(Array((invite + "\n").utf8))
+        let received = try await operation.value
+        #expect(received == invite)
+        #expect(try pty.availableOutput().isEmpty)
+        try pty.expectRestored()
+    }
+
+    @Test("PTY editing handles both backspaces, empty input and CR/LF", arguments: [UInt8(10), UInt8(13)])
+    func terminalEditingPTY(ending: UInt8) async throws {
+        let pty = try CLITerminalPTY()
+        let terminal = try pty.terminal()
+        let operation = Task { try await terminal.read("Paste invite (hidden):", hidden: true) }
+        defer { operation.cancel() }
+        try await pty.awaitPrompt()
+        try await pty.type([8, 127, 97, 98, 99, 8, 127, 100, ending])
+        #expect(try await operation.value == "ad")
+        #expect(try pty.availableOutput().isEmpty)
+        try pty.expectRestored()
+    }
+
+    @Test("Cancellation ends an idle PTY read promptly and restores echo")
+    func cancelledReadPTY() async throws {
+        let pty = try CLITerminalPTY()
+        let terminal = try pty.terminal()
+        let operation = Task { try await terminal.read("Paste invite (hidden):", hidden: true) }
+        defer { operation.cancel() }
+        try await pty.awaitPrompt()
+        try await pty.type(Array("partial".utf8))
+        let cancelledAt = ContinuousClock.now
+        operation.cancel()
+        do { _ = try await operation.value; Issue.record("Terminal read ignored cancellation") }
+        catch { #expect(error is CancellationError) }
+        #expect(cancelledAt.duration(to: .now) < .seconds(2))
+        #expect(try pty.availableOutput().isEmpty)
+        try pty.expectRestored()
+    }
+
+    @Test("A monotonic deadline ends PTY input and restores echo")
+    func deadlineReadPTY() async throws {
+        let pty = try CLITerminalPTY()
+        let terminal = try pty.terminal(readTimeout: .milliseconds(200))
+        let startedAt = ContinuousClock.now
+        let operation = Task { try await terminal.read("Paste invite (hidden):", hidden: true) }
+        defer { operation.cancel() }
+        try await pty.awaitPrompt()
+        try await pty.type(Array("partial".utf8))
+        do { _ = try await operation.value; Issue.record("Terminal read ignored deadline") }
+        catch { #expect(error is CancellationError) }
+        let elapsed = startedAt.duration(to: .now)
+        #expect(elapsed >= .milliseconds(200))
+        #expect(elapsed < .seconds(2))
+        #expect(try pty.availableOutput().isEmpty)
+        try pty.expectRestored()
+    }
+
+    @Test("Ctrl-D cancels a PTY read and restores echo")
+    func endOfInputPTY() async throws {
+        let pty = try CLITerminalPTY()
+        let terminal = try pty.terminal()
+        let operation = Task { try await terminal.read("Paste invite (hidden):", hidden: true) }
+        defer { operation.cancel() }
+        try await pty.awaitPrompt()
+        try await pty.type(Array("partial".utf8) + [4])
+        do { _ = try await operation.value; Issue.record("Terminal read accepted Ctrl-D") }
+        catch { #expect(error is CancellationError) }
+        #expect(try pty.availableOutput().isEmpty)
+        try pty.expectRestored()
+    }
+
+    @Test("PTY byte overflow and invalid UTF-8 fail closed and restore echo", arguments: [false, true])
+    func invalidInputPTY(invalidUTF8: Bool) async throws {
+        let pty = try CLITerminalPTY()
+        let terminal = try pty.terminal()
+        let operation = Task { try await terminal.read("Paste invite (hidden):", hidden: true, limit: 5500) }
+        defer { operation.cancel() }
+        try await pty.awaitPrompt()
+        try await pty.type(invalidUTF8 ? [255, 10] : [UInt8](repeating: 97, count: 5501))
+        do { _ = try await operation.value; Issue.record("Terminal read accepted invalid input") }
+        catch { #expect(error as? ConnectionError == ConnectionError(.invalidInvite)) }
+        #expect(try pty.availableOutput().isEmpty)
+        try pty.expectRestored()
+    }
+
     @Test("Separate invocations own no session and do not touch custody or transport")
     func foreignActions() async throws {
         let store = CLIStore()

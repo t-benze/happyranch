@@ -531,8 +531,11 @@ the packaged native binary also accepts the fixed internal grammar directly.
 Mac host commands remain unavailable/deferred.
 
 A controlling terminal is required before invite/selection work. Paste is hidden,
-limited to 5500 UTF-8 bytes and 120 seconds. The terminal displays the exact target;
-type `connect` to consent and optionally `save` to save access in login Keychain.
+limited to 5500 UTF-8 bytes and 120 seconds. Terminal readiness uses Darwin
+`select` with a 100 ms cancellation interval.
+Echo is disabled before the hidden prompt and terminal mode is restored on exit.
+The terminal displays the exact target; type `connect` to consent and optionally
+`save` to save access in login Keychain.
 The comparison phrase stays on the terminal for comparison with Linux Host.
 No invite arguments, environment/file/stdin intake, clipboard read or secret
 export exists. Saved connect/remove enumerates at most 32 choices, waits at most
@@ -558,7 +561,12 @@ read/action or cancellation, 1 a closed error, 2 invalid grammar without argumen
 echo. No GUI/other CLI session control or new IPC/service is provided.
 
 Focused native tests: from `app/mac`, `swift test --filter ConnectionCLITests`.
-They are NOT RUN on the Linux maker host. The existing unsigned
+They include Darwin `poll`/PTY characterization and real PTY input, echo/restoration,
+editing, byte-limit, Ctrl-D, cancellation and deadline regressions. The internal
+descriptor/timeout seam uses private PTYs; production still opens only `/dev/tty`
+with a 120-second deadline. These tests are NOT RUN on the Linux maker host;
+reviewed-head QA uses the existing `app-scheme` venue described above.
+The existing unsigned
 `build-mac-app.yml` builds release app sources only and does not compile or run
 Swift tests. Native terminal/signal behavior, Keychain consent/unsigned reopen,
 helper integration and home/different-network acceptance remain NOT RUN.
