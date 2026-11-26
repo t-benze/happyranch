@@ -312,7 +312,7 @@ jobs:
             printf '%s\n' "$status" > "$QA_EVIDENCE/$selection-exit.txt"
             # Each case owns its parent, temp roots, daemon and deadline. An
             # assertion/timeout cannot poison another case's source/session.
-            "$UV_PROJECT_ENVIRONMENT/bin/python" - "$selection" "$cap" <<'BOUNDED_LOGS'
+            "$UV_PROJECT_ENVIRONMENT/bin/python" - "$selection" "$cap" <<'BOUNDED_LOGS' || return "$?"
           import hashlib, json, os, pathlib, re, sys
           root = pathlib.Path(os.environ['QA_ROOT'])
           name, cap = sys.argv[1], int(sys.argv[2])
