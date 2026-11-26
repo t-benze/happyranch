@@ -787,7 +787,9 @@ profile removal, custom-skill retire/restore, Organization's Work Hours
 toggle; the registry never marks these `failed`) shows “… Change this on
 {Host}. Nothing was sent.” / “… 未发送任何内容。” for the latest request; the
 next request clears it. The ownerless Create organization (Add organization,
-onboarding) and Add agent forms use `useRemoteRefusal`: they keep the entered
+onboarding) form and the Create team / Create agent form (itself an
+`agents.create` config owner, see below; a remote refusal is not sent, so it
+registers no unknown result) use `useRemoteRefusal`: they keep the entered
 fields and show the refused copy at once, before status reports the remote
 Host. {Host} is the live remote name, else the name captured at refusal, else
 “the Host computer” / “主机”. The schedule Edit dialog shows the same notice
@@ -1870,11 +1872,21 @@ input kept. The create is a config owner (`agents.create`): single-flight, the
 request never re-sent on a 401 (`replayOnUnauthorized: false`), close/navigation/
 org switches held while pending or unknown. `agent_setup_incomplete` (500) shows
 "Agent created; setup incomplete" with `happyranch init-agent`; other lost or
-unrecognised answers show "Result unknown" and Check result, which re-reads the
-original org's roster and identities. Only a full match of the submitted fields
-resolves it; a name match alone stays unknown, and only absence allows a new
-create. On success navigation uses returned `canonical_id`; a failed readback
-says "Created; refresh unavailable". The API's legacy `name` field still means
+unrecognised answers (network loss, forwarded 499 cancellations, other 5xx, a
+raw 409 `target_changed`) show "Result unknown" and Check result. A change the
+transport proves native never forwarded (typed `NotSentError`,
+`ThrottledError`, or a 503 `NativeRecoveryError` such as busy/no_target) is
+"Not sent" instead: the draft stays, no unknown owner is registered, and only
+an explicit resubmit sends it. Check result first cancels in-flight roster and
+identity reads of the original org, then accepts only successful reads issued
+after that (`lib/freshReads.ts`), never an earlier first load or its
+completion time. Only a full match of the submitted fields resolves it; a name
+match alone stays unknown. Absence allows a new create only when naming
+observations are complete (`naming_diagnostic` explicitly null and every agent
+row `naming_status: ready`); unavailable or missing naming metadata keeps the
+result unknown. On success navigation uses returned `canonical_id`; the
+readback retires in-flight agents/enrollments/teams/identities reads before
+refetching, and a failed readback says "Created; refresh unavailable". The API's legacy `name` field still means
 an explicit ID; send exactly one name source.
 See the [naming contract](contracts/threads-and-naming.md) for derivation,
 transaction and rollback details. No manager-session enrollment contract changes.

@@ -28,10 +28,14 @@
  *     stays, correct and resubmit.
  *   - `agent_setup_incomplete` → "Agent created; setup incomplete", View agent
  *     and the supported `happyranch init-agent` recovery; no second Create.
- *   - no trustworthy answer → "Result unknown" and Check result, which re-reads
- *     the roster and identities of the ORIGINAL org. A name match alone is
- *     reported as such, never as success; a new Create is possible only once
- *     nothing with that name is found. Nothing is retried or deleted.
+ *   - a change native provably did not forward (typed pre-forward error) →
+ *     "Not sent": draft kept, no unknown owner, explicit resubmit only.
+ *   - no trustworthy answer → "Result unknown" and Check result, which retires
+ *     in-flight reads and re-reads the roster and identities of the ORIGINAL
+ *     org (`lib/freshReads`). A name match alone is reported as such, never as
+ *     success; a new Create is possible only once nothing with that name is
+ *     found AND the naming observations are complete. Nothing is retried or
+ *     deleted.
  * A pending/unknown owner holds close, navigation and org/target switches
  * (owner gate). On a remote Host the form stays visible but read-only
  * ("Change this on {Host}"), and a native `remote_read_only` refusal keeps
@@ -62,6 +66,7 @@ import type { AgentSummary, IdentityList } from '@/lib/api/types';
 import { REMOTE_OPS, useRemoteReadOnly, useRemoteRefusal } from '@/lib/remotePolicy';
 import { RemoteReadOnlyNote } from '@/shared/remotePolicy/RemoteReadOnlyNote';
 import { ownerContextParams, useConfigOwner, useOwnerGate } from '@/shared/owners';
+import { freshReads } from '@/lib/freshReads';
 import { classifyAgentError, renderAgentError, type AgentErrorView } from './strings';
 import {
   agentNameProblem,
@@ -180,25 +185,13 @@ export function AddAgentDialog({ open, mode: requestedMode, onOpenChange }: Prop
     onDiscard: () => reset(mode),
     checkResult: async () => {
       const submitted = sent.current;
-      // Only the ORIGINAL org's fresh reads can answer for this create.
+      // Only the ORIGINAL org's reads issued AFTER this check started can
+      // answer for this create (never a read that predates the attempt).
       if (submitted === null || submitted.slug !== slug) return 'unknown';
-      const started = Date.now();
-      const agentsKey = ['agents', submitted.slug];
-      const identitiesKey = ['identities', submitted.slug];
-      await Promise.all([
-        qc.refetchQueries({ queryKey: agentsKey, exact: true }),
-        qc.refetchQueries({ queryKey: identitiesKey, exact: true }),
-      ]);
-      const agentsState = qc.getQueryState<{ agents: AgentSummary[] }>(agentsKey);
-      const identitiesState = qc.getQueryState<IdentityList>(identitiesKey);
-      const fresh = (state: typeof agentsState | typeof identitiesState) =>
-        !!state && state.status === 'success' && state.data !== undefined && state.dataUpdatedAt >= started;
-      if (!fresh(agentsState) || !fresh(identitiesState)) return 'unknown';
-      const result = findCreatedAgent(
-        submitted.body,
-        agentsState!.data!.agents,
-        identitiesState!.data!.identities,
-      );
+      const reads = await freshReads(qc, [['agents', submitted.slug], ['identities', submitted.slug]]);
+      if (reads === null) return 'unknown';
+      const [agentsData, identitiesData] = reads as [{ agents: AgentSummary[] }, IdentityList];
+      const result = findCreatedAgent(submitted.body, agentsData.agents, identitiesData);
       setFinding(result);
       if (result.kind === 'matched') {
         setPhase({ kind: 'found', canonicalId: result.canonicalId, name: submitted.body.display_name });
@@ -334,7 +327,11 @@ export function AddAgentDialog({ open, mode: requestedMode, onOpenChange }: Prop
     setFinding(null);
     const result = await owner.track(
       () => create.mutateAsync(body),
-      (error) => (classifyCreateError(error).kind === 'refused' ? 'failed' : 'unknown'),
+      (error) => {
+        const kind = classifyCreateError(error).kind;
+        // A refusal or a provably not-forwarded change created nothing.
+        return kind === 'refused' || kind === 'notSent' ? 'failed' : 'unknown';
+      },
       ticket,
     );
     latch.current = false;
@@ -363,6 +360,11 @@ export function AddAgentDialog({ open, mode: requestedMode, onOpenChange }: Prop
         name: body.display_name,
         team: outcome.team ?? body.team ?? body.new_team ?? '',
       });
+      return;
+    }
+    if (outcome.kind === 'notSent') {
+      // Nothing left the app: the draft stays; only an explicit resubmit sends it.
+      setFormError({ kind: 'message', key: 'agents.create.error.notSent' });
       return;
     }
     if (result.outcome === 'failed') {
@@ -497,7 +499,10 @@ export function AddAgentDialog({ open, mode: requestedMode, onOpenChange }: Prop
                     {t(owner.checking ? 'owners.save.checking' : 'owners.save.checkResult')}
                   </Button>
                 </div>
-                {owner.checkFailed && !owner.checking && finding?.kind !== 'nameOnly' && (
+                {finding?.kind === 'incomplete' && (
+                  <p className="mt-2">{t('agents.create.unknown.incomplete')}</p>
+                )}
+                {owner.checkFailed && !owner.checking && finding?.kind !== 'nameOnly' && finding?.kind !== 'incomplete' && (
                   <p className="text-feedback-danger mt-1 text-xs">{t('owners.save.checkFailed')}</p>
                 )}
               </div>

@@ -2,8 +2,9 @@
  * Create team / Create agent form rules (THR-402, PRD
  * docs/product/prds/2026-11-26-team-and-agent-creation.md).
  *
- * Pure module (no React, no I/O) so the rules can be checked by a plain Node
- * script (`web/scripts/create-agent-form.test.mjs`).
+ * No React and no I/O (it imports only the transport's typed error classes),
+ * so the rules can be checked by a plain Node script
+ * (`web/scripts/create-agent-form.test.mjs`).
  *
  * - Agent name: 1–64 ASCII characters, a letter first, then letters, digits,
  *   `_` or `-`. Sent as `display_name`; the server owns the permanent ID.
@@ -13,10 +14,16 @@
  *   do not follow this rule stay selectable for workers; this rule only
  *   applies to NEW team names (shared API contract with the backend PR).
  * - Outcomes: a confirmed client-side refusal (4xx) changed nothing and the
- *   form may be corrected and resubmitted; `agent_setup_incomplete` (500)
- *   means the agent WAS created but its workspace setup did not finish; any
- *   other answer (no response, 408/499, other 5xx) is a result unknown.
+ *   form may be corrected and resubmitted; a change the desktop app PROVABLY
+ *   did not forward (the transport's typed `NotSentError`, `ThrottledError`
+ *   or a 503 native `NativeRecoveryError` such as busy/no_target) is "not
+ *   sent": the draft stays and only an explicit resubmission sends it;
+ *   `agent_setup_incomplete` (500) means the agent WAS created but its
+ *   workspace setup did not finish; any other answer (no response, 408/499,
+ *   other 5xx, a raw 409 target_changed) is a result unknown.
  */
+import { NativeRecoveryError, NotSentError, ThrottledError } from '../../lib/api/client';
+import type { NativeRecoveryCode } from '../../lib/nativeRecovery';
 
 export const AGENT_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 export const NEW_TEAM_RE = /^[a-z][a-z0-9_]{0,63}$/;
@@ -107,6 +114,8 @@ export function fieldForCode(code: string | null | undefined): CreateField | nul
 export type CreateOutcome =
   /** The server refused before any effect: correct and resubmit. */
   | { kind: 'refused'; status: number; code: string | null }
+  /** The desktop app refused before forwarding: nothing was sent; resubmit explicitly. */
+  | { kind: 'notSent'; reason: NativeRecoveryCode | 'too_many_requests' }
   /** The agent and its team were created; workspace setup did not finish. */
   | { kind: 'setupIncomplete'; canonicalId: string | null; team: string | null; role: string | null }
   /** No trustworthy answer: the agent may or may not exist. */
@@ -114,8 +123,19 @@ export type CreateOutcome =
 
 const str = (value: unknown): string | null => (typeof value === 'string' && value !== '' ? value : null);
 
-/** Classify a rejected create request. Matched by shape so this module stays import-free. */
+/**
+ * Classify a rejected create request. "Not sent" is decided only from the
+ * transport's typed pre-forward errors (never from a status/code shape alone:
+ * a raw 409 target_changed or a daemon 503 proves nothing was not forwarded).
+ */
 export function classifyCreateError(error: unknown): CreateOutcome {
+  if (error instanceof NotSentError) return { kind: 'notSent', reason: 'target_changed' };
+  if (error instanceof ThrottledError) return { kind: 'notSent', reason: 'too_many_requests' };
+  // 503 native answers (busy, no_target, target_starting, target_unreachable,
+  // incompatible) are emitted only by native for a request it did not forward.
+  if (error instanceof NativeRecoveryError && error.recovery.code !== 'target_changed') {
+    return { kind: 'notSent', reason: error.recovery.code };
+  }
   if (!error || typeof error !== 'object') return { kind: 'unknown' };
   const { status, code, detail } = error as { status?: unknown; code?: unknown; detail?: unknown };
   if (typeof status !== 'number') return { kind: 'unknown' };
@@ -133,6 +153,7 @@ export function classifyCreateError(error: unknown): CreateOutcome {
 export interface RosterRow {
   name: string;
   addressable_name?: string | null;
+  naming_status?: 'ready' | 'unavailable';
   team: string | null;
   role: string | null;
   executor: string | null;
@@ -144,6 +165,13 @@ export interface IdentityRow {
   canonical_id: string;
   kind: string;
   addressable_name: string | null;
+  naming_status?: 'ready' | 'unavailable';
+}
+
+/** GET /identities: rows plus the naming diagnostic (absent on older servers = unknown). */
+export interface IdentityRead {
+  identities: readonly IdentityRow[];
+  naming_diagnostic?: string | null;
 }
 
 export type CheckFinding =
@@ -152,19 +180,43 @@ export type CheckFinding =
   /** An active agent matches every submitted field. */
   | { kind: 'matched'; canonicalId: string }
   /** Something carries this name, but that alone does not prove this request created it. */
-  | { kind: 'nameOnly'; canonicalId: string | null };
+  | { kind: 'nameOnly'; canonicalId: string | null }
+  /**
+   * Names could not be read completely (naming unavailable, a diagnostic, or
+   * an agent without a ready name), so no match is NOT evidence of absence.
+   */
+  | { kind: 'incomplete' };
 
 const same = (a: string | null | undefined, b: string): boolean => (a ?? '').trim() === b.trim();
 
+const readyName = (row: { addressable_name?: string | null; naming_status?: string }): boolean =>
+  row.naming_status === 'ready' && typeof row.addressable_name === 'string' && row.addressable_name !== '';
+
+/**
+ * Naming observations are complete only when the identities read explicitly
+ * reports no naming diagnostic, every agent identity has a ready name, and
+ * every roster row has a ready name of its own or through its identity row.
+ */
+export function namingComplete(roster: readonly RosterRow[], read: IdentityRead): boolean {
+  if (read.naming_diagnostic !== null) return false;
+  const agents = read.identities.filter((row) => row.kind === 'agent');
+  if (!agents.every(readyName)) return false;
+  const ready = new Set(agents.map((row) => row.canonical_id));
+  return roster.every((row) => (row.naming_status === undefined ? ready.has(row.name) : readyName(row)));
+}
+
 /**
  * Compare FRESH roster and identity reads with the body that was sent. Names
- * are compared case-insensitively (the naming service owns availability).
+ * are compared case-insensitively (the naming service owns availability). A
+ * full match resolves the create; "absent" is reported only when the naming
+ * observations are complete, otherwise the result stays unknown.
  */
 export function findCreatedAgent(
   sent: CreateBody,
   roster: readonly RosterRow[],
-  identities: readonly IdentityRow[],
+  read: IdentityRead,
 ): CheckFinding {
+  const identities = read.identities;
   const wanted = sent.display_name.toLowerCase();
   const nameOf = (value: string | null | undefined) => (value ?? '').toLowerCase();
   // Older rosters may omit the name metadata: fall back to the identity row.
@@ -184,5 +236,5 @@ export function findCreatedAgent(
   if (rows.length > 0) return { kind: 'nameOnly', canonicalId: rows[0]!.name };
   const identity = identities.find((row) => row.kind === 'agent' && nameOf(row.addressable_name) === wanted);
   if (identity) return { kind: 'nameOnly', canonicalId: identity.canonical_id };
-  return { kind: 'absent' };
+  return namingComplete(roster, read) ? { kind: 'absent' } : { kind: 'incomplete' };
 }

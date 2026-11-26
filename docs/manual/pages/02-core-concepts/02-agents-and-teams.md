@@ -59,7 +59,10 @@ rules. The v1 manual does not expand agent administration into a full reference.
 
 After a successful create the new agent opens; Create team then offers Create
 agent in the new team. If the answer is lost, the form says **Result unknown**
-and keeps your values until **Check result** re-reads the roster. If the agent
+and keeps your values until **Check result** re-reads the roster; while agent
+names cannot be read completely, the result stays unknown. If the desktop app
+could not forward the request at all (for example the computer is busy), the
+form says **Not sent**, keeps your values and lets you submit again. If the agent
 was enrolled but its workspace setup failed, it says **Agent created; setup
 incomplete** and shows the `happyranch init-agent` command that finishes setup.
 Nothing is retried or deleted automatically. Moving existing agents between

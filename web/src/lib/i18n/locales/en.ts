@@ -3172,6 +3172,7 @@ export const en = {
   'agents.create.error.promptRequired': 'Enter a system prompt.',
   'agents.create.error.missingField': 'Description and system prompt are required.',
   'agents.create.error.authRenewed': 'Your sign-in was renewed and nothing was created. Submit again.',
+  'agents.create.error.notSent': 'Not sent: the desktop app could not forward this change to the computer right now, so nothing was created. Your values are kept. Submit again when the connection is ready.',
   'agents.create.pending': 'Creating {name} on {computer} · {org}…',
   'agents.create.success.teamTitle': 'Team created',
   'agents.create.success.agentTitle': 'Agent created',
@@ -3191,6 +3192,7 @@ export const en = {
   'agents.create.unknown.body': 'No reliable answer came back for creating {name} on {computer} · {org}. It may or may not exist. Your values are kept. Check the result before creating anything else.',
   'agents.create.unknown.nameOnly': 'Found an agent with this name ({id}). That alone does not prove this request created it, so the result stays unknown.',
   'agents.create.unknown.absent': 'No agent with this name was found, so nothing was created. Correct anything you need and submit again.',
+  'agents.create.unknown.incomplete': 'Agent names could not be read completely, so this check cannot show whether the agent exists. The result stays unknown. Check again later.',
   // @w4c-end:agents
   // @w4c-begin:skills
   'skills.guidanceOnly': 'Guidance visibility only.',

@@ -3033,6 +3033,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'agents.create.error.promptRequired': '请输入系统提示词。',
   'agents.create.error.missingField': '描述和系统提示词为必填项。',
   'agents.create.error.authRenewed': '登录已续期，未创建任何内容。请重新提交。',
+  'agents.create.error.notSent': '未发送：桌面应用此刻无法将此更改转发到该电脑，因此没有创建任何内容。你填写的内容已保留。连接就绪后请重新提交。',
   'agents.create.pending': '正在 {computer} · {org} 上创建 {name}…',
   'agents.create.success.teamTitle': '团队已创建',
   'agents.create.success.agentTitle': '智能体已创建',
@@ -3052,6 +3053,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'agents.create.unknown.body': '在 {computer} · {org} 上创建 {name} 时没有收到可靠的答复。它可能已存在，也可能不存在。你填写的内容已保留。请先检查结果，再创建其他内容。',
   'agents.create.unknown.nameOnly': '找到了同名智能体（{id}）。仅凭这一点不能证明是本次请求创建的，因此结果仍未知。',
   'agents.create.unknown.absent': '未找到同名智能体，因此没有创建任何内容。请按需修改后重新提交。',
+  'agents.create.unknown.incomplete': '未能完整读取智能体名称，因此本次检查无法判断该智能体是否存在。结果仍未知。请稍后再检查。',
   // @w4c-end:agents
   // @w4c-begin:skills
   'skills.guidanceOnly': '仅影响指导可见性。',
