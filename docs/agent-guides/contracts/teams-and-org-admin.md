@@ -1,5 +1,11 @@
 # Teams and org administration contracts
 
+The canonical [Create team and Create agent Product build specification](../../product/prds/2026-11-26-team-and-agent-creation.md)
+consolidates creation UX and acceptance under THR-402 seq5. Its proposed entry
+points and recovery changes remain delivery work; it preserves the Default,
+membership, naming and remote-configuration contracts below. The historical
+May 30 web creation design is provenance, not deployed verification.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked

@@ -47,6 +47,17 @@ tool for model diversity and specialization.
 Adding or enrolling agents can require founder approval depending on the org's
 rules. The v1 manual does not expand agent administration into a full reference.
 
+The current creation entry is **Agents → New agent**: Worker selects an existing
+team; Manager supplies a new team name and creates that team with its manager.
+The special **Default** team is managed by the human Founder and accepts new
+workers without another manager agent. Moving existing agents between teams is
+unsupported. Founder-created agents become active directly; agent-initiated
+enrollment retains its separate approval flow.
+
+The canonical [Create team and Create agent product specification](../../../product/prds/2026-11-26-team-and-agent-creation.md)
+defines the authorized completion work, including clearer entry points and
+failure recovery. Its `build-spec` status does not mean that work has shipped.
+
 ## Grounded Technical Facts
 
 - Team structure comes from the org's `teams.yaml`.
