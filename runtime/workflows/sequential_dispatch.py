@@ -1561,7 +1561,7 @@ class SequentialDispatcher:
         budget.check()
         from runtime.workflows.sequential_briefs import READ_ONLY_RECONCILIATION, recovery_context
         readonly, supplement, lineage = recovery_context(conn, run, visit, budget)
-        restriction = ''  # Disposable U3 proof: omit trusted read-only propagation.
+        restriction = ('\n' + READ_ONLY_RECONCILIATION) if readonly else ''
         lineage_data = ''
         if lineage:
             budget.reserve(8 * len(_bytes(lineage)) + 512)
