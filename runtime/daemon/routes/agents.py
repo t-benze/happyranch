@@ -340,6 +340,7 @@ class FounderCreateAgentReceipt(BaseModel):
 
 
 _VALID_AGENT_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+_VALID_NEW_TEAM_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 _TERMINATED_AGENTS_DIRNAME = "_terminated"
@@ -1469,8 +1470,9 @@ async def founder_create_agent(
 
     If workspace bootstrap (clone_repo / ensure_workspace_ready /
     create_agent_dirs) fails mid-flight, the agent file and teams.yaml
-    entry are RETAINED — matches ``approve_agent``'s semantics. Use
-    ``manage-agent terminate`` to clean up before retrying.
+    entry are RETAINED — matches ``approve_agent``'s semantics. The structured
+    ``agent_setup_incomplete`` response identifies that retained enrollment;
+    resolve its setup before attempting another creation.
     """
     paths = OrgPaths(root=org.root)
 
@@ -1496,10 +1498,20 @@ async def founder_create_agent(
                 detail={"code": "role_team_mismatch"},
             )
     else:  # manager
-        if not body.new_team or body.team:
+        if body.new_team is None or body.team:
             raise HTTPException(
                 status_code=422,
                 detail={"code": "role_team_mismatch"},
+            )
+        if body.new_team.lower() == "default":
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "team_reserved", "team": body.new_team},
+            )
+        if not _VALID_NEW_TEAM_NAME.fullmatch(body.new_team):
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_team_name", "team": body.new_team},
             )
 
     # The profile/native writer must reserve the actual permanent ID. Propose
@@ -1611,27 +1623,40 @@ async def founder_create_agent(
             async def finish_write() -> dict:
                 # Workspace bootstrap retains the enrolled identity on failure,
                 # as before. Initial name enrollment has already committed.
-                workspace = paths.workspaces_dir / agent_name
-                workspace.mkdir(parents=True, exist_ok=True)
-                repos = agent_def.repos or {}
-                ctx = ContextBuilder(org.settings, paths, slug=org.slug)
-                for repo_name, url in repos.items():
-                    cloned = await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
-                    if not cloned:
-                        authority_change.native_disposition.uncertain = True
+                incomplete = {
+                    "code": "agent_setup_incomplete", "canonical_id": agent_name,
+                    "team": team_name, "role": body.role,
+                }
+                clone_failed = False
+                try:
+                    workspace = paths.workspaces_dir / agent_name
+                    workspace.mkdir(parents=True, exist_ok=True)
+                    repos = agent_def.repos or {}
+                    ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+                    for repo_name, url in repos.items():
+                        cloned = await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
+                        if not cloned:
+                            authority_change.native_disposition.uncertain = True
+                            clone_failed = True
 
-                fresh = prompt_loader.load_agent(paths, agent_name)
-                if fresh is None:
-                    raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
-                await asyncio.to_thread(
-                    ctx.ensure_workspace_ready, workspace, agent_name,
-                    fresh.system_prompt, provider=fresh.executor,
-                )
-                await asyncio.to_thread(ctx.create_agent_dirs, workspace, agent_name)
+                    fresh = prompt_loader.load_agent(paths, agent_name)
+                    if fresh is None:
+                        raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+                    await asyncio.to_thread(
+                        ctx.ensure_workspace_ready, workspace, agent_name,
+                        fresh.system_prompt, provider=fresh.executor,
+                    )
+                    await asyncio.to_thread(ctx.create_agent_dirs, workspace, agent_name)
+                except Exception:
+                    raise HTTPException(status_code=500, detail=incomplete) from None
                 AuditLogger(org.db).log_agent_managed(
                     scope_id="founder", action="enroll", name=agent_name,
                     source="founder", actor="founder",
                 )
+                # A false clone used to continue through bootstrap and audit.
+                # Preserve those calls and their order, but report partial setup.
+                if clone_failed:
+                    raise HTTPException(status_code=500, detail=incomplete)
                 return {"name": agent_name, "canonical_id": agent_name,
                         "addressable_name": body.display_name if body.display_name is not None else agent_name,
                         "team": team_name, "role": body.role}
