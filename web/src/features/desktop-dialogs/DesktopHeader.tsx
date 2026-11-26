@@ -151,7 +151,7 @@ function DesktopHeaderBar(): JSX.Element {
       aria-label={t('desktopHeader.label')}
       // Wrapped status/candidate copy must leave room for Main navigation at
       // 760×560 / 200% text. All header content stays reachable by scrolling.
-      className="border-border-default bg-surface-canvas flex max-h-[40vh] shrink-0 flex-wrap items-center gap-x-2 gap-y-1.5 overflow-y-auto border-b px-3 py-1.5"
+      className="border-border-default bg-surface-canvas flex max-h-2/5 shrink-0 flex-wrap items-center gap-x-2 gap-y-1.5 overflow-y-auto border-b px-3 py-1.5"
     >
       <div className="flex flex-wrap items-center gap-1.5">
         <Button
