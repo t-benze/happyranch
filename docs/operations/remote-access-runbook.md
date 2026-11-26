@@ -30,9 +30,14 @@ healthy upgrade cases with the postinst package before founder upgrade acceptanc
 For an already-READY upgrade, read Status, quit the app, reinstall the new deb
 with `sudo apt-get install -y --reinstall ./happyranch_0.1.0-1_amd64.deb`, reopen,
 wait 15 seconds, read Status, then press Turn on again once. If that press is
-refused or reports failure, wait 30 seconds and read Status; the known N3/N5
-reply can report failure after recovery. Do not add a manual daemon-reload or
-service restart. F3 upgrade acceptance uses this procedure; an identical archive
+refused with `ready-restart-failed-turn-off` after Status read failed/offline,
+wait 30 seconds and confirm Status is ready/available. Then press Turn on again
+once more: expect `enableCompleted` and both tagged LAN rules. The first refused
+press must leave no untracked firewall effect; any retained effect must be
+journaled and removable by Turn off. This is the known pre-existing N3/N5 case;
+F3 does not repair it. A second refusal on a ready/available host is a stop
+condition. Do not add a manual daemon-reload or service restart. F3 upgrade
+acceptance uses this procedure; an identical archive
 reinstall does not model replacement by a different build's unit-file mtimes.
 
 ## Managed home LAN firewall (THR-327 F3)
@@ -43,7 +48,7 @@ subnet to the Headscale listener IP and commented `happyranch-home-headscale`.
 The same dial-IP selector supplies the interface/address; its kernel prefix
 must yield an unambiguous private network no wider than /16. Otherwise Status
 reports `skipped_subnet_rejected` and F2's advisory remains available. Absent or
-inactive UFW is a no-op. Firewalld/raw nftables: advisory only, no mutation.
+inactive UFW is a no-op. Firewalld/raw nftables receive F2 advice only, with no F3 mutation.
 The helper never enables/disables/resets/reorders UFW or issues a separate reload.
 
 Existing hand-added rules coexist: an identical untagged/differently commented
@@ -97,7 +102,9 @@ for an activation with a retained firewall plan.
 `skipped_ufw_inactive`, `skipped_ufw_lock_unavailable`, `skipped_subnet_rejected`,
 `removed`; pending intents or
 `unverified` require recovery/inspection. The per-port fields report recorded
-activation effects from the protected journal without an extra UFW child.
+activation effects read in the existing setup-status child from the protected
+journal. A skipped or timed-out F2 advice probe does not erase these fields;
+no extra UFW child is needed for the recorded effects.
 They do not prove current live-rule presence or packet reachability; Enable
 and cleanup verify live rules.
 

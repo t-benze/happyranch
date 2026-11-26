@@ -495,6 +495,17 @@ class HelperLifecycleBackend:
         self.io.publish_invite_config(_activation_directory=directory)
         check()
 
+    def _recorded_firewall(self, uid: int, result: dict) -> dict:
+        try:
+            if self.store.current() is not None and self.store.current().release_uid == uid:
+                ports = HomeLANFirewall(HomeActivationTransactionStore(
+                    root=self.io.root, root_owner=self.io.root_owner)).status(timeout=.001)
+                if ports is not None:
+                    result['ports'] = ports
+        except Exception:
+            pass  # Missing F3 evidence never erases setup or the F2 advice.
+        return result
+
     def dispatch(self, method: str, uid: int, step: str, expected: str | None, *,
                  revoke_succeeded: bool = False, deadline: float | None = None,
                  before_commit: Callable[[], None] | None = None) -> dict:
@@ -511,17 +522,11 @@ class HelperLifecycleBackend:
         if method == 'Enable' and step == 'firewall' and expected is None:
             remaining = 2.0 if deadline is None else deadline - time.monotonic()
             result = {'firewall': inspect_ufw(timeout=min(1.0, remaining / 2))}
-            try:
-                if self.store.current() is not None and self.store.current().release_uid == uid:
-                    ports = HomeLANFirewall(HomeActivationTransactionStore(
-                        root=self.io.root, root_owner=self.io.root_owner)).status(timeout=max(.001, remaining / 2))
-                    if ports is not None:
-                        result['ports'] = ports
-            except Exception:
-                pass  # F3 observation failure never erases the original F2 advice.
-            return result
+            return self._recorded_firewall(uid, result)
         if method == 'Enable' and step == 'status' and expected is None:
-            return self.setup_status(uid)
+            # Reuse this already-required child: late optional advice can run
+            # out of time without losing the protected journal's effects.
+            return self._recorded_firewall(uid, self.setup_status(uid))
         if type(expected) is not str or self.capture(method, uid) != expected:
             raise ActivationRefused()
         if method == 'RetryPolicyRenewal' and step == 'renew':

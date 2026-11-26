@@ -220,8 +220,15 @@ class HomeLifecycleClient:
         if self.method != 'Enable':
             raise GenerationUnavailable()
         value = self._call('status', None, remaining)
-        if set(value) != {'setup'} or type(value['setup']) is not str or value['setup'] not in SETUP_STATES:
+        if (set(value) not in ({'setup'}, {'setup', 'ports'}) or type(value['setup']) is not str
+                or value['setup'] not in SETUP_STATES):
             raise GenerationUnavailable()
+        if 'ports' in value:
+            if __package__:
+                from .status_v2 import validate_firewall_ports
+            else:
+                from happyranch_fixed_status_v2 import validate_firewall_ports
+            validate_firewall_ports(value['ports'])
         return value
 
     def invite_status(self, observed: GenerationSnapshot, remaining: float) -> dict:

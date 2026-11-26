@@ -282,14 +282,14 @@ class RemoteAccessHelper:
                     setup = _status_v2.SetupObservation(_status_v2.SetupPhase(phase), 0)
                 closed = False
                 if observed is None:
-                    snapshot, closed, phase = self._status_snapshot(uid, deadline)
+                    snapshot, closed, phase, ports = self._status_snapshot(uid, deadline)
                 else:
                     try:
-                        snapshot, closed, phase = self._status_snapshot(uid, deadline)
+                        snapshot, closed, phase, ports = self._status_snapshot(uid, deadline)
                     except Refused as error:
                         if error.category != 'unavailable':
                             raise
-                        snapshot = None
+                        snapshot, ports = None, None
                 if snapshot is not None:
                     setup = _status_v2.SetupObservation(_status_v2.SetupPhase(
                         'in_progress' if phase == 'pending' else phase), 0)
@@ -321,15 +321,16 @@ class RemoteAccessHelper:
                     return settled(raw, None)
                 if setup is not None:
                     setup = _status_v2.SetupObservation(setup.state, int(time.monotonic() - observed_at))
-                invite, cleanup = self._invite_status(uid, observed, deadline)
+                invite, cleanup = self._invite_status(uid, observed, deadline - .3)
                 policy = None
                 try:
                     state = _helper_generation.HomeLifecycleClient('RetryPolicyRenewal', uid).policy_status(
-                        deadline - time.monotonic())
+                        deadline - time.monotonic() - .3)
                     policy = _status_v2.PolicyObservation(_status_v2.PolicyState(state['policy']), 0)
                 except Exception:
                     pass  # Unavailable evidence remains unknown, never current.
-                firewall = None
+                firewall = (_status_v2.FirewallObservation(_status_v2.FirewallState.UNVERIFIED, 0, ports)
+                            if ports is not None else None)
                 try:
                     # Keep encoding/delivery ahead of the 1.9s watchdog within
                     # the original 2s deadline. Advice must not erase facts.
@@ -337,7 +338,7 @@ class RemoteAccessHelper:
                     if remaining > .1:
                         firewall_client = _helper_generation.HomeLifecycleClient('Enable', uid)
                         state = firewall_client.firewall_status(remaining)
-                        ports = getattr(firewall_client, 'firewall_ports', None)
+                        ports = getattr(firewall_client, 'firewall_ports', None) or ports
                         if state != 'unknown' or ports is not None:
                             firewall = _status_v2.FirewallObservation(_status_v2.FirewallState(
                                 state if state != 'unknown' else 'unverified'), 0, ports)
@@ -399,7 +400,7 @@ class RemoteAccessHelper:
             raise Refused('changed')
         return snapshot
 
-    def _status_snapshot(self, uid: int, deadline: float) -> tuple[Snapshot, bool, str]:
+    def _status_snapshot(self, uid: int, deadline: float) -> tuple[Snapshot, bool, str, dict | None]:
         """Display-only absence proof; never supplies a mutation's snapshot.
 
         A missing connector proves no setup phase. Reuse the unchanged Enable
@@ -408,13 +409,14 @@ class RemoteAccessHelper:
         """
         try:
             snapshot = self._snapshot(uid)
-            state = _helper_generation.HomeLifecycleClient('Enable', uid).setup_status(
-                deadline - time.monotonic())['setup']
+            details = _helper_generation.HomeLifecycleClient('Enable', uid).setup_status(
+                deadline - time.monotonic())
+            state = details['setup']
             if state == 'ready' and not snapshot.ready:
                 state = 'runtime_unavailable'
             if state != 'ready':
                 snapshot = replace(snapshot, phase=state, ready=False)
-            return snapshot, False, state
+            return snapshot, False, state, details.get('ports')
         except Refused as error:
             if error.category != 'unavailable':
                 raise
@@ -438,19 +440,20 @@ class RemoteAccessHelper:
             # A ready receipt can outlive stopped units or B6's failed-revoke
             # partial publication. This is display only, never Off/revoke proof.
             try:
-                state = _helper_generation.HomeLifecycleClient('Enable', uid).setup_status(
-                    deadline - time.monotonic())['setup']
+                details = _helper_generation.HomeLifecycleClient('Enable', uid).setup_status(
+                    deadline - time.monotonic())
+                state = details['setup']
                 if state == 'off':
                     raise ValueError()  # Keep the strict absence proof above.
                 if state == 'ready':
                     state = 'runtime_unavailable'
-                return Snapshot(0, uid, False, state, False, None, ()), False, state
+                return Snapshot(0, uid, False, state, False, None, ()), False, state, details.get('ports')
             except Exception:
                 if isinstance(error, _helper_generation.GenerationUnavailable):
                     category = 'unverified' if error.category == 'unknown' else error.category
                     raise Refused('host-state-unrecognized-' + category) from None
                 raise Refused('host-state-unrecognized-unverified') from None
-        return Snapshot(0, uid, True, 'off', False, None, ()), True, 'off'
+        return Snapshot(0, uid, True, 'off', False, None, ()), True, 'off', None
 
     def _target(self, method: str, sender: str, snapshot: Snapshot) -> Device:
         target = (snapshot.pending if method != 'RevokeSelected' else

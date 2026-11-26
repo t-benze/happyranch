@@ -1400,7 +1400,7 @@ chosen by `select_lan_dial_ip`. That selector stays IPv4/RFC1918; F3 adds no
 IPv6 selection. The exact unique network must contain the dial IP, be private
 RFC1918/ULA, and be no wider than /16. Missing/ambiguous, public or wider
 prefixes skip the effect and retain F2 advice. Absent/inactive UFW is a no-op.
-Firewalld and raw nftables remain advisory-only: no mutation through either.
+Firewalld and raw nftables receive F2 advice only: no F3 mutation through either.
 
 The packaged root helper retains `ProtectSystem=strict`, `ProtectHome=read-only`,
 `PrivateTmp=yes` and `NoNewPrivileges=yes`. Its only F3 sandbox carve-out is
@@ -1453,9 +1453,14 @@ later becomes inactive, ownership stays recorded for Turn off cleanup.
 For an already-READY upgrade, read Status, quit the app, reinstall the new deb
 with `sudo apt-get install -y --reinstall ./happyranch_0.1.0-1_amd64.deb`, reopen,
 wait 15 seconds, read Status, then press Turn on again once. If that press is
-refused or reports failure, wait 30 seconds and read Status; the known N3/N5
-reply can report failure after recovery. Do not add a manual daemon-reload or
-service restart. F3 upgrade acceptance uses this procedure; an identical archive
+refused with `ready-restart-failed-turn-off` after Status read failed/offline,
+wait 30 seconds and confirm Status is ready/available. Then press Turn on again
+once more: expect `enableCompleted` and both tagged LAN rules. The first refused
+press must leave no untracked firewall effect; any retained effect must be
+journaled and removable by Turn off. This is the known pre-existing N3/N5 case;
+F3 does not repair it. A second refusal on a ready/available host is a stop
+condition. Do not add a manual daemon-reload or service restart. F3 upgrade
+acceptance uses this procedure; an identical archive
 reinstall does not model replacement by a different build's unit-file mtimes.
 
 StatusV2 optionally carries `firewall.ports`; native/CLI Status projects it as
@@ -1465,8 +1470,9 @@ StatusV2 optionally carries `firewall.ports`; native/CLI Status projects it as
 `skipped_ufw_absent`, `skipped_ufw_inactive`, `skipped_ufw_lock_unavailable`,
 `skipped_subnet_rejected`, plus
 `pending`, `add_intent`, `remove_intent`, `removed`, `unverified` during recovery.
-These are recorded activation effects read from the protected journal without
-an additional UFW child. They do not assert current live-rule presence,
+These are recorded activation effects read from the protected journal in the
+existing setup-status child. They survive a skipped or timed-out F2 advice
+probe without an additional UFW child. They do not assert current live-rule presence,
 packet reachability or setup readiness. Enable and cleanup verify live rules.
 F2 advice and the original Status deadline remain independent; observation
 failure never erases other facts. Frames without this extension remain valid.

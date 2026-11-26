@@ -1368,7 +1368,8 @@ def test_lifecycle_public_mount_fresh_auth_and_audit(
         v.helper.audit.outcome = late_audit
     for _ in range(2):
         v.admit()
-        assert v.helper.lifecycle_result == {'outcome': setup, 'residue': []}
+        assert v.helper.lifecycle_result == ({'outcome': setup, 'residue': [], 'firewallWarning': 'unverified'}
+                                             if setup == 'uncertain' else {'outcome': setup, 'residue': []})
         assert v.helper.inflight is None
         v.renew()
     assert [row['outcome'] for row in map(json.loads, v.helper.audit.path.read_text().splitlines())
@@ -2886,7 +2887,7 @@ def test_thr327_firewall_public_preflight(mount: Any, state: str) -> None:
 
 
 @pytest.mark.parametrize('state', ['likely_blocked', 'unverified', 'clear', 'unknown',
-                                  'timeout', 'error', 'short-budget'])
+                                  'timeout', 'error', 'short-budget', 'short-budget-ports'])
 def test_thr327_firewall_ready_status(mount: Any, monkeypatch: pytest.MonkeyPatch, state: str) -> None:
     from runtime.remote_access import helper_generation as generation
     v = mount
@@ -2907,10 +2908,13 @@ def test_thr327_firewall_ready_status(mount: Any, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args=(), **kw:
                         SimpleNamespace(start=lambda: target(*args)))
     def policy_status(remaining: float) -> dict:
-        if state == 'short-budget':
+        if state in ('short-budget', 'short-budget-ports'):
             time.sleep(1.65)  # Earlier observations leave too little advice time.
         return {'policy': 'current'}
     v.reader.policy_status = Mock(side_effect=policy_status)
+    ports = {'8443/tcp': 'added', '3478/udp': 'added'}
+    if state == 'short-budget-ports':
+        v.reader.setup_status.return_value = {'setup': 'ready', 'ports': ports}
     budgets = []
     def child(command: tuple, **options: Any) -> Any:
         assert command == generation.LIFECYCLE_COMMAND
@@ -2943,11 +2947,13 @@ def test_thr327_firewall_ready_status(mount: Any, monkeypatch: pytest.MonkeyPatc
     assert result['version'] == 2
     assert result['setup']['state'] == 'ready' and result['runtime']['state'] == 'available'
     assert result['policy']['state'] == 'current'
-    if state in ('unknown', 'timeout', 'error', 'short-budget'):
+    if state == 'short-budget-ports':
+        assert result['firewall'] == {'state': 'unverified', 'age_seconds': 0, 'ports': ports}
+    elif state in ('unknown', 'timeout', 'error', 'short-budget'):
         assert 'firewall' not in result
     else:
         assert result['firewall'] == {'state': state, 'age_seconds': 0}
-    if state == 'short-budget':
+    if state in ('short-budget', 'short-budget-ports'):
         v.reader.firewall_status.assert_not_called()
         assert budgets == []
     else:

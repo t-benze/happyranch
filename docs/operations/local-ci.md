@@ -4265,7 +4265,9 @@ data-only `/usr/lib/tmpfiles.d/happyranch-ufw-lock.conf`, its root:root 0644
 archive metadata and md5sums entry. The existing installed-contract check
 retains main's exact `control`, `md5sums` and configure-only `postinst`
 contract in DEBIAN. `test_status_journal_without_ufw` additionally verifies
-backend per-port facts without a live UFW worker or journal/audit mutation;
+backend per-port facts in both firewall and setup-status replies without a live
+UFW worker or journal/audit mutation. The mounted Status table additionally
+requires those facts when slow policy observation leaves no advice budget;
 the installed lane must still prove the full unchanged Status watchdog.
 
 F2 firewall fixtures and the real helper admission/status mount extend the

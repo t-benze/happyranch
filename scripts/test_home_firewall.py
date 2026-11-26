@@ -25,10 +25,11 @@ Four answers (no test-only production seams in any case):
   during B7. B4 tests predate F3.
 * test_status_ports: public V2 roundtrip and native host projection; regression
   = discard/reject the per-port extension. F2 cases carry only aggregate advice.
-* test_status_journal_without_ufw: backend Status returns the recorded per-port
+* test_status_journal_without_ufw [firewall/status]: backend Status returns the recorded per-port
   effect without a live UFW worker, retaining journal/audit bytes. Regression =
   reintroduce the extra UFW read and lose recorded facts on its timeout. The
   projection-only test above does not exercise the backend or its read budget.
+  The status case also exercises the fixed child-response decoder.
   No production seam; the existing native fixture owns activation effects.
 * test_refused_enable_keeps_rules [unauthenticated/already_ready]: observable
   rules/journal unchanged on backend admission refusal; regression = run cleanup
@@ -428,7 +429,8 @@ def test_status_ports(ports: dict[str, str]) -> None:
     assert parser.host_details(snapshot, raw.decode())['firewallPorts'] == ports
 
 
-def test_status_journal_without_ufw(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('step', ['firewall', 'status'])
+def test_status_journal_without_ufw(step: str, composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     v = composition
     NativeUFW(v, monkeypatch)
     start(v)
@@ -440,9 +442,15 @@ def test_status_journal_without_ufw(composition: Any, monkeypatch: pytest.Monkey
         raise f.subprocess.TimeoutExpired('ufw', kwargs['timeout'])
 
     monkeypatch.setattr(f, '_ufw', unavailable)
-    result = v.lifecycle.dispatch('Enable', os.getuid(), 'firewall', None,
+    result = v.lifecycle.dispatch('Enable', os.getuid(), step, None,
                                   deadline=time.monotonic() + .1)
-    assert result == {'firewall': 'clear', 'ports': {'8443/tcp': 'added', '3478/udp': 'added'}}
+    assert result == {('firewall' if step == 'firewall' else 'setup'):
+                      ('clear' if step == 'firewall' else 'ready'),
+                      'ports': {'8443/tcp': 'added', '3478/udp': 'added'}}
+    if step == 'status':
+        from runtime.remote_access.helper_generation import HomeLifecycleClient
+        monkeypatch.setattr(HomeLifecycleClient, '_call', lambda *args: result)
+        assert HomeLifecycleClient('Enable', os.getuid()).setup_status(.1) == result
     assert calls == []
     assert (v.transactions.read_optional().to_bytes(), v.path(str(AUDIT_PATH)).read_bytes()) == before
 
