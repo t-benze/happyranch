@@ -56,6 +56,9 @@ def test_enable_preparation_child_round_trip(
     monkeypatch.setattr(backend, 'ManagedInstaller', lambda **kw: v.io)
     frames = []
     def child(command: tuple, **kwargs: Any) -> Any:
+        if command == ('/usr/sbin/ufw', 'status', 'verbose'):
+            return SimpleNamespace(returncode=0, stdout=b'Status: inactive\n')
+        assert command == generation.LIFECYCLE_COMMAND
         output, errors = io.StringIO(), io.StringIO()
         with monkeypatch.context() as patch:
             patch.setattr(sys, 'argv', ['home_activation_backend.py'])
@@ -308,6 +311,9 @@ def test_enable_preparation_production_trace(
     monkeypatch.setattr(backend, 'ManagedInstaller', lambda **kw: v.io)
     children, signals = [], []
     def child(command: tuple, **kwargs: Any) -> Any:
+        if command == ('/usr/sbin/ufw', 'status', 'verbose'):
+            return SimpleNamespace(returncode=0, stdout=b'Status: inactive\n')
+        assert command == generation.LIFECYCLE_COMMAND
         out, err = io.StringIO(), io.StringIO()
         with monkeypatch.context() as patch:
             patch.setattr(sys, 'argv', ['home_activation_backend.py'])
