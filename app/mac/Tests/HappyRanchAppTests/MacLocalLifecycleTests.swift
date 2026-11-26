@@ -76,7 +76,15 @@ extension AppSchemeSwitchTests {
     /// Jenkins change, synthetic supervisor state or simulated termination.
     @MainActor
     func testBridgeOwnsRealChildStartStopRestartAndQuit() async throws {
-        NSApplication.shared.finishLaunching()
+        let application = NSApplication.shared
+        let previousPolicy = application.activationPolicy()
+        Self.logNativeSheetState("lifecycle setup: before activation")
+        let activated = application.setActivationPolicy(.regular)
+        application.finishLaunching()
+        application.activate(ignoringOtherApps: true)
+        Self.logNativeSheetState("lifecycle setup: setActivationPolicy returned \(activated)")
+        defer { application.setActivationPolicy(previousPolicy) }
+        await Self.probeNativeSheetVenue("lifecycle")
         let (root, scheme, view, _) = try fixture()
         defer {
             scheme.close()
@@ -242,10 +250,19 @@ extension AppSchemeSwitchTests {
         XCTAssertNotEqual(second.processIdentifier, first.processIdentifier)
         try await observeBusyThenReady()
         let presented = XCTNSNotificationExpectation(name: NSWindow.willBeginSheetNotification, object: window)
-        try await begin("local.restart")
+        Self.logNativeSheetState("lifecycle: scheduling Restart trigger Task", window: window, scheme: scheme)
+        let restart = Task { @MainActor in
+            // This logs the test trigger, not the internal MacLocalControls Task.
+            Self.logNativeSheetState("lifecycle: Task body entered; calling real JS Restart bridge", window: window, scheme: scheme)
+            try await begin("local.restart")
+            Self.logNativeSheetState("lifecycle: JS Restart trigger returned", window: window, scheme: scheme)
+        }
+        defer { restart.cancel() }
         let presentation = await XCTWaiter.fulfillment(of: [presented], timeout: 10)
+        Self.logNativeSheetState("lifecycle: Restart waiter=\(presentation)", window: window, scheme: scheme)
         XCTAssertEqual(presentation, .completed, "Main must announce the real Restart sheet")
         _ = try XCTUnwrap(window.attachedSheet, "Restart consent must attach to Main")
+        try await restart.value
         XCTAssertTrue(second.isRunning, "Restart must wait for consent")
         let consenting = try await status("local.status")
         XCTAssertEqual(try service(consenting)["busy"] as? Bool, true)

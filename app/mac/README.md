@@ -173,6 +173,14 @@ Both consent keepers register Main's `willBeginSheetNotification` before Restart
 and await `XCTWaiter.fulfillment`, leaving the main queue/MainActor free for the
 production `NSAlert.beginSheetModal` path. They do not pump a nested run loop
 inside a main-queue block; actual sheet/default/name/retention assertions remain.
+The two SwiftPM keepers explicitly select regular activation policy and activate
+NSApp, matching product launch, then restore the previous policy. Each logs
+timestamped Task-entry, app/window/prompt-window state and a plain NSAlert sheet
+probe on a throwaway window. The probe is diagnostic only and never replaces or
+skips the real Main-attached Restart assertions; their 5s/10s bounds are unchanged.
+The lifecycle Task-entry record identifies the test's JS trigger, not the
+internal MacLocalControls task. Activation setup is a source-supported fix
+attempt; whether this venue can present sheets still requires native execution.
 `AppSchemeSwitchTests.testBridgeOwnsRealChildStartStopRestartAndQuit` runs in the
 existing unfiltered headless XCTest command. It drives the actual Main JS bridge,
 MacLocalControls and AppDelegate supervisor through Start/Stop/Restart, accepts
