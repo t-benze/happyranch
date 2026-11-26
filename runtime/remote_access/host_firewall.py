@@ -124,7 +124,8 @@ def observe_ufw(*, timeout: float = 2.0) -> UFWObservation:
     try:
         result = subprocess.run(('/usr/sbin/ufw', 'status', 'verbose'),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            env={'LC_ALL': 'C', 'LANG': 'C'}, cwd='/', timeout=min(2.0, timeout), check=False)
+            env={'LC_ALL': 'C', 'LANG': 'C', 'PATH': '/usr/sbin:/usr/bin:/sbin:/bin'},
+            cwd='/', timeout=min(2.0, timeout), check=False)
     except FileNotFoundError:
         return UFWObservation('unknown', 'absent')
     except (OSError, ValueError, subprocess.TimeoutExpired):

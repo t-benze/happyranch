@@ -4258,6 +4258,13 @@ UFW becomes inactive, admission-refusal preservation, the real CLI startup
 identity, exact-file sandbox shape, missing/read-only lock skips before either
 rule, and uncertain cleanup with retained ownership. Keep the F2 checks below. Neither suite is added to CI; required checks stay lint/static only.
 
+The existing F2 subprocess table and F3 native fixture assert the fixed
+`PATH=/usr/sbin:/usr/bin:/sbin:/bin` used by UFW and its sysctl child.
+`/usr/bin/python3 -B packaging/linux/test_build_deb.py -v` also checks the
+data-only `/usr/lib/tmpfiles.d/happyranch-ufw-lock.conf`, its root:root 0644
+archive metadata and md5sums entry. The existing installed-contract check
+continues to require exactly `control` and `md5sums` in DEBIAN.
+
 F2 firewall fixtures and the real helper admission/status mount extend the
 existing standalone script selection:
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_home_activation_backend.py scripts/test_helper_mount.py -k thr327_firewall -q --tb=short`.

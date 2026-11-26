@@ -128,7 +128,8 @@ def _ufw(action: str, subnet: str, dial_ip: str, index: int, *, timeout: float =
         raise HomeActivationError()
     result = subprocess.run(('/usr/bin/python3', '-I', '-c', _WORKER),
         input=json.dumps(dict(action=action, subnet=subnet, dial_ip=dial_ip, index=index)).encode(),
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env={'LC_ALL': 'C', 'LANG': 'C'},
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        env={'LC_ALL': 'C', 'LANG': 'C', 'PATH': '/usr/sbin:/usr/bin:/sbin:/bin'},
         cwd='/', timeout=timeout, check=False)
     if result.returncode != 0 or len(result.stdout) > 1024:
         raise HomeActivationError('firewall')

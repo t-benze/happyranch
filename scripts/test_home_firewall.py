@@ -32,6 +32,12 @@ Four answers (no test-only production seams in any case):
 * test_worker_cli_identity: worker constructs the distro frontend with the real
   CLI path, so UFW's security checks can stat it. Regression = leave Python -c
   argv until mutation. Existing fake frontend never observes startup argv.
+  The shared NativeUFW fixture also checks the fixed subprocess PATH in
+  test_worker_cli_identity, test_lock_unavailable, test_owned_lock_unavailable,
+  test_lifecycle_rules, test_interrupted_add, test_failed_enable_rolls_back,
+  test_interrupted_helper_enable and test_refused_enable_keeps_rules. Dropping
+  PATH breaks real UFW's sysctl lookup; the F2 advice fixture covers a separate
+  subprocess boundary and never starts this worker. No production seam added.
 * test_lock_unavailable [missing/readonly, active/unverified]: real worker lock-open failure yields
   durable per-port skip, public Status, unchanged rules and successful Turn off;
   next Enable can acquire rules after access returns. Regression = allow UFW
@@ -137,7 +143,7 @@ class NativeUFW:
 
     def run(self, argv: tuple, **kwargs: Any) -> Any:
         assert argv == ('/usr/bin/python3', '-I', '-c', f._WORKER)
-        assert kwargs['cwd'] == '/' and kwargs['env'] == {'LC_ALL': 'C', 'LANG': 'C'}
+        assert kwargs['cwd'] == '/' and kwargs['env'] == {'LC_ALL': 'C', 'LANG': 'C', 'PATH': '/usr/sbin:/usr/bin:/sbin:/bin'}
         self.worker_sys = SimpleNamespace(stdin=io.StringIO(kwargs['input'].decode()), argv=['-c'])
         ui = SimpleNamespace(get_status=lambda: 'Status: active' if self.active else 'Status: inactive',
             backend=SimpleNamespace(get_rules_ipv4=lambda: self.rules, get_rules_ipv6=lambda: []))

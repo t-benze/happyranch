@@ -507,6 +507,8 @@ class DebPackageTests(unittest.TestCase):
             'ReadWritePaths=-/run/happyranch-headscale',
             'ReadWritePaths=-/run/happyranch-connector',
             'ReadWritePaths=-/run/happyranch-tsnet-sidecar',
+            "# UFW's mandatory lock, without making /run writable. Missing at start => skip.",
+            'ReadWritePaths=-/run/ufw.lock',
             'ReadWritePaths=-/opt/happyranch',
         ])
 
@@ -526,6 +528,29 @@ class DebPackageTests(unittest.TestCase):
     def test_helper_unit_reference_matches_shipped_bytes(self) -> None:
         self.assertEqual((BUILDER.parent / 'systemd/happyranch-remote-access-helper.service').read_bytes(),
                          self.helper_unit_reference())
+
+    def test_packaged_ufw_lock_tmpfiles(self) -> None:
+        # Contract: dpkg installs only data for the narrow boot-time UFW lock.
+        # Regression: omit the copy, change its path/metadata/type, or widen it
+        # to a directory grant. The installed-contract test owns DEBIAN contents
+        # but does not check this tmpfiles data. No test-only production seam.
+        expected = b'f /run/ufw.lock 0644 root root -\n'
+        destination = 'usr/lib/tmpfiles.d/happyranch-ufw-lock.conf'
+        result = self.build(self.payload('x86_64'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deb = self.work / 'dist/happyranch_0.1.0-1_amd64.deb'
+        data = subprocess.check_output(['dpkg-deb', '--fsys-tarfile', deb])
+        with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+            self.assertIn('./' + destination, archive.getnames())
+            member = archive.getmember('./' + destination)
+            self.assertTrue(member.isfile())
+            self.assertEqual((member.uname, member.gname, member.uid, member.gid, member.mode),
+                             ('root', 'root', 0, 0, 0o644))
+            self.assertEqual(archive.extractfile(member).read(), expected)
+        control = self.work / 'tmpfiles-control'
+        subprocess.run(['dpkg-deb', '-e', deb, control], check=True)
+        digest = hashlib.md5(expected, usedforsecurity=False).hexdigest()
+        self.assertIn(f'{digest}  {destination}', (control / 'md5sums').read_text().splitlines())
 
     def test_packaged_user_unit_directives(self) -> None:
         self.assertEqual(UNIT.read_text().splitlines(), [

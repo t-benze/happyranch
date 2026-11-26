@@ -2104,6 +2104,10 @@ def ufw_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path
 ])
 def test_thr327_firewall_read_only_child(composition: Any, ufw_rules: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
                                        case: str, output: str, state: str) -> None:
+    # All rows observe the fixed child argv/env and advice with zero effects.
+    # Dropping PATH breaks distro UFW's sysctl lookup (MEM-993 D1). Parser-only
+    # tests do not observe this process boundary; F3 uses a different worker.
+    # This existing test needs no test-only production seam.
     import subprocess
     v = composition
     prefix = 'Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), deny (routed)\nNew profiles: skip\n'
@@ -2116,7 +2120,7 @@ def test_thr327_firewall_read_only_child(composition: Any, ufw_rules: dict[str, 
     calls = []
     def run(argv: tuple, **kwargs: Any) -> Any:
         calls.append(argv)
-        assert kwargs['env'] == {'LC_ALL': 'C', 'LANG': 'C'}
+        assert kwargs['env'] == {'LC_ALL': 'C', 'LANG': 'C', 'PATH': '/usr/sbin:/usr/bin:/sbin:/bin'}
         assert 0 < kwargs['timeout'] <= 2
         return SimpleNamespace(returncode=0, stdout=raw.encode())
     monkeypatch.setattr(subprocess, 'run', run)

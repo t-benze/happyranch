@@ -51,10 +51,19 @@ inspection. `/run` stays read-only; all existing hardening remains enabled.
 The `-` means systemd ignores an absent file at service start, so availability
 is checked without creating the lock before either rule can be added. Do not
 assume `ufw.service` creates it at boot: its distro startup script differs from
-the UFW CLI, and boot-time availability needs disposable-VM evidence.
+the UFW CLI. The package instead ships
+`/usr/lib/tmpfiles.d/happyranch-ufw-lock.conf`, containing only
+`f /run/ufw.lock 0644 root root -`. systemd-tmpfiles creates this empty lock at
+boot with UFW's own mode and owner; it does not run UFW or change any rule.
+The package adds no maintainer script, install-time tmpfiles command,
+daemon-reload or helper restart. Install/upgrade depends on the distro's
+existing triggers and the helper's existing D-Bus activation lifecycle.
 If absent or read-only, both ports show `skipped_ufw_lock_unavailable`
-("skipped: ufw lock unavailable"); Enable adds neither rule. Check the lock and
-the helper's effective mount policy before retrying through the normal action.
+("skipped: ufw lock unavailable"); Enable adds neither rule. If Status says
+"skipped: ufw lock unavailable", reboot once and press Turn on again. This can
+be needed after a fresh install or upgrade before the new lock and unit's mount
+are available together. Check the lock and helper's effective mount policy if
+the skip persists after reboot.
 Never make `/run` writable or run UFW outside the helper to bypass this skip.
 If rules were already acquired, unavailable cleanup retains its intent and
 reports uncertainty instead of claiming removal. Existing rules remain owned

@@ -1406,8 +1406,15 @@ The packaged root helper retains `ProtectSystem=strict`, `ProtectHome=read-only`
 `PrivateTmp=yes` and `NoNewPrivileges=yes`. Its only F3 sandbox carve-out is
 `ReadWritePaths=-/run/ufw.lock`: UFW must write its own lock even to inspect rules.
 The leading `-` skips a missing file at unit start; it grants no writable `/run`
-directory. The worker checks the existing lock without creating it before any
-rule effect. If missing or read-only, both ports record
+directory. The package ships `/usr/lib/tmpfiles.d/happyranch-ufw-lock.conf`
+containing only `f /run/ufw.lock 0644 root root -`, for systemd-tmpfiles to
+create the empty lock at boot. This matches UFW's lock metadata and creates no
+rule. The deb has no maintainer scripts: DEBIAN contains only `control` and
+`md5sums`. It adds no install-time tmpfiles invocation, daemon-reload or helper
+restart; distro triggers and D-Bus activation retain their existing behavior.
+If install/upgrade leaves the lock unavailable in the helper namespace, reboot
+once and press Turn on again. The worker checks the existing lock without
+creating it before any rule effect. If missing or read-only, both ports record
 `skipped_ufw_lock_unavailable` ("skipped: ufw lock unavailable") in the journal
 and Status. Enable can complete without firewall effects; Turn off has no F3
 rule to remove. Repeating Enable after lock access returns can acquire the rules.
