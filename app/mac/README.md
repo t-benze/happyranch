@@ -80,8 +80,12 @@ are retained. Health compatibility is invalidated before local interruption and
 rechecked after Start/Restart/reconnect with revision fencing. Start/Restart carry
 this computer’s readmission even under remote selection. No local bearer is
 cached: each native request rereads daemon.token through the existing provider.
-An `app.status` read preserves published busy readiness without starting another
-health admission; the readiness producer publishes the later busy/ready change.
+An `app.status` read preserves producer-published busy readiness without starting
+another health admission. Busy from local post-effect/health admission is instead
+refreshed by Recheck through a fresh AppAPIHealth read, fenced by the current
+document, readiness revision and generation. It publishes ready once health is
+compatible and not busy, preserving Main/generation and never repeating a
+lifecycle effect.
 Update status is unknown because Sparkle’s pending app update is not an
 installed-daemon update hint. No daemon auth/bootstrap policy changes.
 

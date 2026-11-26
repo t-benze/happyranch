@@ -5,7 +5,7 @@ import HappyRanchSupervisor
 @testable import HappyRanchApp
 
 private final class SchemeHealthFixture: AppAPITransport, @unchecked Sendable {
-    let body: Data
+    private var body: Data
     private let lock = NSLock()
     private var writes = 0
     private var healthReads = 0
@@ -16,7 +16,8 @@ private final class SchemeHealthFixture: AppAPITransport, @unchecked Sendable {
     var healthInvocations: Int { lock.withLock { healthReads } }
     var pending: AppAPITransfer? { lock.withLock { held } }
     var pendingHealth: AppAPITransfer? { lock.withLock { heldHealth } }
-    func suspendNextHealth() { lock.withLock { suspendHealth = true } }
+    func suspendNextHealth() { lock.withLock { suspendHealth = true; heldHealth = nil } }
+    func setHealthBody(_ body: Data) { lock.withLock { self.body = body } }
     init(body: Data) { self.body = body }
     func appRequest(method: String, target: String, headers: [String: String], body: Data) -> AppAPITransfer {
         let transfer = AppAPITransfer()
@@ -40,7 +41,7 @@ private final class SchemeHealthFixture: AppAPITransport, @unchecked Sendable {
             suspendHealth = false; heldHealth = transfer; return true
         }) { return transfer }
         transfer.emit(.response(200, ["content-type": "application/json"]))
-        transfer.emit(.bytes(self.body)); transfer.finish()
+        transfer.emit(.bytes(lock.withLock { self.body })); transfer.finish()
         return transfer
     }
 }
@@ -200,6 +201,61 @@ final class AppSchemeLoadTests: XCTestCase {
                     let result = try await view.callAsyncJavaScript("return await window.pendingResult;", arguments: [:], in: nil, contentWorld: .page)
                     XCTAssertEqual(result as? String, "original result", detail())
                     await retainDiagnostics("pending-result")
+
+                    // Start/Restart's completed local admission can report busy
+                    // after releasing its mutation owner. C6's app.status Recheck
+                    // must read health again without relying on remote readiness.
+                    phase = "ready: local post-effect busy Recheck"
+                    let generation = scheme.generation
+                    let effects = transport.mutations
+                    let busyBody = Data(#"{"api_contract":{"current":1,"min_client":1},"update_busy":{"busy":true}}"#.utf8)
+                    let readyBody = Data(health.utf8)
+                    transport.setHealthBody(busyBody)
+                    let revision = scheme.localServiceWillChange(starting: true)
+                    let localHealth = try await AppAPIHealth.read(from: transport)
+                    scheme.localServiceDidChange(transport: transport, promptURL: nil, health: localHealth, revision: revision)
+                    let published = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(scheme.statusJSON().utf8)) as? [String: Any], detail())
+                    XCTAssertEqual(published["state"] as? String, "busy", detail("Immediate post-effect publication must retain busy"))
+                    let reads = transport.healthInvocations
+                    let stillBusy = try await view.callAsyncJavaScript("return JSON.parse(await window.happyranchConnection.call('app.status', '{}')).state;", arguments: [:], in: nil, contentWorld: .page)
+                    XCTAssertEqual(stillBusy as? String, "busy", detail())
+                    XCTAssertEqual(transport.healthInvocations, reads + 1, detail("Local Recheck must observe the health body"))
+                    transport.setHealthBody(readyBody)
+                    let rechecked = try await view.callAsyncJavaScript("return JSON.parse(await window.happyranchConnection.call('app.status', '{}'));", arguments: [:], in: nil, contentWorld: .page) as? [String: Any]
+                    XCTAssertEqual(transport.healthInvocations, reads + 2, detail("Cached busy must not strand C6"))
+                    // These are the fresh local app.status fields consumed by C6;
+                    // rendered-page acceptance remains the native qualifier's job.
+                    XCTAssertEqual(rechecked?["state"] as? String, "ready", detail())
+                    XCTAssertEqual((rechecked?["target"] as? [String: Any])?["kind"] as? String, "local", detail())
+                    XCTAssertTrue(rechecked?["incompatible"] is NSNull, detail())
+                    let freshPublication = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(scheme.statusJSON().utf8)) as? NSDictionary, detail())
+                    XCTAssertEqual(rechecked as NSDictionary?, freshPublication, detail("Recheck must publish its fresh result"))
+                    XCTAssertEqual(scheme.generation, generation, detail())
+                    XCTAssertEqual(view.url, documentURL, detail())
+                    let localRetained = try await view.callAsyncJavaScript("return [window.__hrAppContext, window.unsentDraft];", arguments: [:], in: nil, contentWorld: .page) as? [String]
+                    XCTAssertEqual(localRetained, [try XCTUnwrap(context, detail()), "unsent task brief"], detail())
+                    XCTAssertEqual(transport.mutations, effects, detail("Recheck must never repeat an effect"))
+
+                    phase = "ready: newer busy producer fences local Recheck"
+                    let nextRevision = scheme.localServiceWillChange(starting: true)
+                    scheme.localServiceDidChange(transport: transport, promptURL: nil, health: localHealth, revision: nextRevision)
+                    transport.suspendNextHealth()
+                    _ = try await view.callAsyncJavaScript("window.localRecheck = window.happyranchConnection.call('app.status', '{}'); return true;", arguments: [:], in: nil, contentWorld: .page)
+                    let clock = ContinuousClock()
+                    let recheckDeadline = clock.now.advanced(by: .seconds(5))
+                    while transport.pendingHealth == nil, clock.now < recheckDeadline { try await clock.sleep(for: .milliseconds(10)) }
+                    let staleHealth = try XCTUnwrap(transport.pendingHealth, detail())
+                    // Same state, newer producer: the older ready result must lose.
+                    scheme.updateReadiness(localHealth)
+                    staleHealth.emit(.response(200, ["content-type": "application/json"]))
+                    staleHealth.emit(.bytes(readyBody)); staleHealth.finish()
+                    let fenced = try await view.callAsyncJavaScript("return JSON.parse(await window.localRecheck).state;", arguments: [:], in: nil, contentWorld: .page)
+                    XCTAssertTrue(staleHealth.isCancelled, detail())
+                    XCTAssertEqual(fenced as? String, "busy", detail("Stale local admission must not clobber published busy"))
+                    XCTAssertEqual(scheme.generation, generation, detail())
+                    XCTAssertEqual(transport.mutations, effects, detail())
+                    scheme.updateReadiness(try AppAPIHealth(status: 200, data: readyBody))
+                    await retainDiagnostics("local-rechecked")
 
                     // Real handler messages carry the sending relay's context;
                     // a retired clean summary cannot replace new unknown evidence.

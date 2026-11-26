@@ -216,6 +216,8 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private var admission: Task<Void, Error>?
     private var readinessRevision = UUID()
     private var localInterrupted = false
+    // Local health busy is refreshable; a producer owns its next publication.
+    private var localAdmissionBusy = false
     private var documentOwners = AppSchemeOwnerSummary()
     private var document = UUID()
     private var documentContext: String?
@@ -367,6 +369,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
 
     private func advanceGeneration() {
         let old = generation
+        localAdmissionBusy = false
         generation = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         readinessRevision = UUID(); admission?.cancel(); admission = nil
         // Remove custody before cancelling or calling WebKit. An old worker
@@ -467,7 +470,8 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     /// admission, never the document, owner evidence or existing transfers.
     func updateReadiness(_ health: AppAPIHealth) {
         hostContract = health.contract; incompatibleSide = health.incompatibleSide
-        guard state != health.state else { return }
+        guard state != health.state || localAdmissionBusy else { return }
+        localAdmissionBusy = false
         state = health.state; readinessRevision = UUID()
         admission?.cancel(); admission = nil
         emitStatus()
@@ -484,6 +488,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     func localServiceWillChange(starting: Bool) -> UUID? {
         guard hasLocalTarget else { return nil }
         localInterrupted = true; readinessRevision = UUID()
+        localAdmissionBusy = false
         admission?.cancel(); admission = nil; hostContract = nil
         state = starting ? "target_starting" : "unreachable"
         for key in Array(owners.keys) {
@@ -505,6 +510,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         if let promptURL { targetID = promptURL.replacingOccurrences(of: "/api/v1", with: "") }
         hostContract = health?.contract; incompatibleSide = health?.incompatibleSide ?? "host"
         state = health?.state ?? "unreachable"
+        localAdmissionBusy = state == "busy"
         admission?.cancel(); admission = nil
         emitStatus()
     }
@@ -603,6 +609,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             self.hostContract = health.contract
             self.incompatibleSide = health.incompatibleSide
             self.state = health.state
+            self.localAdmissionBusy = self.hasLocalTarget && health.state == "busy"
             self.emitStatus()
             try health.requireReady()
         }
@@ -785,14 +792,19 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         }
         guard let item = message.body as? [String: String] else { replyHandler(nil, "unavailable"); return }
         if item == ["context": context, "command": "app.status"] {
-            if hasLocalTarget, !localInterrupted, state != "ready", state != "busy", transport != nil {
+            if hasLocalTarget, !localInterrupted, state != "ready", (state != "busy" || localAdmissionBusy), transport != nil {
                 let identity = document
+                let revision = readinessRevision, expectedGeneration = generation
                 Task { @MainActor [weak self] in
                     guard let self else { replyHandler(nil, "unavailable"); return }
                     // Explicit Recheck is admission only, never another effect.
-                    // A published busy observation stays authoritative until
-                    // the readiness producer publishes its next observation.
-                    try? await checkAdmission()
+                    // Local admission busy needs a fresh health body to recover.
+                    // Producer-owned busy still waits for its next publication;
+                    // admission's revision/generation fences reject stale reads.
+                    if document == identity, documentContext == context,
+                       readinessRevision == revision, generation == expectedGeneration {
+                        try? await checkAdmission()
+                    }
                     guard document == identity, documentContext == context else { replyHandler(nil, "unavailable"); return }
                     replyHandler(statusJSON(), nil)
                 }
