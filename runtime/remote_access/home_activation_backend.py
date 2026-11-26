@@ -586,6 +586,7 @@ class HelperLifecycleBackend:
                             require_ready()
                             coordinator._owner._managed_fragments(require_home=True)
                         self.io._reset_failed_home_units(require=require_reset)
+                        self.io._reset_failed_headscale_unit(require=require_reset, removed=False)
                         for name in ('happyranch-headscale.service', UNITS[2], UNITS[3], UNITS[0], UNITS[1]):
                             require_ready()
                             if self.io.manager.show_properties(name, ('ActiveState',)).get('ActiveState') != 'active':

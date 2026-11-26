@@ -1630,7 +1630,7 @@ def test_thr327_disable_transitional_owned_only(composition: Any, state: str) ->
     assert v.receipts.current() is None
 
 
-@pytest.mark.parametrize('stopped', [adapters._HEADSCALE, adapters._TARGET, adapters._CONNECTOR, 'both', 'start-limit-hit', 'socket-start-limit-hit'])
+@pytest.mark.parametrize('stopped', [adapters._HEADSCALE, adapters._TARGET, adapters._CONNECTOR, 'both', 'start-limit-hit', 'socket-start-limit-hit', 'headscale-start-limit-hit'])
 def test_thr327_ready_ordinary_restart(composition: Any, monkeypatch: pytest.MonkeyPatch, stopped: str) -> None:
     v = composition
     expected = v.lifecycle.capture('Enable', os.getuid())
@@ -1646,8 +1646,9 @@ def test_thr327_ready_ordinary_restart(composition: Any, monkeypatch: pytest.Mon
     if stopped in (adapters._HEADSCALE, 'both'): v.states[adapters._HEADSCALE] = 'inactive'
     if stopped in (adapters._TARGET, 'both'):
         for name in (adapters._TARGET, adapters._CONNECTOR, adapters._SIDECAR): v.states[name] = 'inactive'
-    failed_unit = 'happyranch-release-verifier.socket' if stopped == 'socket-start-limit-hit' else adapters._SIDECAR
-    if stopped in ('start-limit-hit', 'socket-start-limit-hit'):
+    failed_unit = (adapters._HEADSCALE if stopped == 'headscale-start-limit-hit' else
+                   'happyranch-release-verifier.socket' if stopped == 'socket-start-limit-hit' else adapters._SIDECAR)
+    if stopped in ('start-limit-hit', 'socket-start-limit-hit', 'headscale-start-limit-hit'):
         v.states[failed_unit] = 'failed'
         native = v.io.manager._run
         def start_limited(args: list[str], **kw: Any) -> tuple[int, str]:
@@ -1660,7 +1661,7 @@ def test_thr327_ready_ordinary_restart(composition: Any, monkeypatch: pytest.Mon
                                 deadline=time.monotonic() + 480)['outcome'] == 'ready'
     assert v.path(ACTIVATION_PATH).read_bytes() == ready and v.path(TRANSACTION_PATH).read_bytes() == txn
     assert len(v.mints) == 1
-    if stopped in ('start-limit-hit', 'socket-start-limit-hit'):
+    if stopped in ('start-limit-hit', 'socket-start-limit-hit', 'headscale-start-limit-hit'):
         assert v.calls[calls:] == [['reset-failed', failed_unit], ['start', failed_unit]]
         assert v.states[failed_unit] == 'active'
     else:
@@ -1919,8 +1920,13 @@ def test_thr327_failed_unit_reset_proof(composition: Any, monkeypatch: pytest.Mo
     assert v.states['foreign.service'] == 'failed'
 
 
-@pytest.mark.parametrize('failed_unit', [adapters._SIDECAR, 'happyranch-release-verifier.socket'])
-@pytest.mark.parametrize('reset', ['ok', 'error', 'still-failed'])
+@pytest.mark.parametrize(('failed_unit', 'reset'), [
+    (name, reset) for name in (adapters._SIDECAR, 'happyranch-release-verifier.socket', adapters._HEADSCALE)
+    for reset in ('ok', 'error', 'still-failed')
+] + [(adapters._HEADSCALE, proof) for proof in (
+    'MainPID', 'ControlPID', 'ControlGroup', 'Job', 'Id', 'Names', 'FragmentPath',
+    'DropInPaths', 'NeedDaemonReload', 'LoadState', 'SubState',
+    'missing-MainPID', 'missing-ControlPID', 'missing-ControlGroup', 'after-Job', 'after-active')])
 def test_thr327_failed_restart_turn_off_enable(composition: Any, monkeypatch: pytest.MonkeyPatch, reset: str, failed_unit: str) -> None:
     """Exercise the advice path with a marker retained across verified stop."""
     from runtime.remote_access.installer import UNITS
@@ -1939,10 +1945,31 @@ def test_thr327_failed_restart_turn_off_enable(composition: Any, monkeypatch: py
         if args[:3] == ['systemctl', 'stop', failed_unit]:
             v.calls.append(args[1:])
             return 0, ''
-        if args[:3] == ['systemctl', 'reset-failed', failed_unit] and reset != 'ok':
+        if args[:3] == ['systemctl', 'reset-failed', failed_unit] and reset in ('error', 'still-failed'):
             v.calls.append(args[1:])
             return (1 if reset == 'error' else 0), 'synthetic secret diagnostic'
-        return native(args, **kw)
+        code, output = native(args, **kw)
+        if (args[:3] == ['systemctl', 'show', adapters._HEADSCALE]
+                and '--property=Id' in args and '--property=ControlGroup' in args
+                and not v.path('/etc/systemd/system/' + adapters._HEADSCALE).exists()):
+            # The retained not-found .service still exposes Service properties.
+            # Only this final reset proof is varied, leaving prior B6 gates real.
+            if reset.startswith('missing-'):
+                key = reset.removeprefix('missing-')
+                output = '\n'.join(line for line in output.splitlines() if not line.startswith(key + '='))
+            elif reset.startswith('after-'):
+                if v.states[failed_unit] == 'inactive':
+                    key = 'Job' if reset == 'after-Job' else 'ActiveState'
+                    output = output.replace(key + '=' + ('' if key == 'Job' else 'inactive'),
+                                            key + '=' + ('42 start' if key == 'Job' else 'failed'))
+            elif reset not in ('ok', 'error', 'still-failed'):
+                values = dict(MainPID='42', ControlPID='42', ControlGroup='/live', Job='42 start',
+                    Id='foreign.service', Names=adapters._HEADSCALE + ' foreign.service',
+                    FragmentPath='/foreign.service', DropInPaths='/foreign.conf', NeedDaemonReload='yes',
+                    LoadState='loaded', SubState='running')
+                output = '\n'.join(reset + '=' + values[reset] if line.startswith(reset + '=') else line
+                                   for line in output.splitlines())
+        return code, output
     monkeypatch.setattr(v.io.manager, '_run', run)
     expected = v.lifecycle.capture('Enable', os.getuid())
     with pytest.raises(h.EnablePreparationRefused) as failure:
@@ -1956,11 +1983,13 @@ def test_thr327_failed_restart_turn_off_enable(composition: Any, monkeypatch: py
     result = v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected, revoke_succeeded=True)
     assert result == ({'outcome': 'off', 'residue': []} if reset == 'ok' else
                       {'outcome': 'partial_cleanup', 'residue': ['owned units: reset unconfirmed']})
-    assert [call for call in v.calls[calls:] if call[0] == 'reset-failed'] == [['reset-failed', failed_unit]]
+    assert [call for call in v.calls[calls:] if call[0] == 'reset-failed'] == (
+        [['reset-failed', failed_unit]] if reset in ('ok', 'error', 'still-failed', 'after-Job', 'after-active') else [])
     assert {name: (v.path('/etc/systemd/system/' + name).stat().st_ino,
                    v.path('/etc/systemd/system/' + name).read_bytes()) for name in UNITS} == units
     if reset != 'ok':
-        assert v.receipts.current() is not None and v.states[failed_unit] == 'failed'
+        assert v.receipts.current() is not None
+        assert v.states[failed_unit] == ('inactive' if reset.startswith('after-') else 'failed')
         return
     assert v.io.manager.show_properties(failed_unit, ('ActiveState', 'SubState')) == dict(ActiveState='inactive', SubState='dead')
     assert v.io.inventory().detail == 'post-disable'
@@ -1969,12 +1998,22 @@ def test_thr327_failed_restart_turn_off_enable(composition: Any, monkeypatch: py
     v.states[failed_unit] = 'failed'
     status_calls = len(v.calls)
     from runtime.remote_access.helper_generation import host_state_category
-    try:
-        v.lifecycle.setup_status(os.getuid())
-    except Exception as error:
-        assert host_state_category(error) == 'inventory'
+    if failed_unit == adapters._HEADSCALE:
+        # Immediate post-90ab9044 not-found/failed is still read as Off;
+        # it has no receipt-bound Disable/reset admission. The later native
+        # error-load/account/CA shape needs separate recovery authority too.
+        assert v.lifecycle.setup_status(os.getuid()) == {'setup': 'off'}
+        from runtime.remote_access.helper_generation import GenerationUnavailable
+        with pytest.raises(GenerationUnavailable) as unavailable:
+            v.lifecycle.capture('Disable', os.getuid())
+        assert unavailable.value.category == 'not_applicable'
     else:
-        pytest.fail('stranded failed unit must not report off')
+        try:
+            v.lifecycle.setup_status(os.getuid())
+        except Exception as error:
+            assert host_state_category(error) == 'inventory'
+        else:
+            pytest.fail('stranded failed unit must not report off')
     assert v.states[failed_unit] == 'failed'
     assert not any(call[0] == 'reset-failed' for call in v.calls[status_calls:])
     v.states[failed_unit] = 'inactive'

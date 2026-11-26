@@ -189,7 +189,8 @@ class Fixture:
             if self.fail_service: return 1, "synthetic private diagnostic"
             if args[1] == "show":
                 unit = self.root / "etc/systemd/system" / home.UNIT
-                props = dict(LoadState="loaded" if unit.exists() else "not-found",
+                props = dict(Id=home.UNIT, Names=home.UNIT, NeedDaemonReload="no",
+                             LoadState="loaded" if unit.exists() else "not-found",
                              FragmentPath=str(unit) if unit.exists() else "", DropInPaths="",
                              ActiveState="active" if self.unit_busy else "inactive",
                              SubState="running" if self.unit_busy else "dead", Job="",

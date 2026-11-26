@@ -188,8 +188,10 @@ preparation categories, including both dial spellings; Disable preserves its
 partial_cleanup/failed/uncertain categories. The four CLI-only methods report
 replaceFailedCompleted, cancelInviteCompleted, recoverInviteCompleted or
 policyRenewalCompleted with exit 0; known failure reports lifecycleFailed with
-failed/refused/partial_cleanup and exit 1. All retain effect unknown. An uncertain
-worker, lost/invalid/late receipt or transport loss retains outcomeUnknown/exit 1.
+failed/refused/partial_cleanup and exit 1. All retain effect unknown. Uncertain
+work maps to outcomeUnknown for the four CLI-only methods; valid Enable/Disable
+receipts preserve typed uncertainty, while a lost/invalid/late receipt or transport
+loss retains outcomeUnknown/exit 1.
 The caller fallback margin supplies no acceptance grace. No polling, replay,
 new window command/event or cleanup authority follows. Private worker
 outcomes/residue alone remain insufficient without the authenticated receipt.
@@ -1011,7 +1013,18 @@ not-found reload proof with only their supported PID fields.
 Re-read must prove inactive/dead. Reset failure is fixed partial cleanup during
 Turn off, never completed; real ready-restart failure keeps the Turn off advice.
 All five fragments/configs stay retained and strict inventory state sets stay
-unchanged. Headscale gains no reset caller. Status never resets; an already
+unchanged. Receipt-bound B6 also resets only the fixed Headscale service after
+its verified removal and final daemon reload, before retiring the original
+receipts. Its absent-unit proof requires exact Id/Names, not-found LoadState,
+empty FragmentPath/DropInPaths, no reload requirement, zero MainPID/ControlPID,
+empty ControlGroup/Job, dead/failed SubState, original receipt/G/O/identity/custody
+fences and a fresh inactive/dead after-read. The not-found Service properties
+are required explicitly; missing properties refuse. Ready restart uses the same
+service proof for a failed loaded Headscale unit, with exact home bytes and its
+loaded FragmentPath, before the existing boot-equivalent start. The original
+receipt/G/O/custody/deadline/no-mint/no-replay fences remain. Reset or start
+failure keeps the existing named refusal and Turn off advice.
+Status never resets; an already
 stranded failed retained unit without a receipt still needs operator recovery
 because this change adds no no-receipt Disable admission.
 

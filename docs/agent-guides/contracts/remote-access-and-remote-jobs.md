@@ -1147,7 +1147,7 @@ effects; there is no new phase/schema. V1/v2 journals already at reload, includi
 already-reloaded not-found/failed units, resume through this narrowly checked
 inventory route with unchanged authorization, caller and custody checks.
 Authenticated Turn off and ready-restart Enable additionally clear a failed
-marker for the fixed five `UNITS` names only. Turn off does this after verified
+marker for the fixed five `UNITS` names. Turn off does this after verified
 stop and final fragment form/daemon reload, before retiring cleanup evidence.
 Ready restart retains its existing receipt, G/O, custody, deadline and no-replay
 checks. Each effect freshly verifies the exact owned fragment at its fixed path,
@@ -1159,13 +1159,27 @@ execution context. These are the properties exposed by the
 [systemd Unit, Service and Socket interfaces](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.systemd1.html).
 For an absent fixed unit, `_reload_unit_state` also requires the same supported
 PID fields, not-found LoadState and no fragment/drop-ins;
-Headscale is outside `UNITS` and gains no reset caller. Reset must re-read as
+Headscale remains outside `UNITS`; receipt-bound B6 additionally resets its fixed
+service name after verified removal and final daemon reload, before retiring the
+original activation/account/publication receipts. This separate absent-unit proof
+requires exact Id/Names, not-found LoadState, empty FragmentPath/DropInPaths, no
+reload requirement, MainPID=ControlPID=0, empty ControlGroup/Job and dead/failed
+SubState. A not-found .service still exposes its Service properties; any missing
+property refuses, never defaults to zero. B6 rechecks its original receipt/G/O,
+identity, process and custody fences before reset and after its fresh after-read.
+Reset must re-read as
 inactive/dead with the same ownership/quiescence properties. Failure leaves a
 fixed `partial_cleanup` outcome with `owned units: reset unconfirmed` during
 Turn off, or the existing `ready-restart-failed-turn-off` refusal during Enable.
 No paths, native output or contents enter that result. All ordinary inventory
 state sets stay strict. Status is read-only and never resets; post-disable staged
 refusal is projected through the existing inventory/residue categories.
+Ready restart also resets a failed Headscale unit behind its unchanged
+require-ready fence: exact home unit bytes/loaded FragmentPath, Id/Names and
+the same service quiescence/after-read proof are required before the existing
+boot-equivalent start. It retains the original receipt/G/O/custody/deadline and
+no-mint/no-replay rules. A failed reset/start still names
+`ready-restart-failed-turn-off`; B6 makes that advice safe for a receipted unit.
 Disable without a receipt still uses strict Enable capture: already-stranded
 failed retained units have no new authenticated recovery admission here.
 
@@ -2222,9 +2236,10 @@ The CLI subscribes before its single send and consumes the authenticated unicast
 within the original operation budget. Enable and Disable preserve their typed
 terminal results; CancelInvite, RecoverInvite, RetryPolicyRenewal and admitted
 ReplaceFailed report their named completion or known failure. Effect remains
-`unknown`. Uncertain work or a lost/invalid/late receipt or transport loss retains
-`outcomeUnknown` / exit 1; the fallback margin for live-caller revalidation adds
-no receipt grace. There is no polling or redispatch. Private worker outcomes and
+`unknown`. Uncertain work maps to `outcomeUnknown` for the four CLI-only methods;
+valid Enable/Disable receipts preserve typed uncertainty, while a lost/invalid/late
+receipt or transport loss retains `outcomeUnknown` / exit 1; the fallback margin
+for live-caller revalidation adds no receipt grace. There is no polling or redispatch. Private worker outcomes and
 named residue alone are insufficient without that receipt. Admission cannot
 establish host denial or cleanup; no paths, identities or success claims are
 inferred from it. This is CLI source delivery, not live acceptance.
