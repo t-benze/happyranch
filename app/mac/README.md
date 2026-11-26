@@ -62,6 +62,15 @@ publishing or signed N→N+1 acceptance. Agents do not run these release operati
 
 ## Development
 
+### MAC-3: app-owned local controls
+
+Founder THR-387 seq164 retains the app-owned daemon child. Settings → HappyRanch
+on this computer owns Start, Stop and daemon-only Restart. Mac has no background
+keep-running control: it displays **Not available on Mac / Mac 上不可用**.
+Quit continues to stop the owned child; there is no LaunchAgent or service
+migration. External daemons remain observation-only. Native readmission uses
+AppAPIHealth and the existing LocalTokenCredentialProvider/daemon.token path.
+
 ### MAC-2b: Settings/Connection in Main
 
 The application menu requests the existing shared web Settings and Connection
