@@ -438,9 +438,12 @@ target/status pill and candidate line, the persistent Access wasn't saved
 warning (opens Connection) and the explicit "… unavailable · Retry" action after
 a failed open; see the bridge spec “v2 dialog request event” for the exact copy
 and what counts as a failed open.
-The header is capped at 40vh with internal vertical scrolling. Wrapped labels
-at 760×560 / 200% text keep their full content reachable while leaving room for
-Main and its navigation; the existing capture planner includes this scroll pane.
+The header is capped at one quarter of the shell height with internal vertical
+scrolling. Wrapped labels at 760×560 / 200% text keep their full content
+reachable while leaving room for
+Main and its navigation, including the smaller web viewport inside a 760×560
+native window. The existing capture planner includes this scroll pane and still
+steps by 75% of each visible viewport; its sixteen-page bound is unchanged.
 
 Linux keeps a plain default system title bar, with no custom GTK header or
 Quit/Relaunch/Exit anyway controls. Ctrl+Q and close retain native confirmation.

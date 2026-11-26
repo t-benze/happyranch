@@ -1,21 +1,8 @@
 import AppKit
-import CoreFoundation
 import WebKit
 import XCTest
 import HappyRanchSupervisor
 @testable import HappyRanchApp
-
-// Suspend the async test before processing AppKit on a synchronous main-queue
-// turn. CFRunLoopRunInMode is unavailable inside Swift 6.3 async contexts.
-@MainActor
-func macLocalAppKitTurn() async {
-    await withCheckedContinuation { continuation in
-        DispatchQueue.main.async {
-            CFRunLoopRunInMode(.defaultMode, 0.01, true)
-            continuation.resume()
-        }
-    }
-}
 
 // Reuse the existing packaged-asset/transport fixture, with no real daemon or port.
 extension AppSchemeSwitchTests {
@@ -88,17 +75,15 @@ extension AppSchemeSwitchTests {
         let app = AppDelegate(); app.bindMainScheme(scheme)
         XCTAssertTrue(scheme.localPromptWindow === window)
         XCTAssertTrue(window.isVisible)
+        // Register before scheduling the production MainActor task. XCTest's
+        // async waiter suspends this test instead of nesting a main-queue run
+        // loop, allowing both the task and AppKit's sheet work to drain.
+        let presented = XCTNSNotificationExpectation(name: NSWindow.willBeginSheetNotification, object: window)
         var answer: Bool?
         let task = Task { @MainActor in answer = await app.confirmLocalRestart() }
         defer { task.cancel() }
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(5))
-        while window.attachedSheet == nil, answer == nil, clock.now < deadline {
-            // XCTest's async actor executor is not NSApplication.run(). Let
-            // AppKit process the deferred sheet presentation as well as tasks.
-            await macLocalAppKitTurn()
-            try await clock.sleep(for: .milliseconds(5))
-        }
+        let presentation = await XCTWaiter.fulfillment(of: [presented], timeout: 5)
+        XCTAssertEqual(presentation, .completed, "Main must announce the real sheet presentation")
         let sheet = try XCTUnwrap(window.attachedSheet, "Restart must present on Main; answer=\(String(describing: answer)), visible=\(window.isVisible)")
         func buttons(_ view: NSView) -> [NSButton] {
             (view as? NSButton).map { [$0] } ?? view.subviews.flatMap { buttons($0) }

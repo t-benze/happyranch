@@ -35,6 +35,7 @@ private final class LocalLifecycleChild: ProcessControlling, @unchecked Sendable
             currentDirectoryURL: currentDirectoryURL, environment: environment,
             terminationHandler: terminationHandler)
         lock.withLock { launched.append(child) }
+        print("[MAC-3 child-launched] pid=\(child.processIdentifier)")
         return child
     }
 
@@ -104,12 +105,25 @@ extension AppSchemeSwitchTests {
         app.processController = child
         app.supervisor.configure(homeDir: home.path)
         app.bindMainScheme(scheme)
+        func assertExited(_ handle: any ProcessHandle, stage: String) {
+            let running = handle.isRunning
+            let observed = kill(handle.processIdentifier, 0), error = errno
+            print("[MAC-3 child-census] stage=\(stage) pid=\(handle.processIdentifier) running=\(running) kill0=\(observed) errno=\(error)")
+            XCTAssertFalse(running, "Must observe the actual child exit (\(stage))")
+            XCTAssertEqual(observed, -1)
+            XCTAssertEqual(error, ESRCH, "No process may remain at the owned PID (\(stage))")
+        }
         defer {
             app.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
-            // Failure cleanup does not satisfy any lifecycle assertion below.
-            for handle in child.children where handle.isRunning {
-                _ = ManagedProcessStop.stop(handle, grace: .init(term: 1, kill: 1))
-                XCTAssertFalse(handle.isRunning, "Failure cleanup must reap the disposable child")
+            // Always record every spawned PID, even when consent/bridge awaits
+            // throw. Assert Quit's result before any fallback can hide a leak.
+            print("[MAC-3 child-census] stage=quit-teardown count=\(child.children.count)")
+            for handle in child.children {
+                assertExited(handle, stage: "quit-teardown")
+                if handle.isRunning {
+                    _ = ManagedProcessStop.stop(handle, grace: .init(term: 1, kill: 1))
+                    assertExited(handle, stage: "failure-cleanup")
+                }
             }
         }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
@@ -127,7 +141,6 @@ extension AppSchemeSwitchTests {
             let clock = ContinuousClock(), deadline = ContinuousClock().now.advanced(by: .seconds(10))
             while clock.now < deadline {
                 if try await condition() { return }
-                await macLocalAppKitTurn()
                 try await clock.sleep(for: .milliseconds(10))
             }
             XCTFail("Timed out: \(label)")
@@ -174,12 +187,6 @@ extension AppSchemeSwitchTests {
         func readmission(_ value: [String: Any]) throws -> String? {
             try XCTUnwrap(value["readmission"] as? [String: Any])["state"] as? String
         }
-        func assertExited(_ handle: any ProcessHandle) {
-            XCTAssertFalse(handle.isRunning, "Must observe the actual child exit")
-            let observed = kill(handle.processIdentifier, 0), error = errno
-            XCTAssertEqual(observed, -1)
-            XCTAssertEqual(error, ESRCH, "No process may remain at the owned PID")
-        }
         func observeBusyThenReady() async throws {
             try await wait("published busy") {
                 try await js("return lifecycleStates.some(s => s.state === 'busy');") as? Bool == true
@@ -221,7 +228,7 @@ extension AppSchemeSwitchTests {
 
         try await begin("local.stop")
         let stopped = try await result()
-        assertExited(first)
+        assertExited(first, stage: "stop")
         XCTAssertEqual(app.supervisor.state, .stopped)
         XCTAssertEqual(try service(stopped)["running"] as? String, "stopped")
         try await wait("published stopped") {
@@ -234,8 +241,11 @@ extension AppSchemeSwitchTests {
         XCTAssertTrue(second.isRunning)
         XCTAssertNotEqual(second.processIdentifier, first.processIdentifier)
         try await observeBusyThenReady()
+        let presented = XCTNSNotificationExpectation(name: NSWindow.willBeginSheetNotification, object: window)
         try await begin("local.restart")
-        try await wait("real native Restart consent") { window.attachedSheet != nil }
+        let presentation = await XCTWaiter.fulfillment(of: [presented], timeout: 10)
+        XCTAssertEqual(presentation, .completed, "Main must announce the real Restart sheet")
+        _ = try XCTUnwrap(window.attachedSheet, "Restart consent must attach to Main")
         XCTAssertTrue(second.isRunning, "Restart must wait for consent")
         let consenting = try await status("local.status")
         XCTAssertEqual(try service(consenting)["busy"] as? Bool, true)
@@ -243,7 +253,7 @@ extension AppSchemeSwitchTests {
         window.endSheet(try XCTUnwrap(window.attachedSheet), returnCode: .alertSecondButtonReturn)
         let restarted = try await result()
         let third = try XCTUnwrap(app.currentHandle)
-        assertExited(second)
+        assertExited(second, stage: "restart")
         XCTAssertTrue(third.isRunning)
         XCTAssertNotEqual(third.processIdentifier, second.processIdentifier)
         XCTAssertEqual(try service(restarted)["running"] as? String, "running")
@@ -260,10 +270,10 @@ extension AppSchemeSwitchTests {
         XCTAssertEqual(app.supervisor.state, .stopped)
         // Yield queued termination callbacks; a pending Restart must not orphan
         // a newly launched child after the synchronous Quit path returns.
-        await macLocalAppKitTurn()
+        try await Task.sleep(for: .milliseconds(10))
         XCTAssertEqual(child.children.count, 3)
         for handle in child.children {
-            assertExited(handle)
+            assertExited(handle, stage: "quit-after-callbacks")
         }
     }
 }

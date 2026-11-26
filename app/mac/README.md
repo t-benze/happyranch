@@ -169,9 +169,10 @@ visual inputs at the existing MacLocalControls backend boundary, with no child
 effect; they do not prove real-process lifecycle behavior. The native test also
 observes the real Restart sheet after AppKit launch/run-loop processing, checks
 Cancel as the sole Return default and this computer's name, then retains Main.
-The async consent keeper suspends while a synchronous main-queue turn processes
-AppKit; it uses Swift 6.3's `CFRunLoopMode.defaultMode` without calling the
-no-async run-loop API inside an async context.
+Both consent keepers register Main's `willBeginSheetNotification` before Restart
+and await `XCTWaiter.fulfillment`, leaving the main queue/MainActor free for the
+production `NSAlert.beginSheetModal` path. They do not pump a nested run loop
+inside a main-queue block; actual sheet/default/name/retention assertions remain.
 `AppSchemeSwitchTests.testBridgeOwnsRealChildStartStopRestartAndQuit` runs in the
 existing unfiltered headless XCTest command. It drives the actual Main JS bridge,
 MacLocalControls and AppDelegate supervisor through Start/Stop/Restart, accepts
@@ -182,8 +183,12 @@ test bundle has no frozen daemon. Real handles/PIDs, signals, exit callbacks,
 port files and authenticated loopback health are used with disposable data and
 a synthetic credential. The keeper observes bridge busy/ready/stopped events,
 refuses premature ready while child health remains busy, checks a new PID after
-Restart and no live child after Quit/queued callbacks. This is automated child
-lifecycle coverage; it does not establish full bundled-daemon product behavior.
+Restart and no live child after Quit/queued callbacks. Every launched PID and
+its `isRunning` / `kill(pid, 0)` / errno census is logged. Teardown runs the
+same absence assertions after synchronous Quit even on failure, before any
+fallback cleanup can hide a leak; a fallback has a separately labelled census.
+This is automated child lifecycle coverage; it does not establish full
+bundled-daemon product behavior.
 Native execution of these revised cases is NOT RUN by the Linux maker.
 
 `probe.json.app_scheme.dialogs` retains each PNG's closed name, dimensions,
@@ -199,10 +204,13 @@ records retain pane ranges/page counts, and image receipts retain actual offsets
 Bounds are eight scrolling panes and sixteen additional captures per 200% view,
 2 MiB per PNG and 8 MiB per locale, within the unchanged 40-second process cap.
 Exhaustion fails qualification rather than claiming complete content.
-The desktop header is capped at 40vh and scrolls internally so wrapped English
-status/candidate/warning content at 760×560 / 200% cannot consume Main's height
-and squeeze navigation into a tiny scrolling pane. Header content remains
-reachable and is included by the existing scrolling-pane planner; no capture
+The desktop header is capped at one quarter of the shell height and scrolls
+internally. At 760×560 outer-window / 200% text, native title-bar space leaves a
+shorter web viewport; the former 40% header cap plus fixed sidebar header/footer
+left about 65px for navigation (a 48px capture step). The smaller header leaves
+more navigation space; the planner still steps by 75% of its visible viewport.
+Header content remains reachable and is included by the existing scrolling-pane
+planner; no capture
 page, pane, image, byte or time budget is increased.
 When a dialog is open, planning is confined to that dialog and intersects ancestor
 clipping; covered Main panes cannot consume its scroll budget. Shape, pane-limit

@@ -1910,10 +1910,13 @@ per image, 8 MiB per locale and the existing 40-second process cap bound capture
 incomplete/over-budget capture fails. Below the desktop breakpoint, the sidebar
 footer centers the profile avatar without horizontal insets so it fits the
 56px rail at 200% text in the supported narrow Mac window. The wider sidebar
-keeps its existing insets. The desktop header is capped at 40vh with internal
-vertical scrolling: wrapped English status/candidate/warning content leaves
-space for Main navigation at 200% text, and its full content stays reachable
-through the existing scrolling-pane captures. All capture budgets are unchanged.
+keeps its existing insets. The desktop header is capped at one quarter of the
+shell height with internal vertical scrolling: wrapped English status/candidate/
+warning content leaves space for Main navigation at 200% text, and its full
+content stays reachable
+through the existing scrolling-pane captures. The outer native window includes
+the title bar; each capture step remains 75% of the actual visible pane viewport.
+All capture budgets are unchanged.
 No Jenkins job/config change is included.
 Every navigation/admission and dialog/theme/locale/scroll/settle/snapshot/PNG
 step fsyncs a `capture_progress` record before starting. Native background timers
