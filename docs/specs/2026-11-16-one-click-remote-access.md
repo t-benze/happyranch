@@ -111,7 +111,10 @@ Keep every existing connector/sidecar system hardening directive, including `NoN
 capability/ambient sets, `ProtectSystem=strict`, `ProtectHome=yes`, private tmp/devices,
 kernel/control-group protections, address-family restrictions, SUID/realtime/personality
 restrictions, `MemoryDenyWriteExecute`, native syscall architecture and `UMask=0077`. Keep
-notify/watchdog, restart/start-limit and target/bind/uphold relationships. The verifier retains its
+notify/watchdog, restart-on-failure and target/bind/uphold relationships. The managed-identity
+connector start-rate limit is the later exception described in
+[the contract’s renewal unit upgrade section](../agent-guides/contracts/remote-access-and-remote-jobs.md#thr-327-renewal-unit-upgrade-task-19228);
+sidecar and legacy/other connector limits stay unchanged. The verifier retains its
 separate existing root capability budget and read-only home/proc proof. No user-mode substitution,
 broad filesystem access, new connector LAN listener or weakening for Python is permitted. Item D (bundled
 Python PT_GNU_STACK/MDWE) is delivered in **merged PR #1568, `1a8efca4`**; installation and packaged
