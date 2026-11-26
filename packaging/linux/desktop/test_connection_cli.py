@@ -752,6 +752,19 @@ class ConnectionCLITests(unittest.TestCase):
         self.bus.raw = json.dumps({**self.bus.snapshot, "private": "private-error-canary"})
         self.assertEqual(self.run_native("status")[1]["code"], "unavailable")
 
+    def test_named_status_read_refusals(self) -> None:
+        for remote, category in (
+                ('ai.happyranch.RemoteAccess1.Error.expired', 'timeout'),
+                ('ai.happyranch.RemoteAccess1.Error.unavailable', 'status_unavailable'),
+                ('org.freedesktop.DBus.Error.NoReply', 'status_unavailable')):
+            with self.subTest(remote=remote):
+                self.bus.status_error = remote
+                self.bus.calls.clear()
+                code, result, _ = self.run_native('status')
+                self.assertEqual((code, result), (1, dict(code='hostStateUnrecognized',
+                    category=category, effect='none', recovery='refresh')))
+                self.assertEqual([call[3] for call in self.bus.calls], ['Status'])
+
     def test_closed_host_state_diagnostic(self) -> None:
         for category in ("host_state_unrecognized", "owner_unknown", "owner_ambiguous",
                          "owner_unsupported", "owner_mismatch", "release_home_invalid",
@@ -778,7 +791,8 @@ class ConnectionCLITests(unittest.TestCase):
                 self.assertEqual(message.strip(), expected_message)
         self.bus.status_error = None
         self.bus.error = 'ai.happyranch.RemoteAccess1.Error.host_state_unrecognized_not_applicable'
-        for action in ('enable', 'turn-off', 'replace-failed'):
+        for action in ('enable', 'turn-off', 'replace-failed', 'create-invite', 'cancel-invite',
+                       'recover-invite', 'approve-device', 'reject-device'):
             with self.subTest(action=action):
                 self.bus.calls.clear()
                 code, result, message = self.run_native(action, choices='yes\n')
@@ -787,6 +801,14 @@ class ConnectionCLITests(unittest.TestCase):
                                              effect='none', recovery='refresh'))
                 self.assertIn('No change was made.', message)
                 self.assertEqual([call[3] for call in self.bus.calls], [native.METHODS[action]])
+
+    def test_revoke_off_refuses_before_selection(self) -> None:
+        self.bus.snapshot.update(phase='off', ready=False, devices=[], pending=None, selected=None)
+        code, result, message = self.run_native('revoke-device')
+        self.assertEqual((code, result), (1, dict(code='hostStateUnrecognized',
+            category='not_applicable', effect='none', recovery='refresh')))
+        self.assertIn('No change was made.', message)
+        self.assertEqual([call[3] for call in self.bus.calls], ['Status', 'StatusV2'])
 
     def test_headless_unavailable(self) -> None:
         import gi

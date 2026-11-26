@@ -521,6 +521,7 @@
                 "inventory",
                 "quiescence",
                 "timeout",
+                "status_unavailable",
                 "unknown",
                 "unverified",
                 "not_applicable"

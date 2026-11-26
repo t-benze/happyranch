@@ -4147,6 +4147,7 @@ export const en = {
   "connection.host.hErrStateCustody": "Remote access is unverified: protected file ownership or safety could not be confirmed. Check the local installation.",
   "connection.host.hErrStateInventory": "Remote access is unverified: the installed components could not be confirmed. Check the local installation.",
   "connection.host.hErrStateQuiescence": "Remote access is unverified: the services could not be confirmed stopped. Check the local installation.",
+  "connection.host.hErrStatusUnavailable": "Remote access status could not be read. Check again.",
   "connection.host.hErrStateTimeout": "Remote access is unverified: verification timed out. Check again.",
   "connection.host.hErrStateUnknown": "Remote access could not be verified. Check the local installation before another action.",
   "connection.host.confirmCancel": "Cancel",

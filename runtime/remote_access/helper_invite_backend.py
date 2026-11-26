@@ -60,7 +60,8 @@ class HelperInviteBackend:
         if method not in ('IssueInvite', 'CancelInvite', 'RecoverInvite') or type(uid) is not int or uid < 1000:
             raise ValueError('refused')
         if step == 'capture' and expected is None:
-            return {'snapshot': self.capture(uid)}
+            from runtime.remote_access.home_activation_backend import HelperLifecycleBackend
+            return {'snapshot': HelperLifecycleBackend(self.io).capture(method, uid)}
         if method == 'IssueInvite' and step == 'status':
             if time.monotonic() >= deadline:
                 raise ValueError('refused')

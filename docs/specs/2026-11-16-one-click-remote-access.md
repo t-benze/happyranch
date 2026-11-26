@@ -201,6 +201,24 @@ effect, Ready, Off or cleanup. Invalid/late/wrong-correlation/unsupported or
 absent frames retain outcomeUnknown. No lookup, replay, broadcast or redispatch.
 Turn off uses fresh system authorization without an additional CLI prompt.
 
+Invite capture without an activation receipt first reuses strict Enable
+recognition, then refuses not_applicable before authorization/effects. Device
+actions with unavailable connector status use the existing strict absence proof
+only to refuse: proven Off is not_applicable; other unverified state remains
+unverified. A display snapshot never admits a mutation. CLI revoke refuses a
+fresh known Off status before selection/dispatch. These no-effect refusals use
+the existing hostStateUnrecognized/category envelope and bilingual copy.
+Status's short helper read timer uses timeout in that envelope, while helper
+unavailable or D-Bus NoReply uses the closed status_unavailable category, with
+English and zh-CN GUI parity. Neither names invite/policy expiry or changes the
+unknown-effect rule for a dispatched mutation. The Linux client preserves
+homeUnavailable and protocol errors; only explicit revocation responses prove
+revoked, and identity_denied remains ambiguous accessUnavailable.
+An IssueInvite refusal with no invite-state effect preserves an earlier issued
+observation with its original age, expiry and generation guards. Fresh-helper
+journal observation and dispatched uncertainty remain unchanged; no new
+privileged read or invite delivery is added.
+
 I5c / bridge slice 2b delivers only host.enable, host.turnOff and host.createInvite
 in the Linux packaged window, using the same validator and fixed zero-input
 Enable/Disable/IssueInvite methods with 482/302/122-second transport deadlines.

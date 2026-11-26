@@ -30,7 +30,7 @@ CLI_LIFECYCLE_TIMEOUTS = {"Enable": 482000, "ReplaceFailed": 482000, "Disable": 
                           "IssueInvite": 122000, "CancelInvite": 122000,
                           "RecoverInvite": 122000, "RetryPolicyRenewal": 122000}
 HOST_STATE_CATEGORIES = frozenset({"residue", "owner", "provenance", "custody", "inventory",
-                                    "quiescence", "timeout", "unknown", "unverified", "not_applicable"})
+                                    "quiescence", "timeout", "status_unavailable", "unknown", "unverified", "not_applicable"})
 PREPARATION_CATEGORIES = frozenset({
     "deb-layout-required", "issuer-state-uncertain", "account-shape",
     "account-receipt-uncertain", "foreign-unit", "foreign-custody", "publication-uncertain",
@@ -676,6 +676,15 @@ def request_host(self: object, method: str, complete: object, current: object, o
             complete(self.protocol.host_action(method, snapshot))
         elif not mutation and absent and method == "Status":
             complete(snapshot)
+        elif method == 'Status' and remote in (
+                'ai.happyranch.RemoteAccess1.Error.expired',
+                'ai.happyranch.RemoteAccess1.Error.unavailable',
+                'org.freedesktop.DBus.Error.NoReply'):
+            # The helper's short Status timer is a read timeout, never invite
+            # or policy expiry. A failed read proves no mutation outcome.
+            category = ('timeout' if remote == 'ai.happyranch.RemoteAccess1.Error.expired'
+                        else 'status_unavailable')
+            complete(None, dict(code='hostStateUnrecognized', category=category))
         else:
             closed = {"ai.happyranch.RemoteAccess1.Error.denied": "permissionDenied",
                       "org.freedesktop.DBus.Error.AccessDenied": "permissionDenied",

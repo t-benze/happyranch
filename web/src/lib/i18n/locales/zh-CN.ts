@@ -3958,6 +3958,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "connection.host.hErrStateCustody": "远程访问尚未验证：无法确认受保护文件的所有权或安全状态。请检查本机安装。",
   "connection.host.hErrStateInventory": "远程访问尚未验证：无法确认已安装的组件。请检查本机安装。",
   "connection.host.hErrStateQuiescence": "远程访问尚未验证：无法确认服务已停止。请检查本机安装。",
+  "connection.host.hErrStatusUnavailable": "无法读取远程访问状态。请重新检查。",
   "connection.host.hErrStateTimeout": "远程访问尚未验证：验证超时。请重新检查。",
   "connection.host.hErrStateUnknown": "无法验证远程访问。执行其他操作前请检查本机安装。",
   "connection.host.confirmCancel": "取消",

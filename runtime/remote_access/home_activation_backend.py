@@ -335,6 +335,11 @@ class HelperLifecycleBackend:
 
     def capture(self, method: str, uid: int) -> str:
         if method in ('IssueInvite', 'CancelInvite', 'RecoverInvite'):
+            if self.store.current() is None:
+                # Absence alone is not a clean/off proof. Reuse strict
+                # retained staging recognition before refusing any invite.
+                self.capture('Enable', uid)
+                raise GenerationUnavailable('not_applicable')
             from runtime.remote_access.helper_invite_backend import HelperInviteBackend
             return HelperInviteBackend(self.io).capture(uid)
         receipt = self.store.current()
@@ -811,7 +816,8 @@ def helper_main() -> int:
                 and request.get('step') in ('capture', 'stop', 'cleanup', 'replace')):
             log_lifecycle_failure(error, action='disable' if request['method'] == 'Disable' else 'replace-failed',
                                   step=request['step'])
-        if (type(request) is dict and request.get('method') in ('Enable', 'Disable', 'ReplaceFailed')
+        if (type(request) is dict and request.get('method') in (
+                'Enable', 'Disable', 'ReplaceFailed', 'IssueInvite', 'CancelInvite', 'RecoverInvite')
                 and request.get('step') == 'capture'):
             if request['method'] == 'Enable':
                 log_enable_refusal(error, child=True)

@@ -4650,8 +4650,9 @@ explicit, authenticated Turn on performs the renewal above. No retained-file
 manipulation or other host action is required for that validated shape.
 
 `hostStateUnrecognized` retains its code and adds optional closed category
-`residue|owner|provenance|custody|inventory|quiescence|timeout|unknown|unverified|not_applicable`. The child
-emits only `{refusal: category}` on Enable, Disable or ReplaceFailed capture refusal; HomeLifecycleClient
+`residue|owner|provenance|custody|inventory|quiescence|timeout|status_unavailable|unknown|unverified|not_applicable`. The child
+emits only `{refusal: category}` on Enable, Disable, ReplaceFailed, IssueInvite,
+CancelInvite or RecoverInvite capture refusal; HomeLifecycleClient
 validates the closed frame; helper D-Bus uses `host_state_unrecognized_<category>`.
 The shared native request projection, CLI JSON, Main protocol/relay and Connection
 parser preserve it to English and Simplified Chinese copy. Legacy owner-binding
@@ -4772,7 +4773,9 @@ health reads at one-second intervals (no overlapping reads or transport retries)
 A later error terminates through the existing named CLI error and bounded local
 session cleanup. Only the existing revocation_denied/revocation_stream_closed
 responses map to revoked; generic identity denial remains accessUnavailable,
-never proof of confirmed revocation. This adds no network/auth/credential change,
+never proof of confirmed revocation. Transport loss remains homeUnavailable and
+malformed HTTP remains protocol in CLI JSON; neither collapses to unavailable
+or proves revocation. This adds no network/auth/credential change,
 no keyring deletion, and no UI-loaded/Connected claim. The native GUI's existing
 health action already distinguishes revokedConfirmed from accessDenied.
 
@@ -4817,7 +4820,7 @@ that every CLI response is a success object or treat file-write success as READY
 
 ### Attributed lifecycle refusals
 
-Enable, Turn off and replace-failed capture refusals retain the same closed
+Enable, Turn off, replace-failed and invite capture refusals retain the same closed
 host-state category through the fixed child, D-Bus, native CLI and both Host
 views. Recognized inapplicable actions use `not_applicable` with `effect=none`
 before admission. Turn off with no activation receipt first proves recognized
@@ -4826,6 +4829,25 @@ only the existing `known-failed-or-partial` installer candidate and its exact
 inventory/journal generation; a home activation receipt never qualifies. It is
 not home activation recovery. Unsafe inventory retains its attributed refusal.
 No replacement, cleanup, mint, replay or authentication gate is widened.
+
+With no activation receipt, IssueInvite/CancelInvite/RecoverInvite likewise
+require strict Enable capture before returning not_applicable. Device actions
+whose connector snapshot is unavailable reuse the existing strict absence proof
+only to refuse: proven Off returns not_applicable, otherwise unverified. Its
+display snapshot never admits a device mutation. CLI revoke with fresh known
+Off status refuses not_applicable before selection or mutation dispatch.
+
+The helper's short Status read expiry is projected as hostStateUnrecognized /
+timeout, never invite or policy expiry. Helper unavailable and D-Bus NoReply
+for Status use status_unavailable. Both are no-effect reads and retain their
+closed category through CLI and both bilingual Host views. Other action and
+transport-loss effect semantics remain unchanged.
+
+A positively refused IssueInvite with no invite-state effect does not overwrite
+an earlier same-generation issued observation with unknown. Status keeps the
+original observation age and expiry and its existing UID/generation guards;
+fresh helpers still use the existing protected journal reader. Dispatched
+uncertainty remains uncertain. No privileged read or invite delivery is added.
 
 A prepared activation receipt which has not reached ready is displayed as
 `setup_unverified`, rather than an unqualified pending state. Prepared staging

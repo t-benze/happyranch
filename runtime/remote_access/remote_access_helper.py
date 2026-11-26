@@ -481,7 +481,17 @@ class RemoteAccessHelper:
                 owner = self._binding(uid)
                 if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
                     raise Refused('busy')
-                snapshot = self._snapshot(uid)
+                try:
+                    snapshot = self._snapshot(uid)
+                except Refused as error:
+                    if method not in MUTATIONS or error.category != 'unavailable':
+                        raise
+                    # Use the existing absence proof only to refuse. Its
+                    # display snapshot never admits a device mutation.
+                    _, closed, _ = self._status_snapshot(uid, time.monotonic() + 2.0)
+                    if closed:
+                        raise Refused('host-state-unrecognized-not_applicable') from None
+                    raise Refused('host-state-unrecognized-unverified') from None
                 if method in ('Status', 'NextDevice'):
                     if method == 'NextDevice':
                         if self.inflight is not None and self.inflight.sender == sender:
@@ -523,7 +533,7 @@ class RemoteAccessHelper:
             if isinstance(self.inflight, Capture) and self.inflight.message == message:
                 self._cancel('unavailable')
             else:
-                if isinstance(error, _helper_generation.GenerationUnavailable) and message.get_member() in ('Enable', 'Disable', 'ReplaceFailed'):
+                if isinstance(error, _helper_generation.GenerationUnavailable) and message.get_member() in LIFECYCLE_ACTIONS:
                     category = 'unverified' if error.category == 'unknown' else error.category
                     self._error(message, 'host-state-unrecognized-' + category)
                 else:
@@ -975,7 +985,10 @@ class RemoteAccessHelper:
                 self._error(capture.message, category)
         finally:
             self.lifecycle_result = result
-            self.invite_observation = (capture.uid, capture.generation, result, time.monotonic())
+            # A positive refusal observed no invite-state effect. Preserve the
+            # earlier observation; a fresh helper still uses the existing journal.
+            if result['invite'] != 'unknown':
+                self.invite_observation = (capture.uid, capture.generation, result, time.monotonic())
             self.release(capture)  # Held through the sole terminal reply attempt.
 
     def _run_invite(self, operation: object) -> None:

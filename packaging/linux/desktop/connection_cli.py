@@ -134,6 +134,8 @@ def revoke(host: Host) -> dict:
     if not sys.stdin.isatty() or not sys.stderr.isatty():
         raise ClosedError(recovery="nativePermission")
     snapshot = host.request("Status")
+    if snapshot['observation'] == 'known' and snapshot['setup'] == 'off':
+        raise ClosedError('hostStateUnrecognized', recovery='refresh', category='not_applicable')
     deadline = time.monotonic() + 120
     for _ in range(32):
         if snapshot["observation"] != "known" or not snapshot["devices"]:

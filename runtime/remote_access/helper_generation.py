@@ -156,7 +156,8 @@ class HomeLifecycleClient:
                 raise GenerationUnavailable()
             value = json.loads(result.stdout, object_pairs_hook=_unique_pairs)
             if result.returncode:
-                if (self.method in ('Enable', 'Disable', 'ReplaceFailed') and step == 'capture' and result.returncode == 1
+                if (self.method in ('Enable', 'Disable', 'ReplaceFailed', 'IssueInvite', 'CancelInvite', 'RecoverInvite')
+                        and step == 'capture' and result.returncode == 1
                         and type(value) is dict and set(value) == {'refusal'}):
                     raise GenerationUnavailable(value['refusal'])
                 raise GenerationUnavailable()

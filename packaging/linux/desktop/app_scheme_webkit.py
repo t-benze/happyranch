@@ -396,7 +396,7 @@ APP_RELAY = r"""(() => {
           ? detail.recovery : 'nativeRecovery'};
       if (result.code === 'incompatible' && ['host','app','unknown'].includes(detail.side)) result.side = detail.side;
       if (result.code === 'hostStateUnrecognized') result.category =
-        ['residue','owner','provenance','custody','inventory','quiescence','timeout','unknown','unverified','not_applicable'].includes(detail.category)
+        ['residue','owner','provenance','custody','inventory','quiescence','timeout','status_unavailable','unknown','unverified','not_applicable'].includes(detail.category)
           && detail.category !== 'unknown' ? detail.category : 'unverified';
       if (result.code === 'enablePreparationFailed') {
         const categories = ['deb-layout-required','issuer-state-uncertain','account-shape',
