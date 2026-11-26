@@ -358,7 +358,7 @@ class ThreadGuestsMixin:
                 "SELECT substr(CAST(COALESCE(body_markdown,'') AS BLOB),1,?) FROM thread_messages WHERE thread_id=? AND seq=?",
                 (bound, row["thread_id"], m["seq"]),
             ).fetchone()[0]
-            body = bytes(raw).decode("utf-8", errors="ignore")
+            body = bytes(raw or b"").decode("utf-8", errors="ignore")
             truncated = m["body_bytes"] > bound
             used += len(body.encode("utf-8"))
             speaker = m["speaker"]

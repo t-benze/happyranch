@@ -655,6 +655,31 @@ class GuestMcpTests(unittest.IsolatedAsyncioTestCase):
         for limit in (0, 201):
             self.assertEqual(await self.bad("read_thread", guest_token=token, limit=limit), "invalid arguments")
 
+    async def test_C09_empty_bodies_read_and_wait(self) -> None:
+        gid, joined = await self.join()
+        empty_message = self.append("")
+        empty_system = self.db.append_thread_message(thread_id=THREAD, speaker="daemon",
+            kind=ThreadMessageKind.SYSTEM, body_markdown="",
+            system_payload={"kind_tag": "thread_guest_ended", "private": "PRIVATE_EMPTY_SYSTEM_SENTINEL"})
+        following = self.append("After empty bodies")
+        for tool in ("read_thread", "wait_for_messages"):
+            with self.subTest(tool=tool):
+                options = {"timeout_sec": 1} if tool == "wait_for_messages" else {}
+                result = await self.good(tool, guest_token=joined["guest_token"],
+                    since_seq=joined["last_seq"], **options)
+                self.assertEqual([m["seq"] for m in result["messages"]], [empty_message, empty_system, following])
+                self.assertEqual([m["body_markdown"] for m in result["messages"]], ["", "", "After empty bodies"])
+                self.assertEqual([m["kind"] for m in result["messages"]], ["message", "system", "message"])
+                self.assertEqual([m["speaker_kind"] for m in result["messages"]], ["founder", "system", "founder"])
+                for message in result["messages"]:
+                    self.assertEqual(set(message), {"seq", "speaker_label", "speaker_kind", "kind", "sent_at",
+                        "body_markdown", "attachments", "truncated"})
+                    self.assertFalse(message["truncated"])
+                self.assertNotIn("PRIVATE_EMPTY_SYSTEM_SENTINEL", json.dumps(result))
+                self.assertEqual(result["next_since_seq"], following)
+                self.assertFalse(result["has_more"])
+                self.assertEqual(self.seat(gid)["last_read_seq"], following)
+
     async def test_C10_utf8_byte_bound_and_progress(self) -> None:
         _gid, joined = await self.join()
         token = joined["guest_token"]
