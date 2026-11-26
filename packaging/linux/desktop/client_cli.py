@@ -22,7 +22,8 @@ ACTIONS = ("status", "accept-invite", "saved-computers", "connect-saved", "remov
 ERRORS = frozenset(("invalidInvite", "expiredInvite", "joinUnavailable", "runtimeUnavailable",
                    "authorizationIncomplete", "resumeUnavailable", "identityMismatch", "stateChanged",
                    "keychainLocked", "keychainDenied", "saveFailed", "unavailable", "removalIncomplete",
-                   "revoked", "daemonUnavailable", "accessUnavailable", "stateUnavailable"))
+                   "revoked", "daemonUnavailable", "accessUnavailable", "stateUnavailable",
+                   "homeUnavailable", "protocol"))
 
 
 class Parser(argparse.ArgumentParser):

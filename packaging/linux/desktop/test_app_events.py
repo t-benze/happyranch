@@ -285,7 +285,7 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
   const error=await vm.runInContext("happyranchConnection.call('host.enable','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(error)),{code:'outcomeUnknown',effect:'unknown',recovery:'nativeRecovery'});
  }
- for(const category of ['residue','owner','provenance','custody','inventory','quiescence','timeout','unknown','unverified',null,'/private/canary']){
+ for(const category of ['residue','owner','provenance','custody','inventory','quiescence','timeout','status_unavailable','invite_rate_limited','unknown','unverified',null,'/private/canary']){
   contexts[1].failure={code:'hostStateUnrecognized',effect:'none',recovery:'refresh',category,private:'secret'};
   const error=await vm.runInContext("happyranchConnection.call('host.status','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(error)),{code:'hostStateUnrecognized',effect:'none',recovery:'refresh',

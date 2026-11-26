@@ -139,7 +139,7 @@ export interface ConnectionFailure {
   effect: Effect;
   recovery: Recovery;
   side?: 'host' | 'app' | 'unknown';
-  category?: 'residue' | 'owner' | 'provenance' | 'custody' | 'inventory' | 'quiescence' | 'timeout' | 'unknown' | 'unverified' | 'not_applicable' | PreparationCategory;
+  category?: 'residue' | 'owner' | 'provenance' | 'custody' | 'inventory' | 'quiescence' | 'timeout' | 'status_unavailable' | 'invite_rate_limited' | 'unknown' | 'unverified' | 'not_applicable' | PreparationCategory;
 }
 
 export type PreparationCategory =
@@ -399,7 +399,7 @@ export function parseConnectionFailure(error: unknown): ConnectionFailure {
   }
   if ('category' in obj && obj.code !== 'hostStateUnrecognized') return UNKNOWN_FAILURE;
   if (obj.code === 'hostStateUnrecognized') {
-    const categories = ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'unknown', 'unverified', 'not_applicable'];
+    const categories = ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'status_unavailable', 'invite_rate_limited', 'unknown', 'unverified', 'not_applicable'];
     failure.category = (oneOf(obj.category, categories) && obj.category !== 'unknown' ? obj.category : 'unverified') as ConnectionFailure['category'];
   }
   return failure;

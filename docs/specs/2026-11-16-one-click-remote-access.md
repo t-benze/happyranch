@@ -177,23 +177,50 @@ requires a desktop and fresh native authorization. CLI timeouts are 482 seconds
 for Enable/ReplaceFailed, 302 for Disable and 122 for invite/policy methods.
 Create-invite requires `/dev/tty` before dispatch, validates the exact I4a terminal
 frame and displays the invite only there; stdout JSON carries only closed nonsecret
-action fields. Six methods acknowledge `accepted` before effects. The CLI keeps
-the dedicated bus alive through the operation budget plus margin for live-caller
-revalidation, then reports
-`outcomeUnknown` / effect `unknown`, exit 1, without inventing completion, denial
-or cleanup from admission. Private worker outcomes/residue alone are not a
-terminal receipt. Enable alone adds a unicast LifecycleCompleted(s) receipt
-before helper release, correlated to its original call serial and authenticated
-helper owner within the original 480s budget. Its sole method reply remains
-admission-only accepted. The closed 512-byte signal carries failed/completed
-and optionally one of B9's exact 19 typed preparation categories, preserving
-both dial spellings. The private exit-1 preparationFailure frame is bounded to
+action fields. Six methods acknowledge `accepted` before effects and send one
+unicast LifecycleCompleted(s) receipt before helper release, correlated to the
+original method/call serial and authenticated helper owner. CLI subscribes before
+the single send and consumes only that original receipt inside its original
+480s Enable/ReplaceFailed, 300s Disable or 120s invite/policy budget. Their sole
+method reply remains admission-only accepted. The closed 512-byte signal carries
+failed/completed and an optional failed category. Enable preserves B9's typed
+preparation categories, including both dial spellings; Disable preserves its
+partial_cleanup/failed/uncertain categories. The four CLI-only methods report
+replaceFailedCompleted, cancelInviteCompleted, recoverInviteCompleted or
+policyRenewalCompleted with exit 0; known failure reports lifecycleFailed with
+failed/refused/partial_cleanup and exit 1. All retain effect unknown. An uncertain
+worker, lost/invalid/late receipt or transport loss retains outcomeUnknown/exit 1.
+The caller fallback margin supplies no acceptance grace. No polling, replay,
+new window command/event or cleanup authority follows. Private worker
+outcomes/residue alone remain insufficient without the authenticated receipt.
+The private exit-1 preparationFailure frame is bounded to
 256 bytes. No paths, addresses or raw diagnostic text are exported.
 CLI consumes once: enablePreparationFailed/category/unknown/nativeRecovery
 returns exit 1; enableCompleted/unknown/refresh returns exit 0. Neither proves
 effect, Ready, Off or cleanup. Invalid/late/wrong-correlation/unsupported or
 absent frames retain outcomeUnknown. No lookup, replay, broadcast or redispatch.
 Turn off uses fresh system authorization without an additional CLI prompt.
+
+Invite capture without an activation receipt first reuses strict Enable
+recognition, then refuses not_applicable before authorization/effects. Device
+actions with unavailable connector status use the existing strict absence proof
+only to refuse: proven Off is not_applicable; other unverified state remains
+unverified. A display snapshot never admits a mutation. CLI revoke refuses a
+fresh known Off status before selection/dispatch. These no-effect refusals use
+the existing hostStateUnrecognized/category envelope and bilingual copy.
+The existing pre-write/pre-invalidation/pre-mint issuer rate fence reports the
+closed private result rate_limited, projected as invite_rate_limited/none with
+English and zh-CN copy. No other child refusal is relabelled as this cause.
+Status's short helper read timer uses timeout in that envelope, while helper
+unavailable or D-Bus NoReply uses the closed status_unavailable category, with
+English and zh-CN GUI parity. Neither names invite/policy expiry or changes the
+unknown-effect rule for a dispatched mutation. The Linux client preserves
+homeUnavailable and protocol errors; only explicit revocation responses prove
+revoked, and identity_denied remains ambiguous accessUnavailable.
+An IssueInvite refusal with no invite-state effect preserves an earlier issued
+observation with its original age, expiry and generation guards. Fresh-helper
+journal observation and dispatched uncertainty remain unchanged; no new
+privileged read or invite delivery is added.
 
 I5c / bridge slice 2b delivers only host.enable, host.turnOff and host.createInvite
 in the Linux packaged window, using the same validator and fixed zero-input
@@ -970,6 +997,23 @@ User-visible states/actions (Linux and Mac; no state below grants runtime access
 | Connected / disconnect / local removal | Device remains approved until **Revoke device** or **Turn off remote access**. | **Connected** only after authorized release web UI loads. **Disconnect** keeps saved access; **Remove saved computer** erases local access only. Deletion failure shows **Removal incomplete** and what remains, with **Retry removal**. |
 | Host revocation / turn off | **Revoke device** denies only that device and closes its streams. **Turn off remote access** invalidates all devices, invites and approvals, removes owned remote services/secrets, and preserves release runtime/org data. Both require fresh auth. | **Access revoked — Create new invite on Linux**; close access and erase saved material when observed. An offline Mac cannot prove local erasure, but host denial is already effective. |
 | Partial cleanup / uncertain stop | **Remote access cleanup incomplete** names safe paths/components and whether host denial is confirmed; never claim **Off** or **Removed** without proof. **Retry turn off** is the same fixed Disable action with fresh auth; unknown ownership needs operator recovery. | Close local sessions; show **Local cleanup incomplete** or **Host cleanup status unknown** as applicable. **Retry removal** erases only local state; host cleanup needs Linux. |
+
+Authenticated Turn off clears retained failed markers only for the fixed five
+managed `UNITS`, after verified stop/final fragment form and before cleanup
+receipts retire. Ready-restart Enable uses the same reset before starting owned
+units, with its original G/O, custody, deadline and no-mint/replay fences. Each
+reset requires exact owned bytes/fixed FragmentPath, no drop-ins/reload, failed
+ActiveState, dead/failed SubState and empty Job. Services require
+MainPID=ControlPID=0 and empty ControlGroup; the fixed socket requires
+ControlPID=0 and empty ControlGroup, with no service-only MainPID. The fixed
+target has no execution context. Absent fixed units also require the no-fragment,
+not-found reload proof with only their supported PID fields.
+Re-read must prove inactive/dead. Reset failure is fixed partial cleanup during
+Turn off, never completed; real ready-restart failure keeps the Turn off advice.
+All five fragments/configs stay retained and strict inventory state sets stay
+unchanged. Headscale gains no reset caller. Status never resets; an already
+stranded failed retained unit without a receipt still needs operator recovery
+because this change adds no no-receipt Disable admission.
 
 Enable first inventories only fixed managed destinations, exact unit fragments, drop-ins and package
 files, with no effects on unknown objects. Successful modern records resume idempotently; existing

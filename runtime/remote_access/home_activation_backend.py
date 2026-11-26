@@ -335,6 +335,11 @@ class HelperLifecycleBackend:
 
     def capture(self, method: str, uid: int) -> str:
         if method in ('IssueInvite', 'CancelInvite', 'RecoverInvite'):
+            if self.store.current() is None:
+                # Absence alone is not a clean/off proof. Reuse strict
+                # retained staging recognition before refusing any invite.
+                self.capture('Enable', uid)
+                raise GenerationUnavailable('not_applicable')
             from runtime.remote_access.helper_invite_backend import HelperInviteBackend
             return HelperInviteBackend(self.io).capture(uid)
         receipt = self.store.current()
@@ -507,6 +512,8 @@ class HelperLifecycleBackend:
                 expected_control_plane_id=snapshot['activation']['control_plane_id'],
                 expected_connector_id=snapshot['activation']['connector_id'], expected_generation=snapshot['generation'],
                 expected_operation_id=snapshot['activation']['operation'], revoke_succeeded=revoke_succeeded)
+            if result.get('state') == 'partial_cleanup':
+                return {'outcome': 'partial_cleanup', 'residue': ['owned units: reset unconfirmed']}
             if result.get('state') != 'removed':
                 raise ActivationRefused()
             return {'outcome': 'off', 'residue': []}
@@ -575,6 +582,10 @@ class HelperLifecycleBackend:
                                         str(self.io.root / 'usr/lib/systemd/system' / TIMER_NAME))):
                                 raise ActivationRefused()
                             check()
+                        def require_reset() -> None:
+                            require_ready()
+                            coordinator._owner._managed_fragments(require_home=True)
+                        self.io._reset_failed_home_units(require=require_reset)
                         for name in ('happyranch-headscale.service', UNITS[2], UNITS[3], UNITS[0], UNITS[1]):
                             require_ready()
                             if self.io.manager.show_properties(name, ('ActiveState',)).get('ActiveState') != 'active':
@@ -811,7 +822,8 @@ def helper_main() -> int:
                 and request.get('step') in ('capture', 'stop', 'cleanup', 'replace')):
             log_lifecycle_failure(error, action='disable' if request['method'] == 'Disable' else 'replace-failed',
                                   step=request['step'])
-        if (type(request) is dict and request.get('method') in ('Enable', 'Disable', 'ReplaceFailed')
+        if (type(request) is dict and request.get('method') in (
+                'Enable', 'Disable', 'ReplaceFailed', 'IssueInvite', 'CancelInvite', 'RecoverInvite')
                 and request.get('step') == 'capture'):
             if request['method'] == 'Enable':
                 log_enable_refusal(error, child=True)

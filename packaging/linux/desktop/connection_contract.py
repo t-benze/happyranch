@@ -30,7 +30,7 @@ CLI_LIFECYCLE_TIMEOUTS = {"Enable": 482000, "ReplaceFailed": 482000, "Disable": 
                           "IssueInvite": 122000, "CancelInvite": 122000,
                           "RecoverInvite": 122000, "RetryPolicyRenewal": 122000}
 HOST_STATE_CATEGORIES = frozenset({"residue", "owner", "provenance", "custody", "inventory",
-                                    "quiescence", "timeout", "unknown", "unverified", "not_applicable"})
+                                    "quiescence", "timeout", "status_unavailable", "invite_rate_limited", "unknown", "unverified", "not_applicable"})
 PREPARATION_CATEGORIES = frozenset({
     "deb-layout-required", "issuer-state-uncertain", "account-shape",
     "account-receipt-uncertain", "foreign-unit", "foreign-custody", "publication-uncertain",
@@ -42,13 +42,17 @@ PREPARATION_CATEGORIES = frozenset({
 HELPER_NAME = "ai.happyranch.RemoteAccess1"
 HELPER_PATH = "/ai/happyranch/RemoteAccess1"
 DISABLE_CATEGORIES = frozenset({'partial_cleanup', 'failed', 'uncertain'})
+CLI_COMPLETION_CODES = {'ReplaceFailed': 'replaceFailedCompleted', 'CancelInvite': 'cancelInviteCompleted',
+                        'RecoverInvite': 'recoverInviteCompleted', 'RetryPolicyRenewal': 'policyRenewalCompleted'}
+CLI_FAILURE_CATEGORIES = frozenset({'failed', 'refused', 'partial_cleanup', 'uncertain'})
 
 
 def enable_terminal_frame(raw: str) -> dict:
     value = parse_json(raw, 512)
     if (type(value) is not dict or set(value) not in (
             {"method", "correlation", "outcome"}, {"method", "correlation", "outcome", "category"})
-            or value["method"] not in ("Enable", "Disable") or value["outcome"] not in ("failed", "completed")):
+            or value["method"] not in ("Enable", "Disable", *CLI_COMPLETION_CODES)
+            or value["outcome"] not in ("failed", "completed")):
         raise ValueError("invalid terminal frame")
     correlation = value["correlation"]
     if (type(correlation) is not dict or set(correlation) != {"serial", "owner"}
@@ -58,7 +62,8 @@ def enable_terminal_frame(raw: str) -> dict:
         raise ValueError("invalid terminal correlation")
     if "category" in value and (value["outcome"] != "failed"
             or type(value["category"]) is not str or value["category"] not in (
-                PREPARATION_CATEGORIES if value['method'] == 'Enable' else DISABLE_CATEGORIES)):
+                PREPARATION_CATEGORIES if value['method'] == 'Enable' else DISABLE_CATEGORIES
+                if value['method'] == 'Disable' else CLI_FAILURE_CATEGORIES)):
         raise ValueError("invalid terminal category")
     return value
 
@@ -68,7 +73,7 @@ class EnableTerminalObserver:
 
     def __init__(self, host: object, complete: object, failed: object, current: object,
                  terminal: object, *, cli: bool, admission_current: object, method: str = 'Enable') -> None:
-        if method != 'Enable' and not (cli and method == 'Disable'):
+        if method != 'Enable' and not (cli and method in ('Disable', *CLI_COMPLETION_CODES)):
             raise ValueError('invalid terminal method')
         self.method = method
         self.host, self.connection = host, host.connection
@@ -82,7 +87,7 @@ class EnableTerminalObserver:
         self.pending = None
         self.subscription = self.owners = self.filter_id = self.timer = self.closed_handler = None
         self.started = time.monotonic()
-        budget = 480 if method == 'Enable' else 300
+        budget = CLI_LIFECYCLE_TIMEOUTS[method] / 1000 - 2
         self.cutoff, self.deadline = self.started + budget, self.started + budget + 2
         self.message = host.Gio.DBusMessage.new_method_call(HELPER_NAME, HELPER_PATH, HELPER_NAME, method)
         self.message.set_flags(host.Gio.DBusMessageFlags.ALLOW_INTERACTIVE_AUTHORIZATION)
@@ -211,6 +216,12 @@ class EnableTerminalObserver:
                 if frame['outcome'] == 'completed' else dict(code='turnOffFailed',
                     category=frame.get('category', 'uncertain'), effect='unknown', recovery='nativeRecovery'))
             raw = None  # Disable CLI has no host.enableFinished event.
+        elif self.method in CLI_COMPLETION_CODES:
+            category = frame.get('category', 'uncertain')
+            projection = (dict(code=CLI_COMPLETION_CODES[self.method], effect='unknown', recovery='refresh')
+                if frame['outcome'] == 'completed' else
+                dict(code='outcomeUnknown', effect='unknown', recovery='nativeRecovery') if category == 'uncertain'
+                else dict(code='lifecycleFailed', category=category, effect='unknown', recovery='nativeRecovery'))
         elif frame["outcome"] == "completed":
             projection = dict(code="enableCompleted", effect="unknown", recovery="refresh")
             event = dict(version=1, operationId=self.operation_id, method="Enable", outcome="completed", result=projection)
@@ -665,6 +676,15 @@ def request_host(self: object, method: str, complete: object, current: object, o
             complete(self.protocol.host_action(method, snapshot))
         elif not mutation and absent and method == "Status":
             complete(snapshot)
+        elif method == 'Status' and remote in (
+                'ai.happyranch.RemoteAccess1.Error.expired',
+                'ai.happyranch.RemoteAccess1.Error.unavailable',
+                'org.freedesktop.DBus.Error.NoReply'):
+            # The helper's short Status timer is a read timeout, never invite
+            # or policy expiry. A failed read proves no mutation outcome.
+            category = ('timeout' if remote == 'ai.happyranch.RemoteAccess1.Error.expired'
+                        else 'status_unavailable')
+            complete(None, dict(code='hostStateUnrecognized', category=category))
         else:
             closed = {"ai.happyranch.RemoteAccess1.Error.denied": "permissionDenied",
                       "org.freedesktop.DBus.Error.AccessDenied": "permissionDenied",
@@ -783,7 +803,7 @@ def request_host(self: object, method: str, complete: object, current: object, o
     def call(called: str) -> None:
         nonlocal deadline
         try:
-            if called == "Enable" or called == 'Disable' and cli_lifecycle:
+            if called == "Enable" or cli_lifecycle and called in ('Disable', *CLI_COMPLETION_CODES):
                 previous = getattr(self, "enable_observer", None)
                 if previous is not None:
                     previous.close()

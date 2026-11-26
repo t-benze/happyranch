@@ -58,6 +58,7 @@ def host_state_category(error: Exception) -> str:
         '_read_file': 'custody', '_record': 'custody', '_parent': 'custody',
         '_confirm_quiescent': 'quiescence', '_headscale_stopped': 'quiescence',
         '_home_unit_inventory': 'inventory', '_inventory': 'inventory',
+        '_home_staged_inventory': 'inventory',
         '_replacement_snapshot': 'inventory', '_home_staging_residue': 'residue',
         '_headscale_inventory': 'residue', '_issuer_inventory': 'residue',
         '_headscale_publication': 'residue', '_headscale_receipt': 'provenance',
@@ -156,7 +157,8 @@ class HomeLifecycleClient:
                 raise GenerationUnavailable()
             value = json.loads(result.stdout, object_pairs_hook=_unique_pairs)
             if result.returncode:
-                if (self.method in ('Enable', 'Disable', 'ReplaceFailed') and step == 'capture' and result.returncode == 1
+                if (self.method in ('Enable', 'Disable', 'ReplaceFailed', 'IssueInvite', 'CancelInvite', 'RecoverInvite')
+                        and step == 'capture' and result.returncode == 1
                         and type(value) is dict and set(value) == {'refusal'}):
                     raise GenerationUnavailable(value['refusal'])
                 raise GenerationUnavailable()

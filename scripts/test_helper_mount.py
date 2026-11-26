@@ -551,7 +551,7 @@ def test_thr327_capture_refusal_transport(composition: Any, monkeypatch: pytest.
         assert failure.value.category == 'unknown'
 
 
-@pytest.mark.parametrize('method', ['Enable', 'Disable', 'ReplaceFailed'])
+@pytest.mark.parametrize('method', ['Enable', 'Disable', 'ReplaceFailed', 'IssueInvite', 'CancelInvite', 'RecoverInvite'])
 @pytest.mark.parametrize('category', ['custody', 'unverified', 'not_applicable'])
 def test_thr327_lifecycle_capture_refusal_dbus(mount: Any, method: str, category: str) -> None:
     m = mount
@@ -568,13 +568,19 @@ def test_thr327_lifecycle_capture_refusal_dbus(mount: Any, method: str, category
     ('ReplaceFailed', 'clean', 'not_applicable'), ('ReplaceFailed', 'prepared', 'not_applicable'),
     ('ReplaceFailed', 'ready', 'not_applicable'), ('ReplaceFailed', 'failed', 'not_applicable'),
     ('Enable', 'partial', 'custody'),
+    *((method, prestate, 'not_applicable') for method in ('IssueInvite', 'CancelInvite', 'RecoverInvite')
+      for prestate in ('clean', 'prepared')),
+    *((method, 'off-unsafe', 'custody') for method in ('IssueInvite', 'CancelInvite', 'RecoverInvite')),
 ])
 def test_thr327_lifecycle_capture_named_child(composition: Any, monkeypatch: pytest.MonkeyPatch,
                                              method: str, prestate: str, category: str) -> None:
     from dataclasses import replace
     from runtime.remote_access import helper_generation as generation
     v, uid = composition, os.getuid()
-    if prestate == 'prepared':
+    if prestate == 'off-unsafe':
+        v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+        v.path('/etc/happyranch/sidecar.json').chmod(0o666)
+    elif prestate == 'prepared':
         with v.transactions.locked() as directory:
             v.lifecycle._enable_staging(uid, 'clean', directory, time.monotonic() + 480)
     elif prestate != 'clean':
@@ -766,6 +772,26 @@ def test_enable_child_diagnostic_preserves_closed_exit(
     sent.assert_called_once_with(syslog.LOG_WARNING,
         'remote-access-enable-refusal origin=child stage=child.dispatch.capture exception=OSError')
     assert capsys.readouterr() == ('{"refusal": "unverified"}\n', '')
+
+
+@pytest.mark.parametrize('method', ['ApprovePending', 'RejectPending', 'RevokeSelected'])
+@pytest.mark.parametrize('unsafe', [False, True])
+def test_thr327_off_device_actions_refuse(composition: Any, mount: Any,
+                                          monkeypatch: pytest.MonkeyPatch, method: str, unsafe: bool) -> None:
+    v, m, uid = composition, mount, os.getuid()
+    if unsafe:
+        corrupt_composition(v, 'partial')
+    m.helper.connection.call_sync.return_value = Variant('', (uid,))
+    m.helper.control = m.h.ControlClient(str(v.root / 'absent-connector.sock'))
+    m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture('Enable', uid)
+    m.message.get_member = lambda: method
+    before, calls, mints = staged_inventory(v.fixture), list(v.calls), list(v.mints)
+    m.helper._dispatch(m.message)
+    m.helper._error.assert_called_once_with(m.message, 'host-state-unrecognized-' +
+                                           ('unverified' if unsafe else 'not_applicable'))
+    assert staged_inventory(v.fixture) == before and v.calls == calls and v.mints == mints
+    assert not m.helper.authority.call.called and not m.reader.effect.called
+    assert m.helper.inflight is None and not m.helper.audit.path.exists()
 
 
 @pytest.mark.parametrize('case', ['clean', 'partial', 'failed', 'pending', 'uid', 'unsafe', 'unknown', 'txn', 'source', 'audit', 'headscale-mode', 'clean-ca', 'clean-unit'])
@@ -1220,6 +1246,70 @@ def test_thr327_disable_terminal_before_slot_release(mount: Any, partial: bool) 
     assert v.helper.lifecycle_result['outcome'] == ('partial_cleanup' if partial else 'off')
     assert v.effects == ([] if partial else ['revoke']) + ['stop', 'cleanup']
     assert 'residue' not in frame  # No host paths or private diagnostics on this channel.
+
+
+@pytest.mark.parametrize('method', ['ReplaceFailed', 'CancelInvite', 'RecoverInvite', 'RetryPolicyRenewal'])
+@pytest.mark.parametrize('case', ['complete', 'refused', 'partial_cleanup', 'lost', 'late', 'disconnect'])
+def test_thr327_cli_lifecycle_terminal_before_slot_release(
+        mount: Any, monkeypatch: pytest.MonkeyPatch, method: str, case: str) -> None:
+    v = mount
+    v.message.get_member = lambda: method
+    v.message.get_serial = lambda: 17
+    v.helper.connection.get_unique_name = lambda: ':1.100'
+    sent, order = [], []
+    def signal(destination: str, path: str, interface: str, member: str, body: Any) -> None:
+        assert v.helper.inflight is not None
+        sent.append((destination, path, interface, member, json.loads(body.unpack()[0])))
+        order.append('signal')
+    v.helper.connection.emit_signal = signal
+    context = SimpleNamespace(push_thread_default=lambda: None, pop_thread_default=lambda: None)
+    v.h.GLib.MainContext = SimpleNamespace(new=lambda: context)
+    v.h.GLib.MainLoop = SimpleNamespace(new=lambda *a: SimpleNamespace(run=lambda: None, quit=lambda: None))
+    v.h.GLib.timeout_source_new = lambda *a: SimpleNamespace(set_callback=lambda *a: None,
+        attach=lambda *a: None, destroy=lambda: None)
+    v.h.Gio.Cancellable = lambda: SimpleNamespace(cancel=lambda: None)
+    v.helper.connection.flush_finish = lambda _: order.append('flush')
+    v.helper.connection.flush = lambda cancel, callback, data: callback(v.helper.connection, None, data)
+    release = v.helper.release
+    def released(capture: Any) -> None:
+        if v.helper.inflight is capture:
+            order.append('release')
+        release(capture)
+    v.helper.release = released
+    def result(*args: Any, **kwargs: Any) -> dict:
+        assert v.helper.inflight is not None
+        assert json.loads(v.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
+        if case == 'lost':
+            raise OSError('synthetic lost child reply /private/path')
+        if case == 'late':
+            deadline = v.helper.lifecycle_operation.budget.deadline
+            v.helper.clock = v.helper.lifecycle_operation.budget.clock = lambda: deadline
+        if case == 'disconnect':
+            v.helper.cancelled = True
+        if method == 'ReplaceFailed':
+            return dict(outcome='off' if case == 'complete' else 'failed' if case == 'refused'
+                        else 'partial_cleanup' if case == 'partial_cleanup' else 'off', residue=[])
+        outcome = case if case in ('refused', 'partial_cleanup') else 'complete'
+        if method == 'RetryPolicyRenewal':
+            return dict(outcome='refused' if outcome == 'partial_cleanup' else outcome)
+        return dict(outcome=outcome, invite='cancelled', cleanup='complete')
+    v.reader.effect.side_effect = result
+    v.reader.recover_invite = Mock(side_effect=result)
+    v.reader.retry_policy = Mock(side_effect=result)
+    v.admit()
+    v.helper._reply.assert_called_once_with(v.message, 'accepted')
+    assert v.helper.inflight is None and order[-1] == 'release'
+    if case in ('late', 'disconnect'):
+        assert sent == []
+        return
+    frame = dict(method=method, correlation=dict(serial=17, owner=':1.100'),
+                 outcome='completed' if case == 'complete' else 'failed')
+    if case != 'complete':
+        frame['category'] = ('uncertain' if case == 'lost' else
+            'failed' if method == 'ReplaceFailed' and case == 'refused' else
+            'refused' if method == 'RetryPolicyRenewal' else case)
+    assert sent == [(':1.42', v.h.OBJECT_PATH, v.h.INTERFACE, 'LifecycleCompleted', frame)]
+    assert order == ['signal', 'flush', 'release']
 
 
 @pytest.mark.parametrize('change', ['generation', 'operation', 'uid', 'owner', 'denied', 'deadline'])
@@ -2315,17 +2405,42 @@ def test_issue_invite_refusal_uncertainty_and_deadline(issue_mount: Any, case: s
         assert settled['frame']['invite'] not in retained
 
 
-def test_issue_invite_rate_limit_no_second_delivery(issue_mount: Any) -> None:
+def test_issue_invite_rate_limit_no_second_delivery(issue_mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     v = issue_mount
     v.admit()
     assert v.helper._reply.call_count == 1
+    observed_at = v.helper.invite_observation[-1]
     initial = v.journal.read_bytes()
     v.helper._reply.reset_mock()
+    v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    v.message.new_method_error_literal = lambda name, category: SimpleNamespace(name=name, category=category)
+    v.helper.connection.send_message = Mock()
+    v.helper._error = Mock(wraps=v.h.RemoteAccessHelper._error.__get__(v.helper))
     v.renew()
     v.admit()
     assert v.helper.lifecycle_result['outcome'] == 'refused' and not v.helper._reply.called
+    v.helper._error.assert_called_once_with(v.message, 'host-state-unrecognized-invite_rate_limited')
+    refusal = v.helper.connection.send_message.call_args.args[0]
+    assert refusal.name == v.h.INTERFACE + '.Error.host_state_unrecognized_invite_rate_limited'
     assert len(v.admin.keys) == 1 and v.control.reserve_invite.call_count == 2
     assert v.journal.read_bytes() == initial and v.helper.inflight is None
+    v.renew()  # The lifecycle owner exits; retain its observation for projection.
+    observed = SimpleNamespace(generation=7, operation='b' * 32, release_uid=1000, phase='ready')
+    v.helper.generations = SimpleNamespace(current_generation=lambda _: observed)
+    v.helper.control.status = lambda: SimpleNamespace(owned=True, release_uid=1000, ready=True)
+    monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args=(), **kw:
+                        SimpleNamespace(start=lambda: target(*args)))
+    monkeypatch.setattr(v.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+    v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    reply = SimpleNamespace(set_body=lambda body: setattr(reply, 'body', body))
+    v.message.new_method_reply = lambda: reply
+    v.helper.connection.send_message = Mock()
+    monkeypatch.setattr(v.h.time, 'monotonic', lambda: observed_at + 1)
+    v.helper._status_v2(v.message, ':1.42')
+    status = json.loads(v.helper.connection.send_message.call_args.args[0].body.unpack()[0])
+    assert status['invite'] == dict(state='issued', age_seconds=1,
+                                    deadline_utc_seconds=v.record()['expires_at'])
+    assert v.journal.read_bytes() == initial and len(v.admin.keys) == 1
 
 
 @pytest.mark.parametrize('case', ['valid_large', 'repeat_ready', 'oversize', 'frame_at_limit', 'frame_limit', 'malformed', 'duplicate', 'extra', 'prefix', 'alphabet',

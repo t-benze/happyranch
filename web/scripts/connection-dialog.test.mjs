@@ -370,7 +370,7 @@ test('host view: approval, invite, unconfirmed and manage flags', async () => {
 test('host state categories survive parsing and select bilingual GUI copy', async () => {
   const en = (await import('../src/lib/i18n/locales/en.ts')).default;
   const zh = (await import('../src/lib/i18n/locales/zh-CN.ts')).default;
-  for (const category of ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'unknown', 'unverified', 'not_applicable']) {
+  for (const category of ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'status_unavailable', 'invite_rate_limited', 'unknown', 'unverified', 'not_applicable']) {
     const input = { code: 'hostStateUnrecognized', effect: 'none', recovery: 'refresh', category };
     const failure = conn.parseConnectionFailure(JSON.stringify(input));
     assert.deepEqual(failure, { ...input, category: category === 'unknown' ? 'unverified' : category });

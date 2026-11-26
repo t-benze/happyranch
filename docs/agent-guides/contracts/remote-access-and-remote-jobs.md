@@ -1138,13 +1138,37 @@ The reload intent rechecks custody, full fixed inventory, quiescence and pinned
 no-follow parents before daemon-reload, then resets retained failed markers only
 for fixed managed unit names whose removal precedes this validated journal phase.
 Before each reset, fresh show must prove not-found, empty FragmentPath/DropInPaths,
-zero MainPID/ControlPID, empty Job and failed or inactive ActiveState; inactive
-units need no reset. Unknown shapes refuse. The fixed reset-failed argv uses the
+zero supported PID fields (MainPID/ControlPID for services, ControlPID for the
+socket, neither for the target), empty Job and failed or inactive ActiveState;
+inactive units need no reset. Unknown shapes refuse. The fixed reset-failed argv uses the
 existing service-manager transport and timeout. No caller supplies a unit name.
 The persisted replacement-reload phase is the durable intent for both idempotent
 effects; there is no new phase/schema. V1/v2 journals already at reload, including
 already-reloaded not-found/failed units, resume through this narrowly checked
 inventory route with unchanged authorization, caller and custody checks.
+Authenticated Turn off and ready-restart Enable additionally clear a failed
+marker for the fixed five `UNITS` names only. Turn off does this after verified
+stop and final fragment form/daemon reload, before retiring cleanup evidence.
+Ready restart retains its existing receipt, G/O, custody, deadline and no-replay
+checks. Each effect freshly verifies the exact owned fragment at its fixed path,
+no drop-ins or reload requirement, inactive/failed ActiveState, dead/failed
+SubState and empty Job. Services additionally require zero MainPID/ControlPID
+and empty ControlGroup; the fixed socket requires zero ControlPID and empty
+ControlGroup (its Socket interface has no MainPID). The fixed target has no
+execution context. These are the properties exposed by the
+[systemd Unit, Service and Socket interfaces](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.systemd1.html).
+For an absent fixed unit, `_reload_unit_state` also requires the same supported
+PID fields, not-found LoadState and no fragment/drop-ins;
+Headscale is outside `UNITS` and gains no reset caller. Reset must re-read as
+inactive/dead with the same ownership/quiescence properties. Failure leaves a
+fixed `partial_cleanup` outcome with `owned units: reset unconfirmed` during
+Turn off, or the existing `ready-restart-failed-turn-off` refusal during Enable.
+No paths, native output or contents enter that result. All ordinary inventory
+state sets stay strict. Status is read-only and never resets; post-disable staged
+refusal is projected through the existing inventory/residue categories.
+Disable without a receipt still uses strict Enable capture: already-stranded
+failed retained units have no new authenticated recovery admission here.
+
 The retirement intent additionally requires the ordinary no-unit manager shape;
 cached own fragments no longer qualify and every absent unit must be inactive.
 If reset leaves a unit failed, refuse without looping or adding retry budget.
@@ -2192,14 +2216,18 @@ existing nonsecret action fields (`effect`, `inviteState`, UTC `expiresAt`, etc.
 Malformed/late/lost frames produce `outcomeUnknown` / effect `unknown` without
 display. ReplaceFailed uses section 7's exact warning and default-No terminal
 confirmation before dispatch. Turn off adds no prompt to its fresh native auth.
-The other six lifecycle replies acknowledge `accepted` before effects finish;
-the CLI keeps its dedicated bus alive through the original operation budget plus
-margin for the helper's live-caller revalidation, then reports the existing
-`outcomeUnknown` / effect `unknown`, exit 1,
-without polling or redispatch. Private worker outcome/partial_cleanup/uncertain
-and named residue are not terminal D-Bus receipts. Admission cannot establish
-host denial or any cleanup; no paths, identities, new result fields or success
-claims are inferred from it. This is CLI source delivery, not live acceptance.
+The other six lifecycle replies acknowledge `accepted` before effects finish.
+The CLI subscribes before its single send and consumes the authenticated unicast
+`LifecycleCompleted` receipt, correlated to the original method/call serial,
+within the original operation budget. Enable and Disable preserve their typed
+terminal results; CancelInvite, RecoverInvite, RetryPolicyRenewal and admitted
+ReplaceFailed report their named completion or known failure. Effect remains
+`unknown`. Uncertain work or a lost/invalid/late receipt or transport loss retains
+`outcomeUnknown` / exit 1; the fallback margin for live-caller revalidation adds
+no receipt grace. There is no polling or redispatch. Private worker outcomes and
+named residue alone are insufficient without that receipt. Admission cannot
+establish host denial or cleanup; no paths, identities or success claims are
+inferred from it. This is CLI source delivery, not live acceptance.
 
 `remote_access_helper.py` exports `ai.happyranch.RemoteAccess1` at
 `/ai/happyranch/RemoteAccess1` with zero-input Status, StatusV2, NextDevice,
@@ -3428,7 +3456,10 @@ No B7/B11/minter evidence, live connector/sidecar/Headscale state, pending entry
 or other cleanup residue may remain. Partial cleanup retains the existing Retry
 turn off route. Initial invite-config publication uses the staged-byte proof
 without changing retained config bytes. B6 remains stop/disable/retain and its
-closed deletion map is unchanged; the next activation creates fresh authority.
+closed deletion map is unchanged; the next activation creates fresh authority. Retained
+failed markers are reset only with the fresh fixed-name/byte/manager proof above,
+before activation/account/publication receipts retire. The five fragments and
+configs remain retained; no file or unit bytes change for this recovery.
 Persist one root-generated activation operation ID before `mint_local_node`.
 A lost create/enroll/start outcome is `failed_uncertain`, never an automatic
 new ID. Fresh-auth Enable on that record re-lists the fixed user's keys/nodes:
@@ -3671,10 +3702,11 @@ status at most 2 seconds. B15 conveys progress/terminal outcomes using
 `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`.
 Transport loss after dispatch never means no change.
 
-Enable and Disable send a destination-addressed `LifecycleCompleted(s)` signal on
+Enable, Disable, ReplaceFailed, CancelInvite, RecoverInvite and RetryPolicyRenewal
+send a destination-addressed `LifecycleCompleted(s)` signal on
 `ai.happyranch.RemoteAccess1`, before captured slot/name release, to the original
 unique caller only. Its sole method reply stays JSON `"accepted"` (admission).
-The closed, duplicate-free, 512-byte frame has method=Enable|Disable,
+The closed, duplicate-free, 512-byte frame names that original method,
 correlation={serial:original call serial,owner:authenticated helper unique name},
 outcome=failed|completed, and optional category on failed only. No broadcast,
 cache, lookup, replay, cross-caller transfer or automatic Enable follows.
@@ -3688,6 +3720,20 @@ unknown effect; the receipt supplies no reusable revoke or cleanup authority.
 Lost receipt retains `outcomeUnknown`; no poll, reconnect or mutation replay is
 added. GUI Disable still uses its admission and fresh Status observations;
 it cannot consume the Enable-only window event.
+
+The four CLI-only methods use the same original connection, method/serial/owner
+correlation, subscribe-before-send ordering and single receipt consumption.
+ReplaceFailed keeps its original 480s budget (482s fallback); CancelInvite,
+RecoverInvite and RetryPolicyRenewal keep 120s (122s fallback). Their worker
+settlement sends and flushes the receipt before releasing its capture. A settled
+completion returns `replaceFailedCompleted`, `cancelInviteCompleted`,
+`recoverInviteCompleted` or `policyRenewalCompleted`, respectively, with exit 0.
+A known failure returns `lifecycleFailed` with the closed category `failed`,
+`refused` or `partial_cleanup`, exit 1. These receipts retain effect `unknown`
+and carry no residue paths or cleanup authority. An uncertain worker sends
+category `uncertain`; CLI projects it as `outcomeUnknown`, as it does for a lost,
+invalid or late receipt. No Status polling, mutation replay, extra budget or
+window command/event is added. The GUI command set remains unchanged.
 
 Only HeadscaleServiceError.category at the actual prepare_headscale call mints
 preparation provenance. The private child emits one exact preparationFailure
@@ -4635,8 +4681,9 @@ explicit, authenticated Turn on performs the renewal above. No retained-file
 manipulation or other host action is required for that validated shape.
 
 `hostStateUnrecognized` retains its code and adds optional closed category
-`residue|owner|provenance|custody|inventory|quiescence|timeout|unknown|unverified|not_applicable`. The child
-emits only `{refusal: category}` on Enable, Disable or ReplaceFailed capture refusal; HomeLifecycleClient
+`residue|owner|provenance|custody|inventory|quiescence|timeout|status_unavailable|invite_rate_limited|unknown|unverified|not_applicable`. The child
+emits only `{refusal: category}` on Enable, Disable, ReplaceFailed, IssueInvite,
+CancelInvite or RecoverInvite capture refusal; HomeLifecycleClient
 validates the closed frame; helper D-Bus uses `host_state_unrecognized_<category>`.
 The shared native request projection, CLI JSON, Main protocol/relay and Connection
 parser preserve it to English and Simplified Chinese copy. Legacy owner-binding
@@ -4757,7 +4804,9 @@ health reads at one-second intervals (no overlapping reads or transport retries)
 A later error terminates through the existing named CLI error and bounded local
 session cleanup. Only the existing revocation_denied/revocation_stream_closed
 responses map to revoked; generic identity denial remains accessUnavailable,
-never proof of confirmed revocation. This adds no network/auth/credential change,
+never proof of confirmed revocation. Transport loss remains homeUnavailable and
+malformed HTTP remains protocol in CLI JSON; neither collapses to unavailable
+or proves revocation. This adds no network/auth/credential change,
 no keyring deletion, and no UI-loaded/Connected claim. The native GUI's existing
 health action already distinguishes revokedConfirmed from accessDenied.
 
@@ -4802,7 +4851,7 @@ that every CLI response is a success object or treat file-write success as READY
 
 ### Attributed lifecycle refusals
 
-Enable, Turn off and replace-failed capture refusals retain the same closed
+Enable, Turn off, replace-failed and invite capture refusals retain the same closed
 host-state category through the fixed child, D-Bus, native CLI and both Host
 views. Recognized inapplicable actions use `not_applicable` with `effect=none`
 before admission. Turn off with no activation receipt first proves recognized
@@ -4811,6 +4860,32 @@ only the existing `known-failed-or-partial` installer candidate and its exact
 inventory/journal generation; a home activation receipt never qualifies. It is
 not home activation recovery. Unsafe inventory retains its attributed refusal.
 No replacement, cleanup, mint, replay or authentication gate is widened.
+
+With no activation receipt, IssueInvite/CancelInvite/RecoverInvite likewise
+require strict Enable capture before returning not_applicable. Device actions
+whose connector snapshot is unavailable reuse the existing strict absence proof
+only to refuse: proven Off returns not_applicable, otherwise unverified. Its
+display snapshot never admits a device mutation. CLI revoke with fresh known
+Off status refuses not_applicable before selection or mutation dispatch.
+
+When IssueInvite's existing issuer rate fence positively refuses before journal
+write, invalidation or mint, its private terminal result is rate_limited. Only
+that exact result projects invite_rate_limited with effect none, through CLI
+and both bilingual Host views. It means a recent invite must be used or the
+caller must wait; a generic refused or unavailable result does not prove that
+cause and retains its existing effect semantics.
+
+The helper's short Status read expiry is projected as hostStateUnrecognized /
+timeout, never invite or policy expiry. Helper unavailable and D-Bus NoReply
+for Status use status_unavailable. Both are no-effect reads and retain their
+closed category through CLI and both bilingual Host views. Other action and
+transport-loss effect semantics remain unchanged.
+
+A positively refused IssueInvite with no invite-state effect does not overwrite
+an earlier same-generation issued observation with unknown. Status keeps the
+original observation age and expiry and its existing UID/generation guards;
+fresh helpers still use the existing protected journal reader. Dispatched
+uncertainty remains uncertain. No privileged read or invite delivery is added.
 
 A prepared activation receipt which has not reached ready is displayed as
 `setup_unverified`, rather than an unqualified pending state. Prepared staging

@@ -27,8 +27,9 @@ class ClosedError(Exception):
         self.value = dict(code=code, effect=effect, recovery=recovery)
         if code == "hostStateUnrecognized":
             self.value['category'] = category if category in contract.HOST_STATE_CATEGORIES and category != 'unknown' else 'unverified'
-        elif code in ("enablePreparationFailed", 'turnOffFailed'):
-            categories = contract.PREPARATION_CATEGORIES if code == 'enablePreparationFailed' else contract.DISABLE_CATEGORIES
+        elif code in ("enablePreparationFailed", 'turnOffFailed', 'lifecycleFailed'):
+            categories = (contract.PREPARATION_CATEGORIES if code == 'enablePreparationFailed'
+                          else contract.DISABLE_CATEGORIES if code == 'turnOffFailed' else contract.CLI_FAILURE_CATEGORIES)
             if (type(category) is str and category in categories
                     and effect == "unknown" and recovery == "nativeRecovery"):
                 self.value['category'] = category
@@ -133,6 +134,8 @@ def revoke(host: Host) -> dict:
     if not sys.stdin.isatty() or not sys.stderr.isatty():
         raise ClosedError(recovery="nativePermission")
     snapshot = host.request("Status")
+    if snapshot['observation'] == 'known' and snapshot['setup'] == 'off':
+        raise ClosedError('hostStateUnrecognized', recovery='refresh', category='not_applicable')
     deadline = time.monotonic() + 120
     for _ in range(32):
         if snapshot["observation"] != "known" or not snapshot["devices"]:
@@ -183,7 +186,10 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except ClosedError as error:
-        if error.value.get("category") == "not_applicable" and error.value["effect"] == "none":
+        if error.value.get('category') == 'invite_rate_limited' and error.value['effect'] == 'none':
+            print('An invite was issued recently. Use it or wait before creating another. '
+                  'Category: invite_rate_limited.', file=sys.stderr)
+        elif error.value.get("category") == "not_applicable" and error.value["effect"] == "none":
             print("This action does not apply to the current remote access setup. No change was made. "
                   "Category: not_applicable.", file=sys.stderr)
         elif error.value["code"] == "hostStateUnrecognized":

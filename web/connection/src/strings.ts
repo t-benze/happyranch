@@ -172,6 +172,8 @@ const en = {
   'hostState.custody': "Remote access is unverified: protected file ownership or safety could not be confirmed. Check the local installation.",
   'hostState.inventory': "Remote access is unverified: the installed components could not be confirmed. Check the local installation.",
   'hostState.quiescence': "Remote access is unverified: the services could not be confirmed stopped. Check the local installation.",
+  'hostState.invite_rate_limited': "An invite was issued recently. Use it or wait before creating another.",
+  'hostState.status_unavailable': "Remote access status could not be read. Check again.",
   'hostState.timeout': "Remote access is unverified: verification timed out. Check again.",
   'hostState.unverified': "Remote access could not be verified. Check the local installation before another action.",
 };
@@ -350,6 +352,8 @@ const zh: Copy = {
   'hostState.custody': "远程访问尚未验证：无法确认受保护文件的所有权或安全状态。请检查本机安装。",
   'hostState.inventory': "远程访问尚未验证：无法确认已安装的组件。请检查本机安装。",
   'hostState.quiescence': "远程访问尚未验证：无法确认服务已停止。请检查本机安装。",
+  'hostState.invite_rate_limited': "最近已发出邀请。请使用该邀请，或稍后再创建新的邀请。",
+  'hostState.status_unavailable': "无法读取远程访问状态。请重新检查。",
   'hostState.timeout': "远程访问尚未验证：验证超时。请重新检查。",
   'hostState.unverified': "无法验证远程访问。执行其他操作前请检查本机安装。",
 };
