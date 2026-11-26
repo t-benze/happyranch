@@ -426,6 +426,17 @@ LocalTokenCredentialProvider/daemon.token path. It adds no bootstrap custody,
 selects no target and preserves remote appState. Update status is unknown
 (no installed-daemon hint); normal Quit still stops the child. The legacy Main
 phase strip is removed. Mac native execution and visual acceptance remain QA.
+Real Restart sheet attachment is NOT VERIFIABLE in the SwiftPM XCTest venue
+(build92: inactive/nonrunning NSApp, Main without a screen/window number, and
+plain NSAlert probe without attachment). Production presentation is unchanged.
+Consent coverage checks the production alert construction in EN/ZH, computer
+name, Cancel first and Return-default, Restart second without a key equivalent,
+Cancel/timeout versus Restart response mapping, and no-Main/already-presenting
+guards. The real-child keeper drives Start/Stop through the bridge, verifies a
+mapped decline causes no restart, then drives the bridge's confirmed Restart
+branch with a mapped Restart response and AppDelegate's real post-consent effects.
+It checks PID replacement, busy→ready and synchronous Quit's
+per-PID absence before fallback. These checks do not prove sheet attachment.
 
 The Connection
 dialog body is `features/connection/ConnectionDialogBody.tsx`, composed by

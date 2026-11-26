@@ -1134,10 +1134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         return true
     }
 
-    func confirmLocalRestart() async -> Bool {
-        guard let window = mainScheme?.localPromptWindow, window.attachedSheet == nil else { return false }
-        let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
-        let name = Host.current().localizedName ?? (zh ? "此电脑" : "This computer")
+    static func localRestartAlert(zh: Bool, computerName name: String) -> NSAlert {
         let alert = NSAlert()
         alert.messageText = zh ? "重新启动 \(name) 上的 HappyRanch？" : "Restart HappyRanch on \(name)?"
         alert.informativeText = zh
@@ -1146,13 +1143,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         alert.addButton(withTitle: zh ? "取消" : "Cancel")
         alert.addButton(withTitle: zh ? "重新启动" : "Restart")
         alert.buttons[0].keyEquivalent = "\r"; alert.buttons[1].keyEquivalent = ""
+        return alert
+    }
+
+    static func localRestartConfirmed(_ response: NSApplication.ModalResponse) -> Bool {
+        response == .alertSecondButtonReturn
+    }
+
+    func confirmLocalRestart() async -> Bool {
+        guard let window = mainScheme?.localPromptWindow, window.attachedSheet == nil else { return false }
+        let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+        let name = Host.current().localizedName ?? (zh ? "此电脑" : "This computer")
+        let alert = Self.localRestartAlert(zh: zh, computerName: name)
         let timeout = Task { @MainActor in
             do { try await Task.sleep(for: .seconds(120)) } catch { return }
             if let parent = alert.window.sheetParent { parent.endSheet(alert.window, returnCode: .alertFirstButtonReturn) }
         }
         defer { timeout.cancel() }
         return await withCheckedContinuation { continuation in
-            alert.beginSheetModal(for: window) { continuation.resume(returning: $0 == .alertSecondButtonReturn) }
+            alert.beginSheetModal(for: window) { continuation.resume(returning: Self.localRestartConfirmed($0)) }
         }
     }
 

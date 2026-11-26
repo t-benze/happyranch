@@ -4,51 +4,15 @@ import XCTest
 import HappyRanchSupervisor
 @testable import HappyRanchApp
 
+// Test-side input for the existing attached-sheet guard, not a presenter.
+@MainActor
+private final class LocalRestartGuardWindow: NSWindow {
+    var existingSheet: NSWindow?
+    override var attachedSheet: NSWindow? { existingSheet }
+}
+
 // Reuse the existing packaged-asset/transport fixture, with no real daemon or port.
 extension AppSchemeSwitchTests {
-    @MainActor
-    static func logNativeSheetState(_ stage: String, window: NSWindow? = nil, scheme: AppScheme? = nil) {
-        let application = NSApplication.shared
-        func identity(_ window: NSWindow?) -> String {
-            window.map { String(describing: ObjectIdentifier($0)) } ?? "nil"
-        }
-        var details = "running=\(application.isRunning) active=\(application.isActive) activationPolicy=\(application.activationPolicy())"
-        details += " window=\(identity(window)) localPromptWindow=\(identity(scheme?.localPromptWindow))"
-        if let window {
-            details += " visible=\(window.isVisible) key=\(window.isKeyWindow) onActiveSpace=\(window.isOnActiveSpace) windowNumber=\(window.windowNumber) occlusionState=\(window.occlusionState.rawValue)"
-            details += " screen=\(window.screen.map { "\($0.localizedName) frame=\($0.frame)" } ?? "nil") attachedSheet=\(identity(window.attachedSheet))"
-        }
-        details += " runLoopMode=\(RunLoop.current.currentMode?.rawValue ?? "nil")"
-        // Write directly so a later stalled task cannot leave these buffered.
-        let line = "[MAC-3 sheet t=\(Date().timeIntervalSince1970) uptime=\(ProcessInfo.processInfo.systemUptime)] \(stage) \(details)\n"
-        FileHandle.standardError.write(Data(line.utf8))
-    }
-
-    @MainActor
-    static func probeNativeSheetVenue(_ label: String) async {
-        // Diagnostic only: never replace the real Main/Restart assertions.
-        let probe = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
-                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        probe.makeKeyAndOrderFront(nil)
-        probe.displayIfNeeded()
-        let alert = NSAlert()
-        defer {
-            if let sheet = probe.attachedSheet { probe.endSheet(sheet, returnCode: .alertFirstButtonReturn) }
-            alert.window.orderOut(nil)
-            probe.orderOut(nil)
-        }
-        Self.logNativeSheetState("\(label) venue-capability probe: before plain NSAlert.beginSheetModal", window: probe)
-        alert.beginSheetModal(for: probe) { response in
-            Self.logNativeSheetState("\(label) venue-capability probe: completion response=\(response.rawValue)")
-        }
-        Self.logNativeSheetState("\(label) venue-capability probe: beginSheetModal returned", window: probe)
-        let clock = ContinuousClock(), deadline = ContinuousClock().now.advanced(by: .seconds(1))
-        while probe.attachedSheet == nil, clock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        Self.logNativeSheetState("\(label) venue-capability probe: attachedWithin1s=\(probe.attachedSheet === alert.window); diagnostic only", window: probe)
-    }
-
     @MainActor
     func testLocalReadmissionPreservesMainOwnersAndRejectsStaleReconnect() throws {
         let (root, scheme, view, transport) = try fixture()
@@ -97,70 +61,48 @@ extension AppSchemeSwitchTests {
     }
     @MainActor
     func testNativeRestartConsentDefaultsToCancelAndRetainsMain() async throws {
-        let application = NSApplication.shared
-        let previousPolicy = application.activationPolicy()
-        Self.logNativeSheetState("consent setup: before activation")
-        // Unlike the product launch path, SwiftPM does not install AppDelegate
-        // as NSApp's delegate. Unbundled executables default to .prohibited.
-        let activated = application.setActivationPolicy(.regular)
-        application.finishLaunching()
-        application.activate(ignoringOtherApps: true)
-        Self.logNativeSheetState("consent setup: setActivationPolicy returned \(activated)")
-        defer { application.setActivationPolicy(previousPolicy) }
-        await Self.probeNativeSheetVenue("consent")
+        _ = NSApplication.shared
+        // Build92 demonstrated that this SwiftPM venue cannot attach sheets.
+        // Exercise the production dialog and mapping without presentation.
+        let name = "MAC-3 测试电脑"
+        for zh in [false, true] {
+            let alert = AppDelegate.localRestartAlert(zh: zh, computerName: name)
+            XCTAssertEqual(alert.messageText, zh ? "重新启动 \(name) 上的 HappyRanch？" : "Restart HappyRanch on \(name)?")
+            XCTAssertTrue(alert.messageText.contains(name))
+            XCTAssertEqual(alert.informativeText, zh
+                ? "这会中断此电脑上的本地工作。仅重新启动守护进程，应用和当前对话框将保持打开。不会保证工作自动恢复。"
+                : "This interrupts local work on this computer. Only the daemon restarts; the app and current dialog stay open. Work may not resume automatically.")
+            XCTAssertEqual(alert.buttons.map { $0.title }, zh ? ["取消", "重新启动"] : ["Cancel", "Restart"])
+            XCTAssertEqual(alert.buttons.map { $0.keyEquivalent }, ["\r", ""])
+        }
+        // The production timeout ends the sheet with alertFirstButtonReturn.
+        XCTAssertFalse(AppDelegate.localRestartConfirmed(.alertFirstButtonReturn))
+        XCTAssertFalse(AppDelegate.localRestartConfirmed(.abort))
+        XCTAssertTrue(AppDelegate.localRestartConfirmed(.alertSecondButtonReturn))
+        let app = AppDelegate()
+        let missingMain = await app.confirmLocalRestart()
+        XCTAssertFalse(missingMain)
         let (root, scheme, view, _) = try fixture()
         defer {
             scheme.close()
             try? FileManager.default.removeItem(at: root)
             try? FileManager.default.removeItem(at: root.appendingPathExtension("json"))
         }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+        let window = LocalRestartGuardWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         view.setFrameSize(window.contentLayoutRect.size)
         window.contentView = view
-        window.makeKeyAndOrderFront(nil)
-        window.displayIfNeeded()
-        defer {
-            if let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .alertFirstButtonReturn) }
-            window.orderOut(nil)
-        }
-        let app = AppDelegate(); app.bindMainScheme(scheme)
+        defer { window.contentView = nil }
+        app.bindMainScheme(scheme)
         XCTAssertTrue(scheme.localPromptWindow === window)
-        XCTAssertTrue(window.isVisible)
-        // Register before scheduling the production MainActor task. XCTest's
-        // async waiter suspends this test instead of nesting a main-queue run
-        // loop, allowing both the task and AppKit's sheet work to drain.
-        let presented = XCTNSNotificationExpectation(name: NSWindow.willBeginSheetNotification, object: window)
-        var answer: Bool?
-        Self.logNativeSheetState("consent: scheduling Task", window: window, scheme: scheme)
-        let task = Task { @MainActor in
-            Self.logNativeSheetState("consent: Task body entered; calling confirmLocalRestart", window: window, scheme: scheme)
-            answer = await app.confirmLocalRestart()
-            Self.logNativeSheetState("consent: Task completed answer=\(String(describing: answer))", window: window, scheme: scheme)
-        }
-        defer { task.cancel() }
-        let presentation = await XCTWaiter.fulfillment(of: [presented], timeout: 5)
-        Self.logNativeSheetState("consent: waiter=\(presentation) answer=\(String(describing: answer))", window: window, scheme: scheme)
-        XCTAssertEqual(presentation, .completed, "Main must announce the real sheet presentation")
-        let sheet = try XCTUnwrap(window.attachedSheet, "Restart must present on Main; answer=\(String(describing: answer)), visible=\(window.isVisible)")
-        func buttons(_ view: NSView) -> [NSButton] {
-            (view as? NSButton).map { [$0] } ?? view.subviews.flatMap { buttons($0) }
-        }
-        let choices = sheet.contentView.map { buttons($0) } ?? []
-        XCTAssertEqual(choices.filter { $0.keyEquivalent == "\r" }.count, 1)
-        XCTAssertTrue(choices.contains { ["Cancel", "取消"].contains($0.title) && $0.keyEquivalent == "\r" })
-        func labels(_ view: NSView) -> [String] {
-            (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap { labels($0) }
-        }
-        let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
-        let name = Host.current().localizedName ?? (zh ? "此电脑" : "This computer")
-        XCTAssertTrue(sheet.contentView.map { labels($0).contains { $0.contains(name) } } == true,
-                      "Restart consent must name this computer")
-        window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
-        await task.value
-        XCTAssertEqual(answer, false)
-        XCTAssertTrue(window.isVisible)
+        // Model an already-owned sheet without attempting unsupported attachment.
+        let existingSheet = NSWindow()
+        window.existingSheet = existingSheet
+        let alreadyPresenting = await app.confirmLocalRestart()
+        XCTAssertFalse(alreadyPresenting)
+        XCTAssertTrue(window.attachedSheet === existingSheet)
         XCTAssertTrue(window.contentView === view)
+        XCTAssertTrue(scheme.localPromptWindow === window)
     }
 
 }

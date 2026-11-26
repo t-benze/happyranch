@@ -166,26 +166,28 @@ local-service page: light shows stopped with Start/Restart enabled; dark shows
 running with Stop/Restart disabled by a reserved busy owner. Both locales must
 render the plain Mac-unavailable lifetime row before capture. These are synthetic
 visual inputs at the existing MacLocalControls backend boundary, with no child
-effect; they do not prove real-process lifecycle behavior. The native test also
-observes the real Restart sheet after AppKit launch/run-loop processing, checks
-Cancel as the sole Return default and this computer's name, then retains Main.
-Both consent keepers register Main's `willBeginSheetNotification` before Restart
-and await `XCTWaiter.fulfillment`, leaving the main queue/MainActor free for the
-production `NSAlert.beginSheetModal` path. They do not pump a nested run loop
-inside a main-queue block; actual sheet/default/name/retention assertions remain.
-The two SwiftPM keepers explicitly select regular activation policy and activate
-NSApp, matching product launch, then restore the previous policy. Each logs
-timestamped Task-entry, app/window/prompt-window state and a plain NSAlert sheet
-probe on a throwaway window. The probe is diagnostic only and never replaces or
-skips the real Main-attached Restart assertions; their 5s/10s bounds are unchanged.
-The lifecycle Task-entry record identifies the test's JS trigger, not the
-internal MacLocalControls task. Activation setup is a source-supported fix
-attempt; whether this venue can present sheets still requires native execution.
+effect; they do not prove real-process lifecycle behavior.
+
+Real Restart sheet attachment is **NOT VERIFIABLE in the SwiftPM XCTest venue**:
+build92 observed NSApp not running/active, Main windowNumber 0/no screen, and
+no attachment even for a plain NSAlert on a throwaway window. Round7 keeps
+production presentation unchanged. The existing consent keeper exercises the
+production alert factory in EN and ZH (copy, computer name, Cancel first/Return,
+Restart second/no key equivalent), response mapping (Cancel/timeout false,
+Restart true), and the no-Main/already-presenting guards without presentation.
+Its test-side NSWindow models an already-owned sheet; it proves the guard, not
+AppKit attachment. Attachment waits and round6 probe/diagnostics are removed.
+
 `AppSchemeSwitchTests.testBridgeOwnsRealChildStartStopRestartAndQuit` runs in the
-existing unfiltered headless XCTest command. It drives the actual Main JS bridge,
-MacLocalControls and AppDelegate supervisor through Start/Stop/Restart, accepts
-the actual native Restart sheet, and invokes the app termination path. Only the
-executable at the existing ProcessControlling boundary is substituted: a minimal
+existing unfiltered headless XCTest command. Start and Stop drive the actual Main
+JS bridge, MacLocalControls and AppDelegate supervisor. A Cancel response uses
+the production mapping at the existing backend boundary and proves bridge
+refusal with no restart. A mapped Restart response drives the real bridge's
+confirmed branch and AppDelegate's unchanged post-consent effects, retaining the
+controller's busy reservation, followed by synchronous Quit. Neither response
+claims an accepted native sheet.
+Child execution substitutes the executable at the existing ProcessControlling
+boundary: a minimal
 Python HTTP child (the native job already requires Python), since the SwiftPM
 test bundle has no frozen daemon. Real handles/PIDs, signals, exit callbacks,
 port files and authenticated loopback health are used with disposable data and

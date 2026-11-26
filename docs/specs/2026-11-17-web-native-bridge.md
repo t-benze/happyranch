@@ -797,6 +797,20 @@ This is source inspection, not live/native acceptance. `AS` =
 | Compatibility before activation, reconnect/Restart | **S5-L1 implemented.** Native admission progresses without page API traffic. After observed transport loss, cached compatibility/bearer cannot publish ready: fresh successful health/compatibility admission is required, with bootstrap if needed (`AS:302–364`). Reset/reselection/readiness/Restart invalidate cached compatibility: `WK:391–410` (`refresh_status`), `WK:412–415` (`invalidate_document`), `AS:198–206` (`reset`). Existing launcher reconstruction remains; active/candidate ownership remains S5-L2. |
 | L-2 bearer refresh | **S5-L1 implemented and focused regression verified.** Reset clears bearer; a 401 invalidates native bearer/health admission for the next request’s bootstrap. The already-forwarded request is returned once and never replayed: `AS:198–206` (`reset`), `AS:406–437` (`LocalDaemon.send`), `test_app_scheme.py:test_reset_and_401_rebootstrap_without_replaying_mutation`. |
 
+**MAC-3 round7 consent verification:** real sheet attachment is NOT VERIFIABLE
+in the SwiftPM XCTest venue (build92: NSApp not running/active, Main windowNumber
+0/no screen, plain NSAlert probe also unattached). Production consent behavior
+is unchanged. The existing keeper verifies the production EN/ZH alert factory,
+computer name, ordered buttons (Cancel first/Return default; Restart second/no
+key equivalent), response mapping (Cancel/timeout false; Restart true), and the
+no-Main/already-presenting guards. Real-child Start/Stop retain the bridge →
+MacLocalControls → AppDelegate path; mapped declined consent proves no restart,
+and a mapped Restart response drives the real bridge's confirmed branch and
+unchanged AppDelegate post-consent effects with the busy reservation retained.
+New PID/old PID absence, busy→ready with no premature ready, and synchronous
+Quit/per-PID census before fallback remain required. No successful sheet
+attachment is claimed by this venue.
+
 **Web (S5-W1, TASK-18159).** The web consumes this contract as described in
 [`docs/agent-guides/web-and-cli.md`](../agent-guides/web-and-cli.md#native-bridge-v2-target-generation-thr-387-s5-w1):
 generation store and `X-HappyRanch-Target` echo (`web/src/lib/native/target.ts`,
