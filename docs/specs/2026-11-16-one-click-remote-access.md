@@ -998,6 +998,20 @@ User-visible states/actions (Linux and Mac; no state below grants runtime access
 | Host revocation / turn off | **Revoke device** denies only that device and closes its streams. **Turn off remote access** invalidates all devices, invites and approvals, removes owned remote services/secrets, and preserves release runtime/org data. Both require fresh auth. | **Access revoked — Create new invite on Linux**; close access and erase saved material when observed. An offline Mac cannot prove local erasure, but host denial is already effective. |
 | Partial cleanup / uncertain stop | **Remote access cleanup incomplete** names safe paths/components and whether host denial is confirmed; never claim **Off** or **Removed** without proof. **Retry turn off** is the same fixed Disable action with fresh auth; unknown ownership needs operator recovery. | Close local sessions; show **Local cleanup incomplete** or **Host cleanup status unknown** as applicable. **Retry removal** erases only local state; host cleanup needs Linux. |
 
+Authenticated Turn off clears retained failed markers only for the fixed five
+managed `UNITS`, after verified stop/final fragment form and before cleanup
+receipts retire. Ready-restart Enable uses the same reset before starting owned
+units, with its original G/O, custody, deadline and no-mint/replay fences. Each
+reset requires exact owned bytes/fixed FragmentPath, no drop-ins/reload, failed
+ActiveState, dead/failed SubState, MainPID=ControlPID=0, empty ControlGroup and
+Job; absent fixed units also require the existing no-fragment reload proof.
+Re-read must prove inactive/dead. Reset failure is fixed partial cleanup during
+Turn off, never completed; real ready-restart failure keeps the Turn off advice.
+All five fragments/configs stay retained and strict inventory state sets stay
+unchanged. Headscale gains no reset caller. Status never resets; an already
+stranded failed retained unit without a receipt still needs operator recovery
+because this change adds no no-receipt Disable admission.
+
 Enable first inventories only fixed managed destinations, exact unit fragments, drop-ins and package
 files, with no effects on unknown objects. Successful modern records resume idempotently; existing
 healthy manual installs require explicit migration, never infer failure from a stopped unit. For

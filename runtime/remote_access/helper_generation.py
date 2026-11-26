@@ -58,6 +58,7 @@ def host_state_category(error: Exception) -> str:
         '_read_file': 'custody', '_record': 'custody', '_parent': 'custody',
         '_confirm_quiescent': 'quiescence', '_headscale_stopped': 'quiescence',
         '_home_unit_inventory': 'inventory', '_inventory': 'inventory',
+        '_home_staged_inventory': 'inventory',
         '_replacement_snapshot': 'inventory', '_home_staging_residue': 'residue',
         '_headscale_inventory': 'residue', '_issuer_inventory': 'residue',
         '_headscale_publication': 'residue', '_headscale_receipt': 'provenance',

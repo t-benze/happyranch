@@ -40,3 +40,22 @@ TASK-18883, TLC2.19 / OpenJDK21.0.13.1, workers1/fp0/seed1:
 | current.cfg | 0 | No error; 6796 generated / 3240 distinct, queue0, depth5; safety invariants and WorkerSettles pass. |
 | negative-reset.cfg | 12 expected | ResetBound counterexample; 2265 generated / 1761 distinct. |
 | negative-settlement.cfg | 12 expected | SettledReleased counterexample; 4226 generated / 2569 distinct. |
+
+
+## Retained home-unit reset
+
+`HomeReset.tla` covers the additional Turn off and ready-restart callers. `fixed`
+is membership in the closed five-name UNITS tuple, `owned` abstracts the exact
+fragment/no-drop-in proof (or existing absent-unit proof), and `quiet` abstracts
+fresh PID/control PID/cgroup/job/substate observations. `authorized` includes the
+caller's existing receipt, generation, custody and deadline fences. Status has
+no reset transition; failed resets cannot complete. This finite model does not
+prove filesystem races, systemd behavior or recovery of no-receipt stranded hosts.
+Run the same pinned TLC command with `-config home-reset.cfg HomeReset`, and
+`home-reset-negative.cfg` in a separate state directory. The negative config must
+fail ResetBound. Results are task handoff evidence, outside CI.
+
+TASK-19331 author check: TLC2.19/OpenJDK21.0.13.1, pinned v1.7.4 jar,
+workers1/fp0/seed1: home-reset.cfg exit0 (202 generated/distinct, queue0,
+depth3); home-reset-negative.cfg exit12 expected ResetBound violation
+(193 generated/distinct, depth2). No installed-systemd evidence is implied.

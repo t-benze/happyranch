@@ -1145,6 +1145,24 @@ The persisted replacement-reload phase is the durable intent for both idempotent
 effects; there is no new phase/schema. V1/v2 journals already at reload, including
 already-reloaded not-found/failed units, resume through this narrowly checked
 inventory route with unchanged authorization, caller and custody checks.
+Authenticated Turn off and ready-restart Enable additionally clear a failed
+marker for the fixed five `UNITS` names only. Turn off does this after verified
+stop and final fragment form/daemon reload, before retiring cleanup evidence.
+Ready restart retains its existing receipt, G/O, custody, deadline and no-replay
+checks. Each effect freshly verifies the exact owned fragment at its fixed path,
+no drop-ins or reload requirement, inactive/failed ActiveState, dead/failed
+SubState, zero MainPID/ControlPID, empty ControlGroup and empty Job. For an
+absent fixed unit, the existing `_reload_unit_state` proof is also required;
+Headscale is outside `UNITS` and gains no reset caller. Reset must re-read as
+inactive/dead with the same ownership/quiescence properties. Failure leaves a
+fixed `partial_cleanup` outcome with `owned units: reset unconfirmed` during
+Turn off, or the existing `ready-restart-failed-turn-off` refusal during Enable.
+No paths, native output or contents enter that result. All ordinary inventory
+state sets stay strict. Status is read-only and never resets; post-disable staged
+refusal is projected through the existing inventory/residue categories.
+Disable without a receipt still uses strict Enable capture: already-stranded
+failed retained units have no new authenticated recovery admission here.
+
 The retirement intent additionally requires the ordinary no-unit manager shape;
 cached own fragments no longer qualify and every absent unit must be inactive.
 If reset leaves a unit failed, refuse without looping or adding retry budget.
@@ -3428,7 +3446,10 @@ No B7/B11/minter evidence, live connector/sidecar/Headscale state, pending entry
 or other cleanup residue may remain. Partial cleanup retains the existing Retry
 turn off route. Initial invite-config publication uses the staged-byte proof
 without changing retained config bytes. B6 remains stop/disable/retain and its
-closed deletion map is unchanged; the next activation creates fresh authority.
+closed deletion map is unchanged; the next activation creates fresh authority. Retained
+failed markers are reset only with the fresh fixed-name/byte/manager proof above,
+before activation/account/publication receipts retire. The five fragments and
+configs remain retained; no file or unit bytes change for this recovery.
 Persist one root-generated activation operation ID before `mint_local_node`.
 A lost create/enroll/start outcome is `failed_uncertain`, never an automatic
 new ID. Fresh-auth Enable on that record re-lists the fixed user's keys/nodes:

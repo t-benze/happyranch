@@ -205,6 +205,10 @@ class InstallerError(RuntimeError):
     """An unsafe path, incompatible account, command failure, or unit drift."""
 
 
+class HomeUnitResetRefused(InstallerError):
+    """Fixed partial cleanup cause; never grants repair authority."""
+
+
 @dataclass(frozen=True)
 class InstallInventory:
     """Read-only classification, never authority to remove or replay files."""
@@ -483,6 +487,78 @@ class ManagedInstaller:
                 or props.get("ActiveState") not in {"failed", "inactive"}):
             raise InstallerError(str(self.root / _UNIT_DIR / name))
         return props["ActiveState"]
+
+    def _reset_failed_home_units(self, *, require: Callable[[], None]) -> None:
+        """Clear only fixed owned markers behind the caller's existing fence.
+
+        Effect path only. Ordinary inventory's inactive-only staged/absent gates
+        remain unchanged; neither Status nor capture calls this method.
+        """
+        try:
+            for name in UNITS:
+                if self.manager.show_properties(name, ("ActiveState",)).get("ActiveState") != "failed":
+                    continue
+                require()
+                if self._service_owner is None:
+                    raise InstallerError("reset identity unconfirmed")
+                with self._publication_parent() as (parent, check):
+                    connector = self._json(self._read_file(parent, "connector.json",
+                        owner=(self.root_owner[0], self._service_owner[1]), mode=0o640))
+                    check()
+                units = managed_units(self.layout, connector_config=connector)
+                home = dict(units)
+                prefix = "happyranch-desktop" if self.layout == "deb" else "happyranch"
+                home[UNITS[1]] = render_sidecar_unit(SidecarUnitSpec(
+                    binary_path=f"/opt/{prefix}/bin/happyranch-tsnet-sidecar", home_transport=True))
+                with self._publication_parent(_UNIT_DIR) as (parent, check):
+                    try:
+                        sidecar = self._read_unit(parent, UNITS[1])
+                    except FileNotFoundError:
+                        sidecar = None
+                    try:
+                        data = self._read_unit(parent, name)
+                    except FileNotFoundError:
+                        data = None
+                    check()
+                if data is None:
+                    present = self._home_unit_inventory(units, home)
+                else:
+                    # Ordinary owned inventory already recognizes exact enabled
+                    # Wants links. The staged scanner intentionally rejects them.
+                    expected_units = home if sidecar == home[UNITS[1]].encode() else units
+                    self._inventory_units(connector, observed_units=expected_units)
+                    present = {name: expected_units[name].encode()}
+                # Reuse removal proof for an absent fixed unit, then add the
+                # cgroup and substate proof in the fresh read below.
+                if name not in present:
+                    self._reload_unit_state(name)
+                keys = ("FragmentPath", "DropInPaths", "NeedDaemonReload", "LoadState", "ActiveState",
+                        "SubState", "MainPID", "ControlPID", "ControlGroup", "Job")
+                expected = dict(FragmentPath=str(self.root / _UNIT_DIR / name) if name in present else "",
+                    DropInPaths="", NeedDaemonReload="no", LoadState="loaded" if name in present else "not-found",
+                    MainPID="0", ControlPID="0", ControlGroup="", Job="")
+                require()
+                with self._publication_parent(_UNIT_DIR) as (parent, check):
+                    if name in present:
+                        if self._read_unit(parent, name) != present[name]:
+                            raise InstallerError("reset fragment changed")
+                    else:
+                        self._refuse_provision_entry(parent, name)
+                    check()
+                    props = self.manager.show_properties(name, keys)
+                    if (any(props.get(key) != value for key, value in expected.items())
+                            or props.get("ActiveState") not in {"inactive", "failed"}
+                            or props.get("SubState") not in {"dead", "failed"}):
+                        raise InstallerError("reset quiescence unconfirmed")
+                    if props["ActiveState"] == "failed":
+                        self.manager.reset_failed(name)
+                    after = self.manager.show_properties(name, keys)
+                    if (any(after.get(key) != value for key, value in expected.items())
+                            or after.get("ActiveState") != "inactive" or after.get("SubState") != "dead"):
+                        raise InstallerError("reset inactivity unconfirmed")
+                    check()
+        except (OSError, InstallerError, ServiceManagerError):
+            raise HomeUnitResetRefused("owned unit reset unconfirmed") from None
 
     def inventory(self) -> InstallInventory:
         """Classify only fixed managed destinations without executing old inputs.
@@ -2919,6 +2995,14 @@ class ManagedInstaller:
                 inventory()
                 if any(entry(path) for path in members):
                     raise InstallerError("live member returned")
+                # Retained fragments are final. Failed/dead proves a stop,
+                # but never the staged/off inventory required after retirement.
+                try:
+                    self._reset_failed_home_units(require=require)
+                except HomeUnitResetRefused:
+                    # Return inside the held lock: its generic error adapter
+                    # must not erase this fixed partial-cleanup cause.
+                    return {"state": "partial_cleanup", "residue": "owned units: reset unconfirmed"}
                 # Publication and activation evidence survive every earlier failure;
                 # the account receipt is last, exactly as in the inert owner.
                 retire = ([headscale.PUBLICATION] if publication else [])

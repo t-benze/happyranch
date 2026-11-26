@@ -147,7 +147,7 @@ def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
                     link.symlink_to(OWNED_LINK_TARGET if name == adapters._HEADSCALE else '../' + name)
             if verb == 'disable' and name in links:
                 v.path(links[name]).unlink(missing_ok=True)
-            if verb == 'stop': v.states[name] = 'inactive'
+            if verb in ('stop', 'reset-failed'): v.states[name] = 'inactive'
             if verb == 'start':
                 v.states[name] = 'active'
                 if name == adapters._HEADSCALE:
@@ -1624,8 +1624,8 @@ def test_thr327_disable_transitional_owned_only(composition: Any, state: str) ->
     assert v.receipts.current() is None
 
 
-@pytest.mark.parametrize('stopped', [adapters._HEADSCALE, adapters._TARGET, adapters._CONNECTOR, 'both'])
-def test_thr327_ready_ordinary_restart(composition: Any, stopped: str) -> None:
+@pytest.mark.parametrize('stopped', [adapters._HEADSCALE, adapters._TARGET, adapters._CONNECTOR, 'both', 'start-limit-hit'])
+def test_thr327_ready_ordinary_restart(composition: Any, monkeypatch: pytest.MonkeyPatch, stopped: str) -> None:
     v = composition
     expected = v.lifecycle.capture('Enable', os.getuid())
     assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
@@ -1640,12 +1640,23 @@ def test_thr327_ready_ordinary_restart(composition: Any, stopped: str) -> None:
     if stopped in (adapters._HEADSCALE, 'both'): v.states[adapters._HEADSCALE] = 'inactive'
     if stopped in (adapters._TARGET, 'both'):
         for name in (adapters._TARGET, adapters._CONNECTOR, adapters._SIDECAR): v.states[name] = 'inactive'
+    if stopped == 'start-limit-hit':
+        v.states[adapters._SIDECAR] = 'failed'
+        native = v.io.manager._run
+        def start_limited(args: list[str], **kw: Any) -> tuple[int, str]:
+            if args[:3] == ['systemctl', 'start', adapters._SIDECAR] and v.states[adapters._SIDECAR] == 'failed':
+                return 1, ''
+            return native(args, **kw)
+        monkeypatch.setattr(v.io.manager, '_run', start_limited)
     expected = v.lifecycle.capture('Enable', os.getuid())
     assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
                                 deadline=time.monotonic() + 480)['outcome'] == 'ready'
     assert v.path(ACTIVATION_PATH).read_bytes() == ready and v.path(TRANSACTION_PATH).read_bytes() == txn
     assert len(v.mints) == 1
-    assert all(call[0] == 'start' for call in v.calls[calls:])
+    if stopped == 'start-limit-hit':
+        assert v.calls[calls:] == [['reset-failed', adapters._SIDECAR], ['start', adapters._SIDECAR]]
+    else:
+        assert all(call[0] == 'start' for call in v.calls[calls:])
     assert v.states[adapters._HEADSCALE] == v.states[adapters._TARGET] == 'active'
 
 
@@ -1839,3 +1850,117 @@ def test_renewal_activation_lock_contention(composition: Any, monkeypatch: pytes
     else:
         assert elapsed < 0.3 and invoked == []
         assert staged_inventory(v.fixture) == before
+
+
+@pytest.mark.parametrize('case', ['owned', 'absent', 'MainPID', 'ControlPID', 'ControlGroup', 'Job',
+                                  'foreign', 'bytes', 'dropin', 'absent-cgroup'])
+def test_thr327_failed_unit_reset_proof(composition: Any, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    """Real installer proof observes owned bytes and the native reset boundary."""
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    name = adapters._SIDECAR
+    v.states[name] = v.states['foreign.service'] = 'failed'
+    fragment = v.path('/etc/systemd/system/' + name)
+    if case.startswith('absent'):
+        fragment.unlink()
+        v.path('/etc/systemd/system/multi-user.target.wants/' + adapters._TARGET).unlink()
+        v.path('/etc/systemd/system/happyranch-managed.target.wants/happyranch-release-verifier.socket').unlink()
+
+    if case == 'bytes': fragment.write_bytes(fragment.read_bytes() + b'# foreign\n')
+    if case == 'dropin':
+        override = fragment.with_name(name + '.d')
+        override.mkdir(mode=0o755)
+        put(override / 'foreign.conf', b'[Service]\n', 0o644)
+    native = v.io.manager._run
+    guards = []
+    def run(args: list[str], **kw: Any) -> tuple[int, str]:
+        code, output = native(args, **kw)
+        if args[:3] == ['systemctl', 'show', name]:
+            if case in ('MainPID', 'ControlPID', 'ControlGroup', 'Job'):
+                output = output.replace(case + '=' + {'MainPID': '0', 'ControlPID': '0', 'ControlGroup': '', 'Job': ''}[case],
+                                        case + '=' + ('42' if case.endswith('PID') else '/live' if case == 'ControlGroup' else '42 start'))
+            if case == 'foreign': output = output.replace('FragmentPath=' + str(fragment), 'FragmentPath=/foreign.service')
+            if case == 'absent-cgroup': output = output.replace('ControlGroup=', 'ControlGroup=/live')
+        if args[:3] == ['systemctl', 'reset-failed', name]:
+            assert guards and v.receipts.current().phase == 'ready'
+        return code, output
+    monkeypatch.setattr(v.io.manager, '_run', run)
+    calls = len(v.calls)
+    from runtime.remote_access.installer import InstallerError, UNITS
+    with v.transactions.locked():
+        if case in ('owned', 'absent'):
+            v.io._reset_failed_home_units(require=lambda: guards.append(True))
+            assert v.states[name] == 'inactive'
+        else:
+            with pytest.raises(InstallerError):
+                v.io._reset_failed_home_units(require=lambda: guards.append(True))
+    resets = [call for call in v.calls[calls:] if call[0] == 'reset-failed']
+    assert resets == ([['reset-failed', name]] if case in ('owned', 'absent') else [])
+    assert all(call[1] in UNITS for call in resets)
+    assert v.states['foreign.service'] == 'failed'
+
+
+@pytest.mark.parametrize('reset', ['ok', 'error', 'still-failed'])
+def test_thr327_failed_restart_turn_off_enable(composition: Any, monkeypatch: pytest.MonkeyPatch, reset: str) -> None:
+    """Exercise the advice path with a marker retained across verified stop."""
+    from runtime.remote_access.installer import UNITS
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    units = {name: (v.path('/etc/systemd/system/' + name).stat().st_ino,
+                   v.path('/etc/systemd/system/' + name).read_bytes()) for name in UNITS}
+    v.states[adapters._SIDECAR] = 'failed'
+    native = v.io.manager._run
+    def run(args: list[str], **kw: Any) -> tuple[int, str]:
+        if args[:3] == ['systemctl', 'start', adapters._SIDECAR]:
+            v.states[adapters._SIDECAR] = 'failed'
+            return 1, ''
+        if args[:3] == ['systemctl', 'stop', adapters._SIDECAR]:
+            v.calls.append(args[1:])
+            return 0, ''
+        if args[:3] == ['systemctl', 'reset-failed', adapters._SIDECAR] and reset != 'ok':
+            v.calls.append(args[1:])
+            return (1 if reset == 'error' else 0), 'synthetic secret diagnostic'
+        return native(args, **kw)
+    monkeypatch.setattr(v.io.manager, '_run', run)
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    with pytest.raises(h.EnablePreparationRefused) as failure:
+        v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480)
+    assert failure.value.category == 'ready-restart-failed-turn-off'
+    v.observers.close()
+    v.states[adapters._SIDECAR] = 'failed'
+    expected = v.lifecycle.capture('Disable', os.getuid())
+    assert v.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)['outcome'] == 'in_progress'
+    calls = len(v.calls)
+    result = v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected, revoke_succeeded=True)
+    assert result == ({'outcome': 'off', 'residue': []} if reset == 'ok' else
+                      {'outcome': 'partial_cleanup', 'residue': ['owned units: reset unconfirmed']})
+    assert [call for call in v.calls[calls:] if call[0] == 'reset-failed'] == [['reset-failed', adapters._SIDECAR]]
+    assert {name: (v.path('/etc/systemd/system/' + name).stat().st_ino,
+                   v.path('/etc/systemd/system/' + name).read_bytes()) for name in UNITS} == units
+    if reset != 'ok':
+        assert v.receipts.current() is not None
+        return
+    assert v.io.inventory().detail == 'post-disable'
+    assert v.lifecycle.setup_status(os.getuid()) == {'setup': 'off'}
+    # Already-stranded shape stays read-only and named, never repaired by Status.
+    v.states[adapters._SIDECAR] = 'failed'
+    status_calls = len(v.calls)
+    from runtime.remote_access.helper_generation import host_state_category
+    try:
+        v.lifecycle.setup_status(os.getuid())
+    except Exception as error:
+        assert host_state_category(error) == 'inventory'
+    else:
+        pytest.fail('stranded failed unit must not report off')
+    assert v.states[adapters._SIDECAR] == 'failed'
+    assert not any(call[0] == 'reset-failed' for call in v.calls[status_calls:])
+    v.states[adapters._SIDECAR] = 'inactive'
+    monkeypatch.setattr(v.io.manager, '_run', native)
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    assert len(v.mints) == 2

@@ -512,6 +512,8 @@ class HelperLifecycleBackend:
                 expected_control_plane_id=snapshot['activation']['control_plane_id'],
                 expected_connector_id=snapshot['activation']['connector_id'], expected_generation=snapshot['generation'],
                 expected_operation_id=snapshot['activation']['operation'], revoke_succeeded=revoke_succeeded)
+            if result.get('state') == 'partial_cleanup':
+                return {'outcome': 'partial_cleanup', 'residue': ['owned units: reset unconfirmed']}
             if result.get('state') != 'removed':
                 raise ActivationRefused()
             return {'outcome': 'off', 'residue': []}
@@ -580,6 +582,10 @@ class HelperLifecycleBackend:
                                         str(self.io.root / 'usr/lib/systemd/system' / TIMER_NAME))):
                                 raise ActivationRefused()
                             check()
+                        def require_reset() -> None:
+                            require_ready()
+                            coordinator._owner._managed_fragments(require_home=True)
+                        self.io._reset_failed_home_units(require=require_reset)
                         for name in ('happyranch-headscale.service', UNITS[2], UNITS[3], UNITS[0], UNITS[1]):
                             require_ready()
                             if self.io.manager.show_properties(name, ('ActiveState',)).get('ActiveState') != 'active':
