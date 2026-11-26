@@ -1888,6 +1888,11 @@ result unknown. On success navigation uses returned `canonical_id`; the
 readback retires in-flight agents/enrollments/teams/identities reads before
 refetching, and a failed readback says "Created; refresh unavailable". The API's legacy `name` field still means
 an explicit ID; send exactly one name source.
+The Agents page's once-per-org auto-selection of the first agent never navigates
+while the form is open: a roster that settles after the form opened consumes
+the auto-selection, so a draft is not interrupted by an unsaved-changes prompt
+and closing the form does not select an agent later (browser regression:
+`web/scripts/w4a-browser-evidence.mjs --slice agents-create`).
 See the [naming contract](contracts/threads-and-naming.md) for derivation,
 transaction and rollback details. No manager-session enrollment contract changes.
 

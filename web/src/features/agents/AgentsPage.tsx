@@ -105,7 +105,10 @@ export function AgentsPage(): JSX.Element {
   // Direction-A `a-agents` reference). A ref latches this to fire once — so
   // closing the detail pane (→ inbox) still returns to the calm empty state
   // instead of immediately re-selecting. Deep-links, the empty roster, and
-  // the pending view are all left untouched.
+  // the pending view are all left untouched. THR-402: while Create team /
+  // Create agent is open the settle still consumes the latch but issues no
+  // navigation — a dirty draft's owner gate would block it and its prompt
+  // would intercept Create — and closing creation later does not replay it.
   const didAutoSelect = useRef(false);
   const selectedOrgSlug = useRef<string | undefined>(slug);
   useEffect(() => {
@@ -117,7 +120,7 @@ export function AgentsPage(): JSX.Element {
     if (agentsQuery.isLoading || agentsQuery.isError) return;
     if (['pending', 'terminated'].includes(searchParams.get('view') ?? '')) return;
     didAutoSelect.current = true;
-    if (!selectedAgent && agents.length > 0) {
+    if (!addOpen && !selectedAgent && agents.length > 0) {
       navigate(routes.detail(agents[0].name), { replace: true });
     }
   }, [
@@ -129,6 +132,7 @@ export function AgentsPage(): JSX.Element {
     navigate,
     routes,
     slug,
+    addOpen,
   ]);
 
   const handleStartThread = (agent: AgentSummary) => {
