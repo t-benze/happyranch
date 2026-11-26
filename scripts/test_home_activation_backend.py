@@ -1983,3 +1983,57 @@ def test_thr327_failed_restart_turn_off_enable(composition: Any, monkeypatch: py
     assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
                                 deadline=time.monotonic() + 480)['outcome'] == 'ready'
     assert len(v.mints) == 2
+
+
+@pytest.mark.parametrize('case,output,state', [
+    ('deny-no-rule', '', 'host_firewall_blocks_home'),
+    ('both', '8443/tcp  ALLOW IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n', 'clear'),
+    ('tcp-only', '8443/tcp  ALLOW IN  Anywhere\n', 'host_firewall_blocks_udp_3478'),
+    ('udp-only', '3478/udp  ALLOW IN  Anywhere\n', 'host_firewall_blocks_tcp_8443'),
+    ('lan', '8443/tcp  ALLOW IN  192.168.1.0/24\n3478/udp  ALLOW IN  192.168.1.0/24\n', 'clear'),
+    ('inactive', 'Status: inactive\n', 'clear'),
+    ('unparsable', 'unrecognized synthetic output\n', 'unverified'),
+    ('profile', 'OpenSSH  ALLOW IN  Anywhere\n', 'unverified'),
+    ('v6-only', '8443/tcp (v6)  ALLOW IN  Anywhere (v6)\n3478/udp (v6)  ALLOW IN  Anywhere (v6)\n', 'host_firewall_blocks_home'),
+    ('allow-default', 'Default: allow (incoming), allow (outgoing), deny (routed)\n', 'clear'),
+    ('range', '3400:8500  ALLOW IN  192.168.1.0/24\n', 'clear'),
+    ('limit', '8443/tcp  LIMIT IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n', 'unverified'),
+    ('reject', 'Default: reject (incoming), allow (outgoing), deny (routed)\n', 'host_firewall_blocks_home'),
+])
+def test_thr327_firewall_read_only_child(composition: Any, monkeypatch: pytest.MonkeyPatch,
+                                       case: str, output: str, state: str) -> None:
+    import subprocess
+    v = composition
+    prefix = 'Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), deny (routed)\nNew profiles: skip\n'
+    if case in ('inactive', 'unparsable'):
+        raw = output
+    elif case in ('allow-default', 'reject'):
+        raw = 'Status: active\n' + output
+    else:
+        raw = prefix + ('\nTo                         Action      From\n--                         ------      ----\n' + output if output else '')
+    calls = []
+    def run(argv: tuple, **kwargs: Any) -> Any:
+        calls.append(argv)
+        assert kwargs['env'] == {'LC_ALL': 'C', 'LANG': 'C'}
+        assert 0 < kwargs['timeout'] <= 2
+        return SimpleNamespace(returncode=0, stdout=raw.encode())
+    monkeypatch.setattr(subprocess, 'run', run)
+    before, services = staged_inventory(v.fixture), list(v.calls)
+    result = v.lifecycle.dispatch('Enable', os.getuid(), 'firewall', None, deadline=time.monotonic() + 10)
+    assert result == {'firewall': state}
+    assert calls == [('/usr/sbin/ufw', 'status', 'verbose')]
+    assert staged_inventory(v.fixture) == before and v.calls == services
+    assert '192.168' not in json.dumps(result)
+
+
+def test_thr327_firewall_refuses_enable_before_effects(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=0,
+        stdout=b'Status: active\nDefault: deny (incoming), allow (outgoing), deny (routed)\n'))
+    before, calls = staged_inventory(v.fixture), list(v.calls)
+    with pytest.raises(h.EnablePreparationRefused) as refused:
+        v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 30)
+    assert refused.value.category == 'host_firewall_blocks_home'
+    assert staged_inventory(v.fixture) == before and v.calls == calls

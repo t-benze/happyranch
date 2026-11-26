@@ -4681,7 +4681,7 @@ explicit, authenticated Turn on performs the renewal above. No retained-file
 manipulation or other host action is required for that validated shape.
 
 `hostStateUnrecognized` retains its code and adds optional closed category
-`residue|owner|provenance|custody|inventory|quiescence|timeout|status_unavailable|invite_rate_limited|unknown|unverified|not_applicable`. The child
+`residue|owner|provenance|custody|inventory|quiescence|timeout|status_unavailable|invite_rate_limited|host_firewall_blocks_home|host_firewall_blocks_tcp_8443|host_firewall_blocks_udp_3478|unknown|unverified|not_applicable`. The child
 emits only `{refusal: category}` on Enable, Disable, ReplaceFailed, IssueInvite,
 CancelInvite or RecoverInvite capture refusal; HomeLifecycleClient
 validates the closed frame; helper D-Bus uses `host_state_unrecognized_<category>`.
@@ -4919,3 +4919,44 @@ and timer schedule are unchanged. The bounded unattended
 lock wait and EROFS removal behavior are specified above. No arbitrary exception message,
 path, file contents, identity, credential or invite is journaled. Journal
 failure preserves the original refusal and retained evidence.
+
+### THR-327 F2: read-only Linux host firewall diagnostics
+
+Before Enable lifecycle admission (including audit/setup effects), the existing
+root helper uses its fixed bundled child to inspect `/usr/sbin/ufw status verbose`
+with a fixed C locale and a bounded timeout. Enable refuses with
+`hostStateUnrecognized`, `effect=none`, and one closed category:
+`host_firewall_blocks_home` (8443/tcp and 3478/udp),
+`host_firewall_blocks_tcp_8443`, or `host_firewall_blocks_udp_3478`.
+The child rechecks before setup effects; a newly detected block there uses the
+existing `enablePreparationFailed` terminal with unknown effect (earlier audit
+or concurrent setup work is not erased).
+
+A blocking conclusion requires recognized active UFW output, default incoming
+deny/reject, and no IPv4 allow covering the named port(s). LAN-scoped source
+allows, port lists/ranges and unrestricted protocol rules count as possible
+allows; IPv6-only allows do not establish reachability for the IPv4 home dial
+address. An unknown profile/interface form, rate-limited allow, failed command,
+malformed/non-ASCII/oversized output or timeout is unverified and cannot veto
+Enable. Inactive UFW is clear; missing UFW provides no observation. This is a
+conservative UFW diagnostic, not a packet-path or cross-device connectivity
+proof. firewalld and plain nftables are intentionally not inferred: presence
+alone cannot prove that the home dial ports are blocked.
+
+StatusV2 adds an optional `firewall` observation with `state` and `age_seconds`.
+Its closed states are the three blocking categories plus
+`clear|unverified|unknown|stale`; unknown is omitted on encode, preserving original
+frames when no observation exists. Existing frames without this field remain
+accepted. The original helper Status (v1) frame stays unchanged. Linux native
+projection adds optional `firewallWarning` (the three categories or `unverified`)
+only for fresh observations (at most 30 seconds old). This display warning never
+changes setup READY, runtime availability, receipts or publication formats.
+English and Simplified Chinese host views and CLI recovery copy tell the user to
+allow the named ports **from the home LAN only**, then check Status/retry Enable.
+No rule text, addresses, paths or command stderr cross the public boundary.
+
+Inspection never adds/removes/modifies firewall rules. Automatic rule management
+remains Founder-reserved; no service user, sandbox, capability, ReadWritePaths,
+R2 custody, home-only trust or authentication/authorization check is changed.
+Installed-package/firewall and cross-device qualification remain separate from
+fixture/standalone-script verification.

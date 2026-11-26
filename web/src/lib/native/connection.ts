@@ -98,7 +98,11 @@ export interface HostDevice {
   comparisonPhrase: string | null;
 }
 
+export type FirewallWarning = 'host_firewall_blocks_home' | 'host_firewall_blocks_tcp_8443' | 'host_firewall_blocks_udp_3478' | 'unverified';
+const FIREWALL_WARNINGS: readonly string[] = ['host_firewall_blocks_home', 'host_firewall_blocks_tcp_8443', 'host_firewall_blocks_udp_3478', 'unverified'];
+
 export interface HostSnapshot {
+  firewallWarning?: FirewallWarning;
   setup: HostSetup;
   runtime: Runtime;
   observation: Observation;
@@ -139,7 +143,7 @@ export interface ConnectionFailure {
   effect: Effect;
   recovery: Recovery;
   side?: 'host' | 'app' | 'unknown';
-  category?: 'residue' | 'owner' | 'provenance' | 'custody' | 'inventory' | 'quiescence' | 'timeout' | 'status_unavailable' | 'invite_rate_limited' | 'unknown' | 'unverified' | 'not_applicable' | PreparationCategory;
+  category?: 'residue' | 'owner' | 'provenance' | 'custody' | 'inventory' | 'quiescence' | 'timeout' | 'status_unavailable' | 'invite_rate_limited' | 'unknown' | 'unverified' | 'not_applicable' | PreparationCategory | FirewallWarning;
 }
 
 export type PreparationCategory =
@@ -148,7 +152,7 @@ export type PreparationCategory =
   | 'account-create-uncertain' | 'cleanup-uncertain' | 'materializer-uncertain' | 'custody-uncertain'
   | 'inventory' | 'no_address' | 'multiple_addresses' | 'dial_ip' | 'dial-ip'
   | 'occupied-port' | 'port-check-uncertain'
-  | 'ready-restart-failed-turn-off' | 'activation-retry-later' | 'activation-prepared-retry' | 'activation-unverified';
+  | 'ready-restart-failed-turn-off' | 'activation-retry-later' | 'activation-prepared-retry' | 'activation-unverified' | 'host_firewall_blocks_home' | 'host_firewall_blocks_tcp_8443' | 'host_firewall_blocks_udp_3478';
 
 export interface EnableFinished {
   operationId: string;
@@ -161,7 +165,7 @@ const PREPARATION_CATEGORIES: readonly string[] = [
   'foreign-unit', 'foreign-custody', 'publication-uncertain', 'address-changed',
   'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain', 'custody-uncertain',
   'inventory', 'no_address', 'multiple_addresses', 'dial_ip', 'dial-ip', 'occupied-port', 'port-check-uncertain',
-  'ready-restart-failed-turn-off', 'activation-retry-later', 'activation-prepared-retry', 'activation-unverified',
+  'ready-restart-failed-turn-off', 'activation-retry-later', 'activation-prepared-retry', 'activation-unverified', 'host_firewall_blocks_home', 'host_firewall_blocks_tcp_8443', 'host_firewall_blocks_udp_3478',
 ];
 
 type Obj = Record<string, unknown>;
@@ -233,7 +237,9 @@ function isClient(value: unknown): value is ClientSnapshot {
 }
 
 function isHost(value: unknown): value is HostSnapshot {
-  if (!closed(value, ['setup', 'runtime', 'observation', 'devices', 'pending', 'selected', 'inviteState', 'expiresAt'])) return false;
+  const keys = ['setup', 'runtime', 'observation', 'devices', 'pending', 'selected', 'inviteState', 'expiresAt'];
+  if (!closed(value, keys) && !closed(value, [...keys, 'firewallWarning'])) return false;
+  if ('firewallWarning' in value && !oneOf(value.firewallWarning, FIREWALL_WARNINGS)) return false;
   return (
     oneOf(value.setup, SETUP) &&
     oneOf(value.runtime, RUNTIME) &&
@@ -399,7 +405,7 @@ export function parseConnectionFailure(error: unknown): ConnectionFailure {
   }
   if ('category' in obj && obj.code !== 'hostStateUnrecognized') return UNKNOWN_FAILURE;
   if (obj.code === 'hostStateUnrecognized') {
-    const categories = ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'status_unavailable', 'invite_rate_limited', 'unknown', 'unverified', 'not_applicable'];
+    const categories = ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'status_unavailable', 'invite_rate_limited', 'host_firewall_blocks_home', 'host_firewall_blocks_tcp_8443', 'host_firewall_blocks_udp_3478', 'unknown', 'unverified', 'not_applicable'];
     failure.category = (oneOf(obj.category, categories) && obj.category !== 'unknown' ? obj.category : 'unverified') as ConnectionFailure['category'];
   }
   return failure;

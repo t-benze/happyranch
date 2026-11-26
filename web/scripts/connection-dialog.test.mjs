@@ -412,3 +412,34 @@ test('a target-commit hold admits no save until released', async () => {
   assert.equal(await owners.awaitOwnersReceipt(records), true);
   target.__setNativeBridgeForTests(null);
 });
+
+
+test('host firewall categories preserve READY and render bilingual LAN-only action', async () => {
+  const { catalogs } = await import('../connection/src/strings.ts');
+  const { HostView } = await import('../connection/src/host.ts');
+  for (const category of ['host_firewall_blocks_home', 'host_firewall_blocks_tcp_8443', 'host_firewall_blocks_udp_3478']) {
+    const snapshot = host({ firewallWarning: category });
+    assert.deepEqual(conn.parseHostSnapshot(JSON.stringify(snapshot)), snapshot);
+    const key = 'connection.host.enableFailure.' + category;
+    const view = model.hostView(snapshot, false);
+    assert.equal(view.badge, 'connection.host.hBadgeReady');
+    assert.ok(view.hints.includes(key));
+    for (const code of ['hostStateUnrecognized', 'enablePreparationFailed']) {
+      const failure = conn.parseConnectionFailure(JSON.stringify({ code, category, effect: code === 'hostStateUnrecognized' ? 'none' : 'unknown', recovery: code === 'hostStateUnrecognized' ? 'refresh' : 'nativeRecovery' }));
+      assert.equal(failure.category, category);
+      assert.equal(model.errorKey('host.enable', code, category), key);
+      for (const locale of ['en', 'zh-CN']) {
+        const receiver = { outcome: { command: 'host.enable', raw: null, error: failure },
+          t: (name) => catalogs[locale][name], notice: (text) => ({ textContent: text }),
+          has: () => false, actions: () => [], text: () => ({}) };
+        const reason = catalogs[locale]['enableFailure.' + category];
+        assert.ok(HostView.prototype.outcomeNodes.call(receiver)[0].textContent.includes(reason));
+        assert.match(reason, locale === 'en' ? /home LAN only/ : /仅允许家庭局域网/);
+        assert.match(reason, category.includes('udp') ? /3478\/udp/ : /8443\/tcp/);
+      }
+    }
+  }
+  assert.equal(conn.parseHostSnapshot(JSON.stringify(host({ firewallWarning: '/private/rule' }))), null);
+  assert.deepEqual(conn.parseHostSnapshot(JSON.stringify(host())), host());
+  assert.ok(model.hostView(host({ firewallWarning: 'unverified' }), false).hints.includes('connection.host.firewallUnverified'));
+});

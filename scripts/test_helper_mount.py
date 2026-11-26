@@ -942,7 +942,8 @@ def mount(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
     helper.audit = h._home_audit.HomeAudit(tmp_path / 'audit.jsonl', uid=os.getuid(), gid=os.getgid())
     effects = []
     token = 'protected-generation-and-operation'
-    reader = SimpleNamespace(current_generation=Mock(side_effect=lambda _: token),
+    reader = SimpleNamespace(firewall_status=Mock(return_value='unknown'),
+                             current_generation=Mock(side_effect=lambda _: token),
                              setup_status=Mock(return_value={'setup': 'ready'}))
     def effect(step: str, expected: str, remaining: float, **options: Any) -> dict:
         assert helper.inflight is not None and expected == 'protected-generation-and-operation'
@@ -2859,3 +2860,50 @@ def test_thr327_invite_journal_status_after_restart(invite_mount: Any, monkeypat
     assert {p: p.read_bytes() for p in v.journal.parent.iterdir()} == before
     assert v.trust.snapshot() == trust and not v.events and not v.control.calls
     assert not commit.called and len(v.original.calls) == 1, 'no mint, cleanup, lock or commit'
+
+
+@pytest.mark.parametrize('state', ['host_firewall_blocks_home', 'host_firewall_blocks_tcp_8443', 'host_firewall_blocks_udp_3478'])
+def test_thr327_firewall_public_preflight(mount: Any, state: str) -> None:
+    v = mount
+    v.reader.firewall_status.return_value = state
+    v.message.get_member = lambda: 'Enable'
+    v.helper._dispatch(v.message)
+    v.helper._error.assert_called_once_with(v.message, 'host-state-unrecognized-' + state)
+    assert v.helper.inflight is None and not v.helper.authority.call.called
+    assert not v.reader.effect.called and v.effects == []
+    assert not v.helper.audit.path.exists()
+
+
+@pytest.mark.parametrize('state', ['host_firewall_blocks_home', 'unverified'])
+def test_thr327_firewall_ready_status(mount: Any, monkeypatch: pytest.MonkeyPatch, state: str) -> None:
+    v = mount
+    v.reader.firewall_status.return_value = state
+    v.helper.generations = SimpleNamespace(current_generation=lambda _: None)
+    v.helper.control.status = lambda: v.h.Snapshot(9, 1000, True, 'ready', True, None, ())
+    v.helper.cursors = {}
+    v.message.get_member = lambda: 'StatusV2'
+    monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args=(), **kw:
+                        SimpleNamespace(start=lambda: target(*args)))
+    monkeypatch.setattr(v.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+    v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    reply = SimpleNamespace(set_body=lambda body: setattr(reply, 'body', body))
+    v.message.new_method_reply = lambda: reply
+    v.helper.connection.send_message = Mock()
+    v.helper._reply = v.h.RemoteAccessHelper._reply.__get__(v.helper)
+    v.helper._dispatch(v.message)
+    result = json.loads(reply.body.unpack()[0])
+    assert result['setup']['state'] == 'ready' and result['runtime']['state'] == 'available'
+    assert result['firewall'] == {'state': state, 'age_seconds': 0}
+    assert not v.helper.authority.call.called and not v.reader.effect.called
+    assert not v.helper.audit.path.exists()
+
+
+@pytest.mark.parametrize('state', ['unknown', 'unverified', 'clear'])
+def test_thr327_firewall_ambiguous_does_not_veto(mount: Any, state: str) -> None:
+    v = mount
+    v.reader.firewall_status.return_value = state
+    v.message.get_member = lambda: 'Enable'
+    v.helper._dispatch(v.message)
+    assert v.helper.inflight is not None and v.helper.authority.call.called
+    assert not v.helper._error.called and not v.reader.effect.called
+    assert not v.helper.audit.path.exists()

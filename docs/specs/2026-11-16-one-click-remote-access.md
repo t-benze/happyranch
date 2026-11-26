@@ -266,8 +266,9 @@ Off projection is known/offline with no devices, so the existing Turn on action
 is offered. StatusV2 reports setup off/runtime unavailable; a recognized live
 receipt still retains its own setup observation when the connector is down.
 The refusal keeps `hostStateUnrecognized` and optionally carries only the closed
-category residue, owner, provenance, custody, inventory, quiescence, timeout or
-unknown through child capture, HomeLifecycleClient, D-Bus, native protocol,
+category residue, owner, provenance, custody, inventory, quiescence, timeout,
+host_firewall_blocks_home, host_firewall_blocks_tcp_8443,
+host_firewall_blocks_udp_3478 or unknown through child capture, HomeLifecycleClient, D-Bus, native protocol,
 CLI JSON, Main relay and localized EN/zh-CN copy. Legacy owner-binding errors
 map to owner; absent/invalid categories map to unknown, with no host metadata.
 Status v1 successful serialization shape, status deadlines and mutation admission
@@ -1286,3 +1287,44 @@ Linux settings/window edits with its owner before slices 4/5; do not merge both 
 This docs-only amendment changes the spec and its three companion docs. Behavior, hosted M1/M2, native dialogs, Mac acceptance and
 founder-host failed-install replacement are **NOT RUN**. Return the revised flow and independent
 security findings for Product review before finalizing; source review never establishes acceptance.
+
+### THR-327 F2: read-only Linux host firewall diagnostics
+
+Before Enable lifecycle admission (including audit/setup effects), the existing
+root helper uses its fixed bundled child to inspect `/usr/sbin/ufw status verbose`
+with a fixed C locale and a bounded timeout. Enable refuses with
+`hostStateUnrecognized`, `effect=none`, and one closed category:
+`host_firewall_blocks_home` (8443/tcp and 3478/udp),
+`host_firewall_blocks_tcp_8443`, or `host_firewall_blocks_udp_3478`.
+The child rechecks before setup effects; a newly detected block there uses the
+existing `enablePreparationFailed` terminal with unknown effect (earlier audit
+or concurrent setup work is not erased).
+
+A blocking conclusion requires recognized active UFW output, default incoming
+deny/reject, and no IPv4 allow covering the named port(s). LAN-scoped source
+allows, port lists/ranges and unrestricted protocol rules count as possible
+allows; IPv6-only allows do not establish reachability for the IPv4 home dial
+address. An unknown profile/interface form, rate-limited allow, failed command,
+malformed/non-ASCII/oversized output or timeout is unverified and cannot veto
+Enable. Inactive UFW is clear; missing UFW provides no observation. This is a
+conservative UFW diagnostic, not a packet-path or cross-device connectivity
+proof. firewalld and plain nftables are intentionally not inferred: presence
+alone cannot prove that the home dial ports are blocked.
+
+StatusV2 adds an optional `firewall` observation with `state` and `age_seconds`.
+Its closed states are the three blocking categories plus
+`clear|unverified|unknown|stale`; unknown is omitted on encode, preserving original
+frames when no observation exists. Existing frames without this field remain
+accepted. The original helper Status (v1) frame stays unchanged. Linux native
+projection adds optional `firewallWarning` (the three categories or `unverified`)
+only for fresh observations (at most 30 seconds old). This display warning never
+changes setup READY, runtime availability, receipts or publication formats.
+English and Simplified Chinese host views and CLI recovery copy tell the user to
+allow the named ports **from the home LAN only**, then check Status/retry Enable.
+No rule text, addresses, paths or command stderr cross the public boundary.
+
+Inspection never adds/removes/modifies firewall rules. Automatic rule management
+remains Founder-reserved; no service user, sandbox, capability, ReadWritePaths,
+R2 custody, home-only trust or authentication/authorization check is changed.
+Installed-package/firewall and cross-device qualification remain separate from
+fixture/standalone-script verification.

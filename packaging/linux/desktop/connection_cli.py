@@ -13,6 +13,7 @@ import time
 _spec = importlib.util.spec_from_file_location("connection_contract", Path(__file__).with_name("connection_contract.py"))
 contract = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(contract)
+FIREWALL_MESSAGES = {'host_firewall_blocks_home': 'The host firewall blocks the home ports (8443/tcp and 3478/udp). Allow these ports from your home LAN only, then check status or turn on again.', 'host_firewall_blocks_tcp_8443': 'The host firewall blocks the home port 8443/tcp. Allow this port from your home LAN only, then check status or turn on again.', 'host_firewall_blocks_udp_3478': 'The host firewall blocks the home port 3478/udp. Allow this port from your home LAN only, then check status or turn on again.', 'unverified': 'Could not verify the host firewall. Check home LAN access to 8443/tcp and 3478/udp if connections fail.'}
 METHODS = {"status": "Status", "devices": "Status", "next-device": "NextDevice",
            "approve-device": "ApprovePending", "reject-device": "RejectPending", "revoke-device": "RevokeSelected",
            "enable": "Enable", "turn-off": "Disable", "create-invite": "IssueInvite",
@@ -183,10 +184,14 @@ def main() -> int:
         host = Host()
         host.terminal = terminal
         result = revoke(host) if method == "RevokeSelected" else host.request(method)
+        if result.get('firewallWarning') in FIREWALL_MESSAGES:
+            print(FIREWALL_MESSAGES[result['firewallWarning']] + ' Category: ' + result['firewallWarning'] + '.', file=sys.stderr)
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except ClosedError as error:
-        if error.value.get('category') == 'invite_rate_limited' and error.value['effect'] == 'none':
+        if error.value.get('category') in contract.FIREWALL_BLOCKED:
+            print(FIREWALL_MESSAGES[error.value['category']] + ' Category: ' + error.value['category'] + '.', file=sys.stderr)
+        elif error.value.get('category') == 'invite_rate_limited' and error.value['effect'] == 'none':
             print('An invite was issued recently. Use it or wait before creating another. '
                   'Category: invite_rate_limited.', file=sys.stderr)
         elif error.value.get("category") == "not_applicable" and error.value["effect"] == "none":

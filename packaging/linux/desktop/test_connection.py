@@ -147,5 +147,31 @@ class ConnectionBoundaryTests(unittest.TestCase):
             self.protocol.host(good_raw + " " * 32768)
 
 
+    def test_firewall_status_projection(self) -> None:
+        snapshot = dict(setup='ready', runtime='available', observation='known', devices=[],
+                        pending=None, selected=None, inviteState='unknown', expiresAt=None)
+        detail = dict(version=2, setup=dict(state='ready', age_seconds=0),
+                      runtime=dict(state='available', age_seconds=0),
+                      invite=dict(state='unknown', age_seconds=None, deadline_utc_seconds=None),
+                      address=dict(state='unknown', age_seconds=None),
+                      policy=dict(state='unknown', age_seconds=None),
+                      cleanup=dict(state='unknown', age_seconds=None))
+        for state in ('host_firewall_blocks_home', 'host_firewall_blocks_tcp_8443',
+                      'host_firewall_blocks_udp_3478', 'unverified'):
+            with self.subTest(state=state):
+                raw = json.dumps(detail | dict(firewall=dict(state=state, age_seconds=0)))
+                result = self.protocol.host_details(snapshot, raw)
+                self.assertEqual(result, snapshot | dict(firewallWarning=state))
+                self.protocol.validate(result, self.protocol.schema['$defs']['host'])
+        for state, age in [('clear', 0), ('stale', 31), ('host_firewall_blocks_home', 31)]:
+            self.assertEqual(self.protocol.host_details(snapshot,
+                json.dumps(detail | dict(firewall=dict(state=state, age_seconds=age)))), snapshot)
+        for firewall in (dict(state='/private/canary', age_seconds=0),
+                         dict(state='unverified', age_seconds=True),
+                         dict(state='unverified', age_seconds=0, rules='private')):
+            with self.assertRaises(ValueError):
+                self.protocol.host_details(snapshot, json.dumps(detail | dict(firewall=firewall)))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -206,6 +206,28 @@ class ConnectionCLITests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 protocol.host_details(snapshot, raw)
 
+    def test_firewall_category_and_status_reach_cli(self) -> None:
+        for category, port in [('host_firewall_blocks_home', '8443/tcp'),
+                               ('host_firewall_blocks_tcp_8443', '8443/tcp'),
+                               ('host_firewall_blocks_udp_3478', '3478/udp')]:
+            with self.subTest(category=category):
+                self.bus.error = 'ai.happyranch.RemoteAccess1.Error.host_state_unrecognized_' + category
+                code, result, error = self.run_native('enable')
+                self.assertEqual((code, result['category'], result['effect']), (1, category, 'none'))
+                self.assertIn(port, error)
+                self.assertIn('home LAN only', error)
+                self.bus.error = None
+                value = {'version': 2, **{key: dict(state='unknown', age_seconds=None)
+                    for key in ('setup', 'runtime', 'invite', 'address', 'policy', 'cleanup')}}
+                value['setup'] = dict(state='ready', age_seconds=0)
+                value['invite']['deadline_utc_seconds'] = None
+                value['firewall'] = dict(state=category, age_seconds=0)
+                self.bus.status_detail = value
+                code, result, error = self.run_native('status')
+                self.assertEqual((code, result['setup'], result['firewallWarning']), (0, 'ready', category))
+                self.assertIn('home LAN only', error)
+                self.assertNotIn('/etc/', self.stdout + error)
+
     def test_invite_journal_detail_reaches_cli(self) -> None:
         for state in ('none', 'issued', 'expired', 'minting', 'encoding', 'pairing',
                       'refused', 'uncertain', 'recovered'):

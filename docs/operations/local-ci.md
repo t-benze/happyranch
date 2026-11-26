@@ -4069,6 +4069,19 @@ checks change systemd hardening, required CI selection or workflow triggers.
 
 ## Fixed remote-access helper
 
+F2 firewall fixtures and the real helper admission/status mount extend the
+existing standalone script selection:
+`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_home_activation_backend.py scripts/test_helper_mount.py -k thr327_firewall -q --tb=short`.
+They cover UFW active-deny/reject, both/single/LAN/range/v6 rules, inactivity,
+ambiguous profiles/rate limits and malformed output; refusal before setup or
+audit, fail-open ambiguity, and READY plus a separate Status warning. Command
+output is synthetic; no host firewall, system bus or services are touched.
+The existing Linux `test_connection.py`, `test_connection_cli.py`,
+`test_app_events.py` and Node `connection-dialog.test.mjs` selections cover the
+closed native projection/relay, CLI LAN-only action and bilingual host copy.
+These are local owner checks, with no new required CI or daily E2E trigger.
+
+
 I3a supervisor B10 wiring uses the retained standalone venue:
 `PYTHONPATH=$PWD uv run --frozen pytest scripts/test_invite_control.py -v --tb=short`.
 Its supervisor cases use a real private control listener, the serving pinned

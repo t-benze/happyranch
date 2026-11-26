@@ -33,6 +33,7 @@ from runtime.remote_access.helper_owner import bootstrap_owner
 from runtime.remote_access.helper_lifecycle import log_enable_refusal, log_lifecycle_failure
 from runtime.remote_access.helper_generation import PREPARATION_CATEGORIES, GenerationUnavailable
 from runtime.remote_access.headscale_service import HeadscaleServiceError
+from runtime.remote_access.host_firewall import BLOCKED, inspect_ufw
 
 
 class EnablePreparationRefused(Exception):
@@ -481,6 +482,8 @@ class HelperLifecycleBackend:
             return {'snapshot': self.capture(method, uid)}
         if method == 'RetryPolicyRenewal' and step == 'status' and expected is None:
             return self.policy_status(uid)
+        if method == 'Enable' and step == 'firewall' and expected is None:
+            return {'firewall': inspect_ufw(timeout=2.0 if deadline is None else deadline - time.monotonic())}
         if method == 'Enable' and step == 'status' and expected is None:
             return self.setup_status(uid)
         if type(expected) is not str or self.capture(method, uid) != expected:
@@ -517,6 +520,10 @@ class HelperLifecycleBackend:
             if result.get('state') != 'removed':
                 raise ActivationRefused()
             return {'outcome': 'off', 'residue': []}
+        if method == 'Enable' and step == 'enable':
+            firewall = inspect_ufw(timeout=2.0 if deadline is None else deadline - time.monotonic())
+            if firewall in BLOCKED:
+                raise EnablePreparationRefused(firewall)
         backend = HomeActivationBackend(io=self.io)
         with backend._transactions.locked() as directory:
             if self.capture(method, uid) != expected:

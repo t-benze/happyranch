@@ -360,6 +360,10 @@ const HOST_ERROR: Record<string, MessageKey> = {
 };
 
 const HOST_STATE_ERROR: Record<string, MessageKey> = {
+  host_firewall_blocks_home: 'connection.host.enableFailure.host_firewall_blocks_home',
+  host_firewall_blocks_tcp_8443: 'connection.host.enableFailure.host_firewall_blocks_tcp_8443',
+  host_firewall_blocks_udp_3478: 'connection.host.enableFailure.host_firewall_blocks_udp_3478',
+
   not_applicable: 'connection.host.hErrStateNotApplicable',
   residue: 'connection.host.hErrStateResidue', owner: 'connection.host.hErrStateOwner',
   provenance: 'connection.host.hErrStateProvenance', custody: 'connection.host.hErrStateCustody',
@@ -542,6 +546,10 @@ export function hostView(snapshot: HostSnapshot, unconfirmed: boolean): HostView
     lead = 'connection.host.hInviteNative';
   }
   const hints: MessageKey[] = [];
+  if (!unconfirmed && snapshot.observation === 'known' && snapshot.firewallWarning) {
+    hints.push(snapshot.firewallWarning === 'unverified' ? 'connection.host.firewallUnverified'
+      : ('connection.host.enableFailure.' + snapshot.firewallWarning) as MessageKey);
+  }
   if (phase === 'pending') hints.push('connection.host.hCancelNative');
   if (phase === 'failed') hints.push('connection.host.hRepairUnavailable', 'connection.client.nativeRecoveryHint');
   if (phase === 'paused') hints.push('connection.host.hRenewUnavailable');

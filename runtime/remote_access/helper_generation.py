@@ -11,11 +11,13 @@ from typing import Callable
 
 COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
            'runtime.remote_access.home_activation')
-HOST_STATE_CATEGORIES = frozenset({'residue', 'owner', 'provenance', 'custody',
+FIREWALL_BLOCKED = frozenset({'host_firewall_blocks_home', 'host_firewall_blocks_tcp_8443', 'host_firewall_blocks_udp_3478'})
+FIREWALL_STATES = FIREWALL_BLOCKED | {'clear', 'unverified', 'unknown'}
+HOST_STATE_CATEGORIES = FIREWALL_BLOCKED | frozenset({'residue', 'owner', 'provenance', 'custody',
                                     'inventory', 'quiescence', 'timeout', 'unknown', 'unverified', 'not_applicable'})
 SETUP_STATES = frozenset({'off', 'ready', 'pending', 'prepared_no_receipt', 'failed_uncertain',
                           'partial_cleanup', 'runtime_unavailable', 'setup_unverified', 'renewal_failed'})
-PREPARATION_CATEGORIES = frozenset({
+PREPARATION_CATEGORIES = FIREWALL_BLOCKED | frozenset({
     'deb-layout-required', 'issuer-state-uncertain', 'account-shape',
     'account-receipt-uncertain', 'foreign-unit', 'foreign-custody', 'publication-uncertain',
     'address-changed', 'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain',
@@ -198,6 +200,15 @@ class HomeLifecycleClient:
         if set(value) != {'policy'} or value['policy'] not in ('current', 'renewing', 'expired', 'renewal_failed', 'uncertain'):
             raise GenerationUnavailable()
         return value
+
+    def firewall_status(self, remaining: float) -> str:
+        if self.method != 'Enable':
+            raise GenerationUnavailable()
+        value = self._call('firewall', None, remaining)
+        if (set(value) != {'firewall'} or type(value['firewall']) is not str
+                or value['firewall'] not in FIREWALL_STATES):
+            raise GenerationUnavailable()
+        return value['firewall']
 
     def setup_status(self, remaining: float) -> dict:
         if self.method != 'Enable':

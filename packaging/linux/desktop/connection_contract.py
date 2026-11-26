@@ -29,9 +29,11 @@ WINDOW_LIFECYCLE = frozenset({"Enable", "Disable", "IssueInvite"})
 CLI_LIFECYCLE_TIMEOUTS = {"Enable": 482000, "ReplaceFailed": 482000, "Disable": 302000,
                           "IssueInvite": 122000, "CancelInvite": 122000,
                           "RecoverInvite": 122000, "RetryPolicyRenewal": 122000}
-HOST_STATE_CATEGORIES = frozenset({"residue", "owner", "provenance", "custody", "inventory",
+FIREWALL_BLOCKED = frozenset({'host_firewall_blocks_tcp_8443', 'host_firewall_blocks_home', 'host_firewall_blocks_udp_3478'})
+FIREWALL_STATES = FIREWALL_BLOCKED | {"clear", "unverified", "unknown", "stale"}
+HOST_STATE_CATEGORIES = FIREWALL_BLOCKED | frozenset({"residue", "owner", "provenance", "custody", "inventory",
                                     "quiescence", "timeout", "status_unavailable", "invite_rate_limited", "unknown", "unverified", "not_applicable"})
-PREPARATION_CATEGORIES = frozenset({
+PREPARATION_CATEGORIES = FIREWALL_BLOCKED | frozenset({
     "deb-layout-required", "issuer-state-uncertain", "account-shape",
     "account-receipt-uncertain", "foreign-unit", "foreign-custody", "publication-uncertain",
     "address-changed", "account-create-uncertain", "cleanup-uncertain", "materializer-uncertain",
@@ -593,9 +595,17 @@ class Protocol:
         """Fresh display detail only; v1 keeps its original bytes/vocabulary."""
         value = parse_json(raw, 16384)
         dimensions = {'setup', 'runtime', 'invite', 'address', 'policy', 'cleanup'}
-        if (type(value) is not dict or set(value) != {'version', *dimensions}
+        if (type(value) is not dict or set(value) not in ({'version', *dimensions}, {'version', *dimensions, 'firewall'})
                 or type(value['version']) is not int or value['version'] != 2):
             raise ValueError('invalid status detail')
+        if 'firewall' in value:
+            firewall = value['firewall']
+            if (type(firewall) is not dict or set(firewall) != {'state', 'age_seconds'}
+                    or type(firewall['state']) is not str or firewall['state'] not in FIREWALL_STATES
+                    or type(firewall['age_seconds']) is not int or firewall['age_seconds'] < 0):
+                raise ValueError('invalid firewall detail')
+            if firewall['age_seconds'] <= 30 and firewall['state'] in FIREWALL_BLOCKED | {'unverified'}:
+                snapshot = {**snapshot, 'firewallWarning': firewall['state']}
         part = value['setup']
         states = {'prepared_no_receipt', 'failed_uncertain', 'partial_cleanup',
                   'runtime_unavailable', 'setup_unverified', 'renewal_failed'}

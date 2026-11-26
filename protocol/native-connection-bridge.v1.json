@@ -204,6 +204,14 @@
               "type": "null"
             }
           ]
+        },
+        "firewallWarning": {
+          "enum": [
+            "host_firewall_blocks_home",
+            "host_firewall_blocks_tcp_8443",
+            "host_firewall_blocks_udp_3478",
+            "unverified"
+          ]
         }
       },
       "required": [
@@ -525,7 +533,10 @@
                 "invite_rate_limited",
                 "unknown",
                 "unverified",
-                "not_applicable"
+                "not_applicable",
+                "host_firewall_blocks_home",
+                "host_firewall_blocks_tcp_8443",
+                "host_firewall_blocks_udp_3478"
               ]
             },
             "code": {
@@ -1239,7 +1250,10 @@
             "ready-restart-failed-turn-off",
             "activation-retry-later",
             "activation-prepared-retry",
-            "activation-unverified"
+            "activation-unverified",
+            "host_firewall_blocks_home",
+            "host_firewall_blocks_tcp_8443",
+            "host_firewall_blocks_udp_3478"
           ]
         },
         "effect": {

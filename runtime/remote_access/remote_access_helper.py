@@ -329,8 +329,16 @@ class RemoteAccessHelper:
                     policy = _status_v2.PolicyObservation(_status_v2.PolicyState(state['policy']), 0)
                 except Exception:
                     pass  # Unavailable evidence remains unknown, never current.
+                firewall = None
+                try:
+                    state = _helper_generation.HomeLifecycleClient('Enable', uid).firewall_status(
+                        deadline - time.monotonic())
+                    if state != 'unknown':
+                        firewall = _status_v2.FirewallObservation(_status_v2.FirewallState(state), 0)
+                except Exception:
+                    pass  # No firewall evidence must not change setup or runtime.
                 raw = _status_v2.encode(_status_v2.build_status(now_utc_seconds=int(time.time()),
-                    setup=setup, connector=connector, runtime=runtime, invite=invite, cleanup=cleanup, policy=policy))
+                    setup=setup, connector=connector, runtime=runtime, invite=invite, cleanup=cleanup, policy=policy, firewall=firewall))
             except Exception as error:
                 category = error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable'
             settled(raw, category)
@@ -581,6 +589,10 @@ class RemoteAccessHelper:
             raise Refused('unavailable') from None
         uid = self._uid(sender)
         client = _helper_generation.HomeLifecycleClient(method, uid)
+        if method == 'Enable':
+            firewall = client.firewall_status(admission.remaining())
+            if firewall in _helper_generation.FIREWALL_BLOCKED:
+                raise _helper_generation.GenerationUnavailable(firewall)
         capture = _helper_lifecycle.LifecycleCapture.take(method, sender, self, client, admission)
         if capture.uid != uid:
             raise Refused('wrong-uid')
