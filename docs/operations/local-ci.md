@@ -113,10 +113,9 @@ SQL-seeded new definitions/Allowed defaults substitute for those owners.
 Test-side native closure receipts are synthetic; actual task invocation,
 ASGI completion intake, INTEGER results, consumption and stored transitions are
 observed. No provider is launched. Unknown/malformed outcomes are distinct:
-undeclared `REVISE` lands then holds; malformed generic callbacks currently
-propagate `SequentialContractError` through ASGI, with no committed result or
-output. Those rows record the exact parser exception, **not** a successful4xx
-transport projection. This slice does not change that existing error mapping.
+undeclared `REVISE` lands then holds; malformed generic callbacks refuse
+categorical HTTP422 `workflow_sequential_callback_invalid` with no committed
+result or output. C16 observes that transport boundary (U1 hardening).
 The completion API allocates its own INTEGER result ID and ignores a supplied
 extra `result_id`. C16 checks the allocated identity, then uses the actual
 accepted envelope and pre-acceptance state to check wrong output-result and
@@ -4457,3 +4456,43 @@ within the PR's founder-approved combined unsigned build allowance (current
 ledger in the PR body). Native execution,
 Swift tests, real SSE timing and save-panel/remote acceptance are NOT RUN by
 the Linux maker. This adds no required check, job definition edit or E2E run.
+
+## U1 sequential hardening cases
+
+Use the existing schema-shell venue with `WORKFLOW_SCHEMA_PYTHON=3.12` and `3.14`:
+`bash scripts/test-workflow-schema-load.sh --s4b=native_status_clean_exit`,
+`--s4b=clean_exit_no_callback`, `--s4b=terminal_fallback`,
+`--s4b=nonrender_launch_failure`, `--s4b=recovery_read_only`, and
+`--s5=u1_hold_atomicity`. New cases belong to existing aggregates/full execution.
+`--draft-review=U1_policy` reuses the configured released Coding fixture for actual
+Final prompt/launch COMMIT/route ownership; the authority-omission script invokes
+that same keeper after its ordinary v2 preservation table. That script now honors
+`WORKFLOW_SCHEMA_PYTHON` too (default 3.14). Required checks remain Source Boundary
+Lint and Web Lint (Node 24); no CI trigger/check or Product E2E change follows.
+
+| Case | Observable assertion / proof limit |
+| --- | --- |
+| Native clean negatives / missing callback | Blocked/failed valid and malformed summaries and clean no-result Hold without changing native results/counters or making output/successor; repeat settlement stutters |
+| F1 / atomicity | Fault only the optional specific-cause label on an authentic-shaped closed tuple; persist fallback Held/inbox and replay after restoring classification. SQL refusal between deferred inbox and Held rolls back both; retry commits exactly one pair |
+| P0 | Original synchronous pre-reservation frame; no reservation/journal/effects/launch entered; explicit not-created intent/closed facts |
+| P1 | Original clean prepared invocation; unsuccessful return and throw before effects, safe original outer frame, observed close/release removal |
+| P2 | No complete original scratch certificate is currently available: unproved P2 stays U, never a positive receipt or inferred compensation proof |
+| U0 | Actual original reservation call interrupted before preparation certainty; same unresolved journal/invocation retained |
+| U1/U2 | Controlled original-frame false returns/throws after preparation effects remain unknown; actual integrity/scratch failed-return wiring is NOT RUN in this fixture |
+| U3/U4 | Entered launch writer and committed possible-launch retain unknown; no positive receipt from a failed commit or absent PID |
+| Failed P finishing | Inject close, release and final receipt-storage failures; only intent/unsettled, no Held |
+| Redelivery | Every finite row observes five cycles with no new SID/reservation/preparation/launch/result/Held/inbox or receipt growth after first disposition |
+| U5 | Existing authentic host/outer closure keepers own positive T. Real spawn/PID loss or survivor lifecycle proof remains NOT RUN in U1's provider-free venue; U3 owns process wiring |
+| Policy | Genuine manager Final renders assessment-free node instruction, launch creates no ordinary v2 binding, supplied null/object assessment refuses 400, omitted assessment lands one native result with NULL decision and no v2 attempt; genuine ordinary source v2 remains |
+| Reconciliation | Immutable control lineage carries trusted read-only duty and bounded supplement into the actual renderer across rebrief/retry/reassignment and later callback Hold; never repeats an existing merge |
+
+Native receipt tests use original `TaskInvocation`/Pause/move writers. Synthetic
+host/outer fixtures are explicitly simulated closure evidence, never a claim of
+real containment. Classification fallback catches no authentication/history failure.
+The production receipt reader authenticates task/run/visit/principal, original
+prospective SID/invocation/fingerprint, committed intent/digest and exact positive
+close/release facts; any unresolved same-task native journal refuses positive proof.
+Original audit scope, sticky uncertainty and history work/byte/deadline limits stay
+unchanged. This unit adds no sweep, alarm, provider effect or integration module.
+General integration stays skipped; live-host integration and ad hoc Product E2E
+remain forbidden by this brief. TLC uses the documented pinned task-scratch recipe.

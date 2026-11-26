@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import json
 import logging
 import os
@@ -888,6 +889,14 @@ class Orchestrator:
             outcome = "returned"
             return result, report
         finally:
+            from runtime.orchestrator.task_pause import current_invocation, DeferredRootPause
+            from runtime.orchestrator.team_move import DeferredTeamMove
+            original = current_invocation()
+            if (original is not None and original.owner == 'sequential'
+                    and not isinstance(sys.exception(), (DeferredRootPause, DeferredTeamMove))
+                    and (result is None or not result.success)):
+                from runtime.workflows.sequential_launch_failures import observe_failure
+                observe_failure(original)
             try:
                 self._observe_memory_collection(
                     "terminal", outcome=outcome,
@@ -1235,11 +1244,16 @@ class Orchestrator:
         # resolved executor tuple is carried into both the rendered section and
         # the durable binding. A binding/audit failure raises before the
         # external launch, so no success is ever fabricated.
-        policy_team = resolve_policy_manager_team(
+        from runtime.workflows.recovery import classify_task
+        launch_ownership = classify_task(self._db, task_id, org_slug=self._slug)
+        if launch_ownership.kind == 'reconciliation_required':
+            raise RuntimeError('workflow_reconciliation_required')
+        sequential_visit = launch_ownership.kind == 'seq_visit'
+        policy_team = None if sequential_visit else resolve_policy_manager_team(
             root=self._paths.root, agent_name=agent_name,
             teams=self._teams, team_hint=team,
         )
-        policy_snapshot = resolve_active_team_policy_snapshot(
+        policy_snapshot = None if sequential_visit else resolve_active_team_policy_snapshot(
             store=AuthorityPolicyStore(self._db), root=self._paths.root,
             teams=self._teams, team=team, agent_name=agent_name,
             eligible=policy_team == team,
@@ -1252,7 +1266,7 @@ class Orchestrator:
                 root_task_id=task_id, manager_session_id=session_id,
             ) if policy_snapshot is not None else ""
         )
-        if policy_team == team and pause_invocation is None:
+        if not sequential_visit and policy_team == team and pause_invocation is None:
             persist_session_policy_binding(
                 db=self._db, task_id=task_id, session_id=session_id,
                 agent_name=agent_name, snapshot=policy_snapshot,
@@ -1369,7 +1383,11 @@ class Orchestrator:
             from runtime.orchestrator.active_authority_policy import _persist_session_policy_binding_uncommitted
 
             def _admission_effects() -> None:
-                if policy_team == team:
+                current_owner = classify_task(self._db, task_id, org_slug=self._slug)
+                if (current_owner.kind == 'reconciliation_required'
+                        or (current_owner.kind == 'seq_visit') != sequential_visit):
+                    raise RuntimeError('workflow_reconciliation_required')
+                if not sequential_visit and policy_team == team:
                     _persist_session_policy_binding_uncommitted(
                         db=self._db, task_id=task_id, session_id=session_id,
                         agent_name=agent_name, snapshot=policy_snapshot,

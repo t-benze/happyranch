@@ -2998,3 +2998,32 @@ actual pre-fix refused DB and rediscovers it without Save/Allow. C29 covers
 scratch/manifest/report/coverage for generated carrier, first-task and second
 visit IDs, plus the original-engine advance form. These source checks grant no
 live restart or run/settings mutation.
+
+## Generic Final ownership and read-only reconciliation (U1 hardening)
+
+A manager assigned to a persisted generic `seq_visit` Final uses the same
+assessment-free callback contract as every other node. Its prompt does not demand
+`manager_self_evaluation`; ordinary v2 policy rendering and both binding sites
+are skipped for that authenticated visit. Supplied assessment, even null, refuses
+400; malformed generic carriers refuse categorical 422 without a result. Genuine
+initiating/source/wait-set manager turns retain ordinary v2 policy admission. See
+[authority policy](authority-policy.md#authenticated-sequential-visits-u1-hardening).
+
+A cleanly closed Final with no accepted callback Holds with NULL result, preserving
+uncertainty about prior effects. Recovery from that lineage receives a trusted
+read-only instruction before authored node data: the authored merge responsibility
+is suspended. The initiator's bounded supplement reaches the actual bound prompt
+through authenticated controls, and retries/rebriefs/reassignment/later holds
+cannot remove the restriction. Only read existing evidence, observe existing
+remote state and report the already completed effect with its exact head/receipt.
+Uncertain/mismatching evidence Holds. Never repeat a merge to obtain a callback.
+For the recorded B case, the existing merge is
+`aab3a1ed1cebaa3ced659dc432539cbfdb993d76` at recorded head
+`e546dddcf6157fe7ce623d3e4378f95f1fb42539`; any authorized reconciliation reports
+that existing merge only. This grants no live B control, coding-scratch PR action,
+new pilot, restart or deploy authority, and no extra attempt/recovery allowance.
+
+Pinned Coding@3 JSON/release digests and historical reports remain unchanged.
+The engine neither verifies semantic merge evidence nor supplies a new sandbox.
+Normal exact-head/independence/check duties still apply to ordinary authorized
+Final execution; read-only recovery takes precedence over an authored mutation.

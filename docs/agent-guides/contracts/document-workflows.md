@@ -739,3 +739,31 @@ changed target before COMMIT. It retains original events and an already committe
 cancellation overlay. Standalone intent/schema validation remains unchanged; captured
 document owners remain UNSETTLED under Option B. See the U6 authenticated legacy
 cancellation scope contract.
+
+## Sequential default holds and recovery duties (U1)
+
+For generic @2 visits, authenticated original host/outer closure is followed by a
+default Hold for blocked/failed native callbacks after clean exit, missing callback,
+invalid/oversized output or unhandled outcome. Host timeout/failure takes precedence.
+Original result/findings/status and spent budgets survive. No callback means NULL
+result IDs, no fabricated callback or output. Held and one addressed inbox event
+share the existing transaction; replay creates neither again. A saved generic
+fallback validates its original closed proof rather than requiring later label
+classification to remain unchanged.
+
+Only the finite original-owner P0/P1 positive no-launch path may replace host/outer
+proof with its distinct intent/closed receipt. P2 without complete original scratch
+proof and U0–U5 remain unsettled, with zero Held/inbox. Intent/unsettled receipts and
+native owners fence fresh delivery; no observer cleans or re-executes them. See
+[lifecycle boundaries](runtime-lifecycle.md#sequential-original-owner-failure-boundaries-u1-hardening).
+Authority admission and native status are separate from business disposition.
+
+Recovery after a closed execution with no accepted callback is read-only
+reconciliation. The trusted bound instruction suspends authored mutation duties.
+It follows immutable control lineage through retry/rebrief/reassignment and later
+holds, carries the bounded initiator supplement into the actual node prompt, and
+permits only existing-evidence/state observation and truthful reporting. A plain
+retry cannot drop that restriction. Missing/uncertain effect evidence requires a
+hold; it never authorizes repeating an effect. No automatic recovery is launched.
+These are supported instruction duties, not new OS or tool isolation. U2 owns
+rediscovery/delivery/alarm; unknown native custody remains unheld.

@@ -1416,7 +1416,9 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
     mse_present = "manager_self_evaluation" in body.model_fields_set
     _teams = getattr(org, "teams", None)
     _is_manager = bool(_teams is not None and _teams.is_team_manager(body.agent))
-    if mse_present or _is_manager:
+    if ownership.kind == 'seq_visit' and mse_present:
+        raise HTTPException(status_code=400, detail={"code": "manager_self_evaluation_not_available"})
+    if ownership.kind != 'seq_visit' and (mse_present or _is_manager):
         task = org.db.get_task(task_id)
         from runtime.orchestrator.active_authority_policy import (
             ActiveAuthorityPolicyError,
@@ -1723,6 +1725,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
     decision_json = _json.dumps(decision_payload) if decision_payload is not None else None
     from runtime.workflows.coding_start import CodingStartError
     from runtime.workflows.sequential_engine import SequentialRefusal
+    from runtime.workflows.sequential_definition import SequentialContractError
     sequential_owner = org.workflow_sequential_dispatch if ownership.kind == 'seq_visit' else None
     coding_owner = sequential_owner or (org.workflow_coding_dispatch if ownership.kind == 'coding_attempt' else None)
     continuation = getattr(org.db, '_workflow_continuation', None) if ownership.kind == 'seq_source_wait_set' or plural_start else None
@@ -1809,6 +1812,10 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
                             status_code=status.HTTP_409_CONFLICT,
                             detail={"code": "recovery_callback_not_admissible"},
                         )
+    except SequentialContractError:
+        if sequential_owner is None:
+            raise
+        raise HTTPException(status_code=422, detail={'code': 'workflow_sequential_callback_invalid'}) from None
     except SequentialRefusal as exc:
         if sequential_owner is None and continuation is None:
             raise

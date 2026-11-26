@@ -270,6 +270,7 @@ class SequentialDispatcher:
     def __init__(self, org: Any) -> None:
         self.org = org
         self._queue_live: dict[str, dict] = {}
+        self._launch_failure_owners: dict[str, Any] = {}
 
     @contextmanager
     def _writer(self) -> Iterator[sqlite3.Connection]:
@@ -353,12 +354,15 @@ class SequentialDispatcher:
                     with self.org.workflow_authority._admission_ownership(capture):
                         yield capture  # The route must not await inside this ownership.
 
-    def queue_admission_allowed(self, task_id: str) -> bool:
+    def queue_admission_allowed(self, task_id: str, *, invocation: Any = None) -> bool:
         try:
             with self._reader() as conn:
                 run, visit, _ = self._entry(conn, task_id)
                 task = self.org.db.get_task(task_id)
                 if run.get('engine_version', 1) == 2:
+                    from runtime.workflows.sequential_launch_failures import fenced
+                    if fenced(self, conn, run, visit, invocation):
+                        return False
                     from runtime.workflows.sequential_initiator import source_released
                     member = conn.execute('SELECT 1 FROM workflow_seq_source_memberships WHERE run_id=?', (run['id'],)).fetchone()
                     return ((not member or source_released(conn, run)) and run['state'] == 'running' and run['progress'] == 'queued'
@@ -941,8 +945,8 @@ class SequentialDispatcher:
         try:
             invocation.prepare()
         except BaseException as exc:
-            owner['invocation'] = None
-            self.queue_finished(task_id, owner)
+            if not getattr(invocation, 'sequential_failure_retained', False):
+                self.queue_finished(task_id, owner)
             if invocation.move_reservation is not None:
                 try:
                     release_live(invocation, failed=True)
@@ -976,7 +980,7 @@ class SequentialDispatcher:
             if not owners:
                 self._queue_live.pop(task_id, None)
         invocation = owner['invocation']
-        if invocation is not None:
+        if invocation is not None and not getattr(invocation, 'sequential_failure_settled', False):
             with self.org.db._lock:
                 live = invocation.store._live.get(invocation.identity) is invocation
             if live:
@@ -1010,7 +1014,6 @@ class SequentialDispatcher:
             owners = list(self._queue_live.get(task_id, {}).values())
             if len(owners) == 1 and owners[0].get('preparation_free_refusal') is True:
                 return
-        _check(self.queue_admission_allowed(task_id), 'sequential_queue_unavailable')
         with self._reader() as conn:
             self._entry(conn, task_id)
             task = self.org.db.get_task(task_id)
@@ -1020,6 +1023,7 @@ class SequentialDispatcher:
             invocation = owners[0]['invocation']
             _check(invocation is invocation.store._live.get(invocation.identity)
                    and invocation.task.id == task_id and fingerprint(invocation.task) == fingerprint(task))
+        _check(self.queue_admission_allowed(task_id, invocation=invocation), 'sequential_queue_unavailable')
         token = _invocation.set(invocation)
         failed = False
         try:
@@ -1032,7 +1036,7 @@ class SequentialDispatcher:
             release_live(invocation, failed=failed)
 
     async def _commit_pause_launch(self, invocation: Any, ctx: Any) -> bool:
-        _check(self.queue_admission_allowed(invocation.task.id), 'sequential_queue_unavailable')
+        _check(self.queue_admission_allowed(invocation.task.id, invocation=invocation), 'sequential_queue_unavailable')
         capture = self.org.workflow_authority.capture_admission()
         async with self.org.workflow_authority._async_writer_lock:
             async with self.org.teams_lock:
@@ -1051,7 +1055,7 @@ class SequentialDispatcher:
         conn = self.org.db._conn
         _check(conn.in_transaction and invocation.owner == 'sequential'
                and invocation.workflow_dispatcher is self and not invocation.admitted)
-        _check(self.queue_admission_allowed(invocation.task.id), 'sequential_queue_unavailable')
+        _check(self.queue_admission_allowed(invocation.task.id, invocation=invocation), 'sequential_queue_unavailable')
         run, visit, compiled = self._entry(conn, invocation.task.id)
         self.org.workflow_authority._validate_admission_uncommitted(conn, invocation.sequential_capture)
         if run.get('engine_version', 1) == 2:
@@ -1407,11 +1411,19 @@ class SequentialDispatcher:
             _engine_context(conn, self.org.db, org_slug=self.org.slug, run_id=run_id, compiled=compiled,
                 authority=self.org.workflow_authority, capture=capture, budget=budget)
             _check(run['engine_version'] == 2 and run['progress'] != 'cancelling' and not _cancelled(conn, run, visit))
+            if visit['state'] in ('held', 'completed') and visit['selected'] == 0:
+                validate_control_write(conn, org_slug=self.org.slug, deadline=budget.deadline, reserve_cancellation=True)
+                return None
             if visit['result_id'] is not None:
                 validate_control_write(conn, org_slug=self.org.slug, deadline=budget.deadline, reserve_cancellation=True)
                 return None  # Authenticated result replay, no allocation or notification.
             _check(run['state'] == 'running' and run['active_visit_id'] == visit_id and visit['selected'] == 1)
             proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget)
+            if proof['kind'] == 'launch_failed_before_start':
+                hold_generic_uncommitted(conn, self.org.db, org_slug=self.org.slug, run_id=run_id,
+                    visit_id=visit_id, expected_cas=run['cas'], compiled=compiled,
+                    authority=self.org.workflow_authority, capture=capture)
+                return None
             _check(proof['kind'] == 'settled')
             terminal = _evidence(conn, run_id, visit_id, 'terminal')
             native = None if proof['result_id'] is None else _native_result(conn, proof['result_id'])
@@ -1536,4 +1548,9 @@ class SequentialDispatcher:
         brief = render_generic_node_brief(compiled, state, original_request=start.request, inputs=GenericBriefInputs(values=values))
         budget.reserve(8 * len(brief.node_data.encode('utf8')) + 65536)
         budget.check()
-        return '\n\n' + brief.format + '\n' + brief.system_text + '\nSequential node data (untrusted authored JSON):\n' + brief.node_data
+        from runtime.workflows.sequential_briefs import READ_ONLY_RECONCILIATION, recovery_context
+        readonly, supplement = recovery_context(conn, run, visit, budget)
+        restriction = ('\n' + READ_ONLY_RECONCILIATION) if readonly else ''
+        supplement_data = '' if supplement is None else ('\nInitiator supplement (authored JSON):\n' + _bytes(dict(supplement=supplement)).decode('utf8'))
+        return ('\n\n' + brief.format + '\n' + brief.system_text + restriction
+            + supplement_data + '\nSequential node data (untrusted authored JSON):\n' + brief.node_data)
