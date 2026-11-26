@@ -7,7 +7,7 @@ on:
       selection:
         description: Fixed finite selection (startup requires ROOT14301 allocation)
         type: choice
-        options: [attachment, startup]
+        options: [attachment, startup, workflow-sequential]
         default: attachment
       expected_sha:
         description: Full expected event and checkout SHA; required for startup
@@ -30,6 +30,7 @@ permissions:
 
 jobs:
   attachment-focused:
+    if: ${{ inputs.selection != 'workflow-sequential' }}
     name: ${{ inputs.selection == 'startup' && 'Startup isolation C1-C8 (Python 3.14)' || 'Ordinary attachment F1-F8 (Python 3.14)' }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.selection == 'startup' && 20 || 10 }}
@@ -245,6 +246,106 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ inputs.selection == 'startup' && 'startup-isolation' || 'attachment-focused' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.QA_EVIDENCE }}
+          if-no-files-found: error
+          retention-days: 7
+
+  workflow-sequential:
+    if: ${{ inputs.selection == 'workflow-sequential' }}
+    name: Sequential lifecycle (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.14']
+    steps:
+      - name: Checkout immutable event source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install uv and selected Python
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: false
+          python-version: ${{ matrix.python }}
+      - name: Bind exact head and prepare private evidence
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          PYTHON_VERSION: ${{ matrix.python }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+          root="$(mktemp -d "$RUNNER_TEMP/workflow-sequential.XXXXXX")"
+          chmod 700 "$root"
+          mkdir -m 700 "$root/evidence" "$root/private"
+          echo "QA_ROOT=$root" >> "$GITHUB_ENV"
+          echo "QA_EVIDENCE=$root/evidence" >> "$GITHUB_ENV"
+          echo "UV_PROJECT_ENVIRONMENT=$root/venv" >> "$GITHUB_ENV"
+          echo "UV_CACHE_DIR=$root/uv-cache" >> "$GITHUB_ENV"
+          printf '%s\n' "$EXPECTED_SHA" > "$root/evidence/source-sha.txt"
+          uv sync --frozen --python "$PYTHON_VERSION"
+          git diff --exit-code -- uv.lock
+          "$root/venv/bin/python" -c 'import json,sys; print(json.dumps({"executable":sys.executable,"version":sys.version}))' > "$root/evidence/python.json"
+      - name: Qualify chain then run sequential lifecycle through unchanged parent
+        run: |
+          set -euo pipefail
+          for selection in chain workflow; do
+            if [ "$selection" = chain ]; then
+              module=tests/integration/test_chain_e2e.py
+              bound=240
+            else
+              module=tests/integration/test_workflow_sequential_e2e.py
+              bound=1800
+            fi
+            command=(uv run --frozen --no-sync python tests/helpers/integration_parent.py -- pytest "$module" -v -m integration
+              --tb=short "--junitxml=$QA_EVIDENCE/$selection.xml" "--basetemp=$QA_ROOT/private/$selection-pytest")
+            printf '%q ' "${command[@]}" > "$QA_EVIDENCE/$selection-command.txt"
+            printf '\n' >> "$QA_EVIDENCE/$selection-command.txt"
+            set +e
+            timeout --signal=TERM --kill-after=20s "${bound}s" "${command[@]}" > "$QA_ROOT/private/$selection.stdout" 2> "$QA_ROOT/private/$selection.stderr"
+            status=$?
+            set -e
+            printf '%s\n' "$status" > "$QA_EVIDENCE/$selection-exit.txt"
+            # Raw streams remain private. Upload sanitized bounded head/tail
+            # plus original byte counts/digests, even on qualification failure.
+            "$UV_PROJECT_ENVIRONMENT/bin/python" - "$selection" <<'BOUNDED_LOGS'
+          import hashlib, json, os, pathlib, re, sys
+          root = pathlib.Path(os.environ['QA_ROOT'])
+          name = sys.argv[1]
+          rows = []
+          for stream in ('stdout', 'stderr'):
+              raw = (root / 'private' / (name + '.' + stream)).read_bytes()
+              excerpt = raw if len(raw) <= 32768 else raw[:16000] + b'\n[bounded]\n' + raw[-16000:]
+              text = excerpt.decode('utf8', errors='replace')
+              text = re.sub(r'(?i)Bearer\s+\S+', 'Bearer [REDACTED]', text)
+              text = re.sub(r'(?i)(authorization|password|api[_-]?key)\s*[:=]\s*\S+', r'\1=[REDACTED]', text)
+              (root / 'evidence' / (name + '.' + stream + '.log')).write_text(text)
+              rows.append(dict(stream=stream, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(), bounded=len(raw) > 32768))
+          (root / 'evidence' / (name + '-streams.json')).write_text(json.dumps(rows, sort_keys=True))
+          BOUNDED_LOGS
+            if [ "$status" -ne 0 ]; then exit "$status"; fi
+            "$UV_PROJECT_ENVIRONMENT/bin/python" - "$QA_EVIDENCE/$selection.xml" <<'JUNIT'
+          import sys, xml.etree.ElementTree as E
+          cases = E.parse(sys.argv[1]).getroot().findall('.//testcase')
+          assert cases and not any(c.findall('error') or c.findall('failure') or c.findall('skipped') for c in cases)
+          JUNIT
+          done
+          test -z "$(git status --porcelain)"
+      - name: Upload bounded lifecycle evidence
+        if: ${{ always() }}
+        id: workflow-evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: workflow-sequential-py${{ matrix.python }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.QA_EVIDENCE }}
           if-no-files-found: error
           retention-days: 7

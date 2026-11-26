@@ -2612,6 +2612,62 @@ the historical case reloads a persisted replacement through `OrgState.load`.
 These are private writer/renderer checks; live pilot replay and executor lifecycle
 coverage remain separate.
 
+## U3 sequential workflow lifecycle (THR-336 hardening)
+
+The manual-only `attachment-focused-qa.yml` selection `workflow-sequential`
+uses disposable GitHub-hosted `ubuntu-24.04` runners on Python **3.12 and 3.14**.
+It runs the unchanged chain module first as venue qualification, then the new
+workflow lifecycle module through the unchanged integration parent. This adds
+no trigger, schedule, required check or Product E2E change. General integration
+remains SKIPPED under THR-243; never run this selection on the live Linux host,
+including through daemon jobs.
+
+Dispatch the exact pushed source (substitute its full immutable head):
+
+```bash
+gh workflow run attachment-focused-qa.yml --ref task/TASK-19433 -f selection=workflow-sequential -f expected_sha=FULL_HEAD_SHA
+```
+
+If GitHub refuses the branch-only choice, stop and record the refusal. Do not
+use another workflow or modify the default branch to evade it. U3's total
+allocation is at most six dispatches, with every ID/ref/SHA recorded in the
+task evidence. A dispatch or static pass is not qualification or lifecycle PASS.
+
+The workflow executes these commands on each provisioned, frozen interpreter:
+
+```bash
+uv run --frozen --no-sync python tests/helpers/integration_parent.py -- pytest tests/integration/test_chain_e2e.py -v -m integration --tb=short "--junitxml=$QA_EVIDENCE/chain.xml" "--basetemp=$QA_ROOT/private/chain-pytest"
+uv run --frozen --no-sync python tests/helpers/integration_parent.py -- pytest tests/integration/test_workflow_sequential_e2e.py -v -m integration --tb=short "--junitxml=$QA_EVIDENCE/workflow.xml" "--basetemp=$QA_ROOT/private/workflow-pytest"
+```
+
+`QA_ROOT` is a fresh private runner-temp directory; `QA_EVIDENCE` is its
+`evidence` child, outside the integration parent's temporary tree and the
+explicit pytest basetemps. Both XML files and whitelisted `workflow-receipts/`
+survive parent teardown. Each case exports synthetic identity/cardinality
+records, original custody/prompt/stream digests, bounded sanitized prompt/log
+excerpts and actual callback exits in its fixture's finally path. No environment,
+bearer token, config, DB/WAL or authority mirror is uploaded. Full raw streams
+stay private; uploaded stream head/tail totals are bounded at 256KiB per job.
+Artifacts are uploaded on failure too and retained seven days.
+
+| Cases | Actual boundary and explicit limits |
+| --- | --- |
+| E1 / E1-revision | Real source start, node callbacks, terminal return and ordinary-v2 source consumption; REQUEST_CHANGES returns attributed findings to a second develop visit and retires dependent selections before QA/Final. |
+| E2 retry/rebrief/reassign | Native blocked result preserved, one causal Held, genuine same-run initiating control, replacement and final return. Draft reassignment has a distinct eligible worker. |
+| E3 clean/refused | Actual process exits without an accepted callback, including a real malformed-CLI refusal; zero callback rows/output, one missing-callback Held/inbox. |
+| E4-O / E4-R | Manager Final under active policy, actual full launched prompt, authentic predecessor/Held/control lineage and authoritative read-only precedence over the unchanged authored merge duty. Rebrief supplement is checked on original prompt bytes; retry truthfully has no invented supplement. Each recovery/exhaustion subvariant has an independent run with unchanged Final recoveries:1. Ineligible alternate-manager reassignment must genuinely refuse without allocation; positive Final reassignment is then NOT RUN. No actual merge is attempted. |
+| E5 / E6 | Same-home real stop/start after original terminal+outer COMMIT but before business advance, versus missing original outer proof. The latter stays unheld and logs a stall under the observer's isolated fixed clock. No test-authored closure facts. |
+| E7 / E7-render | Original-owner preparation/execution throws and failed returns, integrity and partial scratch, launch-COMMIT/possible-launch windows, close/release/receipt failure and five finite discovery/delivery cycles without new identities or growing obligations. Three render refusals produce one Held without preparation. P2 lacks an original scratch-unwind certificate and is tested as U; positive P2 is NOT RUN. U5 may settle only from authentic original terminal/outer custody, otherwise remains unknown/alarmed. |
+| E8 | A sibling Held supplies an authentic initiating continuation while the pristine target stays behind a pre-preparation barrier. The initiating cancel wins, and stale delivery cannot bind a SID or spawn. |
+| Populated history | `--start2=populated_long_batch`, native bounds and catalog/startup schema-shell keepers remain **P-only**. Populated real-daemon lifecycle is **NOT RUN**; this module does not establish capacity or pilot acceptance. |
+
+At authoring, chain qualification and hosted RED/GREEN are **NOT RUN**. Record
+the actual run IDs, exact heads, per-Python job conclusions, assertion failures,
+restored source hashes and artifact digests in the PR/task evidence before
+claiming executed proof. Renderer sensitivity must fail at the captured actual
+replacement-prompt assertion with identical fake plans/effect sink, then pass
+after exact restoration. Missing execution or fixture/import errors are not RED.
+
 The project does not install/manage hooks for linked worktrees. Worktree-guard
 setup may remove only its known stale pre-PR607 injected hook configuration.
 Follow normal repository hooks; `--no-verify` and force push remain prohibited.

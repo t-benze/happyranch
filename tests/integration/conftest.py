@@ -273,6 +273,43 @@ def _nested_daemon_env() -> dict[str, str]:
 
 
 @pytest.fixture
+def workflow_lifecycle_capture(request, tmp_path, tmp_home, runtime, monkeypatch):
+    """Opt-in U3 observer and durable, whitelisted evidence after daemon teardown."""
+    if request.node.path.name != "test_workflow_sequential_e2e.py":
+        yield None
+        return
+    import hashlib
+    import re
+    from tests.helpers.integration_stub_guard.guard import manifest
+    from tests.helpers.workflow_lifecycle_capture.sitecustomize import SOURCE_FILES, export_case
+
+    parent = manifest()
+    source = Path(parent["source"])
+    private = tmp_path / "workflow-capture"
+    private.mkdir(mode=0o700)
+    xml = request.config.getoption("xmlpath")
+    if not xml or not Path(xml).is_absolute():
+        raise RuntimeError("U3 requires an absolute --junitxml outside disposable roots")
+    destination = Path(xml).parent / "workflow-receipts"
+    for disposable in (Path(parent["root"]), tmp_path, tmp_home):
+        if destination.resolve().is_relative_to(disposable.resolve()):
+            raise RuntimeError("U3 evidence would be erased with disposable roots")
+    destination.mkdir(parents=True, exist_ok=True)
+    binding = dict(source=str(source), revision=parent["revision"], private=str(private),
+        home=str(tmp_home), org_root=str(runtime), nodeid=request.node.nodeid,
+        hashes={name: hashlib.sha256((source / name).read_bytes()).hexdigest() for name in SOURCE_FILES})
+    (private / "binding.json").write_text(json.dumps(binding, sort_keys=True))
+    monkeypatch.setenv("HAPPYRANCH_WORKFLOW_CAPTURE", str(private / "binding.json"))
+    observer = source / "tests/helpers/workflow_lifecycle_capture"
+    monkeypatch.setenv("PYTHONPATH", str(observer) + os.pathsep + os.environ["PYTHONPATH"])
+    try:
+        yield private
+    finally:
+        name = re.sub(r"[^A-Za-z0-9_.-]", "_", request.node.name)
+        export_case(binding, destination / (name + ".json"))
+
+
+@pytest.fixture
 def live_daemon(
     tmp_home,
     runtime_container,
@@ -284,6 +321,7 @@ def live_daemon(
     fake_codex_plan_env,
     fake_claude_thread_plan_env,
     fake_opencode_thread_plan_env,
+    workflow_lifecycle_capture,
     monkeypatch,
     request,
 ):
