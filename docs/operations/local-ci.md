@@ -2636,23 +2636,42 @@ task evidence. A dispatch or static pass is not qualification or lifecycle PASS.
 The two selected modules explicitly initialize their newly created synthetic
 org database through the production fresh-org initializer before registration,
 including its ordinary pause and reviewer-policy defaults. Other integration
-fixtures retain their existing setup. Hosted run `45870419709` at
-`bd27a4e9a187b434b92266ebb929fa6f7b0c459e` collected four unchanged chain
-tests and failed all four on each Python with `404 unknown_org`; the workflow
-module did not run. Run `45871925099` at
-`e49ad28a475d3b1ef56cc6cc12d5c19de03fe145` then passed all four chain
-cases on each Python (zero errors/skips), qualifying the scoped fixture.
-All 32 lifecycle cases failed at the first settings request with
-`422 sequential_settings_request_invalid`: the test used noncanonical JSON.
-The module now sends the public settings contract's canonical bytes with
-`application/json`; that correction still needs hosted execution. These setup
-failures are neither intended lifecycle RED proof nor lifecycle PASS.
+fixtures retain their existing setup. Hosted run `45871925099` qualified all
+four unchanged chain cases on each Python, then exposed noncanonical settings
+JSON in the lifecycle fixture. Run `45874595036` at
+`b925b30be4f8dbc4dfcc64990cc18f2bdc0f6ed0` again passed chain 4/4 on each
+Python, then timed out at the obsolete shared policy probe (28/27 completed
+case exports). Its omitted callback exited 0 as designed; the probe's assertion
+crashed the fake source and caused cancellation. Those cancellations prove no
+policy refusal and are not attributable lifecycle RED.
 
-The workflow executes these commands on each provisioned, frozen interpreter:
+Manager ruling r2 (`TASK-19466`, root `TASK-19318`) resolves that oracle:
+self-evaluation is advisory for non-escalate decisions. Omitted/mismatched
+ordinary starts are admitted with `missing_assessment` / `binding_mismatch`;
+workflow_start retains its admitted attempt and audit. They proceed like a
+valid start, whose carrier has no diagnostic. Three independent cases each
+use their own fresh source task/SID, check exact evidence and read-only replay,
+and finish the same Draft → Review traversal. Sequential visits still refuse
+assessment field presence (including null) with HTTP400
+`manager_self_evaluation_not_available` and zero allocations. No assessment
+gate or other production change is introduced.
+
+The current fixture sends canonical settings bytes and has no shared negative
+policy prelude. The workflow first qualifies chain, then collects the **36**
+finite lifecycle nodes and runs each through a fresh unchanged integration
+parent with an independent **120-second** timeout (SIGINT, 20-second kill grace).
+A failure is retained and later cases still run. Per-case XML, exit/command,
+phase traceback and actor-error receipts attribute the failure before teardown;
+a combined `workflow.xml` and `workflow-results.json` retain actual outcomes.
+Missing XML, errors, skips and failed exits all fail the job.
+
+The workflow executes these commands on each provisioned, frozen interpreter
+(`NODEID` is each collected lifecycle node; `CASE` is its unique case number):
 
 ```bash
 uv run --frozen --no-sync python tests/helpers/integration_parent.py -- pytest tests/integration/test_chain_e2e.py -v -m integration --tb=short "--junitxml=$QA_EVIDENCE/chain.xml" "--basetemp=$QA_ROOT/private/chain-pytest"
-uv run --frozen --no-sync python tests/helpers/integration_parent.py -- pytest tests/integration/test_workflow_sequential_e2e.py -v -m integration --tb=short "--junitxml=$QA_EVIDENCE/workflow.xml" "--basetemp=$QA_ROOT/private/workflow-pytest"
+uv run --frozen --no-sync python tests/helpers/integration_parent.py -- pytest tests/integration/test_workflow_sequential_e2e.py --collect-only -q -m integration --tb=short "--junitxml=$QA_EVIDENCE/workflow-collect.xml" "--basetemp=$QA_ROOT/private/workflow-collect-pytest"
+uv run --frozen --no-sync python tests/helpers/integration_parent.py -- pytest "$NODEID" -v -m integration --tb=short "--junitxml=$QA_EVIDENCE/workflow-case-$CASE.xml" "--basetemp=$QA_ROOT/private/workflow-case-$CASE-pytest"
 ```
 
 `QA_ROOT` is a fresh private runner-temp directory; `QA_EVIDENCE` is its
@@ -2670,14 +2689,17 @@ Artifacts are uploaded on failure too and retained seven days.
 | E1 / E1-revision | Real source start, node callbacks, terminal return and ordinary-v2 source consumption; REQUEST_CHANGES returns attributed findings to a second develop visit and retires dependent selections before QA/Final. |
 | E2 retry/rebrief/reassign | Native blocked result preserved, one causal Held, genuine same-run initiating control linked to its native result/SID and active-v2 attempt, replacement and final return. Draft reassignment has a distinct eligible worker. |
 | E3 clean/refused | Actual process exits without an accepted callback, including a real malformed-CLI refusal; zero callback rows/output, one missing-callback Held/inbox. |
+| B3 policy / U1 visit assessment | Independent omitted, mismatched and valid ordinary starts retain exact carrier/attempt/audit and allocation-free replay, then finish identical traversal; supplied sequential assessment refuses HTTP400 without allocation. |
 | E4-O / E4-R | Manager Final under active policy, actual full launched prompt, authentic predecessor/Held/control lineage and authoritative read-only precedence over the unchanged authored merge duty. Rebrief supplement is checked on original prompt bytes; retry truthfully has no invented supplement. Each recovery/exhaustion subvariant has an independent run with unchanged Final recoveries:1. Ineligible alternate-manager reassignment must genuinely refuse without allocation; positive Final reassignment is then NOT RUN. No actual merge is attempted. |
 | E5 / E6 | Same-home real stop/start after original terminal+outer COMMIT but before business advance, versus missing original outer proof. The latter stays unheld and logs a stall under the observer's isolated fixed clock. No test-authored closure facts. |
 | E7 / E7-render | Original-owner preparation/execution throws and failed returns, integrity and partial scratch, launch-COMMIT/possible-launch windows, close/release/receipt failure and five finite discovery/delivery cycles compared with the original pre-cycle snapshot. Preparation/invocation/prospective-SID, process/callback/custody and native obligation counts cannot grow. Three distinct render-refusal SIDs produce one Held without preparation. P2 lacks an original scratch-unwind certificate and is tested as U; positive P2 is NOT RUN. U5 may settle only from authentic original terminal/outer custody, otherwise remains unknown/alarmed. |
 | E8 | A sibling Held supplies an authentic initiating continuation while the pristine target stays behind a pre-preparation barrier. The initiating cancel wins, and stale delivery cannot bind a SID or spawn. |
 | Populated history | `--start2=populated_long_batch`, native bounds and catalog/startup schema-shell keepers remain **P-only**. Populated real-daemon lifecycle is **NOT RUN**; this module does not establish capacity or pilot acceptance. |
 
-Chain qualification passed on both Pythons at the head above; lifecycle
-RED/GREEN remain **NOT VERIFIED**. Record
+Chain qualification passed on both Pythons at the historical heads above. The
+r2 oracle and per-case isolation changes await exact-head hosted execution;
+lifecycle RED/GREEN remain **NOT VERIFIED**. The allocation remains **4/6 used,
+2 remain**, reserved for final-head GREEN and attributable renderer RED. Record
 the actual run IDs, exact heads, per-Python job conclusions, assertion failures,
 restored source hashes and artifact digests in the PR/task evidence before
 claiming executed proof. Renderer sensitivity must fail at the captured actual

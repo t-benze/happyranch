@@ -50,8 +50,9 @@ def export_case(binding: dict, destination: Path) -> None:
     """Bound total excerpts to 256KiB, whitelist files, keep original digests."""
     private = Path(binding["private"])
     files = []
-    # 32 finite cases x 3KiB plus the job's 128KiB stream budget < 256KiB.
-    remaining = 3072
+    # 36 cases x (2KiB exports + 2KiB streams + <=2KiB phases), plus
+    # qualification/collection streams, stays within 256KiB of excerpts.
+    remaining = 2048
     candidates = sorted(private.glob("*.receipt.json"), key=lambda p: (p.name != "replacement-prompt.receipt.json", p.name)) + sorted(private.glob("*.prompt"))
     log = Path(binding["home"]) / "daemon.log"
     if log.is_file() and not log.is_symlink():
@@ -73,6 +74,7 @@ def export_case(binding: dict, destination: Path) -> None:
                     "control_id", "held_event_id", "predecessor_visit_id", "readonly", "supplement", "lineage",
                     "restriction_excerpt", "synthetic", "effect", "head", "merge", "sid", "count", "before", "after",
                     "action", "actor_task_id", "actor_sid", "positive_reassignment_lifecycle", "initial", "snapshots", "completed"}
+                fields.update({"result_id", "carrier", "attempt_id", "audit_id", "diagnostic", "variant"})
                 metadata = {key: item for key, item in value.items() if key in fields}
             except ValueError:
                 pass  # JSONL observer stream is retained only as a bounded excerpt.
@@ -91,6 +93,7 @@ def export_case(binding: dict, destination: Path) -> None:
                 "inbox": "SELECT notification_id,event_id,run_id,initiator_task_id FROM workflow_seq_inbox",
                 "results": "SELECT id,task_id,agent,session_id,status FROM task_results",
                 "custody": "SELECT id,run_id,visit_id,kind,evidence_digest FROM workflow_seq_evidence",
+                "attempts": "SELECT attempt_id,root_task_id,manager_session_id,result_id,binding_id,stage,finalization_state,assessment_digest FROM authority_policy_v2_attempts",
             }
             for label, sql in queries.items():
                 try:

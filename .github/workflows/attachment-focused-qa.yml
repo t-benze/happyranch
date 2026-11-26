@@ -297,50 +297,88 @@ jobs:
           uv sync --frozen --python "$PYTHON_VERSION"
           git diff --exit-code -- uv.lock
           "$root/venv/bin/python" -c 'import json,sys; print(json.dumps({"executable":sys.executable,"version":sys.version}))' > "$root/evidence/python.json"
-      - name: Qualify chain then run sequential lifecycle through unchanged parent
+      - name: Qualify chain then run isolated lifecycle cases through unchanged parent
         run: |
           set -euo pipefail
-          for selection in chain workflow; do
-            if [ "$selection" = chain ]; then
-              module=tests/integration/test_chain_e2e.py
-              bound=240
-            else
-              module=tests/integration/test_workflow_sequential_e2e.py
-              bound=1800
-            fi
-            command=(uv run --frozen --no-sync python tests/helpers/integration_parent.py -- pytest "$module" -v -m integration
+          run_selection() {
+            local selection="$1" bound="$2" node="$3" cap="$4" mode="${5:-run}"
+            local command=(uv run --frozen --no-sync python tests/helpers/integration_parent.py -- pytest "$node" -m integration
               --tb=short "--junitxml=$QA_EVIDENCE/$selection.xml" "--basetemp=$QA_ROOT/private/$selection-pytest")
+            if [ "$mode" = collect ]; then command+=(--collect-only -q); else command+=(-v); fi
             printf '%q ' "${command[@]}" > "$QA_EVIDENCE/$selection-command.txt"
             printf '\n' >> "$QA_EVIDENCE/$selection-command.txt"
-            set +e
-            timeout --signal=TERM --kill-after=20s "${bound}s" "${command[@]}" > "$QA_ROOT/private/$selection.stdout" 2> "$QA_ROOT/private/$selection.stderr"
-            status=$?
-            set -e
+            local status=0
+            timeout --signal=INT --kill-after=20s "${bound}s" "${command[@]}" > "$QA_ROOT/private/$selection.stdout" 2> "$QA_ROOT/private/$selection.stderr" || status=$?
             printf '%s\n' "$status" > "$QA_EVIDENCE/$selection-exit.txt"
-            # Raw streams remain private. Upload sanitized bounded head/tail
-            # plus original byte counts/digests, even on qualification failure.
-            "$UV_PROJECT_ENVIRONMENT/bin/python" - "$selection" <<'BOUNDED_LOGS'
+            # Each case owns its parent, temp roots, daemon and deadline. An
+            # assertion/timeout cannot poison another case's source/session.
+            "$UV_PROJECT_ENVIRONMENT/bin/python" - "$selection" "$cap" <<'BOUNDED_LOGS'
           import hashlib, json, os, pathlib, re, sys
           root = pathlib.Path(os.environ['QA_ROOT'])
-          name = sys.argv[1]
+          name, cap = sys.argv[1], int(sys.argv[2])
           rows = []
           for stream in ('stdout', 'stderr'):
               raw = (root / 'private' / (name + '.' + stream)).read_bytes()
-              excerpt = raw if len(raw) <= 32768 else raw[:16000] + b'\n[bounded]\n' + raw[-16000:]
+              excerpt = raw if len(raw) <= cap else raw[:cap // 2 - 16] + b'\n[bounded]\n' + raw[-cap // 2:]
               text = excerpt.decode('utf8', errors='replace')
               text = re.sub(r'(?i)Bearer\s+\S+', 'Bearer [REDACTED]', text)
               text = re.sub(r'(?i)(authorization|password|api[_-]?key)\s*[:=]\s*\S+', r'\1=[REDACTED]', text)
               (root / 'evidence' / (name + '.' + stream + '.log')).write_text(text)
-              rows.append(dict(stream=stream, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(), bounded=len(raw) > 32768))
+              rows.append(dict(stream=stream, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(), bounded=len(raw) > cap))
           (root / 'evidence' / (name + '-streams.json')).write_text(json.dumps(rows, sort_keys=True))
           BOUNDED_LOGS
-            if [ "$status" -ne 0 ]; then exit "$status"; fi
-            "$UV_PROJECT_ENVIRONMENT/bin/python" - "$QA_EVIDENCE/$selection.xml" <<'JUNIT'
+            return "$status"
+          }
+          run_selection chain 240 tests/integration/test_chain_e2e.py 16384
+          "$UV_PROJECT_ENVIRONMENT/bin/python" - "$QA_EVIDENCE/chain.xml" <<'CHAIN_RESULTS'
           import sys, xml.etree.ElementTree as E
           cases = E.parse(sys.argv[1]).getroot().findall('.//testcase')
-          assert cases and not any(c.findall('error') or c.findall('failure') or c.findall('skipped') for c in cases)
-          JUNIT
-          done
+          assert len(cases) == 4 and not any(c.findall('error') or c.findall('failure') or c.findall('skipped') for c in cases)
+          CHAIN_RESULTS
+          run_selection workflow-collect 90 tests/integration/test_workflow_sequential_e2e.py 4096 collect
+          "$UV_PROJECT_ENVIRONMENT/bin/python" - <<'CASE_SELECTION'
+          import json, os, pathlib
+          root = pathlib.Path(os.environ['QA_ROOT'])
+          prefix = 'tests/integration/test_workflow_sequential_e2e.py::'
+          nodes = [line.strip() for line in (root / 'private/workflow-collect.stdout').read_text().splitlines()
+                   if line.startswith(prefix)]
+          assert len(nodes) == len(set(nodes)) == 36, 'finite lifecycle collection mismatch'
+          (root / 'private/workflow-nodes.txt').write_text('\n'.join(nodes) + '\n')
+          (root / 'evidence/workflow-nodes.json').write_text(json.dumps(nodes))
+          CASE_SELECTION
+          index=0
+          for_node_status=0
+          while IFS= read -r node; do
+            index=$((index + 1))
+            selection="workflow-case-$(printf '%02d' "$index")"
+            run_selection "$selection" 120 "$node" 1024 || for_node_status=1
+          done < "$QA_ROOT/private/workflow-nodes.txt"
+          "$UV_PROJECT_ENVIRONMENT/bin/python" - <<'WORKFLOW_RESULTS'
+          import json, os, pathlib, xml.etree.ElementTree as E
+          evidence = pathlib.Path(os.environ['QA_EVIDENCE'])
+          nodes = json.loads((evidence / 'workflow-nodes.json').read_text())
+          combined = E.Element('testsuites')
+          results = []
+          for index, node in enumerate(nodes, 1):
+              name = f'workflow-case-{index:02d}'
+              path = evidence / (name + '.xml')
+              row = dict(nodeid=node, exit=int((evidence / (name + '-exit.txt')).read_text()), xml=path.name)
+              try:
+                  root = E.parse(path).getroot()
+                  cases = root.findall('.//testcase')
+                  row.update(cases=len(cases), failures=len(root.findall('.//failure')),
+                             errors=len(root.findall('.//error')), skipped=len(root.findall('.//skipped')))
+                  assert len(cases) == 1 and cases[0].attrib['name'] == node.split('::')[1], 'case identity mismatch'
+                  combined.extend(list(root) if root.tag == 'testsuites' else [root])
+              except (OSError, E.ParseError, AssertionError) as exc:
+                  row['invalid_xml'] = str(exc)
+              results.append(row)
+          E.ElementTree(combined).write(evidence / 'workflow.xml', encoding='utf-8', xml_declaration=True)
+          (evidence / 'workflow-results.json').write_text(json.dumps(results, sort_keys=True))
+          assert len(results) == 36 and all(r['exit'] == 0 and r.get('cases') == 1 and not any(
+              r.get(k) for k in ('failures', 'errors', 'skipped', 'invalid_xml')) for r in results), 'lifecycle cases failed; inspect per-case XML/phases/exits'
+          WORKFLOW_RESULTS
+          test "$for_node_status" = 0
           test -z "$(git status --porcelain)"
       - name: Upload bounded lifecycle evidence
         if: ${{ always() }}

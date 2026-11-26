@@ -25,6 +25,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import traceback
 from typing import Callable
 
 import httpx
@@ -62,6 +63,10 @@ def _wait(read: Callable, predicate: Callable = bool, *, label: str, timeout: fl
         last = read()
         if predicate(last):
             return last
+        capture = os.environ.get("HAPPYRANCH_WORKFLOW_CAPTURE")
+        if capture:
+            errors = sorted(Path(_binding()["private"]).glob("*-actor-error.receipt.json"))
+            assert not errors, f"{label}: actor failed: {errors[0].read_text() if errors else ''}"
         time.sleep(.1)
     raise AssertionError(f"{label}: deadline exhausted; last={last!r}")
 
@@ -106,22 +111,47 @@ def _assessment(root: Path, task: str, sid: str) -> dict:
 
 
 def _counts(root: Path) -> dict:
-    tables = ("tasks", "task_results", "authority_policy_v2_session_bindings", "authority_policy_v2_attempts",
+    tables = ("tasks", "task_results", "audit_log", "authority_policy_v2_session_bindings", "authority_policy_v2_attempts",
               "workflow_seq_runs", "workflow_seq_visits", "workflow_seq_controls", "workflow_seq_outputs",
               "workflow_seq_evidence", "workflow_seq_inbox")
     return {name: _rows(root, "SELECT count(*) AS n FROM " + name)[0]["n"] for name in tables}
 
 
-def _policy_refusals(private: Path, root: Path, payload: dict, decision: dict, assessment: dict) -> None:
-    before = _counts(root)
-    for variant in ("omitted", "mismatch"):
-        rejected = dict(payload, decision=decision)
-        rejected.pop("manager_self_evaluation", None)
-        if variant == "mismatch":
-            rejected["manager_self_evaluation"] = dict(assessment, manager_session_id="foreign-synthetic-SID")
-        _callback(private, rejected, name=payload["session_id"] + "-" + decision["action"] + "-" + variant,
-                  expected=False)
-        assert _counts(root) == before, "refused ordinary policy evidence allocated state"
+def _policy_diagnostics(root: Path, task: str, sid: str, variant: str) -> dict:
+    """Observe stored callback evidence, independently of the admission helper."""
+    result, = _rows(root, "SELECT * FROM task_results WHERE task_id=? AND session_id=?", (task, sid))
+    decision = json.loads(result["decision_json"])
+    assert decision["action"] == "workflow_start"
+    assert "_authority_v2_admission" not in decision, "workflow_start incorrectly omitted its attempt"
+    carrier = decision["_manager_self_evaluation"]
+    expected = _assessment(root, task, sid)
+    if variant == "omitted":
+        assert carrier == {"_error_code": "missing_assessment"}
+    elif variant == "mismatch":
+        expected["manager_session_id"] = "foreign-synthetic-SID"
+        assert carrier == {"_error_code": "binding_mismatch",
+                           "payload_digest": hashlib.sha256(_bytes(expected)).hexdigest()}
+    else:
+        assert variant == "valid-start" and carrier == expected and "_error_code" not in carrier
+    attempt, = _rows(root, "SELECT * FROM authority_policy_v2_attempts WHERE result_id=?", (result["id"],))
+    binding, = _rows(root, "SELECT * FROM authority_policy_v2_session_bindings WHERE root_task_id=? "
+                     "AND manager_session_id=?", (task, sid))
+    assert (attempt["root_task_id"], attempt["manager_session_id"], attempt["binding_id"]) == (
+        task, sid, binding["binding_id"])
+    assert (attempt["stage"], attempt["finalization_state"], attempt["refusal_code"]) == (
+        "admitted", "unfinalized", None)
+    assert attempt["assessment_digest"] == hashlib.sha256(_bytes(carrier)).hexdigest()
+    audits = _rows(root, "SELECT * FROM audit_log WHERE task_id=? AND action='authority_policy_v2_result_stage'", (task,))
+    admitted = [row for row in audits if json.loads(row["payload"]).get("result_id") == result["id"]]
+    audit, = admitted
+    fields = ("attempt_id", "result_id", "binding_id", "contract_id", "contract_version", "contract_digest",
+              "release_id", "activation_id", "activation_epoch", "selector_id", "assessment_digest",
+              "owner_attempt_id", "origin_boot_id")
+    assert json.loads(audit["payload"]) == dict({key: attempt[key] for key in fields},
+                                              stage="admitted", finalization_state="unfinalized")
+    assert audit["agent"] == attempt["manager_agent"] == result["agent"]
+    return dict(task_id=task, session_id=sid, result_id=result["id"], carrier=carrier,
+                attempt_id=attempt["attempt_id"], audit_id=audit["id"], diagnostic=carrier.get("_error_code"))
 
 
 def _source_actor(private: Path, root: Path, case: dict, payload: dict, prompt: str) -> None:
@@ -137,11 +167,21 @@ def _source_actor(private: Path, root: Path, case: dict, payload: dict, prompt: 
         assert composed.returncode == 0, f"public compose refused {composed.stderr[:2048]!r}"
         decision = json.loads(composed.stdout)
         assert decision["action"] == "workflow_start"
-        # Actual workflow_start requires ordinary policy evidence. Refusals must
-        # precede all native/workflow allocation, then the same SID may correct.
-        _policy_refusals(private, root, payload, decision, assessment)
-        payload.update(decision=decision, manager_self_evaluation=assessment)
+        # Advisory diagnostics retain ordinary start admission. Each variant
+        # has its own source task/SID; controls always use valid evidence.
+        variant = case.get("policy_variant", "valid-start")
+        payload.update(decision=decision)
+        if variant != "omitted":
+            payload["manager_self_evaluation"] = (dict(assessment, manager_session_id="foreign-synthetic-SID")
+                                                   if variant == "mismatch" else assessment)
         _callback(private, payload, name=sid + "-start")
+        if case.get("policy_variant"):
+            observed = _policy_diagnostics(root, task, sid, variant)
+            before = _counts(root)
+            _callback(private, payload, name=sid + "-start-replay")
+            assert _counts(root) == before, "exact start replay allocated state"
+            assert _policy_diagnostics(root, task, sid, variant) == observed
+            _receipt(private, "policy-diagnostic", **observed, variant=variant, before=before, after=_counts(root))
         return
     run = runs[0]
     if case.get("cancel_queued") and run["state"] != "finished":
@@ -178,8 +218,6 @@ def _source_actor(private: Path, root: Path, case: dict, payload: dict, prompt: 
     payload.update(decision=dict(action="workflow_control", workflow=command), manager_self_evaluation=assessment)
     controls = _rows(root, "SELECT * FROM workflow_seq_controls WHERE run_id=?", (run["id"],))
     exhausted = bool(controls) and action != "cancel"
-    if not controls and not (action == "reassign" and case.get("coding")):
-        _policy_refusals(private, root, payload, payload["decision"], assessment)
     before = _counts(root)
     result = _callback(private, payload, name=sid + "-control",
                        expected=None if action == "reassign" and case.get("coding") else not exhausted)
@@ -257,6 +295,14 @@ def _actor(argv: list[str]) -> None:
                     verdict=outcome, head="1" * 40, observation="read-only")))
     payload["summary"] = _bytes(dict(format="workflow-sequential-callback@2", outcome=outcome,
         content_base64=base64.b64encode(content).decode(), findings=findings)).decode()
+    if case.get("assessment_on_visit") and visit["ordinal"] == 1:
+        for name, value in (("null", None), ("object", {})):
+            before = _counts(root)
+            result = _callback(private, dict(payload, manager_self_evaluation=value),
+                               name=sid + "-assessment-" + name, expected=False)
+            message = result.stdout + result.stderr
+            assert b"Error (400):" in message and b"manager_self_evaluation_not_available" in message
+            assert _counts(root) == before, "supplied sequential assessment allocated state"
     _callback(private, payload, name=sid + "-node")
 
 
@@ -423,6 +469,36 @@ def lifecycle(live_daemon, runtime, workflow_lifecycle_capture, fake_claude_plan
         yield value
     finally:
         (value.private / "release-source").touch()
+
+
+@pytest.mark.parametrize("variant", ["omitted", "mismatch", "valid-start"])
+def test_real_policy_diagnostics(lifecycle, variant: str) -> None:
+    """B3: advisory evidence preserves start admission, replay and traversal."""
+    lifecycle.configure(policy_variant=variant)
+    lifecycle.assert_return()
+    lifecycle.assert_inbox(1)
+    run = lifecycle.run()
+    assert run["source_task_id"] == lifecycle.source
+    observed = _policy_diagnostics(lifecycle.root, lifecycle.source, run["source_session_id"], variant)
+    assert json.loads((lifecycle.private / "policy-diagnostic.receipt.json").read_bytes())["result_id"] == observed["result_id"]
+    visits = lifecycle.rows("SELECT * FROM workflow_seq_visits ORDER BY ordinal")
+    assert [v["node_id"] for v in visits] == ["draft", "review"]
+    assert all(v["session_id"] and v["result_id"] is not None and v["state"] == "completed" for v in visits)
+    assert not lifecycle.rows("SELECT * FROM workflow_seq_controls")
+
+
+def test_real_visit_assessment_refusal(lifecycle) -> None:
+    """U1: assessment field presence refuses HTTP400 without allocations."""
+    lifecycle.configure(assessment_on_visit=True)
+    lifecycle.assert_return()
+    lifecycle.assert_inbox(1)
+    receipts = sorted(lifecycle.private.glob("*-assessment-*.receipt.json"))
+    assert len(receipts) == 2
+    for path in receipts:
+        receipt = json.loads(path.read_bytes())
+        assert receipt["exit"] != 0
+        assert "Error (400):" in receipt["stdout"] + receipt["stderr"]
+        assert "manager_self_evaluation_not_available" in receipt["stdout"] + receipt["stderr"]
 
 
 @pytest.mark.parametrize("revision", [False, True], ids=["E1", "E1-revision"])
@@ -666,4 +742,8 @@ def test_real_cancel_before_launch(lifecycle) -> None:
 
 if __name__ == "__main__":
     assert sys.argv[1] == "--actor"
-    _actor(sys.argv[2:])
+    try:
+        _actor(sys.argv[2:])
+    except BaseException:
+        _receipt(Path(_binding()["private"]), sys.argv[3] + "-actor-error", traceback=traceback.format_exc())
+        raise
