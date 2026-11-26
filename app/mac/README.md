@@ -80,6 +80,8 @@ are retained. Health compatibility is invalidated before local interruption and
 rechecked after Start/Restart/reconnect with revision fencing. Start/Restart carry
 this computer’s readmission even under remote selection. No local bearer is
 cached: each native request rereads daemon.token through the existing provider.
+An `app.status` read preserves published busy readiness without starting another
+health admission; the readiness producer publishes the later busy/ready change.
 Update status is unknown because Sparkle’s pending app update is not an
 installed-daemon update hint. No daemon auth/bootstrap policy changes.
 
@@ -154,6 +156,17 @@ rendered destination, focused dialog and locale. WebKit's page snapshot is compo
 frame; no screen-recording permission is requested. Only the commissioned
 qualification process sets its isolated launch language/theme/text size.
 
+At light 100% Settings retains its initial Preferences view; dark 100% shows the
+running local-service page with Stop/Restart enabled. At 200% it selects the
+local-service page: light shows stopped with Start/Restart enabled; dark shows
+running with Stop/Restart disabled by a reserved busy owner. Both locales must
+render the plain Mac-unavailable lifetime row before capture. These are synthetic
+visual inputs at the existing MacLocalControls backend boundary, with no child
+effect; they do not prove real-process lifecycle behavior. The native test also
+observes the real Restart sheet after AppKit launch/run-loop processing, checks
+Cancel as the sole Return default and this computer's name, then retains Main.
+Native execution of these revised cases is NOT RUN by the Linux maker.
+
 `probe.json.app_scheme.dialogs` retains each PNG's closed name, dimensions,
 locale/theme/text percentage, byte count, SHA256 and `base64` data through the
 existing JSON artifact collection. Decode `data` and verify `bytes`/`sha256`.
@@ -167,6 +180,11 @@ records retain pane ranges/page counts, and image receipts retain actual offsets
 Bounds are eight scrolling panes and sixteen additional captures per 200% view,
 2 MiB per PNG and 8 MiB per locale, within the unchanged 40-second process cap.
 Exhaustion fails qualification rather than claiming complete content.
+When a dialog is open, planning is confined to that dialog and intersects ancestor
+clipping; covered Main panes cannot consume its scroll budget. Shape, pane-limit
+and page-limit failures identify `scroll-plan` (with bounded geometry for page
+exhaustion). A failure after successful admission is a capture `failure`, not
+`admission_failure`. The existing pane/page/image/time limits remain in force.
 Before navigation/admission and each dialog/theme/locale/scroll/settle/snapshot/
 PNG step, the qualifier fsyncs `capture_progress` with its closed step name and
 capture coordinates. A background timer allocates navigation up to 10 seconds

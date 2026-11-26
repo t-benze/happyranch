@@ -8,6 +8,24 @@ import Darwin
 private final class AppSchemeSyntheticCredential: DaemonCredentialProvider, @unchecked Sendable {
     func credential() throws -> String { "synthetic-mac1" }
 }
+
+/// Inputs for the existing visual qualifier, never an app lifecycle effect.
+@MainActor
+private final class AppSchemeCaptureLocal: MacLocalControlBackend {
+    var running = "running"
+    var consent: CheckedContinuation<Bool, Never>?
+    var localObservation: MacLocalObservation { MacLocalObservation(supported: true, running: running) }
+    var localMutationAvailable: Bool { true }
+    var localUpdateObservation: String { "not_detected" }
+    func reconcileLocalService() async -> Bool { true }
+    func confirmLocalRestart() async -> Bool {
+        await withCheckedContinuation { consent = $0 }
+    }
+    func performLocalCommand(_ command: String) async throws -> MacLocalReadmission? {
+        throw AppAPIError.unavailable // Capture must never perform an effect.
+    }
+    func cancelConsent() { consent?.resume(returning: false); consent = nil }
+}
 private final class AppSchemeEventLog: @unchecked Sendable {
     private let lock = NSLock()
     private let descriptor: Int32
@@ -352,7 +370,9 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
             catch {
                 guard self.navigation === navigation else { return }
                 if awaitingReload { logReloadFailure(finalPath: webView.url?.path) }
-                log.write("admission_failure"); scheme.close(); exit(1)
+                log.write(capturingDialogs ? "failure" : "admission_failure",
+                          ["reason": capturingDialogs ? "dialog capture failed; see capture_step" : "document admission"])
+                scheme.close(); exit(1)
             }
         }
     }
@@ -370,6 +390,10 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     /// No screen recording permission is needed.
     private func captureDialogs(_ view: WKWebView) async throws {
         guard let window, let frame = window.contentView?.superview, let app = dialogApp else { throw AppAPIError.unavailable }
+        let local = AppSchemeCaptureLocal()
+        let originalControls = app.localControls
+        app.localControls = MacLocalControls(backend: local)
+        defer { local.cancelConsent(); app.localControls = originalControls }
         let locale = mode == "dialogs-zh" ? "zh" : "en"
         for theme in ["light", "dark"] {
             window.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
@@ -381,6 +405,16 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
                 }
                 for dialog in ["settings", "connection", "main"] {
                     let fields = common.merging(["dialog": dialog]) { _, new in new }
+                    let localPage = dialog == "settings" && (scale == 200 || theme == "dark")
+                    let localBusy = scale == 200 && theme == "dark"
+                    if localPage {
+                        local.running = theme == "light" ? "stopped" : "running"
+                        if localBusy {
+                            // Reserve through the real controller and suspend at
+                            // synthetic consent. Reads must render busy; no effect.
+                            app.localControls.call(command: "local.restart", data: "{}", current: { true }, gate: { nil }) { _, _ in }
+                        }
+                    }
                     try await dialogStep("request-dialog", fields: fields) {
                         if dialog == "main" {
                             _ = try await view.callAsyncJavaScript("document.querySelector('[data-desktop-dialog] > button[aria-label]')?.click(); return true;",
@@ -407,36 +441,55 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
                             arguments: ["expected": locale], in: nil, contentWorld: .page)
                         guard value as? Bool == true else { throw AppAPIError.unavailable }
                     }
+                    if localPage {
+                        try await dialogStep("local-state", fields: fields.merging([
+                            "running": local.running, "busy": localBusy
+                        ]) { _, new in new }) {
+                            for _ in 0..<60 {
+                                let value = try await view.callAsyncJavaScript(#"""
+                                    const dialog = document.querySelector('[data-desktop-dialog="settings"]');
+                                    const local = dialog?.querySelector('[data-testid="settings-local"]');
+                                    if (!local) {
+                                        const title = zh ? '此电脑上的 HappyRanch' : 'HappyRanch on this computer';
+                                        [...(dialog?.querySelectorAll('nav button') || [])].find(e => e.textContent.trim() === title)?.click();
+                                        return false;
+                                    }
+                                    const action = local.querySelector(stopped ? '[data-testid="local-start"]' : '[data-testid="local-stop"]');
+                                    const restart = local.querySelector('[data-testid="local-restart"]');
+                                    const keep = local.querySelector('[data-testid="local-keep-row"]');
+                                    return !!action && action.disabled === busy && !!restart && restart.disabled === busy &&
+                                        keep?.textContent.includes(zh ? 'Mac 上不可用' : 'Not available on Mac') &&
+                                        !keep.querySelector('button');
+                                    """#, arguments: ["zh": locale == "zh", "stopped": local.running == "stopped", "busy": localBusy],
+                                    in: nil, contentWorld: .page)
+                                if value as? Bool == true { return }
+                                try await Task.sleep(for: .milliseconds(25))
+                            }
+                            throw AppAPIError.unavailable
+                        }
+                    }
                     // Reset each real scrolling pane before the original top capture.
                     let plan = try await dialogStep("scroll-plan", fields: fields) {
-                        let value = try await view.callAsyncJavaScript(#"""
-                            const root = document.scrollingElement;
-                            const candidates = [...new Set([root, ...document.querySelectorAll('*')])].filter(Boolean);
-                            for (const e of candidates) {
-                                if (e.scrollHeight > e.clientHeight) e.scrollTop = 0;
-                            }
-                            window.__hrCaptureScrollers = candidates.filter(e => {
-                                const r = e.getBoundingClientRect(), s = getComputedStyle(e);
-                                return e.clientHeight > 0 && e.scrollHeight > e.clientHeight + 1 &&
-                                    (e === root || /auto|scroll/.test(s.overflowY)) && s.visibility !== 'hidden' &&
-                                    r.width > 0 && r.bottom > 0 && r.top < innerHeight;
-                            });
-                            return window.__hrCaptureScrollers.map((e, index) => {
-                                const r = e.getBoundingClientRect();
-                                const viewport = Math.min(e.clientHeight, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
-                                const step = Math.max(1, Math.floor(viewport * .75));
-                                const maximum = e.scrollHeight - e.clientHeight;
-                                return {index, step, maximum, pages: Math.ceil(maximum / step)};
-                            });
-                            """#, arguments: [:], in: nil, contentWorld: .page)
-                        guard let plan = value as? [[String: Any]], plan.count <= 8 else { throw AppAPIError.unavailable }
+                        let value = try await view.callAsyncJavaScript(Self.dialogScrollPlan,
+                            arguments: [:], in: nil, contentWorld: .page)
+                        guard let plan = value as? [[String: Any]] else {
+                            log.write("failure", fields.merging(["step": "scroll-plan", "reason": "invalid plan shape"]) { _, new in new })
+                            throw AppAPIError.unavailable
+                        }
+                        guard plan.count <= 8 else {
+                            log.write("failure", fields.merging(["step": "scroll-plan", "reason": "pane limit", "paneCount": plan.count]) { _, new in new })
+                            throw AppAPIError.unavailable
+                        }
                         if scale == 200 {
                             var pages = 0
                             for pane in plan {
                                 guard let count = pane["pages"] as? Int, count > 0 else { throw AppAPIError.unavailable }
                                 pages += count
                             }
-                            guard pages <= 16 else { throw AppAPIError.unavailable }
+                            guard pages <= 16 else {
+                                log.write("failure", fields.merging(["step": "scroll-plan", "reason": "page limit", "pages": pages, "scrollers": plan]) { _, new in new })
+                                throw AppAPIError.unavailable
+                            }
                         }
                         return plan
                     }
@@ -479,6 +532,43 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         document.documentElement.setAttribute('data-theme', theme);
         window.dispatchEvent(new StorageEvent('storage', {key: 'happyranch.theme', newValue: theme, storageArea: localStorage}));
         return true;
+        """#
+
+    private static let dialogScrollPlan = #"""
+        // A modal owns the capture. Background Main overflow is not visible
+        // content and can have a one-pixel intersection at 200% text.
+        const dialog = document.querySelector('[data-desktop-dialog]');
+        const root = dialog || document.scrollingElement;
+        const candidates = [...new Set([root, ...(dialog || document).querySelectorAll('*')])].filter(Boolean);
+        for (const e of candidates) {
+            if (e.scrollHeight > e.clientHeight) e.scrollTop = 0;
+        }
+        function visibleHeight(e) {
+            const r = e.getBoundingClientRect();
+            let top = Math.max(r.top, 0), bottom = Math.min(r.bottom, innerHeight);
+            for (let parent = e.parentElement; parent; parent = parent.parentElement) {
+                const s = getComputedStyle(parent);
+                if (s.display === 'none' || s.visibility === 'hidden') return 0;
+                if (/auto|scroll|hidden|clip/.test(s.overflowY)) {
+                    const clip = parent.getBoundingClientRect();
+                    top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
+                }
+            }
+            return Math.min(e.clientHeight, bottom - top);
+        }
+        window.__hrCaptureScrollers = candidates.filter(e => {
+            const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+            return e.clientHeight > 0 && e.scrollHeight > e.clientHeight + 1 &&
+                (e === document.scrollingElement || /auto|scroll/.test(s.overflowY)) &&
+                s.visibility !== 'hidden' && s.display !== 'none' &&
+                r.width > 0 && r.right > 0 && r.left < innerWidth && visibleHeight(e) > 0;
+        });
+        return window.__hrCaptureScrollers.map((e, index) => {
+            const viewport = visibleHeight(e);
+            const step = Math.max(1, Math.floor(viewport * .75));
+            const maximum = e.scrollHeight - e.clientHeight;
+            return {index, step, maximum, pages: Math.ceil(maximum / step)};
+        });
         """#
 
     private static let dialogScroll = #"""

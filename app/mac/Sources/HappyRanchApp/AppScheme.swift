@@ -785,11 +785,13 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         }
         guard let item = message.body as? [String: String] else { replyHandler(nil, "unavailable"); return }
         if item == ["context": context, "command": "app.status"] {
-            if hasLocalTarget, !localInterrupted, state != "ready", transport != nil {
+            if hasLocalTarget, !localInterrupted, state != "ready", state != "busy", transport != nil {
                 let identity = document
                 Task { @MainActor [weak self] in
                     guard let self else { replyHandler(nil, "unavailable"); return }
                     // Explicit Recheck is admission only, never another effect.
+                    // A published busy observation stays authoritative until
+                    // the readiness producer publishes its next observation.
                     try? await checkAdmission()
                     guard document == identity, documentContext == context else { replyHandler(nil, "unavailable"); return }
                     replyHandler(statusJSON(), nil)

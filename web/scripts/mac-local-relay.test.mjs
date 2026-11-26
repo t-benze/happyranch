@@ -43,3 +43,39 @@ test('Mac local relay keeps exactly the fixed local command set and rejects non-
   await assert.rejects(page.happyranchConnection.call('local.execute', '{}'));
   assert.equal(posts.length, 8, 'neither malformed data nor an unknown name can enter native');
 });
+
+// Same VM venue, executing the actual qualifier script with test-side geometry.
+const qualification = readFileSync(new URL('../../app/mac/Sources/HappyRanchApp/AppSchemeQualification.swift', import.meta.url), 'utf8');
+const scrollPlan = qualification.split('static let dialogScrollPlan = #"""')[1].split('"""#')[0];
+function pane({ top = 80, bottom = 520, height = 440, content = 1800, overflow = 'auto', parent = null } = {}) {
+  return { clientHeight: height, scrollHeight: content, scrollTop: 20, parentElement: parent,
+    style: { overflowY: overflow, visibility: 'visible', display: 'block' },
+    getBoundingClientRect: () => ({ top, bottom, left: 0, right: 760, width: 760 }) };
+}
+function plan(dialog, background = []) {
+  const page = { innerHeight: 560, innerWidth: 760, window: {},
+    getComputedStyle: e => e.style,
+    document: { scrollingElement: background[0] ?? null,
+      querySelector: () => dialog, querySelectorAll: () => [...background, dialog, ...dialog.children] } };
+  const result = runInNewContext(`(function () { ${scrollPlan} })()`, page);
+  return { result: JSON.parse(JSON.stringify(result)), scrollers: Array.from(page.window.__hrCaptureScrollers) };
+}
+test('Mac capture at 760x560 / 200% plans the active Settings panes and excludes background overflow', () => {
+  const dialog = pane({ height: 560, content: 560, top: 0, bottom: 560, overflow: 'hidden' });
+  const settings = pane({ parent: dialog });
+  dialog.children = [settings]; dialog.querySelectorAll = () => dialog.children;
+  const background = pane({ top: 559, bottom: 2000, height: 1441, content: 10000 });
+  const { result, scrollers } = plan(dialog, [background]);
+  assert.deepEqual(scrollers, [settings]);
+  assert.deepEqual(result, [{ index: 0, step: 330, maximum: 1360, pages: 5 }]);
+});
+test('Mac capture excludes panes clipped by hidden ancestors instead of exhausting its page budget', () => {
+  const dialog = pane({ height: 560, content: 560, top: 0, bottom: 560, overflow: 'hidden' });
+  const hidden = pane({ top: 600, bottom: 900, overflow: 'hidden', parent: dialog });
+  const clipped = pane({ parent: hidden });
+  const settings = pane({ parent: dialog });
+  dialog.children = [hidden, clipped, settings]; dialog.querySelectorAll = () => dialog.children;
+  const { result, scrollers } = plan(dialog);
+  assert.deepEqual(scrollers, [settings]);
+  assert.equal(result.reduce((n, p) => n + p.pages, 0), 5);
+});

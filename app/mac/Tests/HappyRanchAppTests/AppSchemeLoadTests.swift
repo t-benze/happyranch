@@ -166,8 +166,10 @@ final class AppSchemeLoadTests: XCTestCase {
                         phase = "ready: publish busy=\(busy) and retain draft/transfer"
                         let health = try AppAPIHealth(status: 200, data: Data("{\"api_contract\":{\"current\":1,\"min_client\":1},\"update_busy\":{\"busy\":\(busy),\"unknown\":\(busy)}}".utf8))
                         scheme.updateReadiness(health)
+                        let healthReads = transport.healthInvocations
                         let status = try await view.callAsyncJavaScript("return JSON.parse(await window.happyranchConnection.call('app.status', '{}')).state;", arguments: [:], in: nil, contentWorld: .page)
                         XCTAssertEqual(status as? String, busy ? "busy" : "ready", detail())
+                        XCTAssertEqual(transport.healthInvocations, healthReads, detail("Published busy/ready reads must not initiate admission"))
                         let retained = try await view.callAsyncJavaScript("return [window.__hrAppContext, window.unsentDraft];", arguments: [:], in: nil, contentWorld: .page) as? [String]
                         XCTAssertEqual(retained, [try XCTUnwrap(context, detail()), "unsent task brief"], detail())
                         XCTAssertEqual(view.url, documentURL, detail())

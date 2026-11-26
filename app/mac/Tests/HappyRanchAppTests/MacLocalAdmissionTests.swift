@@ -1,3 +1,5 @@
+import AppKit
+import CoreFoundation
 import WebKit
 import XCTest
 import HappyRanchSupervisor
@@ -53,7 +55,8 @@ extension AppSchemeSwitchTests {
     }
     @MainActor
     func testNativeRestartConsentDefaultsToCancelAndRetainsMain() async throws {
-        _ = NSApplication.shared
+        let application = NSApplication.shared
+        application.finishLaunching()
         let (root, scheme, view, _) = try fixture()
         defer {
             scheme.close()
@@ -62,24 +65,42 @@ extension AppSchemeSwitchTests {
         }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        view.setFrameSize(window.contentLayoutRect.size)
         window.contentView = view
         window.makeKeyAndOrderFront(nil)
-        defer { window.orderOut(nil) }
+        window.displayIfNeeded()
+        defer {
+            if let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .alertFirstButtonReturn) }
+            window.orderOut(nil)
+        }
         let app = AppDelegate(); app.bindMainScheme(scheme)
+        XCTAssertTrue(scheme.localPromptWindow === window)
+        XCTAssertTrue(window.isVisible)
         var answer: Bool?
         let task = Task { @MainActor in answer = await app.confirmLocalRestart() }
+        defer { task.cancel() }
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(2))
+        let deadline = clock.now.advanced(by: .seconds(5))
         while window.attachedSheet == nil, answer == nil, clock.now < deadline {
+            // XCTest's async actor executor is not NSApplication.run(). Let
+            // AppKit process the deferred sheet presentation as well as tasks.
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true)
             try await clock.sleep(for: .milliseconds(5))
         }
-        let sheet = try XCTUnwrap(window.attachedSheet)
+        let sheet = try XCTUnwrap(window.attachedSheet, "Restart must present on Main; answer=\(String(describing: answer)), visible=\(window.isVisible)")
         func buttons(_ view: NSView) -> [NSButton] {
             (view as? NSButton).map { [$0] } ?? view.subviews.flatMap { buttons($0) }
         }
         let choices = sheet.contentView.map { buttons($0) } ?? []
         XCTAssertEqual(choices.filter { $0.keyEquivalent == "\r" }.count, 1)
         XCTAssertTrue(choices.contains { ["Cancel", "取消"].contains($0.title) && $0.keyEquivalent == "\r" })
+        func labels(_ view: NSView) -> [String] {
+            (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap { labels($0) }
+        }
+        let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+        let name = Host.current().localizedName ?? (zh ? "此电脑" : "This computer")
+        XCTAssertTrue(sheet.contentView.map { labels($0).contains { $0.contains(name) } } == true,
+                      "Restart consent must name this computer")
         window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
         await task.value
         XCTAssertEqual(answer, false)
