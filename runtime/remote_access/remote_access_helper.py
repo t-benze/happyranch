@@ -589,10 +589,6 @@ class RemoteAccessHelper:
             raise Refused('unavailable') from None
         uid = self._uid(sender)
         client = _helper_generation.HomeLifecycleClient(method, uid)
-        if method == 'Enable':
-            firewall = client.firewall_status(admission.remaining())
-            if firewall in _helper_generation.FIREWALL_BLOCKED:
-                raise _helper_generation.GenerationUnavailable(firewall)
         capture = _helper_lifecycle.LifecycleCapture.take(method, sender, self, client, admission)
         if capture.uid != uid:
             raise Refused('wrong-uid')
@@ -671,7 +667,8 @@ class RemoteAccessHelper:
                     self._error(capture.message, error.category if isinstance(error, Refused) else 'changed')
                 self._clear()
 
-    def _emit_enable_terminal(self, operation: object, outcome: object, category: str | None) -> None:
+    def _emit_enable_terminal(self, operation: object, outcome: object, category: str | None,
+                              firewall: str | None = None) -> None:
         """One receive-only receipt, still held by the original worker/slot."""
         capture = operation.capture
         budget = operation.budget
@@ -704,6 +701,8 @@ class RemoteAccessHelper:
                                  else 'uncertain' if outcome == _helper_lifecycle.SetupPhase.UNCERTAIN else 'failed')
         elif outcome not in (_helper_lifecycle.SetupPhase.FAILED, _helper_lifecycle.SetupPhase.UNCERTAIN):
             frame['outcome'] = 'completed'
+        if capture.method == 'Enable' and firewall in ('likely_blocked', 'unverified', 'clear'):
+            frame['firewallWarning'] = firewall
         raw = json.dumps(frame, separators=(',', ':'))
         budget.remaining()
         self.connection.emit_signal(capture.sender, OBJECT_PATH, INTERFACE,
@@ -753,14 +752,25 @@ class RemoteAccessHelper:
         residue: list[str] = []
         outcome = lifecycle.SetupPhase.UNCERTAIN
         preparation_category, send_attempted = None, False
+        firewall = None
 
         def deliver(settled: object) -> None:
-            nonlocal send_attempted
+            nonlocal send_attempted, firewall
             if send_attempted:
                 return
             send_attempted = True
+            # Outcome is already settled by complete(). Reserve the original
+            # terminal/auth budget; advice has no effect on operation success.
+            if capture.method == 'Enable':
+                try:
+                    if operation.budget.remaining() > 6.0:
+                        observed = client.firewall_status(2.0)
+                        if observed in ('likely_blocked', 'unverified', 'clear'):
+                            firewall = observed
+                except Exception:
+                    firewall = 'unverified'
             try:
-                self._emit_enable_terminal(operation, settled, preparation_category)
+                self._emit_enable_terminal(operation, settled, preparation_category, firewall)
             except Exception:
                 pass  # One attempt; receipt loss does not settle effects.
 
@@ -890,6 +900,8 @@ class RemoteAccessHelper:
                     # A failed completion is uncertain, never synthetic success.
                     # Seal admission and let the next activation read the journal.
                     self.exit_requested = True
+                    if firewall is not None:
+                        self.lifecycle_result['firewallWarning'] = firewall
                     self.release(capture)
 
     def _run_policy_renewal(self, operation: object) -> None:

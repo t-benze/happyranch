@@ -275,13 +275,12 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
  for(const category of ['deb-layout-required','issuer-state-uncertain','account-shape','account-receipt-uncertain',
   'foreign-unit','foreign-custody','publication-uncertain','address-changed','account-create-uncertain',
   'cleanup-uncertain','materializer-uncertain','custody-uncertain','inventory','no_address',
-  'multiple_addresses','dial_ip','dial-ip','occupied-port','port-check-uncertain','activation-unverified','host_firewall_blocks_home',
-  'host_firewall_blocks_tcp_8443','host_firewall_blocks_udp_3478']){
+  'multiple_addresses','dial_ip','dial-ip','occupied-port','port-check-uncertain','activation-unverified']){
   contexts[1].failure={code:'enablePreparationFailed',category,effect:'unknown',recovery:'nativeRecovery'};
   const error=await vm.runInContext("happyranchConnection.call('host.enable','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(error)),contexts[1].failure);
  }
- for(const wrong of [{category:'unknown'},{effect:'none'},{effect:'confirmed'},{message:'synthetic'},{recovery:'refresh'}]){
+ for(const wrong of [{category:'host_firewall_blocks_home'},{category:'host_firewall_blocks_tcp_8443'},{category:'host_firewall_blocks_udp_3478'},{category:'unknown'},{effect:'none'},{effect:'confirmed'},{message:'synthetic'},{recovery:'refresh'}]){
   contexts[1].failure={code:'enablePreparationFailed',category:'inventory',effect:'unknown',recovery:'nativeRecovery',...wrong};
   const error=await vm.runInContext("happyranchConnection.call('host.enable','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(error)),{code:'outcomeUnknown',effect:'unknown',recovery:'nativeRecovery'});
@@ -290,7 +289,7 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
   contexts[1].failure={code:'hostStateUnrecognized',effect:'none',recovery:'refresh',category,private:'secret'};
   const error=await vm.runInContext("happyranchConnection.call('host.status','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(error)),{code:'hostStateUnrecognized',effect:'none',recovery:'refresh',
-   category:!category || category==='unknown' || category.startsWith('/') ? 'unverified' : category});
+   category:!category || category==='unknown' || category.startsWith('/') || category.startsWith('host_firewall_') ? 'unverified' : category});
  }
  for(const code of ['permissionDenied','owner_edits_pending','outcomeUnknown','hostStateUnrecognized']){
   contexts[1].failure={code,effect:'unknown',recovery:'nativeRecovery'};

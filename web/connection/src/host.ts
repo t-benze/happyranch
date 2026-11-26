@@ -394,8 +394,8 @@ export class HostView {
       titleKey = runtime === 'offline' ? 'hTitleOffline' : 'hTitleRestarting'; lead = 'hLeadOffline';
     } else if (phase === 'ready' && issued) { badge = ['hBadgeInvite', 'progress']; titleKey = 'hInviteActive'; lead = 'hInviteNative'; }
     nodes.push(this.text('p', this.t(lead)));
-    if (!this.unconfirmed && snapshot.observation === 'known' && snapshot.firewallWarning) {
-      const key = snapshot.firewallWarning === 'unverified' ? 'firewallUnverified' : 'hostState.' + snapshot.firewallWarning;
+    if (!this.unconfirmed && snapshot.observation === 'known' && snapshot.firewallWarning && snapshot.firewallWarning !== 'clear') {
+      const key = snapshot.firewallWarning === 'unverified' ? 'firewallUnverified' : 'firewallLikelyBlocked';
       if (Object.hasOwn(catalogs.en, key)) nodes.push(this.notice(this.t(key as Key), 'attention'));
     }
     if (snapshot.observation === 'stale' && !this.limited('observation')) nodes.push(this.notice(this.t('hStale'), 'attention'));

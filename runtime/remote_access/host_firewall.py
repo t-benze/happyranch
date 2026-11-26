@@ -7,12 +7,10 @@ import re
 import stat
 import subprocess
 
-BLOCKED = frozenset({'host_firewall_blocks_home', 'host_firewall_blocks_tcp_8443',
-                     'host_firewall_blocks_udp_3478'})
 _PORTS = ((8443, 'tcp'), (3478, 'udp'))
 # Stock UFW IPv4 templates (scripts/fixtures/ufw), normalized only for comments
 # and whitespace. Any customization, even one we could consider harmless,
-# makes status verbose insufficient evidence for a blocking conclusion.
+# makes the probability observation unverified. Stock files never prove live rules.
 _STOCK_RULES = (
     ('/etc/ufw/before.rules', '9bfb66e22065371713ecca5c5b5bb067724ccdf389e4eb2fb45e5d6abfd0fcce'),
     ('/etc/ufw/after.rules', 'f65aef81967a426cf4ae8ddfcc2da32ef0471fef1608d778a742891976002ea0'),
@@ -58,11 +56,11 @@ def _covers(destination: str, port: int, protocol: str) -> bool | None:
 
 
 def parse_ufw(raw: bytes) -> str:
-    """Parse candidate UFW blocks; inspect_ufw must also check supplemental rules.
+    """Parse UFW observations; inspect_ufw also checks supplemental files.
 
     Any IPv4 allow for a port (including a source-scoped LAN rule) prevents a
-    blocking claim for that port. Profiles/interfaces/unknown forms are not
-    resolved here: they may allow traffic, so return unverified instead.
+    likely-blocked observation for that port. Unknown profiles/interfaces are
+    not resolved here: they may allow traffic, so return unverified instead.
     """
     if type(raw) is not bytes or len(raw) > 65536:
         return 'unverified'
@@ -80,8 +78,6 @@ def parse_ufw(raw: bytes) -> str:
     default = re.fullmatch(r'Default: (deny|reject|allow) \(incoming\), (?:allow|deny|reject) \(outgoing\), (?:allow|deny|reject|disabled) \(routed\)', defaults[0])
     if default is None:
         return 'unverified'
-    if default[1] == 'allow':
-        return 'clear'
     allowed: set[tuple[int, str]] = set()
     for line in lines:
         if (line == 'Status: active' or line == defaults[0]
@@ -99,7 +95,7 @@ def parse_ufw(raw: bytes) -> str:
         if action == 'LIMIT':
             return 'unverified'  # Rate limits still admit some new connections.
         if action != 'ALLOW':
-            continue  # No allow proof; default already denies incoming.
+            continue  # A deny/reject is not a user allow for either port.
         for port, protocol in _PORTS:
             covers = _covers(destination, port, protocol)
             if covers is None:
@@ -111,9 +107,9 @@ def parse_ufw(raw: bytes) -> str:
     missing = set(_PORTS) - allowed
     if not missing:
         return 'clear'
-    if len(missing) == 2:
-        return 'host_firewall_blocks_home'
-    return 'host_firewall_blocks_tcp_8443' if (8443, 'tcp') in missing else 'host_firewall_blocks_udp_3478'
+    if len(missing) == 2 and default[1] == 'deny':
+        return 'likely_blocked'
+    return 'unverified'
 
 
 def inspect_ufw(*, timeout: float = 2.0) -> str:
@@ -128,7 +124,7 @@ def inspect_ufw(*, timeout: float = 2.0) -> str:
         return 'unverified'
     state = parse_ufw(result.stdout) if result.returncode == 0 else 'unverified'
     try:
-        if state in BLOCKED and not _stock_rule_files():
+        if result.stdout.strip() != b'Status: inactive' and not _stock_rule_files():
             return 'unverified'
     except (OSError, ValueError, UnicodeError):
         return 'unverified'

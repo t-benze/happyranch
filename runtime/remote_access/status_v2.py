@@ -164,9 +164,7 @@ class FirewallState(_StringEnum):
     STALE = 'stale'
     CLEAR = 'clear'
     UNVERIFIED = 'unverified'
-    BLOCKS_HOME = 'host_firewall_blocks_home'
-    BLOCKS_TCP = 'host_firewall_blocks_tcp_8443'
-    BLOCKS_UDP = 'host_firewall_blocks_udp_3478'
+    LIKELY_BLOCKED = 'likely_blocked'
 
 
 @dataclass(frozen=True)

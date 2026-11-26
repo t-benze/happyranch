@@ -181,11 +181,13 @@ def test_enable_preparation_private_frame_rejected(
         assert code == 0 and value == {'preparationFailure': 'inventory'}
 
 
-@pytest.mark.parametrize('outcome', ['prepared', 'typed', 'completed', 'generic', 'audit', 'settlement', 'uid', 'owner',
+@pytest.mark.parametrize('outcome', ['prepared', 'typed', 'completed', 'completed_firewall', 'generic', 'audit', 'settlement', 'uid', 'owner',
     'late', 'auth_deadline', 'disconnect', 'absent_to_new', 'success_audit', 'success_settlement', 'intent', 'flush_error'])
 def test_enable_completion_unicast_envelope(
         mount: Any, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
     m = mount
+    if outcome == 'completed_firewall':
+        m.reader.firewall_status.return_value = 'likely_blocked'
     clock = [100.0]
     m.helper.clock = lambda: clock[0]
     m.message.get_member = lambda: 'Enable'
@@ -251,17 +253,19 @@ def test_enable_completion_unicast_envelope(
         assert sent == []
     else:
         expected = dict(method='Enable', correlation=dict(serial=17, owner=':1.100'),
-                        outcome='completed' if outcome in ('completed', 'absent_to_new') else 'failed')
+                        outcome='completed' if outcome in ('completed', 'completed_firewall', 'absent_to_new') else 'failed')
         if outcome in ('typed', 'audit', 'settlement', 'auth_deadline', 'flush_error'):
             expected['category'] = 'inventory'
         if outcome in ('generic', 'success_audit', 'success_settlement', 'intent'):
             expected['category'] = 'activation-unverified'
         if outcome == 'prepared':
             expected['category'] = 'activation-prepared-retry'
+        if outcome == 'completed_firewall':
+            expected['firewallWarning'] = 'likely_blocked'
         assert sent == [(':1.42', m.h.OBJECT_PATH, m.h.INTERFACE, 'LifecycleCompleted', expected)]
         assert order.index('signal') < order.index('flush') < order.index('release')
     assert m.helper.inflight is None
-    assert m.helper.lifecycle_result['outcome'] == ('ready' if outcome in ('completed', 'uid', 'owner', 'disconnect', 'absent_to_new') else 'in_progress' if outcome == 'prepared' else 'uncertain')
+    assert m.helper.lifecycle_result['outcome'] == ('ready' if outcome in ('completed', 'completed_firewall', 'uid', 'owner', 'disconnect', 'absent_to_new') else 'in_progress' if outcome == 'prepared' else 'uncertain')
     if outcome == 'audit':
         assert json.loads(m.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
 
@@ -2868,19 +2872,20 @@ def test_thr327_invite_journal_status_after_restart(invite_mount: Any, monkeypat
     assert not commit.called and len(v.original.calls) == 1, 'no mint, cleanup, lock or commit'
 
 
-@pytest.mark.parametrize('state', ['host_firewall_blocks_home', 'host_firewall_blocks_tcp_8443', 'host_firewall_blocks_udp_3478'])
+@pytest.mark.parametrize('state', ['likely_blocked', 'unverified', 'clear'])
 def test_thr327_firewall_public_preflight(mount: Any, state: str) -> None:
     v = mount
     v.reader.firewall_status.return_value = state
     v.message.get_member = lambda: 'Enable'
     v.helper._dispatch(v.message)
-    v.helper._error.assert_called_once_with(v.message, 'host-state-unrecognized-' + state)
-    assert v.helper.inflight is None and not v.helper.authority.call.called
+    assert not v.helper._error.called
+    assert v.helper.inflight is not None and v.helper.authority.call.called
+    v.reader.firewall_status.assert_not_called()
     assert not v.reader.effect.called and v.effects == []
     assert not v.helper.audit.path.exists()
 
 
-@pytest.mark.parametrize('state', ['host_firewall_blocks_home', 'unverified'])
+@pytest.mark.parametrize('state', ['likely_blocked', 'unverified', 'clear', 'unknown'])
 def test_thr327_firewall_ready_status(mount: Any, monkeypatch: pytest.MonkeyPatch, state: str) -> None:
     v = mount
     v.reader.firewall_status.return_value = state
@@ -2899,32 +2904,52 @@ def test_thr327_firewall_ready_status(mount: Any, monkeypatch: pytest.MonkeyPatc
     v.helper._dispatch(v.message)
     result = json.loads(reply.body.unpack()[0])
     assert result['setup']['state'] == 'ready' and result['runtime']['state'] == 'available'
-    assert result['firewall'] == {'state': state, 'age_seconds': 0}
+    if state == 'unknown':
+        assert 'firewall' not in result
+    else:
+        assert result['firewall'] == {'state': state, 'age_seconds': 0}
     assert not v.helper.authority.call.called and not v.reader.effect.called
     assert not v.helper.audit.path.exists()
 
 
-@pytest.mark.parametrize('state', ['unknown', 'unverified', 'clear'])
+@pytest.mark.parametrize('state', ['unknown', 'unverified', 'clear', 'likely_blocked', 'error', 'short-budget'])
 def test_thr327_firewall_ambiguous_does_not_veto(mount: Any, state: str) -> None:
     v = mount
+    clock = [100.0]
+    v.helper.clock = lambda: clock[0]
     v.reader.firewall_status.return_value = state
+    if state == 'error':
+        v.reader.firewall_status.side_effect = OSError('synthetic private diagnostic')
+    def effect(*args: Any, **kwargs: Any) -> dict:
+        v.reader.firewall_status.assert_not_called()
+        if state == 'short-budget':
+            clock[0] = 576.0
+        return {'outcome': 'ready', 'residue': []}
+    v.reader.effect.side_effect = effect
     v.message.get_member = lambda: 'Enable'
-    v.helper._dispatch(v.message)
-    assert v.helper.inflight is not None and v.helper.authority.call.called
-    assert not v.helper._error.called and not v.reader.effect.called
-    assert not v.helper.audit.path.exists()
+    v.admit()
+    assert v.helper.lifecycle_result['outcome'] == 'ready'
+    expected = 'unverified' if state == 'error' else state
+    if expected in ('unknown', 'short-budget'):
+        assert 'firewallWarning' not in v.helper.lifecycle_result
+        if state == 'short-budget':
+            v.reader.firewall_status.assert_not_called()
+    else:
+        assert v.helper.lifecycle_result['firewallWarning'] == expected
+    assert not v.helper._error.called and v.reader.effect.call_count == 1
 
 
 @pytest.mark.parametrize('case', [
-    'stock', 'before-lan', 'after-lan', 'multiport', 'broad', 'other-chain',
+    'stock', 'stock-live-input-allow', 'inactive', 'both-user-allows', 'both-user-allows-custom', 'inactive-custom',
+    'before-lan', 'after-lan', 'multiport', 'broad', 'other-chain',
     'unreadable-before', 'unreadable-after', 'oversized-before', 'oversized-after',
 ])
 def test_thr327_firewall_rule_files_enable(mount: Any, ufw_rules: dict[str, Path],
                                          monkeypatch: pytest.MonkeyPatch, case: str) -> None:
-    """The public Enable admission must use the supplemental real file evidence."""
+    """Public Enable completes; incomplete firewall evidence only advises."""
     from runtime.remote_access.host_firewall import inspect_ufw
     v = mount
-    if case in ('before-lan', 'after-lan', 'multiport', 'broad', 'other-chain'):
+    if case in ('before-lan', 'after-lan', 'multiport', 'broad', 'other-chain', 'both-user-allows-custom', 'inactive-custom'):
         name = 'after.rules' if case == 'after-lan' else 'before.rules'
         chain = 'ufw-after-input' if case == 'after-lan' else 'ufw-before-input'
         if case == 'multiport':
@@ -2950,8 +2975,15 @@ def test_thr327_firewall_rule_files_enable(mount: Any, ufw_rules: dict[str, Path
         monkeypatch.setattr(os, 'open', deny_read)
     def run(argv: tuple, **kwargs: Any) -> Any:
         assert argv == ('/usr/sbin/ufw', 'status', 'verbose')
-        return SimpleNamespace(returncode=0,
-            stdout=b'Status: active\nDefault: deny (incoming), allow (outgoing), deny (routed)\n')
+        # TASK-19365's upstream formatter only lists ufw-user-* chains. A live
+        # INPUT allow installed by after.init/another owner yields these same
+        # bytes and stock files; no live firewall is executed by this fixture.
+        raw = b'Status: active\nDefault: deny (incoming), allow (outgoing), deny (routed)\n'
+        if case in ('inactive', 'inactive-custom'):
+            raw = b'Status: inactive\n'
+        elif case in ('both-user-allows', 'both-user-allows-custom'):
+            raw += b'To  Action  From\n--  ------  ----\n8443/tcp  ALLOW IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n'
+        return SimpleNamespace(returncode=0, stdout=raw)
     monkeypatch.setattr(subprocess, 'run', run)
     observed = []
     def firewall_status(remaining: float) -> str:
@@ -2959,16 +2991,18 @@ def test_thr327_firewall_rule_files_enable(mount: Any, ufw_rules: dict[str, Path
         observed.append(state)
         return state
     v.reader.firewall_status = firewall_status
+    def effect(*args: Any, **kwargs: Any) -> dict:
+        assert observed == [], 'firewall inspection must follow settled effects'
+        return {'outcome': 'ready', 'residue': []}
+    v.reader.effect.side_effect = effect
     v.message.get_member = lambda: 'Enable'
     before = {name: path.read_bytes() for name, path in ufw_rules.items()}
-    v.helper._dispatch(v.message)
-    if case == 'stock':
-        assert observed == ['host_firewall_blocks_home']
-        v.helper._error.assert_called_once_with(v.message, 'host-state-unrecognized-host_firewall_blocks_home')
-        assert v.helper.inflight is None and not v.helper.authority.call.called
-    else:
-        assert observed == ['unverified']
-        assert v.helper.inflight is not None and v.helper.authority.call.called
-        assert not v.helper._error.called
+    v.admit()
+    expected = ('likely_blocked' if case in ('stock', 'stock-live-input-allow') else
+                'clear' if case in ('inactive', 'inactive-custom', 'both-user-allows') else 'unverified')
+    assert observed == [expected]
+    assert v.helper.lifecycle_result == {'outcome': 'ready', 'residue': [], 'firewallWarning': expected}
+    assert v.helper.inflight is None and v.helper.authority.call.called
+    assert not v.helper._error.called
     assert {name: path.read_bytes() for name, path in ufw_rules.items()} == before
-    assert not v.reader.effect.called and not v.effects and not v.helper.audit.path.exists()
+    assert v.reader.effect.call_count == 1 and not v.effects

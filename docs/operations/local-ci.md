@@ -4075,8 +4075,11 @@ existing standalone script selection:
 They cover UFW active-deny/reject, both/single/LAN/range/v6 rules, inactivity,
 ambiguous profiles/rate limits and malformed output; stock UFW IPv4 before/after
 rules, LAN/multiport/broad/custom-chain allows and unreadable/oversized files;
-refusal before setup or audit, fail-open ambiguity, and READY plus a separate
-Status warning. Stock templates in `scripts/fixtures/ufw/` come from the UFW
+Enable admission and READY completion regardless of firewall evidence,
+post-settlement advice/error/absence, and READY plus separate Status advice.
+The stock-files/live-INPUT-allow counterexample shares the reviewer’s UFW
+formatter output; it cannot prove live packet acceptance. Stock templates in
+`scripts/fixtures/ufw/` come from the UFW
 package's `usr/share/ufw/iptables` defaults; supplemental files are redirected to
 temporary copies while the production inspector and public Enable run. Command
 output is synthetic; no host firewall, system bus or services are touched.

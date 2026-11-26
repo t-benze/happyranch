@@ -207,16 +207,8 @@ class ConnectionCLITests(unittest.TestCase):
                 protocol.host_details(snapshot, raw)
 
     def test_firewall_category_and_status_reach_cli(self) -> None:
-        for category, port in [('host_firewall_blocks_home', '8443/tcp'),
-                               ('host_firewall_blocks_tcp_8443', '8443/tcp'),
-                               ('host_firewall_blocks_udp_3478', '3478/udp')]:
+        for category in ('likely_blocked', 'unverified', 'clear'):
             with self.subTest(category=category):
-                self.bus.error = 'ai.happyranch.RemoteAccess1.Error.host_state_unrecognized_' + category
-                code, result, error = self.run_native('enable')
-                self.assertEqual((code, result['category'], result['effect']), (1, category, 'none'))
-                self.assertIn(port, error)
-                self.assertIn('home LAN only', error)
-                self.bus.error = None
                 value = {'version': 2, **{key: dict(state='unknown', age_seconds=None)
                     for key in ('setup', 'runtime', 'invite', 'address', 'policy', 'cleanup')}}
                 value['setup'] = dict(state='ready', age_seconds=0)
@@ -224,8 +216,19 @@ class ConnectionCLITests(unittest.TestCase):
                 value['firewall'] = dict(state=category, age_seconds=0)
                 self.bus.status_detail = value
                 code, result, error = self.run_native('status')
+                self.assertIn('firewallWarning', result)
                 self.assertEqual((code, result['setup'], result['firewallWarning']), (0, 'ready', category))
-                self.assertIn('home LAN only', error)
+                self.bus.terminal_frames = [json.dumps(dict(method='Enable',
+                    correlation=dict(serial=17, owner=':1.100'), outcome='completed', firewallWarning=category))]
+                code, result, error = self.run_native('enable')
+                self.assertEqual((code, result['code'], result['firewallWarning']), (0, 'enableCompleted', category))
+                if category == 'likely_blocked':
+                    self.assertIn('probably', error)
+                    self.assertIn('8443/tcp', error)
+                    self.assertIn('3478/udp', error)
+                    self.assertIn('home LAN only', error)
+                elif category == 'clear':
+                    self.assertEqual(error, '')
                 self.assertNotIn('/etc/', self.stdout + error)
 
     def test_invite_journal_detail_reaches_cli(self) -> None:

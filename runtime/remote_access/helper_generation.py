@@ -11,13 +11,12 @@ from typing import Callable
 
 COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
            'runtime.remote_access.home_activation')
-FIREWALL_BLOCKED = frozenset({'host_firewall_blocks_home', 'host_firewall_blocks_tcp_8443', 'host_firewall_blocks_udp_3478'})
-FIREWALL_STATES = FIREWALL_BLOCKED | {'clear', 'unverified', 'unknown'}
-HOST_STATE_CATEGORIES = FIREWALL_BLOCKED | frozenset({'residue', 'owner', 'provenance', 'custody',
+FIREWALL_STATES = frozenset({'likely_blocked', 'clear', 'unverified', 'unknown'})
+HOST_STATE_CATEGORIES = frozenset({'residue', 'owner', 'provenance', 'custody',
                                     'inventory', 'quiescence', 'timeout', 'unknown', 'unverified', 'not_applicable'})
 SETUP_STATES = frozenset({'off', 'ready', 'pending', 'prepared_no_receipt', 'failed_uncertain',
                           'partial_cleanup', 'runtime_unavailable', 'setup_unverified', 'renewal_failed'})
-PREPARATION_CATEGORIES = FIREWALL_BLOCKED | frozenset({
+PREPARATION_CATEGORIES = frozenset({
     'deb-layout-required', 'issuer-state-uncertain', 'account-shape',
     'account-receipt-uncertain', 'foreign-unit', 'foreign-custody', 'publication-uncertain',
     'address-changed', 'account-create-uncertain', 'cleanup-uncertain', 'materializer-uncertain',
