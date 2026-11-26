@@ -136,12 +136,21 @@ records retain pane ranges/page counts, and image receipts retain actual offsets
 Bounds are eight scrolling panes and sixteen additional captures per 200% view,
 2 MiB per PNG and 8 MiB per locale, within the unchanged 40-second process cap.
 Exhaustion fails qualification rather than claiming complete content.
+An open dialog owns its scroll plan: background Main overflow is excluded, and
+ancestor clipping is intersected with the viewport before calculating pages.
+The focused Node24 geometry regression runs with
+`node --experimental-transform-types --test web/scripts/desktop-dialogs.test.mjs`
+from the repository root; it executes the embedded planner without proving
+native WebKit layout or completed PNG captures.
 Before navigation/admission and each dialog/theme/locale/scroll/settle/snapshot/
 PNG step, the qualifier fsyncs `capture_progress` with its closed step name and
 capture coordinates. A background timer allocates navigation up to 10 seconds
 and each later step up to 2 seconds, independently of MainActor/WebKit callbacks,
 within the unchanged process watchdog and suite limits. `capture_step` records completion,
-error or timeout; timeout exits 124 with a short diagnostic line. Navigation
+error or timeout; errors retain bounded reason/domain/code and the WebKit
+JavaScript exception message when present. Scroll-plan validation distinguishes
+invalid shape/page counts and pane/page budget exhaustion. Timeout exits 124
+with a short diagnostic line. Navigation
 still waits for `WKNavigation.didFinish` before admission, with fsynced
 `capture_navigation` checkpoints for provisional/committed/finished phases and
 monotonic elapsed time on completion/timeout. This redistributes startup time
