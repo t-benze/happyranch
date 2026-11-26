@@ -415,6 +415,18 @@ Only a fully passed Ready uses the OK tone. Recheck / Check again only re-read:
 under remote selection `local.status` and `local.update.status` (the earlier
 readmission is kept); under local selection those plus `app.status`, whose fresh
 answer supersedes the readmission. Nothing retries or replays a mutation.
+Mac MAC-3 (PR #1889, Founder THR-387 seq164) adds closed `appProcess` mode
+with Start/Stop/Restart of the existing owned child and `keepRunning:unavailable`.
+The keep-running row is plain **Not available on Mac / Mac 上不可用**, including
+while local status is loading; it has no switch/Repair/Turn off control. External
+daemons report observations and refuse mutations. Native custody survives Main
+loss until explicit settled status reconciliation. Mac invalidates local
+compatibility and reruns AppAPIHealth through the existing per-request
+LocalTokenCredentialProvider/daemon.token path. It adds no bootstrap custody,
+selects no target and preserves remote appState. Update status is unknown
+(no installed-daemon hint); normal Quit still stops the child. The legacy Main
+phase strip is removed. Mac native execution and visual acceptance remain QA.
+
 The Connection
 dialog body is `features/connection/ConnectionDialogBody.tsx`, composed by
 `routes.tsx` through `renderConnectionBody` exactly like Settings (see

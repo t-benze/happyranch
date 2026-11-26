@@ -215,6 +215,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private var cancelled: Set<String> = []
     private var admission: Task<Void, Error>?
     private var readinessRevision = UUID()
+    private var localInterrupted = false
     private var documentOwners = AppSchemeOwnerSummary()
     private var document = UUID()
     private var documentContext: String?
@@ -321,6 +322,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     }
     var switchRefusal: String? { nonGETPending ? "non_get_pending" : documentOwners.switchRefusal }
     var hasLocalTarget: Bool { targetID != nil && !remote }
+    var localPromptWindow: NSWindow? { view?.window }
 
     /// No suspension between admission, selection and generation swap. Owner
     /// evidence belongs to Main and survives this transition.
@@ -331,6 +333,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         let next: Target
         do { next = try switchCandidate() } catch { return "target_starting" }
         transport = next.transport; remote = next.remote; targetID = next.id
+        localInterrupted = false
         accessUnsaved = next.accessUnsaved; hostContract = next.health.contract
         incompatibleSide = next.health.incompatibleSide; state = next.health.state
         candidate = nil
@@ -345,6 +348,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         if targetID == id { return nil }
         if let reason = switchRefusal { return reason }
         self.transport = transport; self.remote = remote; targetID = id
+        localInterrupted = false
         self.promptURL = remote ? nil : promptURL
         hostContract = nil; state = "target_starting"
         advanceGeneration()
@@ -474,6 +478,37 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         admission?.cancel(); admission = nil; emitStatus()
     }
 
+    /// Retire local admission and transfers before the first child effect.
+    /// Main, its dialog, owner evidence, target and generation are retained.
+    @discardableResult
+    func localServiceWillChange(starting: Bool) -> UUID? {
+        guard hasLocalTarget else { return nil }
+        localInterrupted = true; readinessRevision = UUID()
+        admission?.cancel(); admission = nil; hostContract = nil
+        state = starting ? "target_starting" : "unreachable"
+        for key in Array(owners.keys) {
+            guard let owner = owners.removeValue(forKey: key) else { continue }
+            owner.worker?.cancel(); owner.upstream?.cancel()
+            owner.task.didFailWithError(AppAPIError.cancelled)
+        }
+        emitStatus()
+        return readinessRevision
+    }
+
+    func localServiceDidChange(transport: (any AppAPITransport)?, promptURL: String?,
+                               health: AppAPIHealth?, revision: UUID?) {
+        guard hasLocalTarget, let revision, revision == readinessRevision else { return }
+        localInterrupted = false
+        self.transport = transport; self.promptURL = promptURL
+        // Keep the legacy health producer's endpoint identity in sync so its
+        // next observation cannot reselect this same local target/generation.
+        if let promptURL { targetID = promptURL.replacingOccurrences(of: "/api/v1", with: "") }
+        hostContract = health?.contract; incompatibleSide = health?.incompatibleSide ?? "host"
+        state = health?.state ?? "unreachable"
+        admission?.cancel(); admission = nil
+        emitStatus()
+    }
+
     func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
         let key = ObjectIdentifier(urlSchemeTask)
         completedOwners.removeAll { $0.0 == key }
@@ -553,7 +588,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     }
 
     private func checkAdmission(refresh: Bool = false) async throws {
-        guard let transport else { throw AppAPIError.unavailable }
+        guard !localInterrupted, let transport else { throw AppAPIError.unavailable }
         if refresh, state == "ready" { admission = nil }
         if let admission { try await admission.value; return }
         let expected = document
@@ -737,8 +772,31 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             } catch { replyHandler(nil, #"{"code":"invalidRequest","effect":"none","recovery":"refresh"}"#) }
             return
         }
+        if let command = item["command"] as? String, MacLocalControls.commands.contains(command) {
+            guard Set(item.keys) == ["context", "command", "data"], let data = item["data"] as? String else {
+                replyHandler(nil, MacLocalControls.error("invalidRequest", recovery: "none")); return
+            }
+            guard let app = connectionApp else { replyHandler(nil, MacLocalControls.error("unavailable")); return }
+            let identity = document
+            app.localControls.call(command: command, data: data, current: { [weak self] in
+                self?.document == identity && self?.documentContext == context && self?.view != nil
+            }, gate: { [weak self] in self?.switchRefusal ?? (self == nil ? "owner_save_unknown" : nil) }, reply: replyHandler)
+            return
+        }
         guard let item = message.body as? [String: String] else { replyHandler(nil, "unavailable"); return }
-        if item == ["context": context, "command": "app.status"] { replyHandler(statusJSON(), nil); return }
+        if item == ["context": context, "command": "app.status"] {
+            if hasLocalTarget, !localInterrupted, state != "ready", transport != nil {
+                let identity = document
+                Task { @MainActor [weak self] in
+                    guard let self else { replyHandler(nil, "unavailable"); return }
+                    // Explicit Recheck is admission only, never another effect.
+                    try? await checkAdmission()
+                    guard document == identity, documentContext == context else { replyHandler(nil, "unavailable"); return }
+                    replyHandler(statusJSON(), nil)
+                }
+            } else { replyHandler(statusJSON(), nil) }
+            return
+        }
         if item["command"] == "subscribe", Set(item.keys) == ["context", "command", "event", "active"],
            let event = item["event"], ["app.stateChanged", "app.dialogRequested", "client.stateChanged"].contains(event),
            let active = item["active"], ["0", "1"].contains(active) {
@@ -823,10 +881,13 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         let currentCandidate: [String: Any]?
         if let candidateSnapshot { currentCandidate = candidateSnapshot() } else { currentCandidate = candidate }
         let object: [String: Any] = ["schema": 2, "generation": generation,
-            "target": targetID.map { ["kind": remote ? "remote" : "local", "id": $0,
+            "target": targetID.map { ["kind": remote ? "remote" : "local", "id": remote ? $0 : "local",
                        "name": remote ? (zh ? "远程电脑" : "Remote computer") : (zh ? "此电脑" : "This computer")] } as Any? ?? NSNull(),
             "state": state, "incompatible": state == "incompatible" ? ["side": incompatibleSide, "host_contract": hostContract as Any? ?? NSNull(), "client_contract": 1, "min_daemon": 1] as [String: Any] : NSNull(),
-            "local": ["supported": false, "mode": "unsupported", "running": remote ? "unknown" : "running", "prompt_base_url": remote ? NSNull() : (promptURL as Any? ?? NSNull())],
+            "local": ["supported": connectionApp?.localObservation.supported ?? false,
+                      "mode": connectionApp == nil ? "unsupported" : "appProcess",
+                      "running": remote ? "unknown" : (connectionApp?.localObservation.running ?? "running"),
+                      "prompt_base_url": remote ? NSNull() : (promptURL as Any? ?? NSNull())],
             "candidate": currentCandidate as Any? ?? NSNull(), "access_unsaved": accessUnsaved,
             "locale": ["current": zh ? "zh-CN" : "en", "persisted": true]]
         return String(decoding: (try? JSONSerialization.data(withJSONObject: object)) ?? Data(), as: UTF8.self)

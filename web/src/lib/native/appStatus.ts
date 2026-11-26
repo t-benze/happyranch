@@ -27,7 +27,7 @@ export interface AppIncompatible {
 
 export interface AppLocal {
   supported: boolean;
-  mode: 'service' | 'foreground' | 'unsupported';
+  mode: 'service' | 'foreground' | 'unsupported' | 'appProcess';
   running: 'running' | 'starting' | 'stopped' | 'unknown';
   prompt_base_url: string | null;
 }
@@ -93,7 +93,7 @@ function isLocal(value: unknown): value is AppLocal {
   if (!closed(value, ['supported', 'mode', 'running', 'prompt_base_url'])) return false;
   return (
     typeof value.supported === 'boolean' &&
-    oneOf(value.mode, ['service', 'foreground', 'unsupported']) &&
+    oneOf(value.mode, ['service', 'foreground', 'unsupported', 'appProcess']) &&
     oneOf(value.running, ['running', 'starting', 'stopped', 'unknown']) &&
     (value.prompt_base_url === null || typeof value.prompt_base_url === 'string')
   );

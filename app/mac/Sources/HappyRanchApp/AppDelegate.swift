@@ -5,9 +5,10 @@ import HappyRanchSupervisor
 
 /// Application delegate — owns the daemon supervisor and app-level state.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUUpdaterDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUUpdaterDelegate, MacLocalControlBackend {
 
     let supervisor = DaemonSupervisor()
+    lazy var localControls = MacLocalControls(backend: self)
     private lazy var updaterController = SPUStandardUpdaterController(
         startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
     private var updaterObservation: AnyCancellable?
@@ -627,13 +628,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// canStart check after stopDaemon() was always false because the
     /// supervisor was still .stopping.
     func restartDaemon() {
+        guard !localControls.busy else { return }
+        restartOwnedDaemon()
+    }
+
+    private func restartOwnedDaemon() {
         guard !updateStopping, !terminating else { return }
         guard supervisor.isManagedBySelf, canStop else { return }
         pendingRestart = true
-        stopDaemon(confirmed: true)
+        stopOwnedDaemon(confirmed: true)
     }
 
     func startDaemon() {
+        guard !localControls.busy else { return }
+        startOwnedDaemon()
+    }
+
+    private func startOwnedDaemon() {
         guard !updateStopping, !terminating else { return }
         // Always clear the restart flag — a direct start supersedes any
         // pending restart (safety net; the termination handler clears it
@@ -659,6 +670,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     func stopDaemon(confirmed: Bool = false) {
+        guard !localControls.busy else { return }
+        stopOwnedDaemon(confirmed: confirmed)
+    }
+
+    private func stopOwnedDaemon(confirmed: Bool = false) {
         do {
             try supervisor.stop(confirmed: confirmed)
             refreshDerivedState()
@@ -942,7 +958,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         refreshDerivedState()
         if pendingRestart {
             pendingRestart = false
-            startDaemon()
+            startOwnedDaemon()
         }
     }
 
@@ -1008,10 +1024,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
                         diagnostics.recordHealthProbe(success: true, latencyMs: latencyMs, errorMessage: nil)
                         diagnostics.recordDaemonState(pid: pid, port: port, bindHost: "127.0.0.1", state: "running")
                         refreshDerivedState()
-                        if connectionRole == .home && !homeInvite.hasActiveSession,
+                        if !localControls.busy, connectionRole == .home && !homeInvite.hasActiveSession,
                            mainScheme == nil || mainScheme?.hasLocalTarget == true || webViewURL == nil {
-                            if selectMainTransport(id: baseURL, transport: LocalAppAPITransport(port: port,
-                                credential: LocalTokenCredentialProvider(homeDir: Self.daemonHome())), remote: false, promptURL: baseURL + "/api/v1") == nil {
+                            let transport = LocalAppAPITransport(port: port,
+                                credential: LocalTokenCredentialProvider(homeDir: Self.daemonHome()))
+                            if wasRecovering, mainScheme?.hasLocalTarget == true {
+                                // Same selected local target, fresh admission after reconnect.
+                                let revision = mainScheme?.localServiceWillChange(starting: true)
+                                Task { [weak self] in
+                                    guard let self else { return }
+                                    let health = try? await AppAPIHealth.read(from: transport)
+                                    guard currentHandle === handle, handle.isRunning, !localControls.busy else { return }
+                                    mainScheme?.localServiceDidChange(transport: transport, promptURL: baseURL + "/api/v1", health: health, revision: revision)
+                                }
+                            } else if selectMainTransport(id: baseURL, transport: transport, remote: false, promptURL: baseURL + "/api/v1") == nil {
                                 webViewURL = baseURL
                             }
                         }
@@ -1020,6 +1046,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
                         }
                     } else {
                         supervisor.onHealthCheckFailed()
+                        if !localControls.busy { mainScheme?.localServiceWillChange(starting: false) }
                         diagnostics.recordHealthProbe(success: false, latencyMs: latencyMs, errorMessage: errorMessage)
                         refreshDerivedState()
                     }
@@ -1050,6 +1077,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
                 diagnostics.recordHealthProbe(success: false, latencyMs: latencyMs, errorMessage: errorMessage)
             }
         }
+    }
+
+    // MARK: - Installation-local controls (Main is retained throughout effects)
+
+    var localObservation: MacLocalObservation {
+        let state = supervisor.state
+        let home = Self.daemonHome()
+        let pidText = try? String(contentsOfFile: home + "/daemon.pid", encoding: .utf8)
+        let pid = pidText.flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let observedOther = pid.map { $0 > 1 && $0 != currentHandle?.processIdentifier && processIsAlive(pid: $0) } ?? false
+        let external = observedOther || state == .externalRunning || (state.isRunning && !supervisor.isManagedBySelf)
+        if external {
+            let running = state == .externalRunning ? supervisor.observedPid.map { processIsAlive(pid: $0) ? "running" : "stopped" } ?? "unknown" : "unknown"
+            return MacLocalObservation(supported: false, running: running)
+        }
+        let running: String
+        switch state {
+        case .starting: running = "starting"
+        case .running, .unhealthy: running = currentHandle?.isRunning == true ? "running" : "unknown"
+        case .externalRunning: running = "unknown" // handled by the fresh external observation above
+        case .notConfigured, .stopped, .crashed, .stalePid, .failed:
+            running = currentHandle?.isRunning == true ? "unknown" : "stopped"
+        case .stopping: running = "unknown"
+        }
+        return MacLocalObservation(supported: !external, running: running)
+    }
+
+    var localMutationAvailable: Bool {
+        !terminating && !updateStopping && localObservation.supported
+            && ![.starting, .stopping].contains(supervisor.state)
+    }
+
+    // Sparkle's pending app installation is not an installed-daemon-update hint.
+    var localUpdateObservation: String { "unknown" }
+
+    func reconcileLocalService() async -> Bool {
+        let observed = localObservation
+        guard observed.settled else { return false }
+        let revision = mainScheme?.localServiceWillChange(starting: observed.running == "running")
+        if observed.running == "stopped" {
+            mainScheme?.localServiceDidChange(transport: nil, promptURL: nil, health: nil, revision: revision)
+            return true
+        }
+        guard let handle = currentHandle, handle.isRunning, supervisor.isManagedBySelf,
+              let port = supervisor.observedPort else { return false }
+        let transport = LocalAppAPITransport(port: port, credential: LocalTokenCredentialProvider(homeDir: Self.daemonHome()))
+        let health = try? await AppAPIHealth.read(from: transport)
+        guard currentHandle === handle, handle.isRunning, localMutationAvailable else { return false }
+        mainScheme?.localServiceDidChange(transport: transport,
+            promptURL: localTransport.baseURL(for: port) + "/api/v1", health: health, revision: revision)
+        return true
+    }
+
+    func confirmLocalRestart() async -> Bool {
+        guard let window = mainScheme?.localPromptWindow, window.attachedSheet == nil else { return false }
+        let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+        let name = Host.current().localizedName ?? (zh ? "此电脑" : "This computer")
+        let alert = NSAlert()
+        alert.messageText = zh ? "重新启动 \(name) 上的 HappyRanch？" : "Restart HappyRanch on \(name)?"
+        alert.informativeText = zh
+            ? "这会中断此电脑上的本地工作。仅重新启动守护进程，应用和当前对话框将保持打开。不会保证工作自动恢复。"
+            : "This interrupts local work on this computer. Only the daemon restarts; the app and current dialog stay open. Work may not resume automatically."
+        alert.addButton(withTitle: zh ? "取消" : "Cancel")
+        alert.addButton(withTitle: zh ? "重新启动" : "Restart")
+        alert.buttons[0].keyEquivalent = "\r"; alert.buttons[1].keyEquivalent = ""
+        let timeout = Task { @MainActor in
+            do { try await Task.sleep(for: .seconds(120)) } catch { return }
+            if let parent = alert.window.sheetParent { parent.endSheet(alert.window, returnCode: .alertFirstButtonReturn) }
+        }
+        defer { timeout.cancel() }
+        return await withCheckedContinuation { continuation in
+            alert.beginSheetModal(for: window) { continuation.resume(returning: $0 == .alertSecondButtonReturn) }
+        }
+    }
+
+    func performLocalCommand(_ command: String) async throws -> MacLocalReadmission? {
+        guard localMutationAvailable else { throw AppAPIError.unavailable }
+        let starting = command != "local.stop"
+        let revision = mainScheme?.localServiceWillChange(starting: starting)
+        if supervisor.state == .notConfigured { supervisor.configure(homeDir: Self.daemonHome()) }
+        switch command {
+        case "local.start":
+            if currentHandle?.isRunning != true { startOwnedDaemon() }
+        case "local.stop":
+            // No confirmed-external takeover: only this app's current child.
+            if supervisor.isManagedBySelf { stopOwnedDaemon() }
+        case "local.restart":
+            if currentHandle?.isRunning == true { restartOwnedDaemon() }
+            else { startOwnedDaemon() }
+        default: throw AppAPIError.unavailable
+        }
+        // The existing stop path pumps Main's run loop. Continue only after
+        // its real callback/handle observation, never after a signal request.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(90))
+        while [.starting, .stopping].contains(supervisor.state), clock.now < deadline, !terminating {
+            try await clock.sleep(for: .milliseconds(50))
+        }
+        guard !terminating else { throw AppAPIError.cancelled }
+        if !starting {
+            guard localObservation.running == "stopped" else { throw AppAPIError.unavailable }
+            mainScheme?.localServiceDidChange(transport: nil, promptURL: nil, health: nil, revision: revision)
+            return nil
+        }
+        guard supervisor.isManagedBySelf, let handle = currentHandle, handle.isRunning,
+              [.running, .unhealthy].contains(supervisor.state), let port = supervisor.observedPort else { throw AppAPIError.unavailable }
+        let transport = LocalAppAPITransport(port: port, credential: LocalTokenCredentialProvider(homeDir: Self.daemonHome()))
+        let health = try? await AppAPIHealth.read(from: transport)
+        guard currentHandle === handle, handle.isRunning, localMutationAvailable else { throw AppAPIError.unavailable }
+        mainScheme?.localServiceDidChange(transport: transport,
+            promptURL: localTransport.baseURL(for: port) + "/api/v1", health: health, revision: revision)
+        return MacLocalReadmission(health: health)
     }
 
     // MARK: - Role preference
@@ -1117,7 +1256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// No-op when the target role equals the current effective role.
     /// This method is safe to call from tests (no UI dependency).
     func switchConnectionRole(to preference: ConnectionRolePreference) {
-        guard !updateStopping, !terminating else { return }
+        guard !updateStopping, !terminating, !localControls.busy else { return }
         let currentRole = connectionRole
         let targetRole = ConnectionRole.detect(supervisor: supervisor, preference: preference)
 

@@ -71,6 +71,28 @@ Quit continues to stop the owned child; there is no LaunchAgent or service
 migration. External daemons remain observation-only. Native readmission uses
 AppAPIHealth and the existing LocalTokenCredentialProvider/daemon.token path.
 
+The closed projection is `mode:"appProcess"`, `keepRunning:"unavailable"`.
+Start/Stop/Restart use the one app-lifetime MacLocalControls owner, reserved before
+native Restart consent. External daemons refuse mutations. Reads remain available
+during effects; failures/lost documents retain custody until explicit settled
+local.status reconciliation. Main, its dialog, owners and selected remote target
+are retained. Health compatibility is invalidated before local interruption and
+rechecked after Start/Restart/reconnect with revision fencing. Start/Restart carry
+this computer’s readmission even under remote selection. No local bearer is
+cached: each native request rereads daemon.token through the existing provider.
+Update status is unknown because Sparkle’s pending app update is not an
+installed-daemon update hint. No daemon auth/bootstrap policy changes.
+
+Linux maker checks use the existing Node 24 focused venue:
+`node --experimental-transform-types --test web/scripts/local-service.test.mjs web/scripts/local-service-page.test.mjs web/scripts/mac-local-relay.test.mjs`.
+The page render checks require the repository’s existing `npm ci` dependencies.
+Mac execution is NOT RUN by the maker. After independent exact-head review,
+QA’s unfiltered Swift Testing/XCTest selection must include MacLocalControlsTests,
+AppSchemeSwitchTests (including MacLocalAdmissionTests.swift extension) and
+MainDialogTests. Real-process Start/Stop/Restart, dialog preservation, phase-strip
+absence and bilingual compact/200% screenshots remain native QA acceptance.
+See the [finite model](../../docs/specs/formal/mac-local-controls/README.md).
+
 ### MAC-2b: Settings/Connection in Main
 
 The application menu requests the existing shared web Settings and Connection
@@ -112,9 +134,9 @@ The existing protected write/readback for the matching binding clears its
 warning. Confirmed removal also forgets only that binding's failed-save outcome,
 including revoked unsaved B while saved computer A remains selected. Failed or
 unknown removal retains the warning; saving another computer does not settle it.
-The legacy phase strip remains
-until MAC-3; local launchd controls, compatibility cutover and MAC-4 language/
-launch/close/Quit/Relaunch policy are outside this slice.
+MAC-3 removes the legacy phase strip without reserving height or adding fallback
+copy. Settings owns local controls. MAC-4 language/launch/close/Quit/Relaunch
+policy remains outside this cutover.
 
 After independent exact-head review, the existing Jenkins `SUITE=app-scheme`
 still runs the full unfiltered XCTest + Swift Testing workload and transport
