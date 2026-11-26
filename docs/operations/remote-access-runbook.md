@@ -56,7 +56,14 @@ allow is left untouched (`preexisting_not_owned`: already allowed by your
 existing rule); a different action/log collision is left untouched
 (`blocked_by_existing`: your existing rule blocks this port). Turn off does not
 remove either. An exact tagged HappyRanch rule is adopted. Only no-match adds.
-The helper holds UFW's own lock across matching and its fixed rule command.
+The helper holds UFW's own lock across matching, its fixed rule command and
+fresh exact-spec readback. Specs use the distro's hex encoding for the fixed
+comment, matching persisted UFW rules without changing its matcher. A zero CLI
+exit alone does not establish an add or removal: readback must prove the exact
+tagged rule present or absent, respectively. If a rule survives deletion,
+rollback/replacement cleanup/Turn off refuse success; Status and the journal
+retain `remove_intent` and the audit records uncertainty. Hand-added LAN rules
+continue to coexist and are never removed by F3.
 
 The helper service's narrow sandbox carve-out is
 `ReadWritePaths=-/run/ufw.lock`, because UFW needs a writable lock even for

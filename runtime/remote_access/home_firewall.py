@@ -31,7 +31,7 @@ quiet = io.TextIOWrapper(io.BytesIO(), encoding='utf-8')
 with contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
     from ufw.common import UFWRule
     from ufw.frontend import UFWFrontend
-    from ufw.util import create_lock, release_lock
+    from ufw.util import create_lock, release_lock, hex_encode
 request = json.load(sys.stdin)
 assert request.keys() == {'action', 'subnet', 'dial_ip', 'index'}
 action, subnet, dial_ip, index = (request[k] for k in ('action', 'subnet', 'dial_ip', 'index'))
@@ -69,10 +69,12 @@ try:
         ui = UFWFrontend(False)
         active = ui.get_status().splitlines()[0] == 'Status: active'
         states = []
+        specs = []
         for port, protocol in ports:
             spec = UFWRule('allow', protocol, dport=str(port), src=subnet, dst=dial_ip,
-                           comment='happyranch-home-headscale')
+                           comment=hex_encode('happyranch-home-headscale'))
             spec.normalize()
+            specs.append(spec)
             rules = ui.backend.get_rules_ipv6() if network.version == 6 else ui.backend.get_rules_ipv4()
             matches = [UFWRule.match(rule, spec) for rule in rules]
             # Any conflicting rule vetoes add, even if an exact owned rule also exists.
@@ -80,10 +82,11 @@ try:
                      else 'owned' if 0 in matches else 'missing')
             states.append(state)
         mutate = action == 'add' and active and states[index] == 'missing'
+        spec = specs[index]
         if action == 'remove':
             port, protocol = ports[index]
             spec = UFWRule('allow', protocol, dport=str(port), src=subnet, dst=dial_ip,
-                           comment='happyranch-home-headscale')
+                           comment=hex_encode('happyranch-home-headscale'))
             spec.normalize()
             rules = ui.backend.get_rules_ipv6() if network.version == 6 else ui.backend.get_rules_ipv4()
             mutate = any(UFWRule.match(rule, spec) == 0 for rule in rules)
@@ -97,6 +100,17 @@ try:
             except SystemExit as result:
                 if result.code not in (None, 0):
                     raise RuntimeError('ufw command failed')
+        if mutate or action == 'remove':
+            # A successful CLI exit is not proof of the effect. Read the
+            # persisted rules afresh under the same lock and compare the exact
+            # encoded spec, independently of collision-prioritized states.
+            sys.argv = ['/usr/sbin/ufw']
+            readback = UFWFrontend(False)
+            rules = (readback.backend.get_rules_ipv6() if network.version == 6
+                     else readback.backend.get_rules_ipv4())
+            present = any(UFWRule.match(rule, spec) == 0 for rule in rules)
+            if present != (action == 'add'):
+                raise RuntimeError('ufw effect unverified')
     print(json.dumps({'active': active, 'states': states, 'mutated': mutate}))
 finally:
     release_lock(lock)

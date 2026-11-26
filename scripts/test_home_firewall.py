@@ -11,10 +11,13 @@ Four answers (no test-only production seams in any case):
   existing B6 tests never simulate UFW. The worker uses the distro UFWRule
   matcher; the fake native CLI refuses any colliding add independently.
 * test_interrupted_add [resume/cleanup], test_interrupted_helper_enable,
-  test_failed_enable_rolls_back: durable
+  test_failed_enable_rolls_back [journal_commit/native_add]: durable
   intent precedes native add; a fresh owner adopts/removes the tagged rule
   after reply loss. Regression = commit ownership only after add or erase the
-  plan on failure. B4 crash tests have no external firewall state.
+  plan on failure, or trust CLI add success without readback. The native_add
+  row observes refusal and rollback when no rule appeared despite exit zero;
+  the journal_commit row covers a later persistence failure. B4 crash tests
+  have no external firewall state.
 * test_no_firewall_effect [absent/inactive], test_rejected_subnet [wide/public/
   missing/ambiguous]: observable no native command and named journal/Status
   skip. Regression = ignore activity/private-prefix constraints. Selector tests
@@ -61,6 +64,20 @@ Four answers (no test-only production seams in any case):
 * test_packaged_lock_mount: externally consumed systemd shape grants precisely
   the optional UFW lock while retaining hardening. Regression = omit the file
   grant or replace it with a directory. Existing unit cases cover state dirs.
+* NativeUFW users above construct rules with the distro CLI parser, retaining
+  its persisted hex comments. Literal-comment specs must fail adoption/removal;
+  the old direct UFWRule fixture masked that shipping representation boundary.
+* test_unowned_rules_survive_turn_off: simultaneous identical untagged TCP and
+  foreign-comment UDP rules survive the public Turn off transition byte-for-byte.
+  Regression = port-only/comment-only cleanup or refusing cleanup merely
+  because an unowned rule exists. The lifecycle collision table
+  covers one TCP collision at a time, not both pre-existing unowned ports.
+* test_surviving_delete [none/foreign/deny/log]: after CLI delete success without
+  removal, journal and Status retain remove_intent and audit stays uncertain,
+  even when another collision masks the tagged rule in aggregate state.
+  Regression = trust CLI success or only collision-prioritized readback.
+  Existing lifecycle tests assume deletion succeeds; lock failure is earlier.
+  Both new cases use test-side native effects only, with no production seam.
 """
 from __future__ import annotations
 
@@ -98,13 +115,18 @@ class NativeUFW:
         monkeypatch.syspath_prepend('/usr/lib/python3/dist-packages')
         monkeypatch.setattr(builtins, '_', lambda value: value, raising=False)
         from ufw.common import UFWRule
+        from ufw.parser import UFWCommandRule
+        from ufw.util import hex_encode
         from runtime.remote_access import home_activation_backend
         monkeypatch.setattr(home_activation_backend, 'inspect_ufw', lambda **kw: 'clear')
         self.Rule = UFWRule
+        self.CommandRule, self.hex_encode = UFWCommandRule, hex_encode
         self.v, self.rules, self.commands = v, [], []
         self.active, self.locked, self.crash_after_add = True, False, False
         self.lock_error = None
         self.distro_messages = False
+        self.keep_deleted_rule = False
+        self.discard_added_rule = False
         self.worker_outputs = []
         self.frontend_argv = []
         self.lock_opens = []
@@ -114,11 +136,11 @@ class NativeUFW:
 
     def rule(self, port: int, proto: str, *, comment: str = COMMENT, action: str = 'allow',
              subnet: str = '192.168.1.0/24', log: bool = False) -> Any:
-        rule = self.Rule(action, proto, dport=str(port), src=subnet, dst='192.168.1.40', comment=comment)
-        if log:
-            rule.logtype = 'log'
-        rule.normalize()
-        return rule
+        args = [action] + (['log'] if log else []) + [
+            'proto', proto, 'from', subnet, 'to', '192.168.1.40', 'port', str(port)]
+        if comment:
+            args += ['comment', comment]
+        return self.CommandRule(action).parse(args).data['rule']
 
     def lock(self, path: str) -> object:
         assert path == '/run/ufw.lock' and not self.locked
@@ -147,10 +169,12 @@ class NativeUFW:
         self.commands.append(tuple(args))
         if remove:
             assert any(self.Rule.match(old, rule) == 0 for old in self.rules)
-            self.rules[:] = [old for old in self.rules if self.Rule.match(old, rule) != 0]
+            if not self.keep_deleted_rule:
+                self.rules[:] = [old for old in self.rules if self.Rule.match(old, rule) != 0]
         else:
             assert all(self.Rule.match(old, rule) == 1 for old in self.rules), 'CLI would rewrite an existing rule'
-            self.rules.append(rule)
+            if not self.discard_added_rule:
+                self.rules.append(rule)
             if self.crash_after_add:
                 self.crash_after_add = False
                 raise Crash()
@@ -176,7 +200,8 @@ class NativeUFW:
         modules = {'sys': self.worker_sys,
             'ufw.common': SimpleNamespace(UFWRule=self.Rule),
             'ufw.frontend': SimpleNamespace(UFWFrontend=frontend),
-            'ufw.util': SimpleNamespace(create_lock=self.lock, release_lock=self.unlock),
+            'ufw.util': SimpleNamespace(create_lock=self.lock, release_lock=self.unlock,
+                                       hex_encode=self.hex_encode),
             'os': SimpleNamespace(stat=lambda *a, **kw: SimpleNamespace(st_mode=stat.S_IFREG, st_size=100),
                 open=open_lock, close=lambda fd: None,
                 fstat=lambda fd: SimpleNamespace(st_mode=stat.S_IFREG, st_uid=0),
@@ -340,6 +365,46 @@ def test_lifecycle_rules(composition: Any, monkeypatch: pytest.MonkeyPatch, coll
     assert all(args[1] in ('allow', 'delete') for args in native.commands)
 
 
+def test_unowned_rules_survive_turn_off(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    v = composition
+    native = NativeUFW(v, monkeypatch)
+    native.rules.extend((native.rule(8443, 'tcp', comment=''),
+                         native.rule(3478, 'udp', comment='founder LAN rule')))
+    before = [dict(rule.__dict__) for rule in native.rules]
+    start(v)
+    assert v.transactions.read_optional().firewall.states == ('preexisting_not_owned',) * 2
+    v.observers.close()
+    expected = v.lifecycle.capture('Disable', os.getuid())
+    v.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)
+    assert v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected,
+        revoke_succeeded=True)['outcome'] == 'off'
+    assert [rule.__dict__ for rule in native.rules] == before
+    assert native.commands == []
+
+
+@pytest.mark.parametrize('collision', ['none', 'foreign', 'deny', 'log'])
+def test_surviving_delete(composition: Any, monkeypatch: pytest.MonkeyPatch, collision: str) -> None:
+    v = composition
+    native = NativeUFW(v, monkeypatch)
+    start(v)
+    if collision != 'none':
+        native.rules.append(native.rule(8443, 'tcp', comment='foreign',
+            action='deny' if collision == 'deny' else 'allow', log=collision == 'log'))
+    before = [dict(rule.__dict__) for rule in native.rules]
+    native.keep_deleted_rule = True
+    owner = f.HomeLANFirewall(v.transactions)
+    with pytest.raises((ValueError, RuntimeError)):
+        owner.cleanup()
+    assert [rule.__dict__ for rule in native.rules] == before
+    assert v.transactions.read_optional().firewall.states == ('remove_intent', 'added')
+    assert owner.status(timeout=1) == {'8443/tcp': 'remove_intent', '3478/udp': 'added'}
+    events = [json.loads(line) for line in v.path(str(AUDIT_PATH)).read_text().splitlines()]
+    removal = [row for row in events if row['intent_id'] == events[-1]['intent_id']]
+    assert removal[0]['event'] == 'turn_off'
+    assert [row['stage'] for row in removal] == ['intent', 'uncertain']
+    assert removal[-1]['outcome'] == 'uncertain'
+
+
 @pytest.mark.parametrize('disposition', ['resume', 'cleanup'])
 def test_interrupted_add(venue: Venue, monkeypatch: pytest.MonkeyPatch, disposition: str) -> None:
     v = venue
@@ -359,13 +424,15 @@ def test_interrupted_add(venue: Venue, monkeypatch: pytest.MonkeyPatch, disposit
     assert native.rules == [] and v.transactions.read_optional().firewall.states == ('removed',) * 2
 
 
-def test_failed_enable_rolls_back(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('failure', ['journal_commit', 'native_add'])
+def test_failed_enable_rolls_back(composition: Any, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
     v = composition
     native = NativeUFW(v, monkeypatch)
+    native.discard_added_rule = failure == 'native_add'
     original = v.transactions._publish_record
     def fail_done(path: str, raw: bytes, **kwargs: Any) -> None:
         record = json.loads(raw)
-        if record.get('firewall', {}).get('states') == ['added', 'pending']:
+        if failure == 'journal_commit' and record.get('firewall', {}).get('states') == ['added', 'pending']:
             raise OSError('synthetic lost journal commit')
         original(path, raw, **kwargs)
     # All store instances share the real publication method at this boundary.

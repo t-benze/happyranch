@@ -5081,7 +5081,9 @@ remain enabled against the fixed `/usr/sbin/ufw` CLI path before its frontend is
 constructed. No directory-wide grant, out-of-sandbox UFW execution, capability,
 user or dependency change is permitted by this carve-out.
 
-UFW's `UFWRule.match` is authoritative: 0 adopts our tagged exact allow; -2
+UFW's distro `hex_encode` represents the fixed comment in both rule specs,
+matching the CLI parser and persisted backend representation. `UFWRule.match`
+is unchanged and authoritative: 0 adopts our tagged exact allow; -2
 leaves the existing differently tagged/untagged allow untouched; -1 leaves a
 different action/log collision untouched and reports it as blocking. Any
 collision vetoes add, even alongside an exact owned rule. Only no-match adds.
@@ -5099,7 +5101,13 @@ existing rollback/recovery behavior.
 The existing protected activation journal has an optional nonsecret `firewall`
 record: exact subnet and two ordered port states. Older journals omit it and
 retain their byte encoding, effect order and recovery behavior. Each add/remove
-intent is durable before its command; completion follows the result. Existing
+intent is durable before its command; completion follows verified readback.
+After add/delete, a fresh backend read under the same UFW lock checks the exact
+encoded spec independently of collision-prioritized summaries. Add succeeds
+only when that exact rule exists; removal succeeds only when it is absent.
+A successful CLI exit with a surviving rule retains `remove_intent` in the
+journal and Status and an uncertain audit outcome, including rollback,
+replacement cleanup and Turn off. Existing
 local activation/Turn off audit shapes bracket each port with fixed nonsecret
 subjects. A lost add completion retains enough evidence to adopt the tagged
 rule on retry or remove it on cleanup. B7 preserves the record; a generation

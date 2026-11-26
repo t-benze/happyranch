@@ -4249,7 +4249,8 @@ checks change systemd hardening, required CI selection or workflow triggers.
 
 F3 extends the same standalone temporary-root/native-fake venue:
 `PYTHONPATH=$PWD uv run --frozen --python /usr/bin/python3 pytest scripts/test_home_firewall.py -q --tb=short`.
-It uses the installed UFW Python matcher with fake OS/CLI effects; no host rule,
+It uses the installed UFW CLI parser (including persisted hex comments) and
+matcher with fake OS/CLI effects; no host rule,
 system bus or service is changed. Cases cover tagged add/adoption, untagged,
 deny/log collisions, exact cleanup, add-before-commit interruption, failed-Enable
 rollback, absent/inactive UFW, rejected subnets, kernel prefix retention, old
@@ -4262,6 +4263,14 @@ The existing `test_worker_cli_identity` also fresh-loads the real distro
 message formatter and checks the worker's JSON output, lifecycle READY and both
 recorded rules. This covers UFW's import-time stdout binding and binary writes;
 the CLI effect remains synthetic and no host rule is touched.
+`test_unowned_rules_survive_turn_off` retains simultaneous identical untagged
+TCP and foreign-comment UDP rules through public Turn off.
+`test_surviving_delete` covers successful CLI exits with a surviving exact rule,
+including foreign/action/log collisions: no removed/succeeded journal or audit,
+and Status retains cleanup intent.
+The `native_add` row of `test_failed_enable_rolls_back` likewise refuses READY
+when add exits zero without a persisted rule; the existing `journal_commit`
+row retains the later lost-commit rollback check.
 
 The existing F2 subprocess table and F3 native fixture assert the fixed
 `PATH=/usr/sbin:/usr/bin:/sbin:/bin` used by UFW and its sysctl child.
