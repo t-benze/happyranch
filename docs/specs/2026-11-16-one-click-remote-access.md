@@ -1003,8 +1003,11 @@ managed `UNITS`, after verified stop/final fragment form and before cleanup
 receipts retire. Ready-restart Enable uses the same reset before starting owned
 units, with its original G/O, custody, deadline and no-mint/replay fences. Each
 reset requires exact owned bytes/fixed FragmentPath, no drop-ins/reload, failed
-ActiveState, dead/failed SubState, MainPID=ControlPID=0, empty ControlGroup and
-Job; absent fixed units also require the existing no-fragment reload proof.
+ActiveState, dead/failed SubState and empty Job. Services require
+MainPID=ControlPID=0 and empty ControlGroup; the fixed socket requires
+ControlPID=0 and empty ControlGroup, with no service-only MainPID. The fixed
+target has no execution context. Absent fixed units also require the no-fragment,
+not-found reload proof with only their supported PID fields.
 Re-read must prove inactive/dead. Reset failure is fixed partial cleanup during
 Turn off, never completed; real ready-restart failure keeps the Turn off advice.
 All five fragments/configs stay retained and strict inventory state sets stay

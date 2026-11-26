@@ -1138,8 +1138,9 @@ The reload intent rechecks custody, full fixed inventory, quiescence and pinned
 no-follow parents before daemon-reload, then resets retained failed markers only
 for fixed managed unit names whose removal precedes this validated journal phase.
 Before each reset, fresh show must prove not-found, empty FragmentPath/DropInPaths,
-zero MainPID/ControlPID, empty Job and failed or inactive ActiveState; inactive
-units need no reset. Unknown shapes refuse. The fixed reset-failed argv uses the
+zero supported PID fields (MainPID/ControlPID for services, ControlPID for the
+socket, neither for the target), empty Job and failed or inactive ActiveState;
+inactive units need no reset. Unknown shapes refuse. The fixed reset-failed argv uses the
 existing service-manager transport and timeout. No caller supplies a unit name.
 The persisted replacement-reload phase is the durable intent for both idempotent
 effects; there is no new phase/schema. V1/v2 journals already at reload, including
@@ -1151,8 +1152,13 @@ stop and final fragment form/daemon reload, before retiring cleanup evidence.
 Ready restart retains its existing receipt, G/O, custody, deadline and no-replay
 checks. Each effect freshly verifies the exact owned fragment at its fixed path,
 no drop-ins or reload requirement, inactive/failed ActiveState, dead/failed
-SubState, zero MainPID/ControlPID, empty ControlGroup and empty Job. For an
-absent fixed unit, the existing `_reload_unit_state` proof is also required;
+SubState and empty Job. Services additionally require zero MainPID/ControlPID
+and empty ControlGroup; the fixed socket requires zero ControlPID and empty
+ControlGroup (its Socket interface has no MainPID). The fixed target has no
+execution context. These are the properties exposed by the
+[systemd Unit, Service and Socket interfaces](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.systemd1.html).
+For an absent fixed unit, `_reload_unit_state` also requires the same supported
+PID fields, not-found LoadState and no fragment/drop-ins;
 Headscale is outside `UNITS` and gains no reset caller. Reset must re-read as
 inactive/dead with the same ownership/quiescence properties. Failure leaves a
 fixed `partial_cleanup` outcome with `owned units: reset unconfirmed` during
@@ -2210,14 +2216,18 @@ existing nonsecret action fields (`effect`, `inviteState`, UTC `expiresAt`, etc.
 Malformed/late/lost frames produce `outcomeUnknown` / effect `unknown` without
 display. ReplaceFailed uses section 7's exact warning and default-No terminal
 confirmation before dispatch. Turn off adds no prompt to its fresh native auth.
-The other six lifecycle replies acknowledge `accepted` before effects finish;
-the CLI keeps its dedicated bus alive through the original operation budget plus
-margin for the helper's live-caller revalidation, then reports the existing
-`outcomeUnknown` / effect `unknown`, exit 1,
-without polling or redispatch. Private worker outcome/partial_cleanup/uncertain
-and named residue are not terminal D-Bus receipts. Admission cannot establish
-host denial or any cleanup; no paths, identities, new result fields or success
-claims are inferred from it. This is CLI source delivery, not live acceptance.
+The other six lifecycle replies acknowledge `accepted` before effects finish.
+The CLI subscribes before its single send and consumes the authenticated unicast
+`LifecycleCompleted` receipt, correlated to the original method/call serial,
+within the original operation budget. Enable and Disable preserve their typed
+terminal results; CancelInvite, RecoverInvite, RetryPolicyRenewal and admitted
+ReplaceFailed report their named completion or known failure. Effect remains
+`unknown`. Uncertain work or a lost/invalid/late receipt or transport loss retains
+`outcomeUnknown` / exit 1; the fallback margin for live-caller revalidation adds
+no receipt grace. There is no polling or redispatch. Private worker outcomes and
+named residue alone are insufficient without that receipt. Admission cannot
+establish host denial or cleanup; no paths, identities or success claims are
+inferred from it. This is CLI source delivery, not live acceptance.
 
 `remote_access_helper.py` exports `ai.happyranch.RemoteAccess1` at
 `/ai/happyranch/RemoteAccess1` with zero-input Status, StatusV2, NextDevice,

@@ -475,15 +475,18 @@ class ManagedInstaller:
     def _reload_unit_state(self, name: str) -> str:
         if name not in UNITS:
             raise InstallerError("reset-failed requires a fixed managed unit")
+        # Only services expose MainPID; sockets expose ControlPID, targets neither.
+        process = ({"MainPID": "0", "ControlPID": "0"} if name in (UNITS[0], UNITS[1], UNITS[4]) else
+                   {"ControlPID": "0"} if name == UNITS[3] else {})
         try:
             props = self.manager.show_properties(name, (
-                "LoadState", "FragmentPath", "DropInPaths", "MainPID", "ControlPID", "Job", "ActiveState",
+                "LoadState", "FragmentPath", "DropInPaths", *process, "Job", "ActiveState",
             ))
         except (ServiceManagerError, OSError):
             raise InstallerError(str(self.root / _UNIT_DIR / name)) from None
         if (props.get("LoadState") != "not-found" or props.get("FragmentPath") != ""
-                or props.get("DropInPaths") != "" or props.get("MainPID") != "0"
-                or props.get("ControlPID") != "0" or props.get("Job") != ""
+                or props.get("DropInPaths") != "" or any(props.get(key) != value for key, value in process.items())
+                or props.get("Job") != ""
                 or props.get("ActiveState") not in {"failed", "inactive"}):
             raise InstallerError(str(self.root / _UNIT_DIR / name))
         return props["ActiveState"]
@@ -532,11 +535,16 @@ class ManagedInstaller:
                 # cgroup and substate proof in the fresh read below.
                 if name not in present:
                     self._reload_unit_state(name)
+                # Socket execution context has ControlPID/ControlGroup, no MainPID.
+                # The fixed target has no execution context; Unit state/job still apply.
+                process = ({"MainPID": "0", "ControlPID": "0", "ControlGroup": ""}
+                           if name in (UNITS[0], UNITS[1], UNITS[4]) else
+                           {"ControlPID": "0", "ControlGroup": ""} if name == UNITS[3] else {})
                 keys = ("FragmentPath", "DropInPaths", "NeedDaemonReload", "LoadState", "ActiveState",
-                        "SubState", "MainPID", "ControlPID", "ControlGroup", "Job")
+                        "SubState", *process, "Job")
                 expected = dict(FragmentPath=str(self.root / _UNIT_DIR / name) if name in present else "",
                     DropInPaths="", NeedDaemonReload="no", LoadState="loaded" if name in present else "not-found",
-                    MainPID="0", ControlPID="0", ControlGroup="", Job="")
+                    **process, Job="")
                 require()
                 with self._publication_parent(_UNIT_DIR) as (parent, check):
                     if name in present:
