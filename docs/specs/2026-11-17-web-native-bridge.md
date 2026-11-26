@@ -1910,7 +1910,11 @@ per image, 8 MiB per locale and the existing 40-second process cap bound capture
 incomplete/over-budget capture fails. Below the desktop breakpoint, the sidebar
 footer centers the profile avatar without horizontal insets so it fits the
 56px rail at 200% text in the supported narrow Mac window. The wider sidebar
-keeps its existing insets. No Jenkins job/config change is included.
+keeps its existing insets. The desktop header is capped at 40vh with internal
+vertical scrolling: wrapped English status/candidate/warning content leaves
+space for Main navigation at 200% text, and its full content stays reachable
+through the existing scrolling-pane captures. All capture budgets are unchanged.
+No Jenkins job/config change is included.
 Every navigation/admission and dialog/theme/locale/scroll/settle/snapshot/PNG
 step fsyncs a `capture_progress` record before starting. Native background timers
 allocate up to 10 seconds for navigation and 2 seconds for later steps, even if
@@ -1933,6 +1937,15 @@ tests depend on libraries, and only the `HappyRanchLauncher` executable target
 owns `@main`. Its explicit product remains `HappyRanchApp`. The split unfiltered
 XCTest/Swift Testing runs and timeout diagnostics remain unchanged; no runtime
 test-environment sniff or test removal/filter/skip is introduced.
+The existing headless XCTest workload also includes
+`AppSchemeSwitchTests.testBridgeOwnsRealChildStartStopRestartAndQuit`: the actual
+Main bridge drives AppDelegate's owned-child supervisor, with a minimal Python
+health executable substituted only at the existing ProcessControlling boundary
+(the SwiftPM test bundle has no frozen daemon). Real PIDs, loopback health and
+exit callbacks establish Start, Stop, a new PID after consented Restart,
+busy-before-ready bridge publication and no orphan after app termination. All
+data/credentials are disposable/synthetic. This automated lifecycle test needs
+no Jenkins change; execution and full bundled-daemon acceptance remain distinct.
 A required portless cold-client qualification uses the real ContentView/
 AppDelegate composition and production resource lookup; it checks focused
 Settings/Connection from explicit menu actions, absence of a native toolbar, no

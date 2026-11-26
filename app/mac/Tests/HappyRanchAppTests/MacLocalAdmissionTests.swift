@@ -5,6 +5,18 @@ import XCTest
 import HappyRanchSupervisor
 @testable import HappyRanchApp
 
+// Suspend the async test before processing AppKit on a synchronous main-queue
+// turn. CFRunLoopRunInMode is unavailable inside Swift 6.3 async contexts.
+@MainActor
+func macLocalAppKitTurn() async {
+    await withCheckedContinuation { continuation in
+        DispatchQueue.main.async {
+            CFRunLoopRunInMode(.defaultMode, 0.01, true)
+            continuation.resume()
+        }
+    }
+}
+
 // Reuse the existing packaged-asset/transport fixture, with no real daemon or port.
 extension AppSchemeSwitchTests {
     @MainActor
@@ -84,7 +96,7 @@ extension AppSchemeSwitchTests {
         while window.attachedSheet == nil, answer == nil, clock.now < deadline {
             // XCTest's async actor executor is not NSApplication.run(). Let
             // AppKit process the deferred sheet presentation as well as tasks.
-            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true)
+            await macLocalAppKitTurn()
             try await clock.sleep(for: .milliseconds(5))
         }
         let sheet = try XCTUnwrap(window.attachedSheet, "Restart must present on Main; answer=\(String(describing: answer)), visible=\(window.isVisible)")
