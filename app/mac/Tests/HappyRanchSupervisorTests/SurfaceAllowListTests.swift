@@ -5,6 +5,38 @@ import Foundation
 @Suite("SurfaceAllowList deny gate")
 struct SurfaceAllowListTests {
 
+    @Test("guest loopback and sequential operator routes deny concrete IDs and path aliases",
+          arguments: [
+            ("POST", "/guests/mcp"),
+            ("POST", "/guests/setup/claude-desktop"),
+            ("POST", "/workflows/sequential/cancel-close-never-launched"),
+            ("GET", "/workflows/sequential/runs/run-123/cancel-close-never-launched"),
+          ])
+    func deniesGuestAndSequentialOperatorRoutes(method: String, family: String) {
+        let policy = SurfaceAllowList.default
+        for prefix in ["", "/api/v1", "/orgs/alpha", "/api/v1/orgs/alpha", "/api/v42/orgs/alpha"] {
+            for suffix in ["", "/", "?x=1", "/?x=1"] {
+                let target = prefix + family + suffix
+                #expect(!policy.isAllowed(method: method, path: "/tasks", rawPath: target))
+                #expect(!policy.isAllowed(method: method, path: target, rawPath: "/tasks"))
+            }
+        }
+        let encoded = "/api/v1/orgs/alpha" + family.replacingOccurrences(of: "/", with: "%2F")
+        #expect(!policy.isAllowed(method: method, path: "/tasks", rawPath: encoded))
+        #expect(!policy.isAllowed(method: method, path: encoded, rawPath: "/tasks"))
+        #expect(policy.isAllowed(method: method == "GET" ? "POST" : "GET", path: family, rawPath: family))
+        #expect(policy.isAllowed(method: method, path: family + "/child", rawPath: family + "/child"))
+        #expect(policy.isAllowed(method: method, path: "/tasks", rawPath: "/tasks?next=" + family))
+        #expect(SurfaceAllowList().isAllowed(method: method, path: family, rawPath: family))
+        for (browserMethod, browserPath) in [
+            ("POST", "/threads/THR-1/guests"),
+            ("GET", "/workflows/sequential/runs/run-123"),
+            ("PUT", "/workflows/sequential/settings"),
+        ] {
+            #expect(policy.isAllowed(method: browserMethod, path: browserPath, rawPath: "/api/v1/orgs/alpha" + browserPath))
+        }
+    }
+
     @Test("Fixed coding import and saved receipt deny both path candidates")
     func codingImportDenial() {
         let policy = SurfaceAllowList.default

@@ -8,6 +8,9 @@ import Darwin
 private final class AppSchemeSyntheticCredential: DaemonCredentialProvider, @unchecked Sendable {
     func credential() throws -> String { "synthetic-mac1" }
 }
+private enum AppSchemeScrollPlanError: Error {
+    case invalidShape, paneLimit(Int), invalidPageCount, pageLimit(Int)
+}
 private final class AppSchemeEventLog: @unchecked Sendable {
     private let lock = NSLock()
     private let descriptor: Int32
@@ -55,7 +58,7 @@ private final class AppSchemeCaptureStep: @unchecked Sendable {
         }
     }
     @discardableResult
-    func finish(_ result: String) -> Bool {
+    func finish(_ result: String, error: Error? = nil) -> Bool {
         lock.withLock {
             guard !finished else { return false }
             finished = true
@@ -64,6 +67,16 @@ private final class AppSchemeCaptureStep: @unchecked Sendable {
             var resultFields = result == "complete" ? ["step": fields["step"]!] : fields
             if result != "complete" || fields["step"] as? String == "navigation" {
                 resultFields["elapsedMs"] = (DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+            }
+            if let error {
+                let native = error as NSError
+                resultFields["errorDomain"] = String(native.domain.prefix(128))
+                resultFields["errorCode"] = native.code
+                let reason = error is AppSchemeScrollPlanError ? String(describing: error) : native.localizedDescription
+                resultFields["reason"] = String(reason.prefix(512))
+                if let reason = native.userInfo["WKJavaScriptExceptionMessage"] as? String {
+                    resultFields["javaScriptReason"] = String(reason.prefix(512))
+                }
             }
             log.write("capture_step", resultFields.merging(["result": result]) { _, new in new })
             if result == "timeout" {
@@ -363,7 +376,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         do {
             let value = try await operation()
             step.finish("complete"); return value
-        } catch { step.finish("error"); throw error }
+        } catch { step.finish("error", error: error); throw error }
     }
 
     /// WebKit supplies the composited dialogs/header; AppKit draws the frame.
@@ -409,34 +422,17 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
                     }
                     // Reset each real scrolling pane before the original top capture.
                     let plan = try await dialogStep("scroll-plan", fields: fields) {
-                        let value = try await view.callAsyncJavaScript(#"""
-                            const root = document.scrollingElement;
-                            const candidates = [...new Set([root, ...document.querySelectorAll('*')])].filter(Boolean);
-                            for (const e of candidates) {
-                                if (e.scrollHeight > e.clientHeight) e.scrollTop = 0;
-                            }
-                            window.__hrCaptureScrollers = candidates.filter(e => {
-                                const r = e.getBoundingClientRect(), s = getComputedStyle(e);
-                                return e.clientHeight > 0 && e.scrollHeight > e.clientHeight + 1 &&
-                                    (e === root || /auto|scroll/.test(s.overflowY)) && s.visibility !== 'hidden' &&
-                                    r.width > 0 && r.bottom > 0 && r.top < innerHeight;
-                            });
-                            return window.__hrCaptureScrollers.map((e, index) => {
-                                const r = e.getBoundingClientRect();
-                                const viewport = Math.min(e.clientHeight, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
-                                const step = Math.max(1, Math.floor(viewport * .75));
-                                const maximum = e.scrollHeight - e.clientHeight;
-                                return {index, step, maximum, pages: Math.ceil(maximum / step)};
-                            });
-                            """#, arguments: [:], in: nil, contentWorld: .page)
-                        guard let plan = value as? [[String: Any]], plan.count <= 8 else { throw AppAPIError.unavailable }
+                        let value = try await view.callAsyncJavaScript(Self.dialogScrollPlan,
+                            arguments: [:], in: nil, contentWorld: .page)
+                        guard let plan = value as? [[String: Any]] else { throw AppSchemeScrollPlanError.invalidShape }
+                        guard plan.count <= 8 else { throw AppSchemeScrollPlanError.paneLimit(plan.count) }
                         if scale == 200 {
                             var pages = 0
                             for pane in plan {
-                                guard let count = pane["pages"] as? Int, count > 0 else { throw AppAPIError.unavailable }
+                                guard let count = pane["pages"] as? Int, count > 0 else { throw AppSchemeScrollPlanError.invalidPageCount }
                                 pages += count
                             }
-                            guard pages <= 16 else { throw AppAPIError.unavailable }
+                            guard pages <= 16 else { throw AppSchemeScrollPlanError.pageLimit(pages) }
                         }
                         return plan
                     }
@@ -479,6 +475,43 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         document.documentElement.setAttribute('data-theme', theme);
         window.dispatchEvent(new StorageEvent('storage', {key: 'happyranch.theme', newValue: theme, storageArea: localStorage}));
         return true;
+        """#
+
+    private static let dialogScrollPlan = #"""
+        // A modal owns the capture. Background Main overflow is not visible
+        // content and can have a one-pixel intersection at 200% text.
+        const dialog = document.querySelector('[data-desktop-dialog]');
+        const root = dialog || document.scrollingElement;
+        const candidates = [...new Set([root, ...(dialog || document).querySelectorAll('*')])].filter(Boolean);
+        for (const e of candidates) {
+            if (e.scrollHeight > e.clientHeight) e.scrollTop = 0;
+        }
+        function visibleHeight(e) {
+            const r = e.getBoundingClientRect();
+            let top = Math.max(r.top, 0), bottom = Math.min(r.bottom, innerHeight);
+            for (let parent = e.parentElement; parent; parent = parent.parentElement) {
+                const s = getComputedStyle(parent);
+                if (s.display === 'none' || s.visibility === 'hidden') return 0;
+                if (/auto|scroll|hidden|clip/.test(s.overflowY)) {
+                    const clip = parent.getBoundingClientRect();
+                    top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
+                }
+            }
+            return Math.min(e.clientHeight, bottom - top);
+        }
+        window.__hrCaptureScrollers = candidates.filter(e => {
+            const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+            return e.clientHeight > 0 && e.scrollHeight > e.clientHeight + 1 &&
+                (e === document.scrollingElement || /auto|scroll/.test(s.overflowY)) &&
+                s.visibility !== 'hidden' && s.display !== 'none' &&
+                r.width > 0 && r.right > 0 && r.left < innerWidth && visibleHeight(e) > 0;
+        });
+        return window.__hrCaptureScrollers.map((e, index) => {
+            const viewport = visibleHeight(e);
+            const step = Math.max(1, Math.floor(viewport * .75));
+            const maximum = e.scrollHeight - e.clientHeight;
+            return {index, step, maximum, pages: Math.ceil(maximum / step)};
+        });
         """#
 
     private static let dialogScroll = #"""

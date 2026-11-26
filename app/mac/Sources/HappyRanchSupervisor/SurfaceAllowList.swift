@@ -126,6 +126,12 @@ public struct SurfaceAllowList: Sendable {
             ("GET", "/workflows/sequential/final-manager"),
             ("GET", "/workflows/sequential/start-context"),
             ("GET", "/workflows/sequential/start-context/v2"),
+            // Human-only operator close/receipt; neither has a browser consumer.
+            ("POST", "/workflows/sequential/cancel-close-never-launched"),
+            ("GET", "/workflows/sequential/runs/*/cancel-close-never-launched"),
+            // Guest MCP and setup are loopback-only, never remote SPA routes.
+            ("POST", "/guests/mcp"),
+            ("POST", "/guests/setup/*"),
             // Original-current author staging is a native-sensitive mutation.
             ("POST", "/workflows/submissions/handoffs"),
             // Current agent reviewer staging is not a remote human surface.
@@ -281,6 +287,26 @@ public struct SurfaceAllowList: Sendable {
     ///   - rawPath: The original raw path from the request.
     /// - Returns: `true` if the request is allowed, `false` if it is denied.
     public func isAllowed(method: String, path: String, rawPath: String) -> Bool {
+        // Compare both candidates with the same one-pass denial normalization
+        // as the other CLI-only workflow families. Wildcards match one ID only.
+        for candidate in [rawPath, path].map(Self.stageDenialCandidate) {
+            if method == "POST",
+               ["/guests/mcp", "/workflows/sequential/cancel-close-never-launched"].contains(candidate),
+               deniedMethods.contains("POST \(candidate)") {
+                return false
+            }
+            let parts = candidate.split(separator: "/", omittingEmptySubsequences: false)
+            if method == "POST", deniedMethods.contains("POST /guests/setup/*"),
+               parts.count == 4, parts[0].isEmpty, parts[1] == "guests",
+               parts[2] == "setup", !parts[3].isEmpty {
+                return false
+            }
+            if method == "GET", deniedMethods.contains("GET /workflows/sequential/runs/*/cancel-close-never-launched"),
+               parts.count == 6, parts[0].isEmpty, parts[1] == "workflows", parts[2] == "sequential",
+               parts[3] == "runs", !parts[4].isEmpty, parts[5] == "cancel-close-never-launched" {
+                return false
+            }
+        }
         if ["POST", "GET"].contains(method),
            deniedMethods.contains("\(method) /workflows/release-templates/coding/1/import"),
            [rawPath, path].contains(where: {
