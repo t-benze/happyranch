@@ -25,6 +25,11 @@ Four answers (no test-only production seams in any case):
   during B7. B4 tests predate F3.
 * test_status_ports: public V2 roundtrip and native host projection; regression
   = discard/reject the per-port extension. F2 cases carry only aggregate advice.
+* test_status_journal_without_ufw: backend Status returns the recorded per-port
+  effect without a live UFW worker, retaining journal/audit bytes. Regression =
+  reintroduce the extra UFW read and lose recorded facts on its timeout. The
+  projection-only test above does not exercise the backend or its read budget.
+  No production seam; the existing native fixture owns activation effects.
 * test_refused_enable_keeps_rules [unauthenticated/already_ready]: observable
   rules/journal unchanged on backend admission refusal; regression = run cleanup
   before activation admission from an unguarded exception
@@ -44,8 +49,11 @@ Four answers (no test-only production seams in any case):
   to create a missing lock or treat EROFS as activation failure. Existing
   absent/inactive rows do not execute the worker or model sandbox lock access.
 * test_owned_lock_unavailable: retained ownership refuses successful cleanup
-  when the lock becomes unavailable, with durable remove intent. Regression =
+  when the lock becomes unavailable, with durable per-port remove intent also
+  reported by journal-only Status. Regression =
   classify every lock failure as a skip. Inactive row retains a usable lock.
+  An extra live Status read would hide the recorded cleanup intent; the ready
+  Status case does not exercise this uncertain-cleanup state.
 * test_packaged_lock_mount: externally consumed systemd shape grants precisely
   the optional UFW lock while retaining hardening. Regression = omit the file
   grant or replace it with a directory. Existing unit cases cover state dirs.
@@ -237,7 +245,7 @@ def test_owned_lock_unavailable(composition: Any, monkeypatch: pytest.MonkeyPatc
         owner.cleanup()
     assert [rule.__dict__ for rule in native.rules] == before
     assert v.transactions.read_optional().firewall.states == ('remove_intent', 'added')
-    assert set(owner.status(timeout=1).values()) == {'unverified'}
+    assert owner.status(timeout=1) == {'8443/tcp': 'remove_intent', '3478/udp': 'added'}
 
 
 def test_packaged_lock_mount() -> None:
@@ -282,7 +290,10 @@ def test_lifecycle_rules(composition: Any, monkeypatch: pytest.MonkeyPatch, coll
         start(v)
         assert v.transactions.read_optional().to_bytes() == journal
         assert v.path(str(AUDIT_PATH)).read_bytes() == audit and native.commands == commands
-        assert set(v.lifecycle.dispatch('Enable', os.getuid(), 'firewall', None)['ports'].values()) == {'skipped_ufw_inactive'}
+        # Status reports the recorded acquisition; inactivity does not erase
+        # ownership or prevent the exact persisted-rule cleanup below.
+        assert v.lifecycle.dispatch('Enable', os.getuid(), 'firewall', None)['ports'] == {
+            '8443/tcp': 'added', '3478/udp': 'added'}
     v.observers.close()
     captured = v.lifecycle.capture('Disable', os.getuid())
     assert v.lifecycle.dispatch('Disable', os.getuid(), 'stop', captured)['outcome'] == 'in_progress'
@@ -415,6 +426,25 @@ def test_status_ports(ports: dict[str, str]) -> None:
     snapshot = dict(setup='ready', runtime='available', observation='known', devices=[],
         pending=None, selected=None, inviteState='unknown', expiresAt=None)
     assert parser.host_details(snapshot, raw.decode())['firewallPorts'] == ports
+
+
+def test_status_journal_without_ufw(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    v = composition
+    NativeUFW(v, monkeypatch)
+    start(v)
+    before = v.transactions.read_optional().to_bytes(), v.path(str(AUDIT_PATH)).read_bytes()
+    calls = []
+
+    def unavailable(*args: Any, **kwargs: Any) -> dict:
+        calls.append(args)
+        raise f.subprocess.TimeoutExpired('ufw', kwargs['timeout'])
+
+    monkeypatch.setattr(f, '_ufw', unavailable)
+    result = v.lifecycle.dispatch('Enable', os.getuid(), 'firewall', None,
+                                  deadline=time.monotonic() + .1)
+    assert result == {'firewall': 'clear', 'ports': {'8443/tcp': 'added', '3478/udp': 'added'}}
+    assert calls == []
+    assert (v.transactions.read_optional().to_bytes(), v.path(str(AUDIT_PATH)).read_bytes()) == before
 
 
 @pytest.mark.parametrize('refusal', ['unauthenticated', 'already_ready'])

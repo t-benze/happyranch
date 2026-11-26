@@ -136,7 +136,7 @@ is unchanged; outside-home key delivery remains an open founder/security gate (Â
 | --- | --- |
 | `Status()` / none | Bounded redacted phase, readiness, device summaries and selected device; no secrets or mutation. |
 | `StatusV2()` / none | Additive bounded read-only status with separate setup/runtime/invite/address/policy/cleanup observations; Status v1 stays byte-compatible. |
-| `Enable()` / `enable` | Default home-network mode: derive LAN address, install/configure local Headscale/private DERP, locally mint Linux join key, enroll and verify exact system units/READY. Already-ready is inspect-only. |
+| `Enable()` / `enable` | Default home-network mode: derive LAN address, install/configure local Headscale/private DERP, locally mint Linux join key, enroll and verify exact system units/READY. Already-ready uses the existing owned-unit restart/verification path and reconciles the scoped F3 UFW plan below. |
 | `RefreshHomeAddress()` / `refresh-home-address` | Deferred to B13: no helper method exists and the CLI verb remains unavailable. Planned behavior: re-derive LAN address from kernel inventory, renew the leaf/SAN/config with the same private CA, verify readiness; no supplied address or new CA accepted. |
 | `ReplaceFailed()` / `replace-failed` | Replace only a recognized failed/partial installation, with the verbatim loss-of-pairings warning and terminal confirmation in section 7 below. |
 | `Disable()` / `turn-off` (polkit action `disable`) | Stop admission, revoke devices, stop/disable/unlink owned remote units, then clean owned activation config/state/credentials. Renewal units remain package payload; install-scope policy/provision survive. Never stop/delete the release daemon or package. |
@@ -290,7 +290,7 @@ The live-config owner accepts only the renewal's exact policy-digest provenance
 update; other bytes/custody stay bound. All later checks/admission/runtime remain
 strict. Keep the later managed-services renewal and timer-before-target order.
 The EFFECTS tuple, journal names/format/shape and old-intent I3a recovery semantics
-remain unchanged; recovery never renews and Ready Enable remains inspect-only.
+remain unchanged; recovery never renews. Ready Enable retains its existing restart/verification path plus the scoped F3 UFW reconciliation below.
 An absent-journal founder-shaped retained staging host with empty state/verifier
 directories and the expected account reports Off and proceeds on Turn on without
 other host actions. This is synthetic fixture coverage, with installed acceptance
@@ -375,7 +375,7 @@ and evidence requiring revoke success. Disable reports `partial_cleanup` naming
 that un-revoked trust state. Complete requires revoke success AND all proofs
 AND B6 success AND no residue (I3a R4/R7b, I3c C3/C5).
 All ownership and quiescence gates remain required.
-Ready Enable remains inspect-only, and fresh-auth activation recovery remains
+Ready Enable also reconciles the scoped F3 UFW plan below; fresh-auth activation recovery remains
 verify/publication-only without renewal or timer replay. I5a opens the helper
 public gate; Linux CLI consumers are delivered in I5b and bridge consumers are delivered in I5c (source only; I6 pending). B18 artifact-changing
 upgrade repair remains separate.
@@ -1409,9 +1409,10 @@ The leading `-` skips a missing file at unit start; it grants no writable `/run`
 directory. The package ships `/usr/lib/tmpfiles.d/happyranch-ufw-lock.conf`
 containing only `f /run/ufw.lock 0644 root root -`, for systemd-tmpfiles to
 create the empty lock at boot. This matches UFW's lock metadata and creates no
-rule. The deb has no maintainer scripts: DEBIAN contains only `control` and
-`md5sums`. It adds no install-time tmpfiles invocation, daemon-reload or helper
-restart; distro triggers and D-Bus activation retain their existing behavior.
+rule. F3 adds no maintainer script, install-time tmpfiles invocation or helper
+restart. The existing configure-only postinst from the connector upgrade fix
+reloads the system manager; DEBIAN contains `control`, `md5sums` and `postinst`.
+Distro triggers and D-Bus activation retain their existing behavior.
 If install/upgrade leaves the lock unavailable in the helper namespace, reboot
 once and press Turn on again. The worker checks the existing lock without
 creating it before any rule effect. If missing or read-only, both ports record
@@ -1449,6 +1450,14 @@ rules, including identical untagged allows and denies, are never removed.
 Unchanged repeated Enable leaves settled journal/audit bytes untouched. If UFW
 later becomes inactive, ownership stays recorded for Turn off cleanup.
 
+For an already-READY upgrade, read Status, quit the app, reinstall the new deb
+with `sudo apt-get install -y --reinstall ./happyranch_0.1.0-1_amd64.deb`, reopen,
+wait 15 seconds, read Status, then press Turn on again once. If that press is
+refused or reports failure, wait 30 seconds and read Status; the known N3/N5
+reply can report failure after recovery. Do not add a manual daemon-reload or
+service restart. F3 upgrade acceptance uses this procedure; an identical archive
+reinstall does not model replacement by a different build's unit-file mtimes.
+
 StatusV2 optionally carries `firewall.ports`; native/CLI Status projects it as
 `firewallPorts`, exactly `8443/tcp` and `3478/udp`. States are `added`,
 `preexisting_not_owned` (already allowed by your existing rule),
@@ -1456,7 +1465,9 @@ StatusV2 optionally carries `firewall.ports`; native/CLI Status projects it as
 `skipped_ufw_absent`, `skipped_ufw_inactive`, `skipped_ufw_lock_unavailable`,
 `skipped_subnet_rejected`, plus
 `pending`, `add_intent`, `remove_intent`, `removed`, `unverified` during recovery.
-These are display diagnostics, not packet-reachability or setup-readiness proof.
+These are recorded activation effects read from the protected journal without
+an additional UFW child. They do not assert current live-rule presence,
+packet reachability or setup readiness. Enable and cleanup verify live rules.
 F2 advice and the original Status deadline remain independent; observation
 failure never erases other facts. Frames without this extension remain valid.
 

@@ -27,6 +27,14 @@ mismatches. Do not manually modify units or promise Turn off recovery; the
 existing partial-cleanup limit remains. The manager must rerun the failed and
 healthy upgrade cases with the postinst package before founder upgrade acceptance.
 
+For an already-READY upgrade, read Status, quit the app, reinstall the new deb
+with `sudo apt-get install -y --reinstall ./happyranch_0.1.0-1_amd64.deb`, reopen,
+wait 15 seconds, read Status, then press Turn on again once. If that press is
+refused or reports failure, wait 30 seconds and read Status; the known N3/N5
+reply can report failure after recovery. Do not add a manual daemon-reload or
+service restart. F3 upgrade acceptance uses this procedure; an identical archive
+reinstall does not model replacement by a different build's unit-file mtimes.
+
 ## Managed home LAN firewall (THR-327 F3)
 
 The managed home root helper's Enable adds 8443/tcp and 3478/udp allows only
@@ -55,9 +63,10 @@ the UFW CLI. The package instead ships
 `/usr/lib/tmpfiles.d/happyranch-ufw-lock.conf`, containing only
 `f /run/ufw.lock 0644 root root -`. systemd-tmpfiles creates this empty lock at
 boot with UFW's own mode and owner; it does not run UFW or change any rule.
-The package adds no maintainer script, install-time tmpfiles command,
-daemon-reload or helper restart. Install/upgrade depends on the distro's
-existing triggers and the helper's existing D-Bus activation lifecycle.
+F3 adds no maintainer script, install-time tmpfiles command or helper restart.
+The existing configure-only postinst reloads the system manager after package
+replacement. Distro triggers and the helper's D-Bus activation lifecycle remain
+in place.
 If absent or read-only, both ports show `skipped_ufw_lock_unavailable`
 ("skipped: ufw lock unavailable"); Enable adds neither rule. If Status says
 "skipped: ufw lock unavailable", reboot once and press Turn on again. This can
@@ -87,7 +96,10 @@ for an activation with a retained firewall plan.
 `preexisting_not_owned`, `blocked_by_existing`, `skipped_ufw_absent`,
 `skipped_ufw_inactive`, `skipped_ufw_lock_unavailable`, `skipped_subnet_rejected`,
 `removed`; pending intents or
-`unverified` require recovery/inspection. These do not prove packet reachability.
+`unverified` require recovery/inspection. The per-port fields report recorded
+activation effects from the protected journal without an extra UFW child.
+They do not prove current live-rule presence or packet reachability; Enable
+and cleanup verify live rules.
 
 For manual inspection, run `sudo ufw status numbered` and `sudo ufw show added`.
 If manual recovery is needed, read the exact subnet and dial IP from the
@@ -492,8 +504,9 @@ all artifact/provenance/custody checks still apply. After the existing
 shipped policy under its held flock and requires currentness before that effect's
 reload and before ANY enable/start. Existing inert publication reloads occur
 earlier. Failure enables/starts no unit; the later managed-services renewal and
-timer-before-target order remain. Recovery never renews and Ready Enable only
-inspects. Status never writes policy or any other retained file.
+timer-before-target order remain. Recovery never renews. Ready Enable retains
+its existing owned-unit restart/verification path and reconciles the scoped F3
+UFW plan above. Status never writes policy or any other retained file.
 
 Only bounded sidecar `health.json` / `.health-N` diagnostics may remain while
 that unit is inactive and quiescent; other runtime entries and verifier

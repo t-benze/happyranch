@@ -275,16 +275,9 @@ class HomeLANFirewall:
                 raise
 
     def status(self, *, timeout: float) -> dict[str, str] | None:
+        """Report recorded effects without spending Status's budget on UFW."""
         txn = self.transactions.read_optional()
         if txn is None or txn.firewall is None:
             return None
         states = txn.firewall.states
-        if txn.firewall.subnet is not None and any(s not in (
-                'removed', 'skipped_ufw_absent', 'skipped_ufw_inactive', 'skipped_ufw_lock_unavailable') for s in states):
-            try:
-                live = _ufw('inspect', txn.firewall.subnet, txn.dial_ip, 0, timeout=timeout)
-                states = (tuple('added' if s == 'owned' else 'unverified' if s == 'missing' else s
-                                for s in live['states']) if live['active'] else ('skipped_ufw_inactive',) * 2)
-            except (OSError, ValueError, subprocess.TimeoutExpired):
-                states = ('unverified',) * 2
         return {f'{port}/{proto}': state for (port, proto), state in zip(PORTS, states)}

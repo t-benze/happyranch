@@ -3940,7 +3940,7 @@ settlement before terminal success. No step renews the budget.
 
 Interruption after a complete staging step permits only exact owner reuse on the
 next fresh-auth Enable; unknown/pending/partial residue is never adopted or
-deleted. Forward activation retains Ruling 17 and B7 recovery. Ready Enable may perform only the ordinary boot-equivalent start of exact enabled owned units, then joined verification; it never replays activation. Disable, replacement closure, invite and renewal effects and the
+deleted. Forward activation retains Ruling 17 and B7 recovery. Ready Enable may perform the ordinary boot-equivalent start of exact enabled owned units, joined verification and the scoped F3 UFW reconciliation below; it never replays activation. Disable, replacement closure, invite and renewal effects and the
 closed B5/B6/B17 maps remain unchanged. Temp-root tests exercise all five owners,
 including replacement closure, repeated Turn off/Turn on, CAS, refusal and expiry;
 native/NSS/materializer/LAN responses are simulated. Installed acceptance remains I6.
@@ -4262,7 +4262,7 @@ noncurrent renewed policy enables/starts zero units. Earlier inert publication
 retains its existing reloads and read-only manager inspection. Every subsequent
 check, admission and runtime gate is strict. The later `managed_services`
 re-stamp remains, with timer enable before verifier socket/target enable and
-managed target start. Ready Enable may start exact enabled owned units as at boot, then verify joined; it never replays activation. I3a fresh-auth recovery
+managed target start. Ready Enable may start exact enabled owned units as at boot, verify joined and reconcile the scoped F3 UFW plan below; it never replays activation. I3a fresh-auth recovery
 still only verifies and
 publishes (or rolls over to prepared); it never renews policy, links the timer or
 replays any other effect. A later forward Enable runs the existing effect path.
@@ -4565,7 +4565,7 @@ Why no founder: implements approved recognized-failure recovery without terminal
 
 **B18 — Explicit token repair and known-version upgrade.**
 No new method: fresh-auth `Enable()` repairs only a positively classified
-`repair_required` live profile; already-ready Enable permits only ordinary start and joined verification, never activation replay.
+`repair_required` live profile; already-ready Enable permits ordinary start, joined verification and the scoped F3 UFW reconciliation below, never activation replay.
 Close admission/quiesce → same recorded release UID/home → same-FD token read
 → transactional exact-file/digest update → loaded-unit/READY revalidation →
 reopen. Preserve installation IDs, pins, epochs and revocations. Package postinst
@@ -5065,9 +5065,10 @@ The leading `-` skips a missing file at unit start; it grants no writable `/run`
 directory. The package ships `/usr/lib/tmpfiles.d/happyranch-ufw-lock.conf`
 containing only `f /run/ufw.lock 0644 root root -`, for systemd-tmpfiles to
 create the empty lock at boot. This matches UFW's lock metadata and creates no
-rule. The deb has no maintainer scripts: DEBIAN contains only `control` and
-`md5sums`. It adds no install-time tmpfiles invocation, daemon-reload or helper
-restart; distro triggers and D-Bus activation retain their existing behavior.
+rule. F3 adds no maintainer script, install-time tmpfiles invocation or helper
+restart. The existing configure-only postinst from the connector upgrade fix
+reloads the system manager; DEBIAN contains `control`, `md5sums` and `postinst`.
+Distro triggers and D-Bus activation retain their existing behavior.
 If install/upgrade leaves the lock unavailable in the helper namespace, reboot
 once and press Turn on again. The worker checks the existing lock without
 creating it before any rule effect. If missing or read-only, both ports record
@@ -5105,6 +5106,14 @@ rules, including identical untagged allows and denies, are never removed.
 Unchanged repeated Enable leaves settled journal/audit bytes untouched. If UFW
 later becomes inactive, ownership stays recorded for Turn off cleanup.
 
+For an already-READY upgrade, read Status, quit the app, reinstall the new deb
+with `sudo apt-get install -y --reinstall ./happyranch_0.1.0-1_amd64.deb`, reopen,
+wait 15 seconds, read Status, then press Turn on again once. If that press is
+refused or reports failure, wait 30 seconds and read Status; the known N3/N5
+reply can report failure after recovery. Do not add a manual daemon-reload or
+service restart. F3 upgrade acceptance uses this procedure; an identical archive
+reinstall does not model replacement by a different build's unit-file mtimes.
+
 StatusV2 optionally carries `firewall.ports`; native/CLI Status projects it as
 `firewallPorts`, exactly `8443/tcp` and `3478/udp`. States are `added`,
 `preexisting_not_owned` (already allowed by your existing rule),
@@ -5112,7 +5121,9 @@ StatusV2 optionally carries `firewall.ports`; native/CLI Status projects it as
 `skipped_ufw_absent`, `skipped_ufw_inactive`, `skipped_ufw_lock_unavailable`,
 `skipped_subnet_rejected`, plus
 `pending`, `add_intent`, `remove_intent`, `removed`, `unverified` during recovery.
-These are display diagnostics, not packet-reachability or setup-readiness proof.
+These are recorded activation effects read from the protected journal without
+an additional UFW child. They do not assert current live-rule presence,
+packet reachability or setup readiness. Enable and cleanup verify live rules.
 F2 advice and the original Status deadline remain independent; observation
 failure never erases other facts. Frames without this extension remain valid.
 
