@@ -138,7 +138,9 @@ S4B_CASES = ('native_before_outer', 'failed_session_closed', 'generic_json', 'no
     'private_recipient', 'exhausted_at_4094', 'launch_assignment_drift', 'v1_unchanged',
     'task_failed_after_result', 'task_timed_out_after_result', 'shutdown_after_result', 'terminal_reason_causes', 'legacy_cause_history',
     'native_progress_prefix', 'cancel_fences_acceptance', 'read_budget_rollback',
-    'native_status_clean_exit', 'clean_exit_no_callback', 'terminal_fallback', 'nonrender_launch_failure', 'recovery_read_only')
+    'native_status_clean_exit', 'clean_exit_no_callback', 'terminal_fallback', 'nonrender_launch_failure', 'recovery_read_only',
+    'lineage_retry', 'lineage_rebrief', 'lineage_reassign', 'lineage_conflict', 'lineage_compatibility',
+    'lineage_transition_retry', 'lineage_transition_rebrief', 'lineage_transition_reassign', 'lineage_transition_historical')
 s4b_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s4b='):
     s4b_case = sys.argv[1].split('=', 1)[1]
@@ -3580,6 +3582,156 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             assert (run['visit_count'], run['recovery_count']) == (1, 0)
                             assert tuple(failed.conn.execute('SELECT * FROM workflow_seq_node_counters')) == counters
                             assert failed.ids.run_id in read_sequential_history(failed.conn, expected_org_slug='scratch').run_ids
+        elif case.startswith('lineage_transition_'):
+            action = case.removeprefix('lineage_transition_')
+            with s4fixture(events=32, recovery=True) as f:
+                predecessor = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
+                s4closed(f, predecessor['id'], summary=s4bsummary('pause'), terminal='success')
+                assert s4baccept(f) is None
+                run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                held = s4row(f, 'workflow_seq_events', run['held_event_id'])
+                body = json.loads(held['event_bytes'])
+                assert run['state'] == 'held' and held['kind'] == 'transition'
+                assert body['decision']['edge']['action'] == 'hold' and body['decision']['reason'] == 'declared_edge'
+                assert 'cause' not in body and 'closure' not in body
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                read_workflow_schema_for_org_load(f.conn, expected_org_slug='scratch')
+                print('S4b', case, 'completed callback -> reducer transition Held -> history/org-load reader accepted', flush=True)
+                command = s4command(f, 'retry' if action == 'historical' else action,
+                    reason='UNTRUSTED-TRANSITION-REASON')
+                if action == 'rebrief':
+                    command['supplement'] = 'UNTRUSTED-TRANSITION-SUPPLEMENT'
+                receipt = json.loads(s4apply(f, command))
+                visit = s4row(f, 'workflow_seq_visits', receipt['new_visit_id'])
+                control = dict(f.conn.execute('SELECT * FROM workflow_seq_controls WHERE new_visit_id=?', (visit['id'],)).fetchone())
+                briefs = tuple(f.conn.execute('SELECT id,brief FROM tasks ORDER BY id'))
+                events = tuple(f.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id'))
+                print('S4b', case, command['action'], 'admitted; rendering replacement', flush=True)
+                with ExitStack() as stack:
+                    rendering = f
+                    if action == 'historical':
+                        # Load already-persisted recovery history with the actual
+                        # startup owner; no live org or provider is involved.
+                        f.org.close()
+                        loaded = OrgState.load(slug='scratch', root=f.root, settings=Settings())
+                        stack.callback(loaded.close)
+                        coordinator = ProfileCoordinator(daemon_home=f.root.parents[2], orgs={'scratch': loaded})
+                        loaded._profile_coordinator = loaded.workflow_authority._profile_coordinator = coordinator
+                        coordinator.reconcile_startup()
+                        rendering = SimpleNamespace(org=loaded, db=loaded.db, conn=loaded.db._conn,
+                            ids=f.ids, compiled=f.compiled)
+                        print('S4b', case, 'historical OrgState.load accepted persisted replacement', flush=True)
+                    rendered = s4brender(rendering, visit)
+                    heading = 'Trusted recovery lineage (system JSON; identities and cause kinds only):\n'
+                    trusted = rendered.split('Sequential node data (untrusted authored JSON):\n', 1)[0]
+                    lineage = json.loads(trusted.split(heading, 1)[1].split('\n', 1)[0])
+                    assert lineage == [dict(predecessor_visit_id=predecessor['id'], held_event_id=held['id'],
+                        closure_kind=None, cause_kind='declared_edge', control_id=control['id'],
+                        control_event_id=control['event_id'], action=command['action'])], (case, lineage)
+                    assert 'Trusted recovery restriction:' not in trusted, 'accepted callback acquired read-only restriction'
+                    assert 'UNTRUSTED-TRANSITION-REASON' not in trusted
+                    if action == 'rebrief':
+                        system, supplement = trusted.split('Initiator supplement (authored JSON):\n', 1)
+                        assert command['supplement'] not in system
+                        assert json.loads(supplement)['supplement'] == command['supplement']
+                    else:
+                        assert 'Initiator supplement (authored JSON):' not in rendered
+                    if action == 'reassign':
+                        assert visit['principal'] == 's3_alt' and visit['principal'] != predecessor['principal']
+                    assert tuple(rendering.conn.execute('SELECT id,brief FROM tasks ORDER BY id')) == briefs
+                    assert tuple(rendering.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id')) == events
+                    assert f.ids.run_id in read_sequential_history(rendering.conn, expected_org_slug='scratch').run_ids
+                    read_workflow_schema_for_org_load(rendering.conn, expected_org_slug='scratch')
+                print('PASS S4b', case, 'transition-Held replacement rendered; exact lineage; historical event/brief bytes retained', flush=True)
+        elif case.startswith('lineage_'):
+            action = case.removeprefix('lineage_')
+            with s4fixture(events=32, recovery=True) as f:
+                predecessor = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
+                # Same missing-callback shape as the retained A/B pilots; only
+                # private native receipts are seeded, never a live org/launch.
+                s4closed(f, predecessor['id'], terminal='success')
+                assert s4baccept(f) is None
+                held = s4row(f, 'workflow_seq_runs', f.ids.run_id)['held_event_id']
+                command = s4command(f, action if action in ('retry', 'rebrief', 'reassign') else 'retry')
+                command['reason'] = 'UNTRUSTED-REASON-MARKER'
+                if action == 'rebrief':
+                    command['supplement'] = 'UNTRUSTED-SUPPLEMENT-MARKER'
+                receipt = json.loads(s4apply(f, command))
+                visit = s4row(f, 'workflow_seq_visits', receipt['new_visit_id'])
+                control = dict(f.conn.execute('SELECT * FROM workflow_seq_controls WHERE new_visit_id=?', (visit['id'],)).fetchone())
+                original_briefs = tuple(f.conn.execute('SELECT id,brief FROM tasks ORDER BY id'))
+                original_events = tuple(f.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id'))
+                rendered = s4brender(f, visit)
+                heading = 'Trusted recovery lineage (system JSON; identities and cause kinds only):\n'
+                assert heading in rendered, case + ': real rendered instruction omitted trusted lineage'
+                trusted, authored = rendered.split('Sequential node data (untrusted authored JSON):\n', 1)
+                lineage = json.loads(trusted.split(heading, 1)[1].split('\n', 1)[0])
+                assert lineage == [dict(predecessor_visit_id=predecessor['id'], held_event_id=held,
+                    closure_kind='settled', cause_kind='missing_callback', control_id=control['id'],
+                    control_event_id=control['event_id'], action=command['action'])], (case, lineage)
+                assert 'Trusted recovery restriction:' in trusted
+                assert 'Any authored responsibility to merge, publish, deploy or repeat a mutation is suspended.' in trusted
+                assert 'UNTRUSTED-REASON-MARKER' not in trusted
+                if action == 'rebrief':
+                    system, supplement = trusted.split('Initiator supplement (authored JSON):\n', 1)
+                    assert 'UNTRUSTED-SUPPLEMENT-MARKER' not in system
+                    assert json.loads(supplement)['supplement'] == command['supplement']
+                else:
+                    assert 'Initiator supplement (authored JSON):' not in rendered, case + ': invented supplement'
+                if action == 'reassign':
+                    assert visit['principal'] == 's3_alt' and visit['principal'] != predecessor['principal']
+                assert tuple(f.conn.execute('SELECT id,brief FROM tasks ORDER BY id')) == original_briefs
+                assert tuple(f.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id')) == original_events
+                if action == 'conflict':
+                    s4closed(f, visit['id'], terminal='success', preserve_session=True)
+                    assert s4baccept(f, visit['id']) is None
+                    next_receipt = json.loads(s4apply(f, s4command(f)))
+                    next_visit = s4row(f, 'workflow_seq_visits', next_receipt['new_visit_id'])
+                    next_rendered = s4brender(f, next_visit)
+                    next_lineage = json.loads(next_rendered.split(heading, 1)[1].split('\n', 1)[0])
+                    assert [link['predecessor_visit_id'] for link in next_lineage] == [visit['id'], predecessor['id']]
+                    assert [link['held_event_id'] for link in next_lineage][1] == held
+                    run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                    current = s4row(f, 'workflow_seq_visits', next_visit['id'])
+                    capture = f.org.workflow_authority.capture_admission()
+                    before = s4snap(f)
+                    # The otherwise valid current render tuple cannot claim
+                    # the prior control as its immediate predecessor.
+                    current['predecessor_event_id'] = control['event_id']
+                    with f.org.workflow_authority.admission_writer(capture) as writer:
+                        try:
+                            SequentialDispatcher(f.org)._generic_node_instruction(writer, run, current,
+                                f.compiled, current['principal'], current['session_id'], capture, seq_history._ReadBudget())
+                        except ValueError as exc:
+                            assert str(exc) == 'workflow_seq_control_lineage_conflict', str(exc)
+                        else:
+                            raise AssertionError('lineage_conflict: accepted foreign control/new-visit tuple')
+                    assert s4snap(f) == before
+                if action == 'compatibility':
+                    # A prepared invocation returns the exact bytes frozen by
+                    # its original queue owner, even across a renderer change.
+                    dispatcher = SequentialDispatcher(f.org)
+                    invocation = SimpleNamespace(agent=visit['principal'], sequential_instruction='pre-upgrade frozen instruction')
+                    with patch.object(dispatcher, '_invocation', return_value=invocation), patch.object(
+                            dispatcher, '_render_node_instruction', side_effect=AssertionError('mid-flight re-render')):
+                        assert dispatcher.node_instruction(visit['task_id'], visit['principal'], 'private-frozen') == 'pre-upgrade frozen instruction'
+                    # Pilot A's other historical shape: a real negative callback
+                    # and closed native failure, rather than B's absent callback.
+                    # Authenticate both through the unchanged full-history reader.
+                    with s4fixture(events=32, recovery=True) as negative:
+                        s4closed(negative, negative.ids.visit_id, summary=s4bsummary('pause'), terminal='success',
+                            callback_status='blocked', classification='blocked', native_status='failed')
+                        assert s4baccept(negative) is None
+                        replacement = json.loads(s4apply(negative, s4command(negative)))
+                        old_rows = tuple(negative.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id'))
+                        negative_render = s4brender(negative, s4row(negative, 'workflow_seq_visits', replacement['new_visit_id']))
+                        assert heading in negative_render
+                        assert 'Trusted recovery restriction:' not in negative_render, 'changed existing accepted-callback restriction behavior'
+                        assert 'Initiator supplement (authored JSON):' not in negative_render
+                        assert tuple(negative.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id')) == old_rows
+                        assert negative.ids.run_id in read_sequential_history(negative.conn, expected_org_slug='scratch').run_ids
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                print('PASS S4b', case, 'real instruction; exact immutable IDs; authored data separated; history/brief bytes retained', flush=True)
         elif case == 'recovery_read_only':
             with s4fixture(events=32, recovery=True) as f:
                 s4closed(f, f.ids.visit_id, terminal='timeout')

@@ -767,6 +767,17 @@ retry cannot drop that restriction. Missing/uncertain effect evidence requires a
 hold; it never authorizes repeating an effect. No automatic recovery is launched.
 These are supported instruction duties, not new OS or tool isolation.
 
+The trusted recovery lineage section beside that restriction lists each
+predecessor visit, causal Held event and closure/cause kind, and applied control
+ID/event/action, newest first. These identities come from the same authenticated
+immutable rows and bounded read, including for a plain retry with no supplement.
+Separate `held` events supply their cause/closure; reducer-held `transition`
+events supply the authenticated decision reason with a null absent closure kind.
+Authored reasons and supplements remain task data. Rendering changes neither
+persisted task briefs/control digests nor historical event bytes. A live invocation
+keeps its instruction frozen before preparation; restart does not adopt or
+re-render an unsettled sequential native owner.
+
 U2 mounts the same bounded closed-visit sweep before startup workers and on the
 existing periodic reaper. It discovers terminal selected visits and receipt-backed
 unbound Q visits, then reuses U1 settlement and cancellation owners. Each causal

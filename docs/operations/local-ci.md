@@ -2598,6 +2598,20 @@ other scratch, pre-existing `pytest-of-*` tree, or historical backlog.
 
 ## Git hooks and evidence
 
+U3a recovery prompt selectors use the private schema venue:
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s4b=lineage_retry`
+(also 3.14). `lineage_rebrief`, `lineage_reassign`, `lineage_conflict` and
+`lineage_compatibility` observe real rendered trusted IDs, truthful supplement
+presence/absence, principal changes, chained conflict refusal, frozen invocation
+bytes and retained full-history/task-brief compatibility. The existing
+`recovery_read_only` case owns restriction/supplement inheritance across controls.
+`lineage_transition_retry`, `lineage_transition_rebrief`,
+`lineage_transition_reassign` and `lineage_transition_historical` cover completed
+callbacks reduced to Held transitions, recovery rendering and retained bytes;
+the historical case reloads a persisted replacement through `OrgState.load`.
+These are private writer/renderer checks; live pilot replay and executor lifecycle
+coverage remain separate.
+
 The project does not install/manage hooks for linked worktrees. Worktree-guard
 setup may remove only its known stale pre-PR607 injected hook configuration.
 Follow normal repository hooks; `--no-verify` and force push remain prohibited.

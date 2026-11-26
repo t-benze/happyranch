@@ -790,6 +790,12 @@ uncertain merge/effect to obtain a callback. Retry/rebrief cannot remove that
 restriction. Preserve original receipts, exact heads, uncertainty and spent
 allowances. An uncertain observation requires a hold. No new sandbox, access,
 live control, restart/deploy or automatic recovery authority follows.
+The adjacent trusted recovery lineage section identifies predecessor visits,
+causal Held events with closure/cause kinds, and applied control IDs/events/actions
+from authenticated immutable rows. It is present even on a plain retry without
+an initiator supplement; authored reasons and supplements remain task data.
+For reducer-held transitions, the cause kind is the authenticated decision reason
+and an absent closure kind is null; separate held events retain their cause/closure.
 
 ### Agent-owned Coding role duties (v3)
 
