@@ -568,6 +568,48 @@ class ManagedInstaller:
         except (OSError, InstallerError, ServiceManagerError):
             raise HomeUnitResetRefused("owned unit reset unconfirmed") from None
 
+    def _reset_failed_headscale_unit(self, *, require: Callable[[], None], removed: bool) -> None:
+        """Only receipt-bound ready restart or B6's verified fragment removal.
+
+        A not-found .service still has a Service interface; missing PID/cgroup
+        properties are an error, never an implied zero or empty value.
+        """
+        try:
+            require()
+            name = headscale.UNIT
+            if not removed and self.manager.show_properties(name, ("ActiveState",)).get("ActiveState") != "failed":
+                return
+            expected = dict(Id=name, Names=name,
+                FragmentPath="" if removed else str(self.root / _UNIT_DIR / name), DropInPaths="",
+                NeedDaemonReload="no", LoadState="not-found" if removed else "loaded", MainPID="0", ControlPID="0",
+                ControlGroup="", Job="")
+            keys = (*expected, "ActiveState", "SubState")
+            with self._publication_parent(_UNIT_DIR) as (parent, check):
+                def fragment() -> None:
+                    self._headscale_no_pending(parent, name)
+                    if removed:
+                        self._refuse_provision_entry(parent, name)
+                    elif self._read_unit(parent, name) != render_headscale_unit(home_transport=True).encode():
+                        raise InstallerError("Headscale reset fragment changed")
+                    check()
+                fragment()
+                props = self.manager.show_properties(name, keys)
+                if (any(props.get(key) != value for key, value in expected.items())
+                        or props.get("ActiveState") not in {"inactive", "failed"}
+                        or props.get("SubState") not in {"dead", "failed"}):
+                    raise InstallerError("Headscale reset quiescence unconfirmed")
+                if props["ActiveState"] == "failed":
+                    require()
+                    self.manager.reset_failed(name)
+                after = self.manager.show_properties(name, keys)
+                if (any(after.get(key) != value for key, value in expected.items())
+                        or after.get("ActiveState") != "inactive" or after.get("SubState") != "dead"):
+                    raise InstallerError("Headscale reset inactivity unconfirmed")
+                fragment()
+                require()
+        except (OSError, InstallerError, ServiceManagerError, headscale.HeadscaleServiceError):
+            raise HomeUnitResetRefused("owned unit reset unconfirmed") from None
+
     def inventory(self) -> InstallInventory:
         """Classify only fixed managed destinations without executing old inputs.
 
@@ -3007,6 +3049,7 @@ class ManagedInstaller:
                 # but never the staged/off inventory required after retirement.
                 try:
                     self._reset_failed_home_units(require=require)
+                    self._reset_failed_headscale_unit(require=require, removed=True)
                 except HomeUnitResetRefused:
                     # Return inside the held lock: its generic error adapter
                     # must not erase this fixed partial-cleanup cause.

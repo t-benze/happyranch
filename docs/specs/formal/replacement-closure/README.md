@@ -44,10 +44,11 @@ TASK-18883, TLC2.19 / OpenJDK21.0.13.1, workers1/fp0/seed1:
 
 ## Retained home-unit reset
 
-`HomeReset.tla` covers the additional Turn off and ready-restart callers. `fixed`
-is membership in the closed five-name UNITS tuple, `owned` abstracts the exact
-fragment/no-drop-in proof (or existing absent-unit proof), and `quiet` abstracts
-fresh PID/control PID/cgroup/job/substate observations. `authorized` includes the
+`HomeReset.tla` covers Turn off and ready-restart callers. `unit` distinguishes
+the fixed five-name UNITS set, Headscale and a foreign unit. `Fixed` permits
+Headscale for receipt-bound Turn off and ready restart; neither caller gains
+receipt-free recovery. `owned` abstracts the exact fragment/no-drop-in proof
+(or the B6-receipted Headscale removal/absence proof), and `quiet` abstracts fresh PID/control PID/cgroup/job/substate observations. `authorized` includes the
 caller's existing receipt, generation, custody and deadline fences. Status has
 no reset transition; failed resets cannot complete. This finite model does not
 prove filesystem races, systemd behavior or recovery of no-receipt stranded hosts.
@@ -59,3 +60,8 @@ TASK-19331 author check: TLC2.19/OpenJDK21.0.13.1, pinned v1.7.4 jar,
 workers1/fp0/seed1: home-reset.cfg exit0 (202 generated/distinct, queue0,
 depth3); home-reset-negative.cfg exit12 expected ResetBound violation
 (193 generated/distinct, depth2). No installed-systemd evidence is implied.
+
+TASK-19358 extends the reset set to Headscale: same pinned tools/arguments,
+home-reset.cfg exit0 (308 generated/distinct, queue0, depth3);
+home-reset-negative.cfg exit12 expected ResetBound violation
+(289 generated/distinct, depth2). Abstract evidence only.
