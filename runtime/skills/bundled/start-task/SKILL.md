@@ -776,6 +776,12 @@ refuse categorical HTTP422 without landing a callback. After original safe nativ
 closure, a blocked/failed or absent callback Holds; it never creates a success or
 replays an ended agent callback. Runtime business re-settlement is distinct from
 native execution recovery and grants the agent no replay authority.
+The runtime's bounded startup/periodic sweep re-enters only the business writer
+using authentic original closed evidence, including positive no-launch receipts.
+It never invokes an ended callback or reconstructs a SID/native owner. Pending
+inbox publication retries existing readiness; the independent five-minute daemon
+log alarm is observational. Sticky unknown remains unknown and unheld. Neither
+sweep nor alarm grants new control, execution, merge or budget authority.
 
 A trusted read-only reconciliation restriction from held control lineage takes
 precedence over authored node mutation/merge duties. Read existing evidence and

@@ -4523,3 +4523,55 @@ Original audit scope, sticky uncertainty and history work/byte/deadline limits s
 unchanged. This unit adds no sweep, alarm, provider effect or integration module.
 General integration stays skipped; live-host integration and ad hoc Product E2E
 remain forbidden by this brief. TLC uses the documented pinned task-scratch recipe.
+
+## Sequential closed-visit sweep and stall observation (U2)
+
+Use the existing private schema-shell venue on both Python 3.12 and 3.14:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_startup
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_delivery
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_alarm
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_safety
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_receipt
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_unknown
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_success_cancel
+```
+
+These cases extend S5 and run in the full aggregate. Startup and periodic mounts
+are actual production hooks, with a bounded one-tick periodic fixture. They check
+terminal T and original-owner receipt-backed Q discovery, atomic Held/inbox and
+SQL rollback/replay, exactly one causal item per run, five redeliveries without
+growth, missed notification publication through existing readiness, sticky
+journal unknown, and success/cancellation ownership. Native terminal/outer T
+receipts are synthetic private fixture facts; Q uses actual TaskInvocation P0
+receipt production. Synthetic control setup does not prove a genuine initiator
+callback. The fixed-clock logger case observes no DB mutation and still warns
+when authority/publication fail. It checks rate limiting and exact live-session
+suppression without sleeping. Partial pages/errors are never absence-of-stall
+proof. Retain U1 cause/ownership/read-only-lineage keepers unchanged.
+
+A copied-pilot done-test requires a fresh SQLite `.backup` from a read-only live
+source into task TMPDIR and byte-authenticated private authority/profile/roster
+mirrors matching the copied ready pointer. No fake capture, Save/Allow, pointer
+rewrite, fabricated callback/result/proof or source-session insertion is allowed.
+Only the private copy may be written. The opt-in case is excluded from all
+synthetic aggregates and requires explicit absolute private paths:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.12 WORKFLOW_PILOT_PRIVATE_ROOT=/absolute/task-tmp/private-home WORKFLOW_PILOT_COPY_DB=/absolute/task-tmp/private-home/runtime/orgs/happyranch/happyranch.db bash scripts/test-workflow-schema-load.sh --s5=pilot_copy
+```
+
+It rehydrates only an already-ready original authority cache, refuses an active
+publication journal and compares the captured bytes/digest to the copied pointer.
+It uses the shipping sweep, real history/writer/controls and a dry queue observer;
+no original initiator session/result is inserted. Exit 2 with NOT RUN identifies
+unavailable authentic authority closure; other executed failures remain failures.
+Actual A/B Held/inbox/control admissibility must be reported separately from synthetic S5; an unavailable authentic authority
+closure is NOT RUN, never a simulated done-test PASS. No DB/mirrors go in output.
+
+Run full schema suites and ordinary-authority omission on both Pythons, plus
+`scripts/local_ci.sh all`, as durable jobs at the exact committed head. Retain
+[TLC](../specs/formal/task-lifecycle/README.md#run-tlc) current/restart and negative
+controls. This adds no CI trigger/check, U3 module, ad hoc Product E2E or live
+recovery. General integration stays SKIPPED under THR-243.

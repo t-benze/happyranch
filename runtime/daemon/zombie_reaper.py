@@ -406,6 +406,10 @@ async def zombie_reaper_loop(
         uptime = t0 - boot_time
 
         for org in list(state.orgs_snapshot().values()):
+            # Independent business settlement/publication/alarm boundaries run
+            # even when ordinary reaping or another workflow owner fails.
+            from runtime.workflows.sequential_settlement import sweep_sequential
+            await sweep_sequential(org, state.queue)
             try:
                 await org.workflow_submissions.discover_completed_handoffs(state.queue)
                 from runtime.orchestrator.task_pause import discover_pause_work

@@ -195,6 +195,10 @@ async def discover_completed_workflow_handoffs(state: DaemonState) -> None:
         except Exception:
             # A held source remains durable; it is never coerced or relaunched.
             logging.getLogger(__name__).exception('completed workflow handoff remains pending for %s', org.slug)
+        # Terminal visits are absent from the ordinary nonterminal-task sweep.
+        # Run on the startup event loop before workers, without native recovery.
+        from runtime.workflows.sequential_settlement import sweep_sequential
+        await sweep_sequential(org, state.queue)
 
 
 @_startup_span("sweep")

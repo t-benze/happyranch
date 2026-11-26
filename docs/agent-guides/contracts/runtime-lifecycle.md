@@ -1333,12 +1333,49 @@ five redeliveries add nothing. Interrupted intent cannot reconstruct a positive
 receipt. Original unknowns, cancellation, safety predicates and history budgets
 are preserved. Storage failure retains the in-memory barrier; restart safety is
 unverified without durable original facts. Native execution reconstruction/retry
-remains unavailable. U2 owns startup/periodic business re-settlement and diagnostics;
-no such scan/alarm is installed by U1.
+remains unavailable. The U2 business sweep below consumes authentic closed
+evidence without reconstructing native execution.
 
 The older U3d-2 checkpoint below describes that original delivery. Its former
 blanket recovery limitation does not override this current original-owner closure
 and business-settlement distinction.
+
+## Sequential closed-visit rediscovery (U2 hardening)
+
+Before task workers start, `discover_completed_workflow_handoffs` calls the same
+`sequential_settlement.sweep_sequential` hook as the existing 30-second reaper.
+It traverses engine-v2 running runs in keyset pages of 32, including selected
+terminal native tasks omitted from ordinary recovery and unbound queued visits
+with original no-launch receipts. Progress text does not select candidates.
+Each candidate uses current authority, the original ownership tuple and the U1
+closure/history/atomic Held-inbox writer. Conflicting live invocation or persisted
+native journal obligations refuse; unknown is never cleared. Cancelling runs
+use the existing cancellation finish writer. One refusal rolls back that
+candidate and does not prevent later candidates, publication or observation.
+Cursors only aid traversal; restart rechecks the same durable history. Original
+pins, results, limits, spent counters and finite reader allowances remain intact.
+
+The continuation owner periodically retries committed visit outbox and initiator
+inbox publication in independent pages of 32. Its existing readiness, Pause,
+live/job/ordinary dependency barriers and `enqueue_if_absent` remain controlling.
+One causal event has exactly one durable inbox item for its recorded initiator;
+queue hints may be redelivered/coalesced across boots. Terminal/unavailable
+initiators are logged and never replaced by another recipient.
+
+An independent SELECT-only observer uses logger
+`happyranch.workflows.sequential_settlement`. For a non-Held unfinished run with
+no verified live session and an unchanged fingerprint for five minutes it emits
+one bounded `sequential_stall` warning per fingerprint. CAS/event, active visit,
+native status/result, SID and original evidence identities count as progress;
+heartbeats and queue redelivery do not. Time is monotonic; a valid terminal
+completion timestamp may seed prior age, otherwise observation begins now.
+Finished/Held observations retire; at most 4096 fingerprints are retained.
+Partial pages/capacity/read errors emit `observation_incomplete`; settlement and
+publication errors have separate diagnostics. No partial scan proves absence of
+stalls. Alarm execution needs neither authority nor wake success and changes no
+business data, notifications, settings or native custody. Missing liveness is
+not death proof. Eventual progress remains conditional on fair scans, storage,
+current authority and existing finite history capacity.
 
 ## Sequential launch ownership and backout (U3d-2)
 
@@ -1369,7 +1406,9 @@ or infer settlement. Existing U3d-1 settlement hunks remain byte-preserved.
 
 ### U3e-2 returned-only caller rediscovery
 
-Startup/dynamic attachment rediscovery has an explicit sequential-owner branch.
+This retained older-family return owner is separate from the U2 generic @2
+Held/inbox publication above. Startup/dynamic attachment rediscovery has an
+explicit sequential-owner branch.
 It independently validates complete history, discovers only actual committed
 `returned`/`run_return` obligations, and calls the same postcommit consumer as the
 terminal dispatcher tail. Terminal sources need this branch because ordinary
