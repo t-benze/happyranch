@@ -2,7 +2,7 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
-uv run --frozen --python 3.14 python - <<'PY'
+uv run --frozen --python "${WORKFLOW_SCHEMA_PYTHON:-3.14}" python - <<'PY'
 import asyncio
 import json
 import sqlite3
@@ -490,6 +490,9 @@ with tempfile.TemporaryDirectory(prefix='authority-omission-') as scratch:
             db.close()
     print('RESULT', len(cases) - len(failures), 'passed;', len(failures), 'failed;', len(cases), 'cases')
     print('NOT RUN: live-daemon/Product-E2E proof; no serving daemon or Product E2E invoked')
-    print('NOT RUN: successful workflow_start route and owned draft/f5/coding-attempt/seq_visit callbacks; require configured workflow/native launch and host evidence; no launch/evidence forging')
+    print('NOT RUN: successful workflow_start route and owned draft/f5/coding-attempt callbacks; require configured workflow/native launch and host evidence; no launch/evidence forging')
     assert not failures, failures
 PY
+
+# Reuse the configured released-workflow keeper for prompt/binding/route ownership.
+bash scripts/test-workflow-schema-load.sh --draft-review=U1_policy

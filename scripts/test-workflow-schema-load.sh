@@ -68,7 +68,7 @@ EXPECTED_REGISTERED_DEFINITIONS = (
      '7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2',
      'f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65'),
 )
-DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 35)) + ('caller_ledger',)
+DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 35)) + ('caller_ledger', 'U1_policy')
 draft_review_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--draft-review='):
     draft_review_case = sys.argv[1].split('=', 1)[1]
@@ -126,7 +126,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--s6a='):
     sys.argv[1:] = ['--assignments']
 S5_CASES = ('batch_all_or_none', 'source_outer_all_runs', 'hold_A_run_B', 'return_A_run_B',
     'duplicate_wake', 'crash_before_ack', 'crash_after_ack', 'source_with_ordinary_deps',
-    'later_sid_no_batch_settle')
+    'later_sid_no_batch_settle', 'u1_hold_atomicity')
 s5_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s5='):
     s5_case = sys.argv[1].split('=', 1)[1]
@@ -134,8 +134,9 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--s5='):
     sys.argv[1:] = ['--assignments']
 S4B_CASES = ('native_before_outer', 'failed_session_closed', 'generic_json', 'no_coding_witness',
     'private_recipient', 'exhausted_at_4094', 'launch_assignment_drift', 'v1_unchanged',
-    'task_failed_after_result', 'task_timed_out_after_result', 'shutdown_after_result', 'terminal_reason_causes',
-    'native_progress_prefix', 'cancel_fences_acceptance', 'read_budget_rollback')
+    'task_failed_after_result', 'task_timed_out_after_result', 'shutdown_after_result', 'terminal_reason_causes', 'legacy_cause_history',
+    'native_progress_prefix', 'cancel_fences_acceptance', 'read_budget_rollback',
+    'native_status_clean_exit', 'clean_exit_no_callback', 'terminal_fallback', 'nonrender_launch_failure', 'recovery_read_only')
 s4b_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s4b='):
     s4b_case = sys.argv[1].split('=', 1)[1]
@@ -2516,7 +2517,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             with ExitStack() as f.cursor_patches:
                 yield f
 
-    def s4closed(f, visit_id, *, summary=None, terminal='timeout', positive=True, native_status=None, classification=None, preserve_session=False):
+    def s4closed(f, visit_id, *, summary=None, terminal='timeout', positive=True, native_status=None, classification=None, preserve_session=False, callback_status='completed'):
         visit = s4row(f, 'workflow_seq_visits', visit_id)
         sid = visit['session_id'] if preserve_session else 'private-session-' + str(visit['ordinal'])
         f.conn.execute("UPDATE workflow_seq_visits SET session_id=?,state='running' WHERE id=?", (sid, visit_id))
@@ -2526,9 +2527,9 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         callback = None
         if summary is not None:
             result = f.conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,output_summary,created_at) VALUES (?,?,?,?,?,?)',
-                (visit['task_id'], visit['principal'], sid, 'completed', summary, '2026-11-19T00:00:00+00:00')).lastrowid
+                (visit['task_id'], visit['principal'], sid, callback_status, summary, '2026-11-19T00:00:00+00:00')).lastrowid
             callback = dict(task_id=visit['task_id'], principal=visit['principal'], session_id=sid,
-                result_id=result, status='completed', carrier_digest=hashlib.sha256(summary.encode('utf8')).hexdigest())
+                result_id=result, status=callback_status, carrier_digest=hashlib.sha256(summary.encode('utf8')).hexdigest())
         common = dict(task_id=visit['task_id'], principal=visit['principal'], session_id=sid)
         invocation = 'private-invocation-' + str(visit['ordinal'])
         _evidence(f.conn, f.ids.run_id, visit_id, 'terminal', dict(format='workflow-sequential-terminal@1',
@@ -3513,6 +3514,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 raise AssertionError(case + ': persisted event/native identity or projection was not authenticated: ' + str(exc)) from exc
             assert f.ids.run_id in persisted.run_ids, case + ': run missing from authenticated history'
         print('PASS S4a', case, 'real private writers/native rows; no provider or live cancellation', flush=True)
+    original_failure_rows = None
     for case in (S4B_CASES if s4b_case or not sys.argv[1:] else ()):
         if s4b_case not in (None, 'all', case):
             continue
@@ -3576,6 +3578,202 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             assert (run['visit_count'], run['recovery_count']) == (1, 0)
                             assert tuple(failed.conn.execute('SELECT * FROM workflow_seq_node_counters')) == counters
                             assert failed.ids.run_id in read_sequential_history(failed.conn, expected_org_slug='scratch').run_ids
+        elif case == 'recovery_read_only':
+            with s4fixture(events=32, recovery=True) as f:
+                s4closed(f, f.ids.visit_id, terminal='timeout')
+                assert s4baccept(f) is None
+                for index, action in enumerate(('rebrief', 'retry', 'reassign')):
+                    command = s4command(f, action)
+                    if action == 'rebrief':
+                        command['supplement'] = 'Report existing merge aab3a1ed1cebaa3ced659dc432539cbfdb993d76 only; never merge again.'
+                    receipt = json.loads(s4apply(f, command))
+                    visit = s4row(f, 'workflow_seq_visits', receipt['new_visit_id'])
+                    rendered = s4brender(f, visit)
+                    assert 'Trusted recovery restriction:' in rendered
+                    assert 'Any authored responsibility to merge, publish, deploy or repeat a mutation is suspended.' in rendered
+                    assert 'aab3a1ed1cebaa3ced659dc432539cbfdb993d76' in rendered
+                    assert rendered.index('Trusted recovery restriction:') < rendered.index('Sequential node data (untrusted authored JSON):')
+                    assert 'read_only_reconciliation' in f.db.get_task(visit['task_id']).brief
+                    s4closed(f, visit['id'], summary=s4bsummary('pause'), terminal='success', preserve_session=True,
+                        callback_status='blocked', classification='blocked', native_status='failed')
+                    assert s4baccept(f, visit['id']) is None
+                    assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                    print('PASS U1 immutable reconciliation lineage', action, 'trusted prompt restriction/supplement retained', flush=True)
+        elif case == 'nonrender_launch_failure':
+            async def original_failure_rows():
+                from runtime.orchestrator.task_pause import TaskInvocation, _invocation, settle_live
+                from runtime.orchestrator.executors import ExecutorResult
+                from runtime.orchestrator import run_step as worker
+                worker_rows = ('P1-throw', 'P1-executor-throw', 'P1-cleanup-unknown', 'P1-sticky-unknown')
+                for boundary in ('P0', 'P1-return', *worker_rows, 'U0', 'U1-return', 'U1-throw', 'P2-unproved', 'U2-return', 'U3', 'U4', 'close-fails', 'release-fails', 'receipt-fails'):
+                    with (s5fixture() if boundary in worker_rows else s4fixture()) as f:
+                        f.org.orchestrator._main_loop = asyncio.get_running_loop()
+                        if boundary in worker_rows:
+                            await asyncio.to_thread(s5release, f)
+                        task = f.db.get_task(f.ids.visit_task_id)
+                        dispatcher = f.org.workflow_sequential_dispatch
+                        if boundary in worker_rows:
+                            owner = await asyncio.to_thread(dispatcher.queue_started, task.id)
+                            inv = owner['invocation']
+                            assert inv.prepare_complete and not inv.preparation_effects_entered
+                            calls = []
+                            def early_throw(*args):
+                                calls.append(args)
+                                assert not inv.commit_entered and not inv.preparation_effects_entered
+                                if boundary == 'P1-sticky-unknown':
+                                    inv.move_reservation.failed_cleanup()
+                                raise RuntimeError('controlled original P1 exception')
+                            try:
+                                with ExitStack() as faults:
+                                    target = '_build_executor' if boundary == 'P1-executor-throw' else '_resolve_agent_def'
+                                    faults.enter_context(patch.object(inv.orch, target, early_throw))
+                                    if boundary == 'P1-cleanup-unknown':
+                                        # Fault the actual cleanup owner; its real wrapper must return unknown.
+                                        faults.enter_context(patch.object(worker, '_root_worktree_batch_impl',
+                                            side_effect=RuntimeError('controlled outer cleanup failure')))
+                                    try:
+                                        await asyncio.to_thread(worker.run_step_impl, inv.orch, task.id)
+                                    except RuntimeError as exc:
+                                        assert str(exc) == 'controlled original P1 exception'
+                                assert len(calls) == 1, (boundary, calls)
+                            finally:
+                                await asyncio.to_thread(dispatcher.queue_finished, task.id, owner)
+                        else:
+                            inv = TaskInvocation(f.org.orchestrator, task, task.assigned_agent,
+                                'original-failure-session', owner='sequential', workflow_dispatcher=dispatcher)
+                        if boundary in worker_rows:
+                            pass  # The actual worker already performed original outer settlement.
+                        elif boundary == 'P0':
+                            original_held = inv.store.held_uncommitted
+                            calls = []
+                            def fail_before_reservation(task_id):
+                                calls.append(task_id)
+                                if len(calls) == 1:
+                                    raise RuntimeError('controlled original pre-reservation failure')
+                                return original_held(task_id)
+                            with patch.object(inv.store, 'held_uncommitted', fail_before_reservation):
+                                try: await asyncio.to_thread(inv.prepare)
+                                except RuntimeError: pass
+                        elif boundary == 'U0':
+                            original_reserve = inv.orch._team_moves.reserve_task_uncommitted
+                            def uncertain_reserve(owner):
+                                original_reserve(owner)
+                                raise RuntimeError('original reserve returned uncertain')
+                            with patch.object(inv.orch._team_moves, 'reserve_task_uncommitted', uncertain_reserve):
+                                try: await asyncio.to_thread(inv.prepare)
+                                except RuntimeError: pass
+                        else:
+                            inv.prepare()
+                            if boundary.startswith(('U1', 'U2', 'P2')):
+                                with inv.preparation_effects():
+                                    pass
+                            if boundary == 'U4':
+                                assert await asyncio.to_thread(inv.commit)
+                            if boundary == 'U3':
+                                with patch.object(inv.store, 'held_uncommitted', side_effect=RuntimeError('launch writer failed')):
+                                    try: await asyncio.to_thread(inv.commit)
+                                    except RuntimeError: pass
+                            def failed_impl(*args, **kwargs):
+                                if boundary.endswith('throw') or boundary == 'U3':
+                                    raise RuntimeError('controlled original failure')
+                                return ExecutorResult(success=False, duration_seconds=0, session_id=inv.session_id), None
+                            token = _invocation.set(inv)
+                            try:
+                                with patch.object(inv.orch, '_run_agent_impl', failed_impl):
+                                    try: await asyncio.to_thread(inv.orch._run_agent, task.id, task.assigned_agent, task.brief)
+                                    except RuntimeError: pass
+                            finally:
+                                _invocation.reset(token)
+                            with ExitStack() as faults:
+                                if boundary == 'close-fails':
+                                    faults.enter_context(patch.object(inv, 'close', side_effect=RuntimeError('native close failed')))
+                                if boundary == 'release-fails':
+                                    faults.enter_context(patch.object(inv.orch._team_moves, 'release_task', side_effect=RuntimeError('native release failed')))
+                                if boundary == 'receipt-fails':
+                                    from runtime.workflows import sequential_launch_failures as failure_owner
+                                    append = failure_owner._append
+                                    def failed_receipt(conn, body):
+                                        if body['stage'] == 'closed': raise RuntimeError('receipt storage failed')
+                                        return append(conn, body)
+                                    faults.enter_context(patch.object(failure_owner, '_append', failed_receipt))
+                                try:
+                                    await asyncio.to_thread(settle_live, inv, failed=boundary.endswith('throw'),
+                                        cleanup=SimpleNamespace(kind='safe', processes=[]))
+                                except RuntimeError:
+                                    assert boundary in ('close-fails', 'release-fails', 'receipt-fails')
+
+                        run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                        receipts = [json.loads(r[0]) for r in f.conn.execute(
+                            "SELECT payload FROM audit_log WHERE action='workflow_seq_native_launch_failure' ORDER BY id")]
+                        positive = boundary in ('P0', 'P1-return', 'P1-throw', 'P1-executor-throw')
+                        assert run['state'] == ('held' if positive else 'running'), (boundary, run, receipts)
+                        assert [r['stage'] for r in receipts] == (['intent', 'closed'] if positive else ['intent', 'unsettled'] if boundary in ('close-fails', 'release-fails', 'receipt-fails') else ['unsettled']), (boundary, receipts)
+                        assert f.db.get_task(task.id).current_session_id == (inv.session_id if boundary == 'U4' else None)
+                        assert f.conn.execute('SELECT count(*) FROM task_results WHERE task_id=?', (task.id,)).fetchone()[0] == 0
+                        native = deepcopy(inv.store.row_uncommitted(inv.store.root_uncommitted(task.id)['id']))
+                        before = s4snap(f)
+                        if boundary in worker_rows:
+                            queued = tuple(f.queue._queue._queue)
+                            assert sum(item[1] == f.source.id for item in queued) == int(positive), (boundary, queued)
+                            current = f.db.get_task(task.id)
+                            assert current.status == 'pending' and current.orchestration_step_count == task.orchestration_step_count
+                        for delivery in range(5):
+                            assert not dispatcher.queue_admission_allowed(task.id), (boundary, delivery)
+                            dispatcher.notify_queued(task.id, SimpleNamespace(enqueue_if_absent=lambda *args: (_ for _ in ()).throw(AssertionError('failure requeued'))))
+                        assert s4snap(f) == before
+                        if boundary in worker_rows:
+                            assert tuple(f.queue._queue._queue) == queued, (boundary, 'duplicate initiator wake')
+                        assert inv.store.row_uncommitted(inv.store.root_uncommitted(task.id)['id']) == native
+                        assert f.conn.execute("SELECT count(*) FROM audit_log WHERE action='workflow_seq_native_launch_failure'").fetchone()[0] == len(receipts)
+                        if positive:
+                            event = json.loads(f.conn.execute("SELECT event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()[0])
+                            assert event['cause'] == 'launch_failed_before_start', (boundary, event)
+                            assert f.conn.execute("SELECT count(*) FROM workflow_seq_events WHERE kind='held'").fetchone()[0] == 1
+                            inbox = [tuple(row) for row in f.conn.execute('SELECT initiator_task_id,run_id FROM workflow_seq_inbox')]
+                            assert inbox == ([(f.source.id, f.ids.run_id)] if boundary in worker_rows else []), (boundary, inbox)
+                            assert not any(e['id'] == inv.identity for e in ([] if native is None else native['journal']['entries']))
+                            assert inv.identity not in inv.orch._team_moves._reservations
+                            assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                        else:
+                            assert f.conn.execute("SELECT count(*) FROM workflow_seq_events WHERE kind='held'").fetchone()[0] == 0
+                            assert f.conn.execute('SELECT count(*) FROM workflow_seq_inbox').fetchone()[0] == 0
+                            assert any(e['id'] == inv.identity and e['phase'] == 'unknown' and e['context']['execution_unknown'] for e in native['journal']['entries'])
+                        print('PASS U1 original boundary', boundary, 'five delivery checks; native receipts/no growth; provider NOT RUN', flush=True)
+        elif case == 'terminal_fallback':
+            with s4fixture() as f:
+                s4closed(f, f.ids.visit_id, summary=s4bsummary('pause'), terminal='success',
+                    native_status='failed', classification='blocked', callback_status='blocked')
+                with patch('runtime.workflows.sequential_business_hold._specific_generic_hold_cause', return_value=None):
+                    assert s4baccept(f) is None
+                event = json.loads(f.conn.execute("SELECT event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()[0])
+                assert event['cause'] == 'terminal_outcome_unhandled', event
+                assert event['closure']['result_id'] is not None
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                before = s4snap(f)
+                assert s4baccept(f) is None and s4snap(f) == before
+        elif case in ('native_status_clean_exit', 'clean_exit_no_callback'):
+            statuses = ('blocked', 'failed') if case == 'native_status_clean_exit' else (None,)
+            for status in statuses:
+                for malformed in ((False, True) if status else (False,)):
+                    with s4fixture() as f:
+                        summary = None if status is None else ('{bad callback' if malformed else s4bsummary('pause'))
+                        s4closed(f, f.ids.visit_id, summary=summary, terminal='success', native_status='failed',
+                            classification=status or 'unknown', callback_status=status)
+                        f.conn.execute('UPDATE task_results SET confidence_score=80 WHERE confidence_score IS NULL')
+                        f.conn.commit()
+                        results = tuple(tuple(row) for row in f.conn.execute('SELECT * FROM task_results'))
+                        counters = tuple(tuple(row) for row in f.conn.execute('SELECT * FROM workflow_seq_node_counters'))
+                        assert s4baccept(f) is None
+                        event = json.loads(f.conn.execute("SELECT event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()[0])
+                        assert event['cause'] == ('missing_callback' if status is None else 'task_' + status + '_after_clean_exit'), event
+                        assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['state'] == 'held'
+                        assert not f.conn.execute('SELECT 1 FROM workflow_seq_outputs').fetchall()
+                        assert tuple(tuple(row) for row in f.conn.execute('SELECT * FROM task_results')) == results
+                        assert tuple(tuple(row) for row in f.conn.execute('SELECT * FROM workflow_seq_node_counters')) == counters
+                        before = s4snap(f)
+                        assert s4baccept(f) is None and s4snap(f) == before
+                        assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                        print('PASS U1', case, status, malformed, 'Held/no allocation/replay', flush=True)
         elif case == 'terminal_reason_causes':
             from runtime.platform.session_backend import TerminalReason
             from runtime.workflows.sequential_business_hold import generic_hold_cause
@@ -3589,14 +3787,62 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
                         visit = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
                         if reason in ('success', 'unknown-native'):
-                            s4refuses(f, lambda: generic_hold_cause(f.conn, run=run, visit=visit,
-                                compiled=f.compiled, budget=seq_history._ReadBudget()), 'hold_cause_unavailable')
+                            cause, proof = generic_hold_cause(f.conn, run=run, visit=visit,
+                                compiled=f.compiled, budget=seq_history._ReadBudget())
+                            assert cause == ('missing_callback' if reason == 'success' and summary is None else 'terminal_outcome_unhandled')
                         else:
                             cause, proof = generic_hold_cause(f.conn, run=run, visit=visit,
                                 compiled=f.compiled, budget=seq_history._ReadBudget())
                             expected = 'task_timed_out' if reason == 'timeout' else 'task_failed'
                             assert cause == expected + ('_without_result' if summary is None else '_after_result'), (reason, cause)
                             assert (proof['result_id'] is None) == (summary is None)
+        elif case == 'legacy_cause_history':
+            from runtime.workflows import sequential_business_hold as causes
+            # Historical input labels come from the pre-U1 cause table. The fixture
+            # writer is patched only to persist those original labels; the actual
+            # schema reader below runs unpatched against byte-unchanged saved rows.
+            legacy_rows = (
+                ('unknown_outcome', 'success', s4bsummary('REVISE')),
+                ('result_bad_shape', 'success', ''),
+                ('result_bad_shape', 'success', '{bad callback'),
+                ('result_too_large', 'success', s4bsummary(content=b'x' * 49153)),
+                ('revision_limit_exhausted', 'success', s4bsummary('revise')),
+                ('task_timed_out_after_result', 'timeout', s4bsummary()),
+                ('task_failed_after_result', 'failure', s4bsummary()),
+            )
+            for status in ('blocked', 'failed'):
+                for saved_cause, reason, summary in legacy_rows:
+                    with s4fixture() as f:
+                        s4closed(f, f.ids.visit_id, summary=summary, terminal=reason,
+                            native_status='failed', classification=status, callback_status=status)
+                        proof = causes.generic_closed_visit(f.conn,
+                            run=s4row(f, 'workflow_seq_runs', f.ids.run_id),
+                            visit=s4row(f, 'workflow_seq_visits', f.ids.visit_id), budget=seq_history._ReadBudget())
+                        with patch.object(causes, 'generic_hold_cause', return_value=(saved_cause, proof)):
+                            assert s4baccept(f) is None
+                        before = tuple(f.conn.iterdump())
+                        try:
+                            read_workflow_schema_for_org_load(f.conn, expected_org_slug='scratch')
+                        except ValueError as exc:
+                            raise AssertionError((case, 'legacy schema load rejected', status, saved_cause, str(exc))) from exc
+                        assert tuple(f.conn.iterdump()) == before, (case, 'history rewritten', status, saved_cause)
+                        event = json.loads(f.conn.execute("SELECT event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()[0])
+                        assert event['cause'] == saved_cause and event['closure'] == proof
+                        print('PASS U1 legacy saved cause/schema reader', status, saved_cause, 'unchanged rows', flush=True)
+                # A saved specialized label is not sufficient: its original output
+                # predicate must still hold, even with a valid negative callback.
+                for saved_cause in ('unknown_outcome', 'result_bad_shape', 'result_too_large', 'revision_limit_exhausted'):
+                    with s4fixture() as f:
+                        s4closed(f, f.ids.visit_id, summary=s4bsummary(), terminal='success',
+                            native_status='failed', classification=status, callback_status=status)
+                        proof = causes.generic_closed_visit(f.conn,
+                            run=s4row(f, 'workflow_seq_runs', f.ids.run_id),
+                            visit=s4row(f, 'workflow_seq_visits', f.ids.visit_id), budget=seq_history._ReadBudget())
+                        with patch.object(causes, 'generic_hold_cause', return_value=(saved_cause, proof)):
+                            assert s4baccept(f) is None
+                        s4refuses(f, lambda: read_workflow_schema_for_org_load(f.conn, expected_org_slug='scratch'),
+                            'workflow_seq_generic_hold_proof_conflict')
+                        print('PASS U1 legacy predicate refusal', status, saved_cause, flush=True)
         elif case == 'native_progress_prefix':
             with s4fixture() as f:
                 visit = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
@@ -3772,7 +4018,8 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             assert f.db.get_task(f.source.id) == f.source, case + ': S5 source behavior leaked'
                     if case != 'exhausted_at_4094':
                         assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
-        print('PASS S4b', case, 'real private production boundary; native multi-process NOT RUN', flush=True)
+        if case != 'nonrender_launch_failure':
+            print('PASS S4b', case, 'real private production boundary; native multi-process NOT RUN', flush=True)
     # S5 extends the existing private assignment/native fixture. Real SQL
     # transactions and TaskQueue insertion are observed; no provider is launched.
     from copy import deepcopy
@@ -3909,8 +4156,44 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             f.conn.rollback()
             raise
 
+    # The P1 worker cases reuse S5's real initiator/batch fixture. Run the
+    # S4b table after that fixture is defined, including in the full aggregate.
+    if original_failure_rows is not None:
+        asyncio.run(original_failure_rows())
+        print('PASS S4b nonrender_launch_failure real private production boundary; native multi-process NOT RUN', flush=True)
+
     for case in (S5_CASES if s5_case or not sys.argv[1:] else ()):
         if s5_case not in (None, 'all', case):
+            continue
+        if case == 'u1_hold_atomicity':
+            for status in ('blocked', 'failed', None):
+                with s5fixture() as f:
+                    s5release(f)
+                    s4closed(f, f.ids.visit_id, summary=None if status is None else s4bsummary('pause'),
+                        terminal='success', native_status='failed', classification=status or 'unknown', callback_status=status)
+                    f.conn.execute('UPDATE task_results SET confidence_score=80 WHERE confidence_score IS NULL')
+                    f.conn.commit()
+                    before = s5snap(f)
+                    f.conn.set_authorizer(lambda action, table, *args: sqlite3.SQLITE_DENY
+                        if action == sqlite3.SQLITE_INSERT and table == 'workflow_seq_events' else sqlite3.SQLITE_OK)
+                    try:
+                        try: s4baccept(f)
+                        except sqlite3.DatabaseError: pass
+                        else: raise AssertionError('Held event SQL fault was not observed')
+                    finally:
+                        f.conn.set_authorizer(None)
+                    assert s5snap(f) == before, 'inbox escaped rolled-back Held transaction'
+                    with patch('runtime.workflows.sequential_business_hold._specific_generic_hold_cause', return_value=None):
+                        assert s4baccept(f) is None
+                    held = f.conn.execute("SELECT id,event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()
+                    assert json.loads(held[1])['cause'] == 'terminal_outcome_unhandled'
+                    inbox = f.conn.execute('SELECT initiator_task_id,event_id FROM workflow_seq_inbox').fetchall()
+                    assert [tuple(row) for row in inbox] == [(f.source.id, held[0])]
+                    assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                    before = s5snap(f)
+                    assert s4baccept(f) is None and s5snap(f) == before
+                    assert SequentialDispatcher(f.org).queue_admission_allowed(f.batch_ids[1].visit_task_id)
+                    print('PASS U1 atomic Held/inbox fallback replay', status, flush=True)
             continue
         if case == 'batch_all_or_none':
             with s5fixture(admitted=False) as f:
@@ -7904,8 +8187,10 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 parse_error=exc
                 if rejected is None: raise
             if rejected is not None:
-                assert parse_error is not None and str(parse_error)==rejected,(rejected,parse_error)
-                print('C16 existing ASGI parser exception',rejected,'(unhandled server error, not HTTP4xx)',flush=True)
+                assert parse_error is None, (rejected, parse_error, 'expected categorical HTTP422')
+                assert response.status_code == 422, response.text
+                assert response.json()['detail']['code'] == 'workflow_sequential_callback_invalid', response.text
+                print('C16 categorical ASGI refusal', rejected, 'HTTP422; zero result', flush=True)
                 assert f.db.get_latest_task_result(visit['task_id'],visit['principal'],sid) is None
                 assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs WHERE visit_id=?',(visit['id'],)).fetchone()[0]==0
                 assert s4row(f,'workflow_seq_runs',run_id)['visit_count']==run['visit_count']
@@ -8823,6 +9108,60 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             finally:
                 state.metrics_store.close(); state.direct_connect_authority_store.close()
 
+    async def dr_manager_policy():
+        from runtime.orchestrator.executors import ExecutorResult
+        from runtime.orchestrator.task_pause import _invocation
+        from runtime.orchestrator.active_authority_policy import load_session_policy_binding
+        async with dr_fixture(launch=True) as f:
+            run = (await dr_start(f, ('release/happyranch/coding',)))[0]
+            for outcome in ('produced', 'APPROVE', 'PASS'):
+                await dr_visit(f, run['id'], outcome)
+            run = dr_select(f, run['id'])
+            visit = s4row(f, 'workflow_seq_visits', run['active_visit_id'])
+            task = f.db.get_task(visit['task_id'])
+            assert f.org.teams.is_team_manager(task.assigned_agent)
+            workspace = f.root / 'workspaces' / task.assigned_agent
+            workspace.mkdir(parents=True, exist_ok=True)
+            (workspace / 'AGENTS.md').write_text('Private policy fixture. Follow the bound node callback.\n')
+            (workspace / 'CLAUDE.md').symlink_to('AGENTS.md')
+            marker = f.org.orchestrator._readiness_marker(workspace, 'codex')
+            marker.parent.mkdir(parents=True, exist_ok=True); marker.write_text('private initialized marker')
+            inv = TaskInvocation(f.org.orchestrator, task, task.assigned_agent, 'final-original-session',
+                owner='sequential', workflow_dispatcher=f.dispatcher)
+            inv.prepare()
+            prompts = []
+            def launch(**kwargs):
+                prompts.append(kwargs['full_prompt'])
+                assert inv.commit()
+                binding = load_session_policy_binding(db=f.db, task_id=task.id,
+                    session_id=inv.session_id, agent_name=inv.agent)
+                assert binding is None, binding
+                return ExecutorResult(success=True, duration_seconds=0, session_id=inv.session_id)
+            token = _invocation.set(inv)
+            try:
+                with patch.object(inv.orch, '_launch_agent_with_scratch', launch):
+                    await asyncio.to_thread(inv.orch._run_agent, task.id, task.assigned_agent, task.brief)
+            finally:
+                _invocation.reset(token)
+            assert prompts and 'Omit decision, waiting_on_job_ids, and manager_self_evaluation' in prompts[0]
+            assert '## [RESERVED] Active Team Escalation Policy' not in prompts[0]
+            summary = s4bytes(dict(format='workflow-sequential-callback@2', outcome='merged',
+                content_base64=base64.b64encode(b'{"report":"existing effect only"}').decode(), findings=[])).decode()
+            payload = dict(agent=inv.agent, session_id=inv.session_id, status='completed', confidence=80, output_summary=summary)
+            for value in (None, {}, {'looks': 'valid'}):
+                before = dr_inventory(f)
+                response = await f.client.post('/api/v1/orgs/scratch/tasks/' + task.id + '/completion',
+                    headers=f.auth, json=dict(payload, manager_self_evaluation=value))
+                assert response.status_code == 400 and response.json()['detail']['code'] == 'manager_self_evaluation_not_available', response.text
+                assert dr_inventory(f) == before
+            response = await f.client.post('/api/v1/orgs/scratch/tasks/' + task.id + '/completion', headers=f.auth, json=payload)
+            assert response.status_code == 200, response.text
+            row = f.db.get_latest_task_result(task.id, inv.agent, inv.session_id)
+            assert row['decision_json'] is None
+            assert f.db.get_authority_policy_v2_attempt_for_result(row['id']) is None
+            f.org.sessions.clear_if_active_session(task.id, inv.agent, inv.session_id)
+            print('PASS U1 manager policy: actual Final prompt, launch binding and route; null/object presence rejected; omitted accepted; ordinary source v2 retained', flush=True)
+
     async def dr_coding_launch():
         snapshot = os.environ.get('WORKFLOW_CODING_QUEUED_DB')
         if snapshot:
@@ -9035,7 +9374,9 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
     if draft_review_case:
         for case in DRAFT_REVIEW_CASES:
             if draft_review_case in ('all',case):
-                if case == 'C27':
+                if case == 'U1_policy':
+                    asyncio.run(dr_manager_policy())
+                elif case == 'C27':
                     asyncio.run(dr_first_launch(snapshot=os.environ.get('WORKFLOW_QUEUED_DB')))
                 elif case == 'C28':
                     asyncio.run(dr_render_tuples())

@@ -48,6 +48,7 @@ Coding v3 has additive Founder Workflows → Setup Save and separate Allow/Disab
 
 - Task-local and manager-handoff `model`/`reasoning_effort`, retry carry and explicit clear: [THR-356 contract](docs/specs/2026-11-13-task-model-reasoning-overrides.md).
 
+- Persisted sequential-visit ownership precedes ordinary decision/policy behavior, including manager Final; see [lifecycle boundaries](docs/agent-guides/contracts/runtime-lifecycle.md#sequential-original-owner-failure-boundaries-u1-hardening).
 - Task owners (`task_type='task'`) produce `decision` blocks; delegated subtask agents (`task_type='subtask'`) produce plain completions. Prose uses "task owner" and "subtask agent" rather than "team manager"/"worker".
 - Only root tasks (`parent_task_id is None`) escalate to the founder; non-root tasks fail and hand back to their parent (bounded recovery carries it up).
 - Manager supersession creates a successor only for an eligible, still-current root. A still-current non-root manager task that returns `supersede` fails with a `manager supersede refused: non-root task ...` note and wakes its parent; it creates no successor or `manager_supersessions` row.

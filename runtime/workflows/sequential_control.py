@@ -286,11 +286,14 @@ def apply_control_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug:
             supplement = command.supplement if command.supplement is not None else prior_supplement
             original_visit = min((item for item in data['workflow_seq_visits'] if item['node_id'] == previous['node_id']),
                                  key=lambda item: item['ordinal'])
+            from runtime.workflows.sequential_briefs import recovery_context
+            readonly, _ = recovery_context(conn, run, previous, budget, held_event_id=run['held_event_id'])
             brief = _bytes(dict(format='workflow-sequential-recovery-brief@2', original_request=start.request,
                 node=node.id, role=node.role, responsibilities=list(node.responsibilities),
                 original_step_brief=db.get_task(original_visit['task_id']).brief,
                 selected_input_digest=previous['input_selection_digest'], supplement=supplement,
-                reason=command.reason, effect_disposition='unverified')).decode('utf8')
+                reason=command.reason, effect_disposition='unverified',
+                read_only_reconciliation=readonly)).decode('utf8')
             replacement_task = task.model_copy(update={'brief': brief})
             payload.update(replaced_visit_id=previous['id'], new_visit_id=new_visit,
                 assignment=dict(value=assignment, authority=capture.authority_snapshot), supplement=supplement,
