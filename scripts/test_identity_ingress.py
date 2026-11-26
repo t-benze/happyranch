@@ -223,9 +223,14 @@ def test_exact_unit_hardening_parity(home_transport: bool, customized: bool) -> 
     spec = ConnectorUnitSpec(user="happyranch", group="happyranch", release_verifier=True)
     legacy = render_connector_unit(spec).splitlines()
     modern = render_connector_unit(replace(spec, ingress_profile="linux-managed-identity-v1")).splitlines()
-    assert [line for line in modern if line != "RuntimeDirectoryMode=0700"] == legacy
+    assert legacy.count("StartLimitIntervalSec=300") == 1
+    assert [line.replace("StartLimitIntervalSec=0", "StartLimitIntervalSec=300")
+            for line in modern if line != "RuntimeDirectoryMode=0700"] == legacy
     assert modern.count("RuntimeDirectoryMode=0700") == 1
-    assert tuple(line for line in modern if "=" in line and line != "RuntimeDirectoryMode=0700") == _BASE_CONNECTOR_DIRECTIVES
+    assert modern.count("StartLimitIntervalSec=0") == 1
+    assert tuple(line for line in modern if "=" in line and line != "RuntimeDirectoryMode=0700") == tuple(
+        "StartLimitIntervalSec=0" if line == "StartLimitIntervalSec=300" else line
+        for line in _BASE_CONNECTOR_DIRECTIVES)
     sidecar_spec = SidecarUnitSpec()
     base_unit = _BASE_SIDECAR_UNIT
     base_directives = _BASE_SIDECAR_DIRECTIVES

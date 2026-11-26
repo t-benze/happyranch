@@ -18,7 +18,7 @@ from runtime.remote_access.home_activation_txn import CONFIG_MEMBERS, HomeActiva
 from runtime.remote_access.home_live_config import _addition, render_home_live_configs
 from runtime.remote_access.home_unit_gate import HomeUnitGate
 from runtime.remote_access.invite_issuer import HomeInviteConfigRecord
-from runtime.remote_access.installer import InstallerError, ManagedInstaller, UNITS, managed_units
+from runtime.remote_access.installer import InstallerError, ManagedInstaller, UNITS, managed_units, previous_connector_unit
 from runtime.remote_access.systemd_unit import (
     SidecarUnitSpec, render_headscale_unit, render_sidecar_unit,
 )
@@ -242,6 +242,17 @@ class HomeProfileAdmission:
     def observed_units(self, admitted: HomeAdmission) -> dict[str, str]:
         """Comparison only; E2b owns first publication/selection under intent."""
         units = managed_units(self.io.layout, connector_config=self.io._json(admitted.files["connector.json"]))
+        # Comparison only: preserve exact historical product bytes until the
+        # existing fresh-auth ready Enable republishes them under its flock.
+        with self.io._publication_parent("etc/systemd/system") as (parent, check):
+            previous = previous_connector_unit(units[UNITS[0]])
+            try:
+                observed = self.io._read_unit(parent, UNITS[0])
+            except FileNotFoundError:
+                observed = None  # Existing removal inventory owns absence.
+            if observed == previous.encode():
+                units[UNITS[0]] = previous
+            check()
         binary = f"/opt/{'happyranch-desktop' if self.io.layout == 'deb' else 'happyranch'}/bin/happyranch-tsnet-sidecar"
         legacy = units[UNITS[1]]
         units[UNITS[1]] = render_sidecar_unit(SidecarUnitSpec(binary_path=binary, home_transport=True))

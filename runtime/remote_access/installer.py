@@ -232,6 +232,15 @@ class ReplacementInventory:
     inventory_generation: str | None = None
 
 
+def previous_connector_unit(current: str) -> str:
+    """Exact d05afaac/98a87688 connector bytes from the fixed current renderer.
+
+    Callers supply generated text, never an observed or caller-selected unit.
+    All other directives, including the complete hardening, are identical.
+    """
+    return current.replace("StartLimitIntervalSec=0\n", "StartLimitIntervalSec=300\n", 1)
+
+
 def managed_units(layout: str = "source", *, connector_config: dict | None = None) -> dict[str, str]:
     """Use the shared renderers verbatim, including sidecar credential injection."""
     if layout not in ("source", "deb"):

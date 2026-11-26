@@ -1763,6 +1763,48 @@ def test_thr327_ready_repairs_policy_unit_and_timer(
     assert len(v.mints) == 1
 
 
+@pytest.mark.parametrize('failed', [False, True])
+def test_thr327_ready_connector_retry_upgrade(composition: Any, monkeypatch: pytest.MonkeyPatch, failed: bool) -> None:
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    unit = v.path('/etc/systemd/system/' + adapters._CONNECTOR)
+    current = managed_units(v.io.layout, connector_config={'managed': {'profile': 'linux-managed-identity-v1'}})[adapters._CONNECTOR]
+    previous = current.replace('StartLimitIntervalSec=0\n', 'StartLimitIntervalSec=300\n', 1).encode()
+    # Independent digest of bda86a149's exact deb-layout managed rendering.
+    assert hashlib.sha256(previous).hexdigest() == 'd620b41f37777518231d8b4e404529767d85f860e88c8af589087cf3515ce0e7'
+    put(unit, previous, 0o644)
+    if failed:
+        v.states[adapters._CONNECTOR] = 'failed'
+        v.states[adapters._SIDECAR] = 'inactive'
+    native = v.io.manager._run
+    def run(args: list[str], **kw: Any) -> tuple[int, str]:
+        code, output = native(args, **kw)
+        if args[:3] == ['systemctl', 'start', adapters._CONNECTOR]:
+            # Native Upholds restarts its inactive sidecar after readiness.
+            v.states[adapters._SIDECAR] = 'active'
+        if failed and args[:3] == ['systemctl', 'show', adapters._CONNECTOR] and v.states[adapters._CONNECTOR] == 'failed':
+            output = output.replace('Result=success', 'Result=timeout')
+        return code, output
+    monkeypatch.setattr(v.io.manager, '_run', run)
+    ready, txn = v.path(ACTIVATION_PATH).read_bytes(), v.path(TRANSACTION_PATH).read_bytes()
+    calls = len(v.calls)
+    # Read-only capture recognizes historical bytes without changing them.
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert unit.read_bytes() == previous and len(v.calls) == calls
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    assert 'StartLimitIntervalSec=0\n' in unit.read_text()
+    assert unit.read_bytes() == current.encode()
+    assert ['daemon-reload'] in v.calls[calls:]
+    if failed:
+        assert v.calls[calls:].index(['daemon-reload']) < v.calls[calls:].index(['reset-failed', adapters._CONNECTOR])
+        assert v.states[adapters._CONNECTOR] == v.states[adapters._SIDECAR] == 'active'
+    assert v.path(ACTIVATION_PATH).read_bytes() == ready and v.path(TRANSACTION_PATH).read_bytes() == txn
+    assert len(v.mints) == 1
+
+
 @pytest.mark.parametrize('minted', [False, True])
 def test_thr327_failed_enable_recovery_without_replay(composition: Any, monkeypatch: pytest.MonkeyPatch, minted: bool) -> None:
     v = composition

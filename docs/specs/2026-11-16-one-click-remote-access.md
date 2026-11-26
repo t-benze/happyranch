@@ -418,6 +418,24 @@ connector checks kernel peer credentials before any trust mutation.
 
 ## 4. Generated inventory and custody
 
+TASK-19401 daemon outage retry: only the managed Linux identity connector's
+`StartLimitIntervalSec` changes from 300 to 0. Restart-on-failure, one-second
+restart delay, each 120-second start attempt, the watchdog, hardening and full
+pre-listener readiness remain. Daemon absence is never readiness or permission
+to serve; after restoration the connector retries without a button and its
+unchanged Upholds/BindsTo sidecar dependency recovers. Allow the existing two
+startup budgets plus polling/delay (250 seconds) with all other gates healthy;
+installed-systemd validation is separate.
+
+For an already-READY d05afaac/98a87688 host, package upgrade alone retains the
+old connector unit and old failure behaviour. Fresh-auth Turn on again
+republishes only its exact previous rendering through the existing pinned-parent
+unit publisher under ready receipt/G/O/custody/deadline checks, reloads, then
+uses the existing reset/start/joined path. No receipt or transaction rewrite,
+mint, replay or new recovery admission. A renewal-unit property mismatch still
+refuses, now logging only the fixed unit kind and property name. Its actual
+VM cause must be observed; it is not silently assumed to be stale reload state.
+
 All persistent writes use literal no-follow parents, bounded regular single-link files, exclusive
 temporary writes, fsync + descriptor-relative rename. Existing unsafe metadata refuses, never
 chmod/chown a foreign tree into acceptance. `root:hr` means root:`happyranch`; `hr:hr` means

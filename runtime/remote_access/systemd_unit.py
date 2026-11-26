@@ -134,7 +134,13 @@ def render_connector_unit(spec: ConnectorUnitSpec) -> str:
     lines.append("Description=HappyRanch remote-access connector (supervised Linux home connector)")
     lines.append("After=network-online.target")
     lines.append("Wants=network-online.target")
-    lines.extend(_START_LIMIT)
+    # A missing desktop daemon is an ordinary, potentially long startup wait.
+    # BindsTo/Upholds dependency starts also consume the burst; NRestarts alone
+    # understates it. Retain the readiness gate and bounded start attempt, but
+    # never strand this fixed managed profile after its start timeouts.
+    lines.extend(("StartLimitIntervalSec=0", "StartLimitBurst=5")
+                 if spec.system and spec.release_verifier and spec.ingress_profile
+                 else _START_LIMIT)
     lines.append(f"PartOf={_MANAGED_TARGET}")
     if spec.system:
         if spec.release_verifier:

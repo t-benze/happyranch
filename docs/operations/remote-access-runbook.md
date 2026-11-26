@@ -1,5 +1,26 @@
 # HappyRanch Remote Access — Self-Hosted headscale + DERP Runbook
 
+Current Linux home-host daemon outages (TASK-19401): the managed connector now
+retries startup without a start-rate limit, retaining its 120-second per-attempt
+timeout and every readiness/security check. The sidecar follows connector
+readiness. With every other gate healthy, allow up to 250 seconds after the
+desktop daemon returns for both existing startup budgets and polling; verify
+this in the installed-systemd acceptance lane. No button is needed after the
+new connector unit has been applied. An install with needrestart may still
+wait for a 120-second start timeout while the app is closed; later retries
+continue. This change does not eliminate that apt delay/message.
+
+Upgrading a READY d05afaac/98a87688 host does **not** replace its helper-published
+connector unit automatically. With no button it keeps the old failure behaviour.
+Authenticated **Turn on again**, on an intact admitted ready publication,
+republishes the exact previous connector bytes and reloads before ordinary
+restart. It does not mint, replay activation, or repair unknown/stale inventory.
+If it refuses, stop and retain the journal's fixed
+`remote-access-renewal-unit-mismatch unit=service|timer property=...` line.
+Do not infer a stale reload, manually modify units, or promise Turn off recovery;
+the existing partial-cleanup limit remains. The manager must establish the
+actual mismatching property and separately resolve any recovery-admission change.
+
 For the fixed outside-home test server, follow the founder-run [test-server hardening guide](remote-access-test-server-hardening.md) (PR-A; version/relay/ACL decisions remain deferred).
 
 **Phase-2 Part A** — deploy artifact runbook

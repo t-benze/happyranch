@@ -568,7 +568,19 @@ class HelperLifecycleBackend:
                         require_ready()
                         if self.io.inventory().state != 'owned-activated':
                             raise ActivationRefused()
-                        coordinator._owner._managed_fragments(require_home=True)
+                        units = coordinator._owner._managed_fragments(require_home=True)
+                        from runtime.remote_access.installer import managed_units, previous_connector_unit
+                        with self.io._publication_parent() as (parent, check):
+                            connector = self.io._json(self.io._read_file(parent, 'connector.json',
+                                owner=(self.io.root_owner[0], self.io._service_owner[1]), mode=0o640))
+                            check()
+                        current_unit = managed_units(self.io.layout, connector_config=connector)[UNITS[0]]
+                        if units[UNITS[0]] != current_unit:
+                            publish_home_unit(self.io, UNITS[0], legacy=previous_connector_unit(current_unit).encode(),
+                                              home=current_unit.encode(), require=require_ready)
+                            self.io.manager.daemon_reload()
+                            require_ready()
+                            coordinator._owner._managed_fragments(require_home=True)
                         # Restore the exact Wants link before starting the target.
                         relative = 'etc/systemd/system/happyranch-managed.target.wants'
                         with self.io._publication_parent(relative) as (parent, check):

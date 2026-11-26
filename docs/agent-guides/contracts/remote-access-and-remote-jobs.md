@@ -4736,6 +4736,38 @@ that sub-case remains a decision, not an offline revocation exception.
 
 ### THR-327 renewal unit upgrade (TASK-19228)
 
+TASK-19401: the fixed Linux managed-identity connector changes only
+`StartLimitIntervalSec=300` to `StartLimitIntervalSec=0`. It keeps
+`Restart=on-failure`, `RestartSec=1`, `TimeoutStartSec=120`, the 30-second
+watchdog, all hardening and all readiness gates. A missing desktop daemon
+therefore keeps retrying startup instead of exhausting the start limit.
+No listener or request admission opens until all gates pass. The sidecar's
+`After`/`BindsTo` connector and the connector's `Upholds` sidecar are unchanged.
+With the daemon restored and every other gate healthy, allow up to 250 seconds
+for the existing two 120-second startup budgets, restart delay and readiness
+polling; normally the connector notices within its five-second poll and the
+sidecar follows. This is a source budget requiring installed-systemd acceptance.
+Persistent unrelated failures also keep retrying; this changes no failure into
+readiness. Sidecar rate limiting remains unchanged.
+
+An already-READY d05afaac/98a87688 host retains its exact previous connector
+unit across package upgrade. With **no button**, it retains the old retry
+behaviour, including a terminal failure already reached. Authenticated **Turn on
+again** uses the existing ready receipt/ordinary admission and activation lock
+to atomically republish only those exact previous bytes, then daemon-reloads
+before the existing failed-unit reset/start/joined checks. Capture and Status
+only recognize the previous rendering; they never publish or repair. Receipt,
+transaction, G/O, token source, enabled-link, custody and deadline checks remain;
+no mint or activation replay occurs. Unknown bytes refuse.
+
+The renewal-unit loaded-property comparison remains strict. A refusal now
+journals `remote-access-renewal-unit-mismatch unit=service|timer property=<fixed
+property name>` without the observed value. A package-upgrade refusal at that
+comparison is not proof of `NeedDaemonReload=yes`; a stale manager or other
+property mismatch is not automatically repaired by this change. Turn on again
+can still refuse `ready-restart-failed-turn-off`. Transitional-unit admission,
+partial-cleanup recovery and richer waiting-for-daemon Status are unchanged.
+
 The fixed renewal oneshot uses User=root, Group=root and
 SupplementaryGroups=happyranch, retaining empty capability sets and existing
 hardening. Pending publication skips fchown only when fstat already reports the
