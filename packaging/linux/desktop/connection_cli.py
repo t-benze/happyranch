@@ -186,7 +186,10 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=True))
         return 0
     except ClosedError as error:
-        if error.value.get("category") == "not_applicable" and error.value["effect"] == "none":
+        if error.value.get('category') == 'invite_rate_limited' and error.value['effect'] == 'none':
+            print('An invite was issued recently. Use it or wait before creating another. '
+                  'Category: invite_rate_limited.', file=sys.stderr)
+        elif error.value.get("category") == "not_applicable" and error.value["effect"] == "none":
             print("This action does not apply to the current remote access setup. No change was made. "
                   "Category: not_applicable.", file=sys.stderr)
         elif error.value["code"] == "hostStateUnrecognized":

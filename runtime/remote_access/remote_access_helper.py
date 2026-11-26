@@ -952,6 +952,9 @@ class RemoteAccessHelper:
                 frame = operation.generations.issue_invite(capture.generation,
                     operation.budget.deadline, before_commit)
                 operation.budget.remaining()
+                if frame == {'result': 'rate_limited'}:
+                    dispatched = False  # Child positively proved a pre-effect refusal.
+                    raise Refused('host-state-unrecognized-invite_rate_limited')
                 if frame == {'result': 'refused'}:
                     dispatched = False  # Child positively proved refusal.
                     raise Refused('unavailable')

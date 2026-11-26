@@ -522,6 +522,7 @@
                 "quiescence",
                 "timeout",
                 "status_unavailable",
+                "invite_rate_limited",
                 "unknown",
                 "unverified",
                 "not_applicable"

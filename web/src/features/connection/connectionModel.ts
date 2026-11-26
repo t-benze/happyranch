@@ -364,6 +364,7 @@ const HOST_STATE_ERROR: Record<string, MessageKey> = {
   residue: 'connection.host.hErrStateResidue', owner: 'connection.host.hErrStateOwner',
   provenance: 'connection.host.hErrStateProvenance', custody: 'connection.host.hErrStateCustody',
   inventory: 'connection.host.hErrStateInventory', quiescence: 'connection.host.hErrStateQuiescence',
+  invite_rate_limited: 'connection.host.hErrInviteRateLimited',
   status_unavailable: 'connection.host.hErrStatusUnavailable',
   timeout: 'connection.host.hErrStateTimeout', unverified: 'connection.host.hErrStateUnknown', unknown: 'connection.host.hErrStateUnknown',
 };

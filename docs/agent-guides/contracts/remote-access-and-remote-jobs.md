@@ -4650,7 +4650,7 @@ explicit, authenticated Turn on performs the renewal above. No retained-file
 manipulation or other host action is required for that validated shape.
 
 `hostStateUnrecognized` retains its code and adds optional closed category
-`residue|owner|provenance|custody|inventory|quiescence|timeout|status_unavailable|unknown|unverified|not_applicable`. The child
+`residue|owner|provenance|custody|inventory|quiescence|timeout|status_unavailable|invite_rate_limited|unknown|unverified|not_applicable`. The child
 emits only `{refusal: category}` on Enable, Disable, ReplaceFailed, IssueInvite,
 CancelInvite or RecoverInvite capture refusal; HomeLifecycleClient
 validates the closed frame; helper D-Bus uses `host_state_unrecognized_<category>`.
@@ -4836,6 +4836,13 @@ whose connector snapshot is unavailable reuse the existing strict absence proof
 only to refuse: proven Off returns not_applicable, otherwise unverified. Its
 display snapshot never admits a device mutation. CLI revoke with fresh known
 Off status refuses not_applicable before selection or mutation dispatch.
+
+When IssueInvite's existing issuer rate fence positively refuses before journal
+write, invalidation or mint, its private terminal result is rate_limited. Only
+that exact result projects invite_rate_limited with effect none, through CLI
+and both bilingual Host views. It means a recent invite must be used or the
+caller must wait; a generic refused or unavailable result does not prove that
+cause and retains its existing effect semantics.
 
 The helper's short Status read expiry is projected as hostStateUnrecognized /
 timeout, never invite or policy expiry. Helper unavailable and D-Bus NoReply

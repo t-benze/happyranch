@@ -128,7 +128,9 @@ class HelperInviteBackend:
                 issued = issuer.issue()
             except IssuerError as error:
                 code = error.args[0]
-                if code in ('refused', 'rate_limited', 'busy'):
+                if code == 'rate_limited' and not self.dispatched:
+                    return {'result': 'rate_limited'}  # Before journal write, invalidation or mint.
+                if code in ('refused', 'busy'):
                     return {'result': 'refused'}
                 if self.dispatched:
                     # Keep the existing journal vocabulary/rate fence. B11 selects

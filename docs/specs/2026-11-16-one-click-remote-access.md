@@ -208,6 +208,9 @@ only to refuse: proven Off is not_applicable; other unverified state remains
 unverified. A display snapshot never admits a mutation. CLI revoke refuses a
 fresh known Off status before selection/dispatch. These no-effect refusals use
 the existing hostStateUnrecognized/category envelope and bilingual copy.
+The existing pre-write/pre-invalidation/pre-mint issuer rate fence reports the
+closed private result rate_limited, projected as invite_rate_limited/none with
+English and zh-CN copy. No other child refusal is relabelled as this cause.
 Status's short helper read timer uses timeout in that envelope, while helper
 unavailable or D-Bus NoReply uses the closed status_unavailable category, with
 English and zh-CN GUI parity. Neither names invite/policy expiry or changes the

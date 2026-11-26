@@ -2412,9 +2412,16 @@ def test_issue_invite_rate_limit_no_second_delivery(issue_mount: Any, monkeypatc
     observed_at = v.helper.invite_observation[-1]
     initial = v.journal.read_bytes()
     v.helper._reply.reset_mock()
+    v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    v.message.new_method_error_literal = lambda name, category: SimpleNamespace(name=name, category=category)
+    v.helper.connection.send_message = Mock()
+    v.helper._error = Mock(wraps=v.h.RemoteAccessHelper._error.__get__(v.helper))
     v.renew()
     v.admit()
     assert v.helper.lifecycle_result['outcome'] == 'refused' and not v.helper._reply.called
+    v.helper._error.assert_called_once_with(v.message, 'host-state-unrecognized-invite_rate_limited')
+    refusal = v.helper.connection.send_message.call_args.args[0]
+    assert refusal.name == v.h.INTERFACE + '.Error.host_state_unrecognized_invite_rate_limited'
     assert len(v.admin.keys) == 1 and v.control.reserve_invite.call_count == 2
     assert v.journal.read_bytes() == initial and v.helper.inflight is None
     v.renew()  # The lifecycle owner exits; retain its observation for projection.

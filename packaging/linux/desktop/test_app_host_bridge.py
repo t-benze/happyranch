@@ -105,7 +105,7 @@ class MainHostTests(unittest.TestCase):
         self.app.host_adapter.host_request = lambda method, finish, **kwargs: finish(None, 'hostStateUnrecognized')
         self.assertEqual(self.call('host.status'), [(False, dict(code='hostStateUnrecognized', effect='none',
                                                                recovery='refresh'))])
-        for category in ('residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'status_unavailable', 'unknown'):
+        for category in ('residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'status_unavailable', 'invite_rate_limited', 'unknown'):
             with self.subTest(category=category):
                 self.app.host_adapter.host_request = lambda method, finish, **kwargs: finish(
                     None, dict(code='hostStateUnrecognized', category=category))

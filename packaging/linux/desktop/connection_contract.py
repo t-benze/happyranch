@@ -30,7 +30,7 @@ CLI_LIFECYCLE_TIMEOUTS = {"Enable": 482000, "ReplaceFailed": 482000, "Disable": 
                           "IssueInvite": 122000, "CancelInvite": 122000,
                           "RecoverInvite": 122000, "RetryPolicyRenewal": 122000}
 HOST_STATE_CATEGORIES = frozenset({"residue", "owner", "provenance", "custody", "inventory",
-                                    "quiescence", "timeout", "status_unavailable", "unknown", "unverified", "not_applicable"})
+                                    "quiescence", "timeout", "status_unavailable", "invite_rate_limited", "unknown", "unverified", "not_applicable"})
 PREPARATION_CATEGORIES = frozenset({
     "deb-layout-required", "issuer-state-uncertain", "account-shape",
     "account-receipt-uncertain", "foreign-unit", "foreign-custody", "publication-uncertain",

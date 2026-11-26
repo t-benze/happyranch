@@ -802,6 +802,14 @@ class ConnectionCLITests(unittest.TestCase):
                 self.assertIn('No change was made.', message)
                 self.assertEqual([call[3] for call in self.bus.calls], [native.METHODS[action]])
 
+    def test_outstanding_invite_refusal_is_named(self) -> None:
+        self.bus.error = 'ai.happyranch.RemoteAccess1.Error.host_state_unrecognized_invite_rate_limited'
+        code, result, message = self.run_native('create-invite')
+        self.assertEqual((code, result), (1, dict(code='hostStateUnrecognized',
+            category='invite_rate_limited', effect='none', recovery='refresh')))
+        self.assertIn('An invite was issued recently.', message)
+        self.assertEqual([call[3] for call in self.bus.calls], ['IssueInvite'])
+
     def test_revoke_off_refuses_before_selection(self) -> None:
         self.bus.snapshot.update(phase='off', ready=False, devices=[], pending=None, selected=None)
         code, result, message = self.run_native('revoke-device')
