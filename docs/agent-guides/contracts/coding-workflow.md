@@ -3027,3 +3027,11 @@ Pinned Coding@3 JSON/release digests and historical reports remain unchanged.
 The engine neither verifies semantic merge evidence nor supplies a new sandbox.
 Normal exact-head/independence/check duties still apply to ordinary authorized
 Final execution; read-only recovery takes precedence over an authored mutation.
+
+U2 startup/periodic re-settlement consumes original closed evidence through the
+same atomic business owner; it has no executor or repository-effect port and
+creates no recovery visit. Pending inbox delivery retains original initiator
+readiness. B stays Held until an authorized same-run read-only rebrief; every
+replacement preserves U1's trusted restriction and original merge/head evidence.
+The independent log-only alarm neither launches nor repairs an unknown attempt.
+See [U2 lifecycle](runtime-lifecycle.md#sequential-closed-visit-rediscovery-u2-hardening).

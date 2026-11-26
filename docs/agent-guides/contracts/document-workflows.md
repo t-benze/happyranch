@@ -765,5 +765,14 @@ holds, carries the bounded initiator supplement into the actual node prompt, and
 permits only existing-evidence/state observation and truthful reporting. A plain
 retry cannot drop that restriction. Missing/uncertain effect evidence requires a
 hold; it never authorizes repeating an effect. No automatic recovery is launched.
-These are supported instruction duties, not new OS or tool isolation. U2 owns
-rediscovery/delivery/alarm; unknown native custody remains unheld.
+These are supported instruction duties, not new OS or tool isolation.
+
+U2 mounts the same bounded closed-visit sweep before startup workers and on the
+existing periodic reaper. It discovers terminal selected visits and receipt-backed
+unbound Q visits, then reuses U1 settlement and cancellation owners. Each causal
+Held event commits exactly one recorded-initiator inbox item; periodic publication
+retries pending delivery through existing readiness and coalescing gates. A
+separate log-only five-minute stall observer still runs when settlement/authority
+or publication fails. Partial scans are explicit; missing live proof cannot
+establish death. Unknown native custody remains unheld and unchanged. See
+[U2 lifecycle](runtime-lifecycle.md#sequential-closed-visit-rediscovery-u2-hardening).

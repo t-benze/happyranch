@@ -444,23 +444,46 @@ class WorkflowContinuation:
         return True
 
     def rediscover(self, *, queue: Any = None) -> None:
+        """Retry committed publication in bounded, independently fair pages."""
+        import logging
         from runtime.workflows.sequential_history import _ReadBudget, _sql_budget
-        from runtime.workflows.sequential_initiator import _rows
         selected = queue or getattr(self.org.orchestrator, '_queue', None)
         budget = _ReadBudget()
         with self.db.coherent_read_view() as conn:
             if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_seq_source_wait_sets'").fetchone() is None:
                 return
             with _sql_budget(conn, budget):
-                ids = [row['source_task_id'] for row in _rows(conn, 'workflow_seq_source_wait_sets', budget,
-                    '1', ())]
-                visits = _rows(conn, 'workflow_seq_outbox', budget,
-                    "kind='visit_queued' AND task_id IN (SELECT id FROM tasks WHERE status='pending')", ())
+                ids = conn.execute('SELECT CASE WHEN typeof(source_task_id)=\'text\' AND '
+                    'length(CAST(source_task_id AS BLOB))<=256 THEN source_task_id END '
+                    'FROM workflow_seq_source_wait_sets WHERE source_task_id>? ORDER BY source_task_id LIMIT 33',
+                    (getattr(self, '_source_cursor', ''),)).fetchall()
+                visits = conn.execute("SELECT CASE WHEN typeof(task_id)='text' AND "
+                    'length(CAST(task_id AS BLOB))<=256 THEN task_id END FROM workflow_seq_outbox '
+                    "WHERE kind='visit_queued' AND task_id>? AND task_id IN "
+                    "(SELECT id FROM tasks WHERE status='pending') ORDER BY task_id LIMIT 33",
+                    (getattr(self, '_visit_cursor', ''),)).fetchall()
+                _require(all(type(row[0]) is str and bool(row[0]) for row in [*ids, *visits]),
+                    'publication_discovery_invalid')
+                budget.reserve(66 * 512)
+        self._source_cursor = ids[31][0] if len(ids) > 32 else ''
+        self._visit_cursor = visits[31][0] if len(visits) > 32 else ''
+        log = logging.getLogger('happyranch.workflows.sequential_settlement')
+        if len(ids) > 32 or len(visits) > 32:
+            log.warning('observation_incomplete org=%s reason=publication_partial_page', self.org.slug)
         if selected is not None:
-            for row in visits:
-                self.org.workflow_sequential_dispatch.notify_queued(row['task_id'], selected)
-        for task_id in ids:
-            self.wake(task_id, queue=queue)
+            for (task_id,) in visits[:32]:
+                try:
+                    self.org.workflow_sequential_dispatch.notify_queued(task_id, selected)
+                except Exception as exc:
+                    log.warning('publication_failed org=%s task=%s reason=%s', self.org.slug, task_id, type(exc).__name__)
+        for (task_id,) in ids[:32]:
+            try:
+                value = observation(self.db, task_id)
+                if value and value['pending'] and value['disposition'] in ('initiator_terminal', 'unavailable'):
+                    log.warning('initiator_unavailable org=%s task=%s reason=%s', self.org.slug, task_id, value['disposition'])
+                self.wake(task_id, queue=queue)
+            except Exception as exc:
+                log.warning('publication_failed org=%s task=%s reason=%s', self.org.slug, task_id, type(exc).__name__)
 
     def _publish_cancellation(self, result_id: int) -> None:
         """Take one committed member handoff, then Stop outside the DB lock."""

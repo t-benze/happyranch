@@ -8,7 +8,9 @@ or merge gate is added.
 
 New risky lifecycle changes must update a model per the [coding practice rules](../../../agent-guides/contracts/coding-practice-rules.md).
 
-## Sequential closed-outcome settlement (U1)
+<a id="sequential-closed-outcome-settlement-u1"></a>
+
+## Sequential closed-outcome settlement (U1/U2)
 
 `SequentialSettlement.tla` models the finite original-owner P0/P1 intent → native
 removal → closed receipt sequence and the existing original terminal/outer path.
@@ -39,7 +41,15 @@ Liveness assumes fair original finishing/settlement, eventual valid authority an
 successful durable writes; uncertain states have no promised business completion.
 The abstraction does not prove Python refinement, byte/digest authentication,
 native containment, queue delivery, semantic reports, external effects or live
-recovery. U2 owns restart/scan/alarm extensions. TLC results are review evidence,
+recovery. U2 extends `Restart`/`Sweep` over the closed-but-unsettled window,
+with lost queue hints, delayed readiness, replay and independent `Observe`.
+Restart before closure retains uncertainty; it never manufactures closure.
+`sequential-settlement-restart.cfg` checks conditional Completion, Delivery and
+UnknownObserved as well as the retained safety invariants. Weak fairness assumes
+eventual authority, scans, storage and delivery readiness; alarm state is a log
+observation only. Pages, digest/SQL budgets, clock thresholds, Python races and
+host containment remain outside this finite abstraction. TLC results are review
+evidence,
 never a CI gate; actual commands and limits belong in the PR/task output.
 
 ## Sequential first-launch refusals
