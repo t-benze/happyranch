@@ -331,10 +331,13 @@ class RemoteAccessHelper:
                     pass  # Unavailable evidence remains unknown, never current.
                 firewall = None
                 try:
-                    state = _helper_generation.HomeLifecycleClient('Enable', uid).firewall_status(
-                        deadline - time.monotonic())
-                    if state != 'unknown':
-                        firewall = _status_v2.FirewallObservation(_status_v2.FirewallState(state), 0)
+                    # Keep encoding/delivery ahead of the 1.9s watchdog within
+                    # the original 2s deadline. Advice must not erase facts.
+                    remaining = deadline - time.monotonic() - .3
+                    if remaining > .1:
+                        state = _helper_generation.HomeLifecycleClient('Enable', uid).firewall_status(remaining)
+                        if state != 'unknown':
+                            firewall = _status_v2.FirewallObservation(_status_v2.FirewallState(state), 0)
                 except Exception:
                     pass  # No firewall evidence must not change setup or runtime.
                 raw = _status_v2.encode(_status_v2.build_status(now_utc_seconds=int(time.time()),

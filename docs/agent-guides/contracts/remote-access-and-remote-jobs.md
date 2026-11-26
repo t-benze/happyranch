@@ -4956,9 +4956,13 @@ Missing UFW supplies no observation; firewalld/plain nftables are not inferred.
 
 StatusV2's optional `firewall` observation uses `state` and `age_seconds`, with
 `likely_blocked|unverified|clear` plus internal `unknown|stale` freshness states.
-Unknown is omitted. Frames without the field and original Status v1 retain
-compatibility. Fresh observations (at most 30 seconds old) project to the
-existing optional native host `firewallWarning`. Enable's settled terminal and
+Unknown is omitted. Status advice reserves 300 ms of the original two-second
+response deadline, leaving 200 ms before the unchanged 1.9-second watchdog. It
+is skipped when the resulting advice budget is at most 100 ms. Advice timeout
+or error omits the field and still returns the collected V2 observations; it
+never extends the original deadline. Frames without the field and original
+Status v1 retain compatibility. Fresh observations (at most 30 seconds old)
+project to the existing optional native host `firewallWarning`. Enable's settled terminal and
 successful native/CLI result may carry the same optional closed advisory.
 Absent advice never substitutes for setup/effect evidence. `clear` is carried
 without warning text; English and Simplified Chinese host views and CLI say

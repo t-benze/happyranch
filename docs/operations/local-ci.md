@@ -4077,6 +4077,10 @@ ambiguous profiles/rate limits and malformed output; stock UFW IPv4 before/after
 rules, LAN/multiport/broad/custom-chain allows and unreadable/oversized files;
 Enable admission and READY completion regardless of firewall evidence,
 post-settlement advice/error/absence, and READY plus separate Status advice.
+The existing Status table uses the real 1.9-second watchdog and fixed child
+transport with synthetic slow/error results: advice timeout retains V2
+READY/available/current-policy observations without `expired`, and insufficient
+advice time skips the child within the original two-second response budget.
 The stock-files/live-INPUT-allow counterexample shares the reviewer’s UFW
 formatter output; it cannot prove live packet acceptance. Stock templates in
 `scripts/fixtures/ufw/` come from the UFW

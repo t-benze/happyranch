@@ -2885,29 +2885,74 @@ def test_thr327_firewall_public_preflight(mount: Any, state: str) -> None:
     assert not v.helper.audit.path.exists()
 
 
-@pytest.mark.parametrize('state', ['likely_blocked', 'unverified', 'clear', 'unknown'])
+@pytest.mark.parametrize('state', ['likely_blocked', 'unverified', 'clear', 'unknown',
+                                  'timeout', 'error', 'short-budget'])
 def test_thr327_firewall_ready_status(mount: Any, monkeypatch: pytest.MonkeyPatch, state: str) -> None:
+    from runtime.remote_access import helper_generation as generation
     v = mount
-    v.reader.firewall_status.return_value = state
     v.helper.generations = SimpleNamespace(current_generation=lambda _: None)
     v.helper.control.status = lambda: v.h.Snapshot(9, 1000, True, 'ready', True, None, ())
     v.helper.cursors = {}
     v.message.get_member = lambda: 'StatusV2'
+    native_timer, timers = v.h.threading.Timer, []
+    def timer(*args: Any, **kwargs: Any) -> Any:
+        # Timer initializes its Thread base dynamically; the mount runs the
+        # observation worker synchronously, but the watchdog must remain real.
+        with monkeypatch.context() as patch:
+            patch.setattr(v.h.threading, 'Thread', REAL_THREAD)
+            value = native_timer(*args, **kwargs)
+        timers.append(value)
+        return value
+    monkeypatch.setattr(v.h.threading, 'Timer', timer)
     monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args=(), **kw:
                         SimpleNamespace(start=lambda: target(*args)))
-    monkeypatch.setattr(v.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+    def policy_status(remaining: float) -> dict:
+        if state == 'short-budget':
+            time.sleep(1.65)  # Earlier observations leave too little advice time.
+        return {'policy': 'current'}
+    v.reader.policy_status = Mock(side_effect=policy_status)
+    budgets = []
+    def child(command: tuple, **options: Any) -> Any:
+        assert command == generation.LIFECYCLE_COMMAND
+        assert json.loads(options['input'])['step'] == 'firewall'
+        budgets.append(options['timeout'])
+        if state == 'timeout':
+            time.sleep(options['timeout'])
+            raise subprocess.TimeoutExpired(command, options['timeout'])
+        if state == 'error':
+            raise OSError('synthetic private diagnostic')
+        return SimpleNamespace(returncode=0, stdout=json.dumps({'firewall': state}).encode())
+    monkeypatch.setattr(generation.subprocess, 'run', child)
+    v.reader.firewall_status.side_effect = generation.HomeLifecycleClient('Enable', 1000).firewall_status
     v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
     reply = SimpleNamespace(set_body=lambda body: setattr(reply, 'body', body))
     v.message.new_method_reply = lambda: reply
     v.helper.connection.send_message = Mock()
     v.helper._reply = v.h.RemoteAccessHelper._reply.__get__(v.helper)
-    v.helper._dispatch(v.message)
+    started = time.monotonic()
+    try:
+        v.helper._dispatch(v.message)
+    finally:
+        for value in timers:
+            value.cancel()
+            value.join()
+    assert not v.helper._error.called, v.helper._error.call_args_list
+    assert v.helper.connection.send_message.call_count == 1
+    assert time.monotonic() - started < 2.0
     result = json.loads(reply.body.unpack()[0])
+    assert result['version'] == 2
     assert result['setup']['state'] == 'ready' and result['runtime']['state'] == 'available'
-    if state == 'unknown':
+    assert result['policy']['state'] == 'current'
+    if state in ('unknown', 'timeout', 'error', 'short-budget'):
         assert 'firewall' not in result
     else:
         assert result['firewall'] == {'state': state, 'age_seconds': 0}
+    if state == 'short-budget':
+        v.reader.firewall_status.assert_not_called()
+        assert budgets == []
+    else:
+        assert len(budgets) == 1 and 0 < budgets[0] <= 1.7
+    assert v.helper.status_worker is None
     assert not v.helper.authority.call.called and not v.reader.effect.called
     assert not v.helper.audit.path.exists()
 
