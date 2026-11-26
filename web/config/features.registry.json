@@ -12,6 +12,6 @@
   "task_attributes_ui": {
     "purpose": "Show Settings › Task attributes (custom task attribute definitions management: list, create/edit, detail with version history, archive) in the web Settings sub-navigation and the desktop Settings dialog, and the Task detail › Attributes card with its value editor and history (PR7). Also gates the Tasks list attribute filters and the bounded root-task export dialog.",
     "owner": "engineering_manager",
-    "removal_condition": "Remove once the Custom Task Attributes v1 UI is accepted for release and the production profile enables it permanently (PR9)."
+    "removal_condition": "Remove after the founder confirms v1 release acceptance."
   }
 }

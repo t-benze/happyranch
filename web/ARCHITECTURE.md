@@ -123,7 +123,7 @@ Work Hours), and hidden code may still be present in the bundle and source maps.
 | --- | --- |
 | `config/features.registry.json` | Every flag with `purpose`, `owner`, `removal_condition` |
 | `config/features.development.json` | Complete development profile (`work_hours_ui: true`, `kb_compose_ui: false`, `task_attributes_ui: true`) |
-| `config/features.production.json` | Complete production profile (every flag `false`) |
+| `config/features.production.json` | Complete production profile (`work_hours_ui: false`, `kb_compose_ui: false`, `task_attributes_ui: true`) |
 | `config/features.local.example.json` | Example for the optional, gitignored `config/features.local.json` |
 | `src/config/features.ts` | The ONLY consumer module: `import { features } from '@/config/features'` |
 
@@ -197,8 +197,9 @@ changes, and that restart counts as a new startup.
 Organization hooks stay unconditional, and the general Save never sends
 `working_hours`. `kb_compose_ui` gates KB Compose.
 
-`task_attributes_ui` (THR-390 PR6; development `true`, production `false`
-until PR9) gates Settings › Task attributes: the web `SettingsSubNav` item
+`task_attributes_ui` (THR-390 PR6; development `true`; production `true`
+since PR9, kept in the registry until the founder confirms v1 release
+acceptance) gates Settings › Task attributes: the web `SettingsSubNav` item
 (between Organization and Executors), the `/orgs/:slug/settings/task-attributes`
 route (off: it falls through to the Capacity redirect), the org-less recovery
 route, the desktop Settings dialog `RUNTIME_ITEMS` entry (after Organization)

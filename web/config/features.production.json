@@ -1,5 +1,5 @@
 {
   "work_hours_ui": false,
   "kb_compose_ui": false,
-  "task_attributes_ui": false
+  "task_attributes_ui": true
 }
