@@ -26,6 +26,8 @@ class LANInterface:
     up: bool
     loopback: bool
     addresses: tuple[str, ...]
+    # Parallel kernel prefix lengths; legacy inventories have no prefix proof.
+    prefix_lengths: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, repr=False)

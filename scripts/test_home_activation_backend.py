@@ -52,6 +52,11 @@ def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
     from runtime.remote_access.home_minter import CreationWindow
     from runtime.remote_access.invite_issuer import MintedKey
 
+    # Existing lifecycle cases have no host firewall. F3 cases replace only
+    # this native observation with their isolated UFW worker below.
+    from runtime.remote_access import home_firewall, host_firewall
+    monkeypatch.setattr(home_firewall, 'host_firewall', SimpleNamespace(
+        observe_ufw=lambda **kw: host_firewall.UFWObservation('unknown', 'absent')))
     fixture = Fixture(tmp_path, monkeypatch)
     for name in ('connector.json', 'sidecar.json', 'policy.json', 'enrollment.key'):
         (fixture.inputs / name).unlink()

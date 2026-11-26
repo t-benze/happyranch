@@ -6,6 +6,7 @@ import os
 import re
 import stat
 import subprocess
+from dataclasses import dataclass
 
 _PORTS = ((8443, 'tcp'), (3478, 'udp'))
 # Stock UFW IPv4 templates (scripts/fixtures/ufw), normalized only for comments
@@ -112,20 +113,34 @@ def parse_ufw(raw: bytes) -> str:
     return 'unverified'
 
 
-def inspect_ufw(*, timeout: float = 2.0) -> str:
+@dataclass(frozen=True)
+class UFWObservation:
+    advisory: str
+    availability: str
+
+
+def observe_ufw(*, timeout: float = 2.0) -> UFWObservation:
     """Fixed root-child command; no shell, caller inputs, rules or stderr output."""
     try:
         result = subprocess.run(('/usr/sbin/ufw', 'status', 'verbose'),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             env={'LC_ALL': 'C', 'LANG': 'C'}, cwd='/', timeout=min(2.0, timeout), check=False)
     except FileNotFoundError:
-        return 'unknown'  # No UFW command; other firewall engines are not inferred.
+        return UFWObservation('unknown', 'absent')
     except (OSError, ValueError, subprocess.TimeoutExpired):
-        return 'unverified'
+        return UFWObservation('unverified', 'unverified')
     state = parse_ufw(result.stdout) if result.returncode == 0 else 'unverified'
+    availability = ('inactive' if result.returncode == 0 and result.stdout.strip() == b'Status: inactive'
+                    else 'active' if result.returncode == 0 and result.stdout.startswith(b'Status: active\n')
+                    else 'unverified')
     try:
         if result.stdout.strip() != b'Status: inactive' and not _stock_rule_files():
-            return 'unverified'
+            return UFWObservation('unverified', availability)
     except (OSError, ValueError, UnicodeError):
-        return 'unverified'
-    return state
+        return UFWObservation('unverified', availability)
+    return UFWObservation(state, availability)
+
+
+def inspect_ufw(*, timeout: float = 2.0) -> str:
+    """Original F2 advisory interface; F3 shares the same bounded observation."""
+    return observe_ufw(timeout=timeout).advisory

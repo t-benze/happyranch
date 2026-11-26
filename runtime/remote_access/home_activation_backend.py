@@ -34,6 +34,7 @@ from runtime.remote_access.helper_lifecycle import log_enable_refusal, log_lifec
 from runtime.remote_access.helper_generation import PREPARATION_CATEGORIES, GenerationUnavailable
 from runtime.remote_access.headscale_service import HeadscaleServiceError
 from runtime.remote_access.host_firewall import inspect_ufw
+from runtime.remote_access.home_firewall import HomeLANFirewall
 
 
 class EnablePreparationRefused(Exception):
@@ -80,11 +81,15 @@ class _OperationTransactions(HomeActivationTransactionStore):
 
 
 class HomeActivationBackend:
-    def __init__(self, *, io: ManagedInstaller | None = None) -> None:
+    def __init__(self, *, io: ManagedInstaller | None = None, deadline: float | None = None) -> None:
         self._io = io or ManagedInstaller()
+        self._deadline = deadline
         self._transactions = _OperationTransactions(io=self._io)
         self._prepare = HomeActivationPrepare(io=self._io)
         self._prepare._transactions = self._transactions
+
+    def _firewall(self) -> HomeLANFirewall:
+        return HomeLANFirewall(self._transactions, deadline=self._deadline)
 
     def _compose(self, receipt: HomeActivationReceipt, *, defer_policy_expiry: bool = False) -> tuple[
             HomeActivationCoordinator, HomeActivationRecovery, HomeObserver]:
@@ -104,6 +109,7 @@ class HomeActivationBackend:
     def enable(self, *, expected_generation: int, authenticated: bool,
                _defer_policy_expiry: bool = False,
                _refresh_staged_policy: bool = False) -> HomeActivationReceipt:
+        activation_admitted = False
         try:
             _generation(expected_generation)
             if authenticated is not True or os.geteuid() != 0:
@@ -130,6 +136,7 @@ class HomeActivationBackend:
                     raise ActivationRefused()
                 if transaction is not None:
                     if transaction.matches(receipt):
+                        activation_admitted = True
                         coordinator, _, _ = self._compose(receipt)
                         # Ruling 17: retain the actual protected binding.
                         coordinator._pending()
@@ -143,6 +150,7 @@ class HomeActivationBackend:
                             and all(getattr(transaction, key) == getattr(receipt, key) for key in IDENTITY_KEYS)
                             and transaction.operation_id != receipt.operation_id):
                         raise ActivationRefused()
+                    self._firewall().cleanup()
                 if receipt.phase != "prepared":
                     raise ActivationRefused()
                 if exists or _refresh_staged_policy:
@@ -156,9 +164,24 @@ class HomeActivationBackend:
                     # Discard captured pre-renewal provenance. The actual
                     # coordinator below re-reads it with strict expiry checks.
                 coordinator, _, observer = self._compose(receipt, defer_policy_expiry=_defer_policy_expiry)
+                activation_admitted = True
                 coordinator.run(receipt)
+                self._firewall().enable()
                 return coordinator.publish_ready(expected_generation=expected_generation, observer=observer)
         except Exception:
+            # Includes lost add replies/commits: the durable intent keeps the
+            # exact subnet/spec available to cleanup and the next invocation.
+            try:
+                _generation(expected_generation)
+                if activation_admitted and authenticated is True and os.geteuid() == 0:
+                    with self._transactions.locked():
+                        txn = self._transactions.read_optional()
+                        current = self._prepare._receipts.current()
+                        if (txn is not None and current is not None and txn.matches(current)
+                                and txn.activation_generation == expected_generation):
+                            self._firewall().cleanup()
+            except Exception as error:
+                _log_activation_failure(error)
             raise ActivationRefused() from None
 
     def recover(self, *, expected_generation: int, expected_operation_id: str,
@@ -171,9 +194,12 @@ class HomeActivationBackend:
                 if receipt.operation_id != expected_operation_id:
                     raise ActivationRefused()
                 _, recovery, observer = self._compose(receipt)
-                return recovery.recover(expected_generation=expected_generation,
+                recovered = recovery.recover(expected_generation=expected_generation,
                     expected_operation_id=expected_operation_id, fresh_authenticated=fresh_authenticated,
                     observation_owner=observer._owner)
+                if recovered.phase == 'ready':
+                    self._firewall().enable()
+                return recovered
         except RecoveryRefused as error:
             if str(error) == 'retry_later':
                 raise EnablePreparationRefused('activation-retry-later') from None
@@ -483,7 +509,17 @@ class HelperLifecycleBackend:
         if method == 'RetryPolicyRenewal' and step == 'status' and expected is None:
             return self.policy_status(uid)
         if method == 'Enable' and step == 'firewall' and expected is None:
-            return {'firewall': inspect_ufw(timeout=2.0 if deadline is None else deadline - time.monotonic())}
+            remaining = 2.0 if deadline is None else deadline - time.monotonic()
+            result = {'firewall': inspect_ufw(timeout=min(1.0, remaining / 2))}
+            try:
+                if self.store.current() is not None and self.store.current().release_uid == uid:
+                    ports = HomeLANFirewall(HomeActivationTransactionStore(
+                        root=self.io.root, root_owner=self.io.root_owner)).status(timeout=max(.001, remaining / 2))
+                    if ports is not None:
+                        result['ports'] = ports
+            except Exception:
+                pass  # F3 observation failure never erases the original F2 advice.
+            return result
         if method == 'Enable' and step == 'status' and expected is None:
             return self.setup_status(uid)
         if type(expected) is not str or self.capture(method, uid) != expected:
@@ -510,6 +546,9 @@ class HelperLifecycleBackend:
             receipt = self.store.current()
             if receipt is None:
                 raise ActivationRefused()
+            cleanup_backend = HomeActivationBackend(io=self.io, deadline=deadline)
+            with cleanup_backend._transactions.locked():
+                cleanup_backend._firewall().cleanup()
             result = self.io.cleanup_headscale(expected_release_uid=uid,
                 expected_home_id=snapshot['activation']['home_id'],
                 expected_control_plane_id=snapshot['activation']['control_plane_id'],
@@ -520,7 +559,7 @@ class HelperLifecycleBackend:
             if result.get('state') != 'removed':
                 raise ActivationRefused()
             return {'outcome': 'off', 'residue': []}
-        backend = HomeActivationBackend(io=self.io)
+        backend = HomeActivationBackend(io=self.io, deadline=deadline)
         with backend._transactions.locked() as directory:
             if self.capture(method, uid) != expected:
                 raise ActivationRefused()
@@ -643,6 +682,7 @@ class HelperLifecycleBackend:
                         require_ready()
                         if not timer_active():
                             raise ActivationRefused()
+                        backend._firewall().enable()
                     except Exception:
                         raise EnablePreparationRefused('ready-restart-failed-turn-off') from None
                 elif current is not None and current.phase == 'failed_uncertain':

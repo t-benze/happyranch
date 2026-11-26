@@ -1381,8 +1381,61 @@ The remote client snapshot does not carry host firewall Status. Replacing the
 client's generic home-network-unavailable explanation therefore needs a new
 protocol field and remains follow-up; this change adds none to that snapshot.
 
-Inspection never adds/removes/modifies firewall rules. Automatic rule management
-remains Founder-reserved. Service user, sandbox, capabilities, ReadWritePaths,
+The F2 inspector never changes firewall rules. Founder THR-327 seq722 authorizes
+only the F3 effects below. Service user, sandbox, capabilities, ReadWritePaths,
 R2 custody, home-only trust and authentication/authorization remain unchanged.
 Installed-package/UFW and cross-device qualification remain separate from the
 standalone temporary-file/native-simulation venue.
+
+### THR-327 F3: owned home LAN UFW rules
+
+Founder THR-327 seq722 authorizes the root helper's Enable, after joined
+activation, to share F2's bounded UFW observation and add/adopt exactly two
+allow specifications on installed, active UFW: from the selected home LAN
+subnet to the Headscale dial IP, 8443/tcp and 3478/udp, each commented
+`happyranch-home-headscale`. No caller supplies addresses, prefixes, paths,
+commands or flags. The kernel prefix is retained for the same interface/address
+chosen by `select_lan_dial_ip`. That selector stays IPv4/RFC1918; F3 adds no
+IPv6 selection. The exact unique network must contain the dial IP, be private
+RFC1918/ULA, and be no wider than /16. Missing/ambiguous, public or wider
+prefixes skip the effect and retain F2 advice. Absent/inactive UFW is a no-op.
+Firewalld and raw nftables remain advisory-only: no mutation through either.
+
+UFW's `UFWRule.match` is authoritative: 0 adopts our tagged exact allow; -2
+leaves the existing differently tagged/untagged allow untouched; -1 leaves a
+different action/log collision untouched and reports it as blocking. Any
+collision vetoes add, even alongside an exact owned rule. Only no-match adds.
+The fixed system-Python worker holds UFW's POSIX lock across fresh inspection
+and execution of `/usr/sbin/ufw` with fixed-action argv in the same process,
+closing the inspection/add race. UFW already supplies its Python modules; no
+new dependency or privilege model is added. No shell, ufw enable/disable/reset,
+insert, reorder or separate reload is issued.
+
+The existing protected activation journal has an optional nonsecret `firewall`
+record: exact subnet and two ordered port states. Older journals omit it and
+retain their byte encoding, effect order and recovery behavior. Each add/remove
+intent is durable before its command; completion follows the result. Existing
+local activation/Turn off audit shapes bracket each port with fixed nonsecret
+subjects. A lost add completion retains enough evidence to adopt the tagged
+rule on retry or remove it on cleanup. B7 preserves the record; a generation
+rollover cleans the old plan first. Failed-Enable rollback and Turn off
+cleanup delete only an allow with our comment AND the exact source,
+destination, protocol and port. Missing owned rules are idempotent. Uncertain
+cleanup retains its intent and refuses successful cleanup. Founder hand-added
+rules, including identical untagged allows and denies, are never removed.
+Unchanged repeated Enable leaves settled journal/audit bytes untouched. If UFW
+later becomes inactive, ownership stays recorded for Turn off cleanup.
+
+StatusV2 optionally carries `firewall.ports`; native/CLI Status projects it as
+`firewallPorts`, exactly `8443/tcp` and `3478/udp`. States are `added`,
+`preexisting_not_owned` (already allowed by your existing rule),
+`blocked_by_existing` (your existing rule blocks this port),
+`skipped_ufw_absent`, `skipped_ufw_inactive`, `skipped_subnet_rejected`, plus
+`pending`, `add_intent`, `remove_intent`, `removed`, `unverified` during recovery.
+These are display diagnostics, not packet-reachability or setup-readiness proof.
+F2 advice and the original Status deadline remain independent; observation
+failure never erases other facts. Frames without this extension remain valid.
+
+Replace failed remains installer-only and refuses home activation before
+admission; that path cannot acquire F3 rules. Use Turn off for retained F3
+activation effects. This preserves the existing R2 compatibility contract.

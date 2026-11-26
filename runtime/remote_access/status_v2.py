@@ -15,6 +15,15 @@ MAX_BYTES = 16384  # Includes the terminating newline.
 STALE_AFTER_SECONDS = 30
 MAX_AGE_SECONDS = 2_147_483_647
 MAX_DEADLINE_UTC_SECONDS = 9_223_372_036_854_775_807
+FIREWALL_PORT_STATES = frozenset({'added', 'preexisting_not_owned', 'blocked_by_existing',
+    'skipped_ufw_absent', 'skipped_ufw_inactive', 'skipped_subnet_rejected',
+    'pending', 'add_intent', 'remove_intent', 'removed', 'unverified'})
+
+
+def validate_firewall_ports(value: object) -> None:
+    if (type(value) is not dict or value.keys() != {'8443/tcp', '3478/udp'}
+            or any(type(s) is not str or s not in FIREWALL_PORT_STATES for s in value.values())):
+        raise StatusError()
 
 
 class _StringEnum(str, Enum):
@@ -171,6 +180,7 @@ class FirewallState(_StringEnum):
 class FirewallObservation:
     state: FirewallState = FirewallState.UNKNOWN
     age_seconds: int | None = None
+    ports: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -216,6 +226,8 @@ def _validate_observation(value: O, kind: type[O], states: type[_StringEnum]) ->
         raise StatusError()
     if value.state == 'stale' and age <= STALE_AFTER_SECONDS:
         raise StatusError()
+    if kind is FirewallObservation and value.ports is not None:
+        validate_firewall_ports(value.ports)
     if kind is InviteObservation:
         deadline = value.deadline_utc_seconds
         if value.state in _ACTIVE_INVITE:
@@ -292,6 +304,8 @@ def encode(status: StatusV2) -> bytes:
         if name == 'firewall' and observation.state == FirewallState.UNKNOWN:
             continue  # Optional extension: original frames keep their bytes.
         value[name] = {'state': observation.state.value, 'age_seconds': observation.age_seconds}
+        if name == 'firewall' and observation.ports is not None:
+            value[name]['ports'] = dict(observation.ports)
         if name == 'invite':
             value[name]['deadline_utc_seconds'] = observation.deadline_utc_seconds
     raw = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode() + b'\n'
@@ -337,7 +351,8 @@ def decode(raw: bytes) -> StatusV2:
             continue
         part = value[name]
         keys = {'state', 'age_seconds'} | ({'deadline_utc_seconds'} if name == 'invite' else set())
-        if type(part) is not dict or set(part) != keys or type(part['state']) is not str:
+        if (type(part) is not dict or set(part) not in (keys, keys | {'ports'} if name == 'firewall' else keys)
+                or type(part['state']) is not str):
             raise StatusError()
         # Enum lookup cannot return an arbitrary string or echo it on failure.
         state = next((s for s in states if s.value == part['state']), None)

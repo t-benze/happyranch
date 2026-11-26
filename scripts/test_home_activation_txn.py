@@ -198,7 +198,17 @@ class Venue:
 
 @pytest.fixture
 def venue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Venue:
-    return Venue(tmp_path, monkeypatch)
+    value = Venue(tmp_path, monkeypatch)
+    # Explicit native absence for legacy backend cases: no host netlink/UFW.
+    from types import SimpleNamespace
+    from runtime.remote_access import home_firewall, host_firewall
+    from runtime.remote_access.home_headscale import LANDefaultRoute, LANInterface
+    monkeypatch.setattr(headscale_service, 'collect_lan_inventory', lambda: (
+        (LANInterface(2, True, False, (value.prepared.dial_ip,)),),
+        (LANDefaultRoute(2, value.prepared.dial_ip),)))
+    monkeypatch.setattr(home_firewall, 'host_firewall', SimpleNamespace(observe_ufw=lambda **kw:
+        host_firewall.UFWObservation('unknown', 'absent')))
+    return value
 
 
 @pytest.mark.parametrize("case", ["extra", "missing", "duplicate", "oversized", "bool", "uid",

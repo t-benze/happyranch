@@ -27,6 +27,60 @@ mismatches. Do not manually modify units or promise Turn off recovery; the
 existing partial-cleanup limit remains. The manager must rerun the failed and
 healthy upgrade cases with the postinst package before founder upgrade acceptance.
 
+## Managed home LAN firewall (THR-327 F3)
+
+The managed home root helper's Enable adds 8443/tcp and 3478/udp allows only
+when UFW is installed and active. Both are scoped from the exact selected LAN
+subnet to the Headscale listener IP and commented `happyranch-home-headscale`.
+The same dial-IP selector supplies the interface/address; its kernel prefix
+must yield an unambiguous private network no wider than /16. Otherwise Status
+reports `skipped_subnet_rejected` and F2's advisory remains available. Absent or
+inactive UFW is a no-op. Firewalld and raw nftables receive no mutation.
+The helper never enables/disables/resets/reorders UFW or issues a separate reload.
+
+Existing hand-added rules coexist: an identical untagged/differently commented
+allow is left untouched (`preexisting_not_owned`: already allowed by your
+existing rule); a different action/log collision is left untouched
+(`blocked_by_existing`: your existing rule blocks this port). Turn off does not
+remove either. An exact tagged HappyRanch rule is adopted. Only no-match adds.
+The helper holds UFW's own lock across matching and its fixed rule command.
+
+Turn off and failed-Enable rollback remove only the
+fixed comment AND exact allow/source/destination/port/protocol specification.
+The protected activation journal records each intent before the effect and
+completion afterward, so interrupted add/delete remains recoverable. Old
+journals without the optional firewall record still recover. If cleanup is
+uncertain it retains the intent and refuses successful cleanup.
+Repeating Enable with unchanged firewall facts leaves settled journal/audit
+bytes untouched. Making UFW inactive later retains ownership so Turn off still
+removes the exact tagged rules from its persisted configuration.
+Replace failed remains installer-only: its existing pre-admission refusal for
+home activation is unchanged. That path cannot acquire F3 rules; use Turn off
+for an activation with a retained firewall plan.
+
+`StatusV2` exposes per-port `firewall.ports`; the host CLI Status JSON exposes
+`firewallPorts` with `8443/tcp` and `3478/udp`. Expected states include `added`,
+`preexisting_not_owned`, `blocked_by_existing`, `skipped_ufw_absent`,
+`skipped_ufw_inactive`, `skipped_subnet_rejected`, `removed`; pending intents or
+`unverified` require recovery/inspection. These do not prove packet reachability.
+
+For manual inspection, run `sudo ufw status numbered` and `sudo ufw show added`.
+If manual recovery is needed, read the exact subnet and dial IP from the
+protected activation journal and compare the comment and full specification.
+Only after confirming ownership, repeat the corresponding full command with
+`delete` before `allow`, for example (replace these synthetic addresses with
+the journal's exact values):
+
+```sh
+sudo ufw delete allow proto tcp from 192.168.42.0/24 to 192.168.42.10 port 8443 comment happyranch-home-headscale
+sudo ufw delete allow proto udp from 192.168.42.0/24 to 192.168.42.10 port 3478 comment happyranch-home-headscale
+```
+
+Never delete by port alone or by a stale numbered-rule index. Leave unrelated
+and identical untagged founder rules untouched. The cloud provisioning examples
+later in this historical runbook describe a separate self-hosted deployment;
+they are not commands issued by managed home Enable.
+
 For the fixed outside-home test server, follow the founder-run [test-server hardening guide](remote-access-test-server-hardening.md) (PR-A; version/relay/ACL decisions remain deferred).
 
 **Phase-2 Part A** — deploy artifact runbook

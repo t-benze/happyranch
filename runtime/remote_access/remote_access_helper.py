@@ -335,9 +335,12 @@ class RemoteAccessHelper:
                     # the original 2s deadline. Advice must not erase facts.
                     remaining = deadline - time.monotonic() - .3
                     if remaining > .1:
-                        state = _helper_generation.HomeLifecycleClient('Enable', uid).firewall_status(remaining)
-                        if state != 'unknown':
-                            firewall = _status_v2.FirewallObservation(_status_v2.FirewallState(state), 0)
+                        firewall_client = _helper_generation.HomeLifecycleClient('Enable', uid)
+                        state = firewall_client.firewall_status(remaining)
+                        ports = getattr(firewall_client, 'firewall_ports', None)
+                        if state != 'unknown' or ports is not None:
+                            firewall = _status_v2.FirewallObservation(_status_v2.FirewallState(
+                                state if state != 'unknown' else 'unverified'), 0, ports)
                 except Exception:
                     pass  # No firewall evidence must not change setup or runtime.
                 raw = _status_v2.encode(_status_v2.build_status(now_utc_seconds=int(time.time()),

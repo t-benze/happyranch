@@ -14,6 +14,11 @@
     }
   ],
   "$defs": {
+    "firewallPortState": {
+      "enum": ["added", "preexisting_not_owned", "blocked_by_existing",
+        "skipped_ufw_absent", "skipped_ufw_inactive", "skipped_subnet_rejected",
+        "pending", "add_intent", "remove_intent", "removed", "unverified"]
+    },
     "runtime": {
       "enum": [
         "available",
@@ -204,6 +209,15 @@
               "type": "null"
             }
           ]
+        },
+        "firewallPorts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["8443/tcp", "3478/udp"],
+          "properties": {
+            "8443/tcp": { "$ref": "#/$defs/firewallPortState" },
+            "3478/udp": { "$ref": "#/$defs/firewallPortState" }
+          }
         },
         "firewallWarning": {
           "enum": [

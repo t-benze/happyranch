@@ -16,6 +16,7 @@ from runtime.remote_access.home_activation import (
 )
 from runtime.remote_access.headscale_service import HeadscaleServiceError
 from runtime.remote_access.installer import InstallerError
+from runtime.remote_access.home_firewall_record import FirewallRecord, validate_firewall_transition
 
 TRANSACTION_PATH = "/var/lib/happyranch-remote-access/home-activation-txn.json"
 EFFECTS = ("preflight", "headscale_start_verify", "db_users", "local_node_mint",
@@ -63,6 +64,7 @@ class HomeActivationTransaction:
     phase: str
     effects: tuple[Effect, ...]
     recovery_observation: Mapping[str, str] | None = None
+    firewall: FirewallRecord | None = None
 
     def __post_init__(self) -> None:
         # Reuse all B1 identity predicates, without inventing another grammar.
@@ -87,6 +89,10 @@ class HomeActivationTransaction:
             HomeActivationReceipt(**self.binding(), member_digests={p: "0" * 64 for p in MEMBER_PATHS},
                                   phase="ready", **pair)
             object.__setattr__(self, "recovery_observation", MappingProxyType(dict(pair)))
+        if self.firewall is not None:
+            if type(self.firewall) is not FirewallRecord:
+                raise HomeActivationError()
+            self.firewall.validate(self.dial_ip)
 
     def __repr__(self) -> str:
         return "HomeActivationTransaction(<redacted>)"
@@ -107,17 +113,24 @@ class HomeActivationTransaction:
                       effects=[effect.to_dict() for effect in self.effects])
         if self.recovery_observation is not None:
             record["recovery_observation"] = dict(self.recovery_observation)
+        if self.firewall is not None:
+            record['firewall'] = self.firewall.to_dict()
         return _encode_record(record)
 
     @classmethod
     def parse(cls, data: bytes) -> HomeActivationTransaction:
         # Old records retain their exact key set and byte encoding.
-        try:
-            record = _decode_record(data, _KEYS, TRANSACTION_FORMAT)
-        except HomeActivationError:
-            record = _decode_record(data, _KEYS | {"recovery_observation"}, TRANSACTION_FORMAT)
-            if record["recovery_observation"] is None:
-                raise HomeActivationError()
+        record = None
+        for optional in (set(), {'recovery_observation'}, {'firewall'}, {'recovery_observation', 'firewall'}):
+            try:
+                record = _decode_record(data, _KEYS | optional, TRANSACTION_FORMAT)
+                break
+            except HomeActivationError:
+                continue
+        if record is None or any(record[key] is None for key in ('recovery_observation', 'firewall') if key in record):
+            raise HomeActivationError()
+        if 'firewall' in record:
+            record['firewall'] = FirewallRecord.parse(record['firewall'])
         record.pop("format")
         effects = record["effects"]
         if (type(effects) is not list or any(type(item) is not dict or item.keys() !=
@@ -129,8 +142,15 @@ class HomeActivationTransaction:
 
 def validate_transaction_transition(previous: HomeActivationTransaction,
                                     updated: HomeActivationTransaction) -> None:
+    if (previous.binding() == updated.binding() and previous.phase == updated.phase
+            and previous.effects == updated.effects
+            and previous.recovery_observation == updated.recovery_observation
+            and updated.firewall is not None and previous.firewall != updated.firewall):
+        validate_firewall_transition(previous.firewall, updated.firewall)
+        return
     if (previous.binding() != updated.binding() or previous.phase == "failed_uncertain"
-            or previous.recovery_observation != updated.recovery_observation):
+            or previous.recovery_observation != updated.recovery_observation
+            or previous.firewall != updated.firewall):
         raise HomeActivationError("transition")
     if updated.phase == "failed_uncertain" and updated.effects == previous.effects:
         return
