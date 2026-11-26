@@ -831,7 +831,7 @@ class ConnectionCLITests(unittest.TestCase):
                 self.assertEqual(call[:6], ("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
                                            "ai.happyranch.RemoteAccess1", method, None, "(s)"))
                 self.assertEqual(call[6], Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION)
-                if method in ("Enable", 'Disable'):
+                if method != "IssueInvite":
                     self.assertEqual(call[7], 122000)  # Admission only; original operation budget stays held separately.
                 else:
                     self.assertGreater(call[7], budget)
@@ -852,6 +852,33 @@ class ConnectionCLITests(unittest.TestCase):
         self.assertEqual(stopped.exception.code, 2)
         help_text = parser._subparsers._group_actions[0].choices["connection"]._subparsers._group_actions[0].choices["host"].format_help()
         self.assertNotIn("lifecycle recovery are unavailable", help_text)
+
+    def test_cli_only_lifecycle_terminal_results(self) -> None:
+        for action, method, completed in (
+                ("replace-failed", "ReplaceFailed", "replaceFailedCompleted"),
+                ("cancel-invite", "CancelInvite", "cancelInviteCompleted"),
+                ("recover-invite", "RecoverInvite", "recoverInviteCompleted"),
+                ("retry-policy-renewal", "RetryPolicyRenewal", "policyRenewalCompleted")):
+            for early in (False, True):
+                for category in (None, "failed", "refused", "partial_cleanup", "uncertain"):
+                    with self.subTest(action=action, early=early, category=category):
+                        self.bus.calls.clear()
+                        self.bus.early = early
+                        frame = dict(method=method, correlation=dict(serial=17, owner=":1.100"),
+                                     outcome="failed" if category else "completed")
+                        if category:
+                            frame["category"] = category
+                        # A valid frame for another original method cannot settle this call.
+                        self.bus.terminal_frames = [terminal_frame(), json.dumps(frame), json.dumps(frame)]
+                        code, result, _ = self.run_native(action, "yes\n")
+                        expected = (dict(code=completed, effect="unknown", recovery="refresh") if category is None
+                            else dict(code="outcomeUnknown", effect="unknown", recovery="nativeRecovery")
+                            if category == "uncertain" else dict(code="lifecycleFailed", category=category,
+                                effect="unknown", recovery="nativeRecovery"))
+                        self.assertEqual((code, result), (0 if category is None else 1, expected))
+                        self.assertEqual([call[3] for call in self.bus.calls], [method])
+                        self.assertEqual(self.bus.calls[0][7], 122000)
+                        self.assertEqual((self.bus.filters, self.bus.subscriptions, self.bus.handlers), ({}, {}, {}))
 
     def test_terminal_admission_and_replace_confirmation(self) -> None:
         for action in ("create-invite", "replace-failed"):

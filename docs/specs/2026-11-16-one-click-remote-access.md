@@ -177,17 +177,23 @@ requires a desktop and fresh native authorization. CLI timeouts are 482 seconds
 for Enable/ReplaceFailed, 302 for Disable and 122 for invite/policy methods.
 Create-invite requires `/dev/tty` before dispatch, validates the exact I4a terminal
 frame and displays the invite only there; stdout JSON carries only closed nonsecret
-action fields. Six methods acknowledge `accepted` before effects. The CLI keeps
-the dedicated bus alive through the operation budget plus margin for live-caller
-revalidation, then reports
-`outcomeUnknown` / effect `unknown`, exit 1, without inventing completion, denial
-or cleanup from admission. Private worker outcomes/residue alone are not a
-terminal receipt. Enable alone adds a unicast LifecycleCompleted(s) receipt
-before helper release, correlated to its original call serial and authenticated
-helper owner within the original 480s budget. Its sole method reply remains
-admission-only accepted. The closed 512-byte signal carries failed/completed
-and optionally one of B9's exact 19 typed preparation categories, preserving
-both dial spellings. The private exit-1 preparationFailure frame is bounded to
+action fields. Six methods acknowledge `accepted` before effects and send one
+unicast LifecycleCompleted(s) receipt before helper release, correlated to the
+original method/call serial and authenticated helper owner. CLI subscribes before
+the single send and consumes only that original receipt inside its original
+480s Enable/ReplaceFailed, 300s Disable or 120s invite/policy budget. Their sole
+method reply remains admission-only accepted. The closed 512-byte signal carries
+failed/completed and an optional failed category. Enable preserves B9's typed
+preparation categories, including both dial spellings; Disable preserves its
+partial_cleanup/failed/uncertain categories. The four CLI-only methods report
+replaceFailedCompleted, cancelInviteCompleted, recoverInviteCompleted or
+policyRenewalCompleted with exit 0; known failure reports lifecycleFailed with
+failed/refused/partial_cleanup and exit 1. All retain effect unknown. An uncertain
+worker, lost/invalid/late receipt or transport loss retains outcomeUnknown/exit 1.
+The caller fallback margin supplies no acceptance grace. No polling, replay,
+new window command/event or cleanup authority follows. Private worker
+outcomes/residue alone remain insufficient without the authenticated receipt.
+The private exit-1 preparationFailure frame is bounded to
 256 bytes. No paths, addresses or raw diagnostic text are exported.
 CLI consumes once: enablePreparationFailed/category/unknown/nativeRecovery
 returns exit 1; enableCompleted/unknown/refresh returns exit 0. Neither proves

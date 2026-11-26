@@ -3671,10 +3671,11 @@ status at most 2 seconds. B15 conveys progress/terminal outcomes using
 `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`.
 Transport loss after dispatch never means no change.
 
-Enable and Disable send a destination-addressed `LifecycleCompleted(s)` signal on
+Enable, Disable, ReplaceFailed, CancelInvite, RecoverInvite and RetryPolicyRenewal
+send a destination-addressed `LifecycleCompleted(s)` signal on
 `ai.happyranch.RemoteAccess1`, before captured slot/name release, to the original
 unique caller only. Its sole method reply stays JSON `"accepted"` (admission).
-The closed, duplicate-free, 512-byte frame has method=Enable|Disable,
+The closed, duplicate-free, 512-byte frame names that original method,
 correlation={serial:original call serial,owner:authenticated helper unique name},
 outcome=failed|completed, and optional category on failed only. No broadcast,
 cache, lookup, replay, cross-caller transfer or automatic Enable follows.
@@ -3688,6 +3689,20 @@ unknown effect; the receipt supplies no reusable revoke or cleanup authority.
 Lost receipt retains `outcomeUnknown`; no poll, reconnect or mutation replay is
 added. GUI Disable still uses its admission and fresh Status observations;
 it cannot consume the Enable-only window event.
+
+The four CLI-only methods use the same original connection, method/serial/owner
+correlation, subscribe-before-send ordering and single receipt consumption.
+ReplaceFailed keeps its original 480s budget (482s fallback); CancelInvite,
+RecoverInvite and RetryPolicyRenewal keep 120s (122s fallback). Their worker
+settlement sends and flushes the receipt before releasing its capture. A settled
+completion returns `replaceFailedCompleted`, `cancelInviteCompleted`,
+`recoverInviteCompleted` or `policyRenewalCompleted`, respectively, with exit 0.
+A known failure returns `lifecycleFailed` with the closed category `failed`,
+`refused` or `partial_cleanup`, exit 1. These receipts retain effect `unknown`
+and carry no residue paths or cleanup authority. An uncertain worker sends
+category `uncertain`; CLI projects it as `outcomeUnknown`, as it does for a lost,
+invalid or late receipt. No Status polling, mutation replay, extra budget or
+window command/event is added. The GUI command set remains unchanged.
 
 Only HeadscaleServiceError.category at the actual prepare_headscale call mints
 preparation provenance. The private child emits one exact preparationFailure

@@ -1222,6 +1222,70 @@ def test_thr327_disable_terminal_before_slot_release(mount: Any, partial: bool) 
     assert 'residue' not in frame  # No host paths or private diagnostics on this channel.
 
 
+@pytest.mark.parametrize('method', ['ReplaceFailed', 'CancelInvite', 'RecoverInvite', 'RetryPolicyRenewal'])
+@pytest.mark.parametrize('case', ['complete', 'refused', 'partial_cleanup', 'lost', 'late', 'disconnect'])
+def test_thr327_cli_lifecycle_terminal_before_slot_release(
+        mount: Any, monkeypatch: pytest.MonkeyPatch, method: str, case: str) -> None:
+    v = mount
+    v.message.get_member = lambda: method
+    v.message.get_serial = lambda: 17
+    v.helper.connection.get_unique_name = lambda: ':1.100'
+    sent, order = [], []
+    def signal(destination: str, path: str, interface: str, member: str, body: Any) -> None:
+        assert v.helper.inflight is not None
+        sent.append((destination, path, interface, member, json.loads(body.unpack()[0])))
+        order.append('signal')
+    v.helper.connection.emit_signal = signal
+    context = SimpleNamespace(push_thread_default=lambda: None, pop_thread_default=lambda: None)
+    v.h.GLib.MainContext = SimpleNamespace(new=lambda: context)
+    v.h.GLib.MainLoop = SimpleNamespace(new=lambda *a: SimpleNamespace(run=lambda: None, quit=lambda: None))
+    v.h.GLib.timeout_source_new = lambda *a: SimpleNamespace(set_callback=lambda *a: None,
+        attach=lambda *a: None, destroy=lambda: None)
+    v.h.Gio.Cancellable = lambda: SimpleNamespace(cancel=lambda: None)
+    v.helper.connection.flush_finish = lambda _: order.append('flush')
+    v.helper.connection.flush = lambda cancel, callback, data: callback(v.helper.connection, None, data)
+    release = v.helper.release
+    def released(capture: Any) -> None:
+        if v.helper.inflight is capture:
+            order.append('release')
+        release(capture)
+    v.helper.release = released
+    def result(*args: Any, **kwargs: Any) -> dict:
+        assert v.helper.inflight is not None
+        assert json.loads(v.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
+        if case == 'lost':
+            raise OSError('synthetic lost child reply /private/path')
+        if case == 'late':
+            deadline = v.helper.lifecycle_operation.budget.deadline
+            v.helper.clock = v.helper.lifecycle_operation.budget.clock = lambda: deadline
+        if case == 'disconnect':
+            v.helper.cancelled = True
+        if method == 'ReplaceFailed':
+            return dict(outcome='off' if case == 'complete' else 'failed' if case == 'refused'
+                        else 'partial_cleanup' if case == 'partial_cleanup' else 'off', residue=[])
+        outcome = case if case in ('refused', 'partial_cleanup') else 'complete'
+        if method == 'RetryPolicyRenewal':
+            return dict(outcome='refused' if outcome == 'partial_cleanup' else outcome)
+        return dict(outcome=outcome, invite='cancelled', cleanup='complete')
+    v.reader.effect.side_effect = result
+    v.reader.recover_invite = Mock(side_effect=result)
+    v.reader.retry_policy = Mock(side_effect=result)
+    v.admit()
+    v.helper._reply.assert_called_once_with(v.message, 'accepted')
+    assert v.helper.inflight is None and order[-1] == 'release'
+    if case in ('late', 'disconnect'):
+        assert sent == []
+        return
+    frame = dict(method=method, correlation=dict(serial=17, owner=':1.100'),
+                 outcome='completed' if case == 'complete' else 'failed')
+    if case != 'complete':
+        frame['category'] = ('uncertain' if case == 'lost' else
+            'failed' if method == 'ReplaceFailed' and case == 'refused' else
+            'refused' if method == 'RetryPolicyRenewal' else case)
+    assert sent == [(':1.42', v.h.OBJECT_PATH, v.h.INTERFACE, 'LifecycleCompleted', frame)]
+    assert order == ['signal', 'flush', 'release']
+
+
 @pytest.mark.parametrize('change', ['generation', 'operation', 'uid', 'owner', 'denied', 'deadline'])
 def test_native_capture_action_and_cas_before_effect(mount: Any, monkeypatch: pytest.MonkeyPatch, change: str) -> None:
     v = mount

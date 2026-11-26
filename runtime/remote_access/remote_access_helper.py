@@ -59,6 +59,8 @@ AUTH_DEADLINE = _helper_lifecycle.AUTH_DEADLINE
 LIFECYCLE_ACTIONS = {'Enable': 'enable', 'ReplaceFailed': 'replace-failed', 'Disable': 'disable',
                      'RetryPolicyRenewal': 'retry-policy-renewal',
                      **_helper_invite.METHODS}
+TERMINAL_METHODS = frozenset({'Enable', 'Disable', 'ReplaceFailed', 'CancelInvite',
+                             'RecoverInvite', 'RetryPolicyRenewal'})
 IDLE_SECONDS = 60.0
 SERVICE_PATHS = tuple('/' + parent + '/happyranch-' + service
     for parent in ('var/lib', 'run') for service in ('headscale', 'connector', 'tsnet-sidecar'))
@@ -651,7 +653,7 @@ class RemoteAccessHelper:
         """One receive-only receipt, still held by the original worker/slot."""
         capture = operation.capture
         budget = operation.budget
-        if (capture.method not in ('Enable', 'Disable') or not operation.accepted or self.cancelled
+        if (capture.method not in TERMINAL_METHODS or not operation.accepted or self.cancelled
                 or self.inflight is not capture or budget.remaining() <= 2.0):
             return
         # _uid retains its fixed 2s authentication read. Never start it with less
@@ -669,6 +671,10 @@ class RemoteAccessHelper:
         if (category is None and capture.method == 'Enable'
                 and outcome in (_helper_lifecycle.SetupPhase.FAILED, _helper_lifecycle.SetupPhase.UNCERTAIN)):
             category = 'activation-unverified'
+        elif (category is None and capture.method not in ('Enable', 'Disable')
+                and outcome in (_helper_lifecycle.SetupPhase.FAILED, _helper_lifecycle.SetupPhase.UNCERTAIN,
+                                _helper_lifecycle.SetupPhase.PARTIAL_CLEANUP)):
+            category = outcome.value
         if category is not None:
             frame['category'] = category
         elif capture.method == 'Disable' and outcome != _helper_lifecycle.SetupPhase.OFF:
@@ -728,7 +734,7 @@ class RemoteAccessHelper:
 
         def deliver(settled: object) -> None:
             nonlocal send_attempted
-            if send_attempted or capture.method not in ('Enable', 'Disable'):
+            if send_attempted:
                 return
             send_attempted = True
             try:
@@ -853,8 +859,7 @@ class RemoteAccessHelper:
             # all effects return, so transient contention cannot strand its slot.
             with self.lock:
                 try:
-                    settled = (operation.complete(outcome, before_release=deliver) if capture.method in ('Enable', 'Disable')
-                               else operation.complete(outcome))
+                    settled = operation.complete(outcome, before_release=deliver)
                     self.lifecycle_result = {'outcome': settled.value, 'residue': residue}
                 except Exception:
                     deliver(lifecycle.SetupPhase.UNCERTAIN)
@@ -906,7 +911,13 @@ class RemoteAccessHelper:
                     pass
         finally:
             self.lifecycle_result = result
-            self.release(capture)
+            try:
+                self._emit_enable_terminal(operation, result['outcome'],
+                    None if result['outcome'] == 'complete' else result['outcome'])
+            except Exception:
+                pass  # A lost terminal receipt never changes the settled worker result.
+            finally:
+                self.release(capture)
 
     def _run_issue_invite(self, operation: object) -> None:
         """One authenticated terminal reply; secret never enters helper state."""
@@ -1016,7 +1027,13 @@ class RemoteAccessHelper:
         finally:
             self.lifecycle_result = result
             self.invite_observation = (capture.uid, capture.generation, result, time.monotonic())
-            self.release(capture)
+            try:
+                self._emit_enable_terminal(operation, result['outcome'],
+                    None if result['outcome'] == 'complete' else result['outcome'])
+            except Exception:
+                pass  # One attempt, held through delivery on the original caller/deadline.
+            finally:
+                self.release(capture)
 
     def _authorized(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult, capture: Capture | LifecycleCapture) -> None:
         terminal = False
