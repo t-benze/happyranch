@@ -3723,7 +3723,8 @@ send a destination-addressed `LifecycleCompleted(s)` signal on
 unique caller only. Its sole method reply stays JSON `"accepted"` (admission).
 The closed, duplicate-free, 512-byte frame names that original method,
 correlation={serial:original call serial,owner:authenticated helper unique name},
-outcome=failed|completed, and optional category on failed only. No broadcast,
+outcome=failed|completed, and optional category on failed only. Enable may also
+carry optional closed `firewallWarning` display advice (see F2 below). No broadcast,
 cache, lookup, replay, cross-caller transfer or automatic Enable follows.
 Disable's failed receipt has only `partial_cleanup`, `failed` or `uncertain`
 as its category; it never sends residue paths. Only a settled Off produces its
@@ -4369,10 +4370,11 @@ observations, and I4b-2 reads policy/timer state through the same fixed bundled
 child into the existing policy dimension; address remains unknown. Observation ages measure time
 since the reads with a monotonic clock and pass through the existing stale normalization.
 No device data, IDs or receipt fields cross StatusV2. Status v1 serialization is unchanged.
-The frozen `StatusV2` has exactly
+`StatusV2` requires the six dimensions
 `setup`, `runtime`, `invite`, `address`, `policy`, `cleanup`; wire JSON additionally
-has integer `version: 2`. Each dimension has exactly `state` and `age_seconds`;
-invite additionally has `deadline_utc_seconds`. All vocabularies include
+has integer `version: 2` and may include the optional `firewall` observation
+specified in the THR-327 F2 amendment below. Each dimension has exactly `state`
+and `age_seconds`; invite additionally has `deadline_utc_seconds`. All vocabularies include
 `unknown` and `stale`, plus only:
 
 - setup: `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`,
@@ -4934,3 +4936,62 @@ and timer schedule are unchanged. The bounded unattended
 lock wait and EROFS removal behavior are specified above. No arbitrary exception message,
 path, file contents, identity, credential or invite is journaled. Journal
 failure preserves the original refusal and retained evidence.
+
+### THR-327 F2: read-only Linux host firewall advisory
+
+Firewall evidence never vetoes Enable. No firewall inspection runs in Enable
+preflight or before setup effects. After the lifecycle outcome is settled, the
+existing fixed child may supply optional display advice within the original
+deadline: only when more than six seconds remain, allowing at most two seconds
+for advice and preserving the remaining terminal/auth budget. Read errors
+produce `unverified`; insufficient remaining budget omits the observation.
+Neither advice nor its failure changes the settled outcome, authorization,
+audit, receipts, publication, setup READY or runtime availability.
+
+The fixed C-locale `/usr/sbin/ufw status verbose` observation has three named
+advisory categories:
+
+- `likely_blocked`: recognized active UFW, default deny incoming, neither an
+  IPv4 user allow for 8443/tcp nor one for 3478/udp, and stock IPv4 before/after
+  templates. This is a probability: live INPUT allows from initialization or
+  other owners can exist even when both files are stock.
+- `clear`: UFW is inactive, or recognized user allows cover both ports with
+  stock templates. This says nothing about end-to-end connectivity.
+- `unverified`: any active customization, unreadable/unknown evidence, partial
+  allow, default allow/reject without both user allows, command failure,
+  rate limit, unknown profile/interface, malformed output or timeout.
+
+LAN-scoped allows and port lists/ranges count as possible allows; IPv6-only
+allows do not cover the IPv4 home dial address. Fixed rule-file reads are
+read-only, no-follow, regular-file-only and limited to 64 KiB each. Any change,
+including harmless customizations, symlinks, missing files or oversized and
+non-ASCII content, downgrades active observations to `unverified`. Stock hashes
+never establish live rules. No iptables/nft execution or new capability is used.
+Missing UFW supplies no observation; firewalld/plain nftables are not inferred.
+
+StatusV2's optional `firewall` observation uses `state` and `age_seconds`, with
+`likely_blocked|unverified|clear` plus internal `unknown|stale` freshness states.
+Unknown is omitted. Status advice reserves 300 ms of the original two-second
+response deadline, leaving 200 ms before the unchanged 1.9-second watchdog. It
+is skipped when the resulting advice budget is at most 100 ms. Advice timeout
+or error omits the field and still returns the collected V2 observations; it
+never extends the original deadline. Frames without the field and original
+Status v1 retain compatibility. Fresh observations (at most 30 seconds old)
+project to the existing optional native host `firewallWarning`. Enable's settled terminal and
+successful native/CLI result may carry the same optional closed advisory.
+Absent advice never substitutes for setup/effect evidence. `clear` is carried
+without warning text; English and Simplified Chinese host views and CLI say
+that the **home computer's firewall probably blocks** the home ports for
+`likely_blocked`, and tell the user to allow **8443/tcp and 3478/udp from the
+home LAN only**, then check Status. Unverified advice is conditional on failed
+connections. No rule contents, addresses, paths or stderr cross the boundary.
+
+The remote client snapshot does not carry host firewall Status. Replacing the
+client's generic home-network-unavailable explanation therefore needs a new
+protocol field and remains follow-up; this change adds none to that snapshot.
+
+Inspection never adds/removes/modifies firewall rules. Automatic rule management
+remains Founder-reserved. Service user, sandbox, capabilities, ReadWritePaths,
+R2 custody, home-only trust and authentication/authorization remain unchanged.
+Installed-package/UFW and cross-device qualification remain separate from the
+standalone temporary-file/native-simulation venue.

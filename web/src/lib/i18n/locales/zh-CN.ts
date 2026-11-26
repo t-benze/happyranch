@@ -3926,6 +3926,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "connection.host.enableFailure.multiple_addresses": "找到多个家庭网络地址。",
   "connection.host.enableFailure.dial_ip": "不支持此家庭网络地址。",
   "connection.host.enableFailure.dial-ip": "不支持此家庭网络地址。",
+  "connection.host.firewallLikelyBlocked": "家庭电脑的防火墙可能阻止了家庭网络端口（8443/tcp 和 3478/udp）。请仅允许家庭局域网访问这些端口，然后检查状态。",
+  "connection.host.firewallUnverified": "无法验证本机防火墙。若家庭网络连接失败，请检查是否仅允许家庭局域网访问 8443/tcp 和 3478/udp。",
   "connection.host.enableFailure.occupied-port": "远程访问所需的网络端口已被占用。",
   "connection.host.enableFailure.port-check-uncertain": "无法检查远程访问所需的网络端口。",
   "connection.host.enableFailure.ready-restart-failed-turn-off": "所属服务无法重新启动或通过验证。请关闭远程访问，然后检查操作结果。",

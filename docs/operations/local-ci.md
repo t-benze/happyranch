@@ -4069,6 +4069,30 @@ checks change systemd hardening, required CI selection or workflow triggers.
 
 ## Fixed remote-access helper
 
+F2 firewall fixtures and the real helper admission/status mount extend the
+existing standalone script selection:
+`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_home_activation_backend.py scripts/test_helper_mount.py -k thr327_firewall -q --tb=short`.
+They cover UFW active-deny/reject, both/single/LAN/range/v6 rules, inactivity,
+ambiguous profiles/rate limits and malformed output; stock UFW IPv4 before/after
+rules, LAN/multiport/broad/custom-chain allows and unreadable/oversized files;
+Enable admission and READY completion regardless of firewall evidence,
+post-settlement advice/error/absence, and READY plus separate Status advice.
+The existing Status table uses the real 1.9-second watchdog and fixed child
+transport with synthetic slow/error results: advice timeout retains V2
+READY/available/current-policy observations without `expired`, and insufficient
+advice time skips the child within the original two-second response budget.
+The stock-files/live-INPUT-allow counterexample shares the reviewer’s UFW
+formatter output; it cannot prove live packet acceptance. Stock templates in
+`scripts/fixtures/ufw/` come from the UFW
+package's `usr/share/ufw/iptables` defaults; supplemental files are redirected to
+temporary copies while the production inspector and public Enable run. Command
+output is synthetic; no host firewall, system bus or services are touched.
+The existing Linux `test_connection.py`, `test_connection_cli.py`,
+`test_app_events.py` and Node `connection-dialog.test.mjs` selections cover the
+closed native projection/relay, CLI LAN-only action and bilingual host copy.
+These are local owner checks, with no new required CI or daily E2E trigger.
+
+
 I3a supervisor B10 wiring uses the retained standalone venue:
 `PYTHONPATH=$PWD uv run --frozen pytest scripts/test_invite_control.py -v --tb=short`.
 Its supervisor cases use a real private control listener, the serving pinned

@@ -329,8 +329,19 @@ class RemoteAccessHelper:
                     policy = _status_v2.PolicyObservation(_status_v2.PolicyState(state['policy']), 0)
                 except Exception:
                     pass  # Unavailable evidence remains unknown, never current.
+                firewall = None
+                try:
+                    # Keep encoding/delivery ahead of the 1.9s watchdog within
+                    # the original 2s deadline. Advice must not erase facts.
+                    remaining = deadline - time.monotonic() - .3
+                    if remaining > .1:
+                        state = _helper_generation.HomeLifecycleClient('Enable', uid).firewall_status(remaining)
+                        if state != 'unknown':
+                            firewall = _status_v2.FirewallObservation(_status_v2.FirewallState(state), 0)
+                except Exception:
+                    pass  # No firewall evidence must not change setup or runtime.
                 raw = _status_v2.encode(_status_v2.build_status(now_utc_seconds=int(time.time()),
-                    setup=setup, connector=connector, runtime=runtime, invite=invite, cleanup=cleanup, policy=policy))
+                    setup=setup, connector=connector, runtime=runtime, invite=invite, cleanup=cleanup, policy=policy, firewall=firewall))
             except Exception as error:
                 category = error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable'
             settled(raw, category)
@@ -659,7 +670,8 @@ class RemoteAccessHelper:
                     self._error(capture.message, error.category if isinstance(error, Refused) else 'changed')
                 self._clear()
 
-    def _emit_enable_terminal(self, operation: object, outcome: object, category: str | None) -> None:
+    def _emit_enable_terminal(self, operation: object, outcome: object, category: str | None,
+                              firewall: str | None = None) -> None:
         """One receive-only receipt, still held by the original worker/slot."""
         capture = operation.capture
         budget = operation.budget
@@ -692,6 +704,8 @@ class RemoteAccessHelper:
                                  else 'uncertain' if outcome == _helper_lifecycle.SetupPhase.UNCERTAIN else 'failed')
         elif outcome not in (_helper_lifecycle.SetupPhase.FAILED, _helper_lifecycle.SetupPhase.UNCERTAIN):
             frame['outcome'] = 'completed'
+        if capture.method == 'Enable' and firewall in ('likely_blocked', 'unverified', 'clear'):
+            frame['firewallWarning'] = firewall
         raw = json.dumps(frame, separators=(',', ':'))
         budget.remaining()
         self.connection.emit_signal(capture.sender, OBJECT_PATH, INTERFACE,
@@ -741,14 +755,25 @@ class RemoteAccessHelper:
         residue: list[str] = []
         outcome = lifecycle.SetupPhase.UNCERTAIN
         preparation_category, send_attempted = None, False
+        firewall = None
 
         def deliver(settled: object) -> None:
-            nonlocal send_attempted
+            nonlocal send_attempted, firewall
             if send_attempted:
                 return
             send_attempted = True
+            # Outcome is already settled by complete(). Reserve the original
+            # terminal/auth budget; advice has no effect on operation success.
+            if capture.method == 'Enable':
+                try:
+                    if operation.budget.remaining() > 6.0:
+                        observed = client.firewall_status(2.0)
+                        if observed in ('likely_blocked', 'unverified', 'clear'):
+                            firewall = observed
+                except Exception:
+                    firewall = 'unverified'
             try:
-                self._emit_enable_terminal(operation, settled, preparation_category)
+                self._emit_enable_terminal(operation, settled, preparation_category, firewall)
             except Exception:
                 pass  # One attempt; receipt loss does not settle effects.
 
@@ -878,6 +903,8 @@ class RemoteAccessHelper:
                     # A failed completion is uncertain, never synthetic success.
                     # Seal admission and let the next activation read the journal.
                     self.exit_requested = True
+                    if firewall is not None:
+                        self.lifecycle_result['firewallWarning'] = firewall
                     self.release(capture)
 
     def _run_policy_renewal(self, operation: object) -> None:

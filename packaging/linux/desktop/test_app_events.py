@@ -280,16 +280,16 @@ contexts.forEach((c,i)=>c.callbacks=handlers[i].get('message'));
   const error=await vm.runInContext("happyranchConnection.call('host.enable','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(error)),contexts[1].failure);
  }
- for(const wrong of [{category:'unknown'},{effect:'none'},{effect:'confirmed'},{message:'synthetic'},{recovery:'refresh'}]){
+ for(const wrong of [{category:'host_firewall_blocks_home'},{category:'host_firewall_blocks_tcp_8443'},{category:'host_firewall_blocks_udp_3478'},{category:'unknown'},{effect:'none'},{effect:'confirmed'},{message:'synthetic'},{recovery:'refresh'}]){
   contexts[1].failure={code:'enablePreparationFailed',category:'inventory',effect:'unknown',recovery:'nativeRecovery',...wrong};
   const error=await vm.runInContext("happyranchConnection.call('host.enable','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(error)),{code:'outcomeUnknown',effect:'unknown',recovery:'nativeRecovery'});
  }
- for(const category of ['residue','owner','provenance','custody','inventory','quiescence','timeout','status_unavailable','invite_rate_limited','unknown','unverified',null,'/private/canary']){
+ for(const category of ['residue','owner','provenance','custody','inventory','quiescence','timeout','status_unavailable','invite_rate_limited','host_firewall_blocks_home','host_firewall_blocks_tcp_8443','host_firewall_blocks_udp_3478','unknown','unverified',null,'/private/canary']){
   contexts[1].failure={code:'hostStateUnrecognized',effect:'none',recovery:'refresh',category,private:'secret'};
   const error=await vm.runInContext("happyranchConnection.call('host.status','{}').catch(raw=>JSON.parse(raw))",contexts[0]);
   assert.deepEqual(JSON.parse(JSON.stringify(error)),{code:'hostStateUnrecognized',effect:'none',recovery:'refresh',
-   category:!category || category==='unknown' || category.startsWith('/') ? 'unverified' : category});
+   category:!category || category==='unknown' || category.startsWith('/') || category.startsWith('host_firewall_') ? 'unverified' : category});
  }
  for(const code of ['permissionDenied','owner_edits_pending','outcomeUnknown','hostStateUnrecognized']){
   contexts[1].failure={code,effect:'unknown',recovery:'nativeRecovery'};

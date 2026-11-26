@@ -4115,6 +4115,8 @@ export const en = {
   "connection.host.enableFailure.multiple_addresses": "More than one home network address was found.",
   "connection.host.enableFailure.dial_ip": "The home network address is not supported.",
   "connection.host.enableFailure.dial-ip": "The home network address is not supported.",
+  "connection.host.firewallLikelyBlocked": "The home computer’s firewall probably blocks the home ports (8443/tcp and 3478/udp). Allow these ports from your home LAN only, then check status.",
+  "connection.host.firewallUnverified": "Could not verify the host firewall. If home connections fail, check that 8443/tcp and 3478/udp allow access from your home LAN only.",
   "connection.host.enableFailure.occupied-port": "A network port needed for remote access is already in use.",
   "connection.host.enableFailure.port-check-uncertain": "The network ports needed for remote access could not be checked.",
   "connection.host.enableFailure.ready-restart-failed-turn-off": "The owned services could not restart or verify. Turn off remote access, then check its result.",

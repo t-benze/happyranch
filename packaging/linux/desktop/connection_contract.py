@@ -29,6 +29,8 @@ WINDOW_LIFECYCLE = frozenset({"Enable", "Disable", "IssueInvite"})
 CLI_LIFECYCLE_TIMEOUTS = {"Enable": 482000, "ReplaceFailed": 482000, "Disable": 302000,
                           "IssueInvite": 122000, "CancelInvite": 122000,
                           "RecoverInvite": 122000, "RetryPolicyRenewal": 122000}
+FIREWALL_ADVISORIES = frozenset({"likely_blocked", "clear", "unverified"})
+FIREWALL_STATES = FIREWALL_ADVISORIES | {"unknown", "stale"}
 HOST_STATE_CATEGORIES = frozenset({"residue", "owner", "provenance", "custody", "inventory",
                                     "quiescence", "timeout", "status_unavailable", "invite_rate_limited", "unknown", "unverified", "not_applicable"})
 PREPARATION_CATEGORIES = frozenset({
@@ -49,8 +51,9 @@ CLI_FAILURE_CATEGORIES = frozenset({'failed', 'refused', 'partial_cleanup', 'unc
 
 def enable_terminal_frame(raw: str) -> dict:
     value = parse_json(raw, 512)
+    keys = {'method', 'correlation', 'outcome'}
     if (type(value) is not dict or set(value) not in (
-            {"method", "correlation", "outcome"}, {"method", "correlation", "outcome", "category"})
+            keys, keys | {'category'}, keys | {'firewallWarning'}, keys | {'category', 'firewallWarning'})
             or value["method"] not in ("Enable", "Disable", *CLI_COMPLETION_CODES)
             or value["outcome"] not in ("failed", "completed")):
         raise ValueError("invalid terminal frame")
@@ -65,6 +68,10 @@ def enable_terminal_frame(raw: str) -> dict:
                 PREPARATION_CATEGORIES if value['method'] == 'Enable' else DISABLE_CATEGORIES
                 if value['method'] == 'Disable' else CLI_FAILURE_CATEGORIES)):
         raise ValueError("invalid terminal category")
+    if 'firewallWarning' in value and (value['method'] != 'Enable'
+            or type(value['firewallWarning']) is not str
+            or value['firewallWarning'] not in FIREWALL_ADVISORIES):
+        raise ValueError('invalid firewall advisory')
     return value
 
 
@@ -224,6 +231,8 @@ class EnableTerminalObserver:
                 else dict(code='lifecycleFailed', category=category, effect='unknown', recovery='nativeRecovery'))
         elif frame["outcome"] == "completed":
             projection = dict(code="enableCompleted", effect="unknown", recovery="refresh")
+            if 'firewallWarning' in frame:
+                projection['firewallWarning'] = frame['firewallWarning']
             event = dict(version=1, operationId=self.operation_id, method="Enable", outcome="completed", result=projection)
         else:
             projection = dict(code="outcomeUnknown", effect="unknown", recovery="nativeRecovery")
@@ -593,9 +602,17 @@ class Protocol:
         """Fresh display detail only; v1 keeps its original bytes/vocabulary."""
         value = parse_json(raw, 16384)
         dimensions = {'setup', 'runtime', 'invite', 'address', 'policy', 'cleanup'}
-        if (type(value) is not dict or set(value) != {'version', *dimensions}
+        if (type(value) is not dict or set(value) not in ({'version', *dimensions}, {'version', *dimensions, 'firewall'})
                 or type(value['version']) is not int or value['version'] != 2):
             raise ValueError('invalid status detail')
+        if 'firewall' in value:
+            firewall = value['firewall']
+            if (type(firewall) is not dict or set(firewall) != {'state', 'age_seconds'}
+                    or type(firewall['state']) is not str or firewall['state'] not in FIREWALL_STATES
+                    or type(firewall['age_seconds']) is not int or firewall['age_seconds'] < 0):
+                raise ValueError('invalid firewall detail')
+            if firewall['age_seconds'] <= 30 and firewall['state'] in FIREWALL_ADVISORIES:
+                snapshot = {**snapshot, 'firewallWarning': firewall['state']}
         part = value['setup']
         states = {'prepared_no_receipt', 'failed_uncertain', 'partial_cleanup',
                   'runtime_unavailable', 'setup_unverified', 'renewal_failed'}

@@ -2022,3 +2022,71 @@ def test_thr327_failed_restart_turn_off_enable(composition: Any, monkeypatch: py
     assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
                                 deadline=time.monotonic() + 480)['outcome'] == 'ready'
     assert len(v.mints) == 2
+
+
+@pytest.fixture
+def ufw_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+    """Real stock UFW IPv4 files; redirect only the two fixed production reads."""
+    paths = {}
+    for name in ('before.rules', 'after.rules'):
+        path = tmp_path / name
+        path.write_bytes((Path(__file__).parent / 'fixtures' / 'ufw' / name).read_bytes())
+        paths[name] = path
+    native_open = os.open
+    def open_rules(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        fixed = {'/etc/ufw/' + name: fixture for name, fixture in paths.items()}
+        return native_open(fixed.get(str(path), path), flags, *args, **kwargs)
+    monkeypatch.setattr(os, 'open', open_rules)
+    return paths
+
+
+@pytest.mark.parametrize('case,output,state', [
+    ('deny-no-rule', '', 'likely_blocked'),
+    ('both', '8443/tcp  ALLOW IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n', 'clear'),
+    ('tcp-only', '8443/tcp  ALLOW IN  Anywhere\n', 'unverified'),
+    ('udp-only', '3478/udp  ALLOW IN  Anywhere\n', 'unverified'),
+    ('lan', '8443/tcp  ALLOW IN  192.168.1.0/24\n3478/udp  ALLOW IN  192.168.1.0/24\n', 'clear'),
+    ('inactive', 'Status: inactive\n', 'clear'),
+    ('unparsable', 'unrecognized synthetic output\n', 'unverified'),
+    ('profile', 'OpenSSH  ALLOW IN  Anywhere\n', 'unverified'),
+    ('v6-only', '8443/tcp (v6)  ALLOW IN  Anywhere (v6)\n3478/udp (v6)  ALLOW IN  Anywhere (v6)\n', 'likely_blocked'),
+    ('allow-default', 'Default: allow (incoming), allow (outgoing), deny (routed)\n', 'unverified'),
+    ('range', '3400:8500  ALLOW IN  192.168.1.0/24\n', 'clear'),
+    ('limit', '8443/tcp  LIMIT IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n', 'unverified'),
+    ('reject', 'Default: reject (incoming), allow (outgoing), deny (routed)\n', 'unverified'),
+])
+def test_thr327_firewall_read_only_child(composition: Any, ufw_rules: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+                                       case: str, output: str, state: str) -> None:
+    import subprocess
+    v = composition
+    prefix = 'Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), deny (routed)\nNew profiles: skip\n'
+    if case in ('inactive', 'unparsable'):
+        raw = output
+    elif case in ('allow-default', 'reject'):
+        raw = 'Status: active\n' + output
+    else:
+        raw = prefix + ('\nTo                         Action      From\n--                         ------      ----\n' + output if output else '')
+    calls = []
+    def run(argv: tuple, **kwargs: Any) -> Any:
+        calls.append(argv)
+        assert kwargs['env'] == {'LC_ALL': 'C', 'LANG': 'C'}
+        assert 0 < kwargs['timeout'] <= 2
+        return SimpleNamespace(returncode=0, stdout=raw.encode())
+    monkeypatch.setattr(subprocess, 'run', run)
+    before, services = staged_inventory(v.fixture), list(v.calls)
+    result = v.lifecycle.dispatch('Enable', os.getuid(), 'firewall', None, deadline=time.monotonic() + 10)
+    assert result == {'firewall': state}
+    assert calls == [('/usr/sbin/ufw', 'status', 'verbose')]
+    assert staged_inventory(v.fixture) == before and v.calls == services
+    assert '192.168' not in json.dumps(result)
+
+
+def test_thr327_firewall_enable_reaches_ready(composition: Any, ufw_rules: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=0,
+        stdout=b'Status: active\nDefault: deny (incoming), allow (outgoing), deny (routed)\n'))
+    result = v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480)
+    assert result == {'outcome': 'ready', 'residue': []}
+    assert v.receipts.current().phase == 'ready' and len(v.mints) == 1
