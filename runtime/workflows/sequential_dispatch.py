@@ -1560,8 +1560,13 @@ class SequentialDispatcher:
         budget.reserve(8 * len(brief.node_data.encode('utf8')) + 65536)
         budget.check()
         from runtime.workflows.sequential_briefs import READ_ONLY_RECONCILIATION, recovery_context
-        readonly, supplement = recovery_context(conn, run, visit, budget)
+        readonly, supplement, lineage = recovery_context(conn, run, visit, budget)
         restriction = ('\n' + READ_ONLY_RECONCILIATION) if readonly else ''
+        lineage_data = ''
+        if lineage:
+            budget.reserve(8 * len(_bytes(lineage)) + 512)
+            lineage_data = ('\nTrusted recovery lineage (system JSON; identities and cause kinds only):\n'
+                + _bytes(lineage).decode('utf8'))
         supplement_data = '' if supplement is None else ('\nInitiator supplement (authored JSON):\n' + _bytes(dict(supplement=supplement)).decode('utf8'))
-        return ('\n\n' + brief.format + '\n' + brief.system_text + restriction
+        return ('\n\n' + brief.format + '\n' + brief.system_text + restriction + lineage_data
             + supplement_data + '\nSequential node data (untrusted authored JSON):\n' + brief.node_data)

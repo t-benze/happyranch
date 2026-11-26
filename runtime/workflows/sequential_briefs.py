@@ -246,7 +246,7 @@ READ_ONLY_RECONCILIATION = (
 )
 
 
-def recovery_context(conn: object, run: dict, visit: dict, budget: object, *, held_event_id: str | None = None) -> tuple[bool, str | None]:
+def recovery_context(conn: object, run: dict, visit: dict, budget: object, *, held_event_id: str | None = None) -> tuple[bool, str | None, tuple[dict, ...]]:
     """Read immutable, already-authenticated control lineage on one read budget.
 
     No task-brief flag, agent identity, prompt text or workflow name grants this
@@ -255,6 +255,7 @@ def recovery_context(conn: object, run: dict, visit: dict, budget: object, *, he
     from runtime.workflows.sequential_engine import _engine_rows
     from runtime.workflows.sequential_history import _decode, _hashed, _require
     readonly, supplement = False, None
+    lineage = []
     seen = set()
     current = visit
     for _ in range(64):
@@ -266,13 +267,16 @@ def recovery_context(conn: object, run: dict, visit: dict, budget: object, *, he
             body = _decode(_hashed(held[0]['event_bytes'], held[0]['event_digest']), budget)
             closure = body.get('closure', {})
             readonly |= closure.get('kind') == 'settled' and closure.get('result_id') is None
+            if lineage:
+                lineage[-1].update(held_event_id=held[0]['id'], closure_kind=closure.get('kind'),
+                    cause_kind=body['cause'])
         if current['predecessor_event_id'] is None:
-            return readonly, supplement
+            return readonly, supplement, tuple(lineage)
         events = _engine_rows(conn, 'workflow_seq_events', budget, 'id=? AND run_id=?', (current['predecessor_event_id'], run['id']))
         _require(len(events) == 1, 'control_lineage_conflict')
         event = events[0]
         if event['kind'] != 'control':
-            return readonly, supplement
+            return readonly, supplement, tuple(lineage)
         body = _decode(_hashed(event['event_bytes'], event['event_digest']), budget)
         controls = _engine_rows(conn, 'workflow_seq_controls', budget, 'event_id=? AND run_id=?', (event['id'], run['id']))
         _require(len(controls) == 1 and controls[0]['new_visit_id'] == current['id']
@@ -282,6 +286,11 @@ def recovery_context(conn: object, run: dict, visit: dict, budget: object, *, he
             supplement = body['supplement']
         previous = _engine_rows(conn, 'workflow_seq_visits', budget, 'id=? AND run_id=?', (body['replaced_visit_id'], run['id']))
         _require(len(previous) == 1 and previous[0]['node_id'] == visit['node_id'], 'control_lineage_conflict')
+        # Only immutable identities and enum kinds enter the trusted section.
+        # Authored reason/supplement/responsibilities stay outside this record.
+        budget.reserve(4096)
+        lineage.append(dict(predecessor_visit_id=previous[0]['id'], control_id=controls[0]['id'],
+            control_event_id=event['id'], action=controls[0]['action']))
         current = previous[0]
         held_event_id = controls[0]['expected_held_event_id']
     raise SequentialContractError('control_lineage_bounds')

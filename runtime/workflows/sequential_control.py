@@ -287,7 +287,7 @@ def apply_control_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug:
             original_visit = min((item for item in data['workflow_seq_visits'] if item['node_id'] == previous['node_id']),
                                  key=lambda item: item['ordinal'])
             from runtime.workflows.sequential_briefs import recovery_context
-            readonly, _ = recovery_context(conn, run, previous, budget, held_event_id=run['held_event_id'])
+            readonly, _, _ = recovery_context(conn, run, previous, budget, held_event_id=run['held_event_id'])
             brief = _bytes(dict(format='workflow-sequential-recovery-brief@2', original_request=start.request,
                 node=node.id, role=node.role, responsibilities=list(node.responsibilities),
                 original_step_brief=db.get_task(original_visit['task_id']).brief,
