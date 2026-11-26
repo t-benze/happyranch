@@ -136,6 +136,21 @@ def runtime(runtime_container: Path, request: pytest.FixtureRequest) -> Path:
     # NOTE: artifacts/ is intentionally NOT created here.
     # tests/integration/test_artifacts_e2e.py::test_lifespan_creates_artifacts_dir_for_existing_org
     # depends on this absence to exercise the daemon's startup mkdir. Do not add it.
+    if request.node.path.name in ("test_chain_e2e.py", "test_workflow_sequential_e2e.py"):
+        # These scoped hosted modules own this freshly created skeleton.
+        # Match explicit org creation: observing an absent DB at startup is
+        # not fresh-creation authority. Never synthesize lifecycle state.
+        from runtime.infrastructure.workflow_schema import initialize_fresh_org_database
+        from runtime.infrastructure.task_pause_controls import install_pause_schema
+        from runtime.orchestrator.org_config import initialize_fresh_reviewer_agents
+        from runtime.orchestrator._paths import OrgPaths
+
+        database = initialize_fresh_org_database(org_root / "happyranch.db", expected_org_slug=DEFAULT_TEST_SLUG)
+        try:
+            install_pause_schema(database, org_slug=DEFAULT_TEST_SLUG)
+            initialize_fresh_reviewer_agents(OrgPaths(org_root), database)
+        finally:
+            database.close()
     return org_root
 
 

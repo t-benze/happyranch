@@ -2633,6 +2633,15 @@ use another workflow or modify the default branch to evade it. U3's total
 allocation is at most six dispatches, with every ID/ref/SHA recorded in the
 task evidence. A dispatch or static pass is not qualification or lifecycle PASS.
 
+The two selected modules explicitly initialize their newly created synthetic
+org database through the production fresh-org initializer before registration,
+including its ordinary pause and reviewer-policy defaults. Other integration
+fixtures retain their existing setup. Hosted run `45870419709` at
+`bd27a4e9a187b434b92266ebb929fa6f7b0c459e` collected four unchanged chain
+tests and failed all four on each Python with `404 unknown_org`; the workflow
+module did not run. This scoped fixture correction still needs hosted
+qualification; that failure is neither lifecycle RED proof nor PASS.
+
 The workflow executes these commands on each provisioned, frozen interpreter:
 
 ```bash
