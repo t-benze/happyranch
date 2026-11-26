@@ -1009,7 +1009,9 @@ class SequentialDispatcher:
             queue.enqueue_if_absent(self.org.slug, task_id)
 
     def dispatch(self, task_id: str) -> None:
-        from runtime.orchestrator.task_pause import _invocation, release_live, fingerprint
+        from runtime.orchestrator.task_pause import _invocation, release_live, fingerprint, DeferredRootPause
+        from runtime.orchestrator.team_move import DeferredTeamMove
+        from runtime.infrastructure.task_pause_controls import PauseControlError
         with self.org.db._lock:
             owners = list(self._queue_live.get(task_id, {}).values())
             if len(owners) == 1 and owners[0].get('preparation_free_refusal') is True:
@@ -1028,9 +1030,18 @@ class SequentialDispatcher:
         failed = False
         try:
             self.org.orchestrator._run_agent(task_id, task.assigned_agent, task.brief)
-        except BaseException:
+        except BaseException as exc:
             failed = True
-            raise
+            # An observed original P1 execution exception still needs the real
+            # outer cleanup batch. Propagating it now labels that batch unknown
+            # before it runs. This only hands off to the original tail; the
+            # receipt owner still requires every positive close/release proof.
+            if not (isinstance(exc, Exception)
+                    and not isinstance(exc, (DeferredRootPause, DeferredTeamMove, PauseControlError))
+                    and getattr(invocation, 'sequential_failure', False)
+                    and invocation.prepare_complete and not invocation.preparation_effects_entered
+                    and not invocation.commit_entered):
+                raise
         finally:
             _invocation.reset(token)
             release_live(invocation, failed=failed)

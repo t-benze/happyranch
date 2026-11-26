@@ -134,7 +134,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--s5='):
     sys.argv[1:] = ['--assignments']
 S4B_CASES = ('native_before_outer', 'failed_session_closed', 'generic_json', 'no_coding_witness',
     'private_recipient', 'exhausted_at_4094', 'launch_assignment_drift', 'v1_unchanged',
-    'task_failed_after_result', 'task_timed_out_after_result', 'shutdown_after_result', 'terminal_reason_causes',
+    'task_failed_after_result', 'task_timed_out_after_result', 'shutdown_after_result', 'terminal_reason_causes', 'legacy_cause_history',
     'native_progress_prefix', 'cancel_fences_acceptance', 'read_budget_rollback',
     'native_status_clean_exit', 'clean_exit_no_callback', 'terminal_fallback', 'nonrender_launch_failure', 'recovery_read_only')
 s4b_case = None
@@ -3514,6 +3514,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 raise AssertionError(case + ': persisted event/native identity or projection was not authenticated: ' + str(exc)) from exc
             assert f.ids.run_id in persisted.run_ids, case + ': run missing from authenticated history'
         print('PASS S4a', case, 'real private writers/native rows; no provider or live cancellation', flush=True)
+    original_failure_rows = None
     for case in (S4B_CASES if s4b_case or not sys.argv[1:] else ()):
         if s4b_case not in (None, 'all', case):
             continue
@@ -3602,14 +3603,47 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             async def original_failure_rows():
                 from runtime.orchestrator.task_pause import TaskInvocation, _invocation, settle_live
                 from runtime.orchestrator.executors import ExecutorResult
-                for boundary in ('P0', 'P1-return', 'P1-throw', 'U0', 'U1-return', 'U1-throw', 'P2-unproved', 'U2-return', 'U3', 'U4', 'close-fails', 'release-fails', 'receipt-fails'):
-                    with s4fixture() as f:
+                from runtime.orchestrator import run_step as worker
+                worker_rows = ('P1-throw', 'P1-executor-throw', 'P1-cleanup-unknown', 'P1-sticky-unknown')
+                for boundary in ('P0', 'P1-return', *worker_rows, 'U0', 'U1-return', 'U1-throw', 'P2-unproved', 'U2-return', 'U3', 'U4', 'close-fails', 'release-fails', 'receipt-fails'):
+                    with (s5fixture() if boundary in worker_rows else s4fixture()) as f:
                         f.org.orchestrator._main_loop = asyncio.get_running_loop()
+                        if boundary in worker_rows:
+                            await asyncio.to_thread(s5release, f)
                         task = f.db.get_task(f.ids.visit_task_id)
                         dispatcher = f.org.workflow_sequential_dispatch
-                        inv = TaskInvocation(f.org.orchestrator, task, task.assigned_agent,
-                            'original-failure-session', owner='sequential', workflow_dispatcher=dispatcher)
-                        if boundary == 'P0':
+                        if boundary in worker_rows:
+                            owner = await asyncio.to_thread(dispatcher.queue_started, task.id)
+                            inv = owner['invocation']
+                            assert inv.prepare_complete and not inv.preparation_effects_entered
+                            calls = []
+                            def early_throw(*args):
+                                calls.append(args)
+                                assert not inv.commit_entered and not inv.preparation_effects_entered
+                                if boundary == 'P1-sticky-unknown':
+                                    inv.move_reservation.failed_cleanup()
+                                raise RuntimeError('controlled original P1 exception')
+                            try:
+                                with ExitStack() as faults:
+                                    target = '_build_executor' if boundary == 'P1-executor-throw' else '_resolve_agent_def'
+                                    faults.enter_context(patch.object(inv.orch, target, early_throw))
+                                    if boundary == 'P1-cleanup-unknown':
+                                        # Fault the actual cleanup owner; its real wrapper must return unknown.
+                                        faults.enter_context(patch.object(worker, '_root_worktree_batch_impl',
+                                            side_effect=RuntimeError('controlled outer cleanup failure')))
+                                    try:
+                                        await asyncio.to_thread(worker.run_step_impl, inv.orch, task.id)
+                                    except RuntimeError as exc:
+                                        assert str(exc) == 'controlled original P1 exception'
+                                assert len(calls) == 1, (boundary, calls)
+                            finally:
+                                await asyncio.to_thread(dispatcher.queue_finished, task.id, owner)
+                        else:
+                            inv = TaskInvocation(f.org.orchestrator, task, task.assigned_agent,
+                                'original-failure-session', owner='sequential', workflow_dispatcher=dispatcher)
+                        if boundary in worker_rows:
+                            pass  # The actual worker already performed original outer settlement.
+                        elif boundary == 'P0':
                             original_held = inv.store.held_uncommitted
                             calls = []
                             def fail_before_reservation(task_id):
@@ -3671,27 +3705,40 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
                         receipts = [json.loads(r[0]) for r in f.conn.execute(
                             "SELECT payload FROM audit_log WHERE action='workflow_seq_native_launch_failure' ORDER BY id")]
-                        positive = boundary in ('P0', 'P1-return', 'P1-throw')
+                        positive = boundary in ('P0', 'P1-return', 'P1-throw', 'P1-executor-throw')
                         assert run['state'] == ('held' if positive else 'running'), (boundary, run, receipts)
                         assert [r['stage'] for r in receipts] == (['intent', 'closed'] if positive else ['intent', 'unsettled'] if boundary in ('close-fails', 'release-fails', 'receipt-fails') else ['unsettled']), (boundary, receipts)
                         assert f.db.get_task(task.id).current_session_id == (inv.session_id if boundary == 'U4' else None)
                         assert f.conn.execute('SELECT count(*) FROM task_results WHERE task_id=?', (task.id,)).fetchone()[0] == 0
                         native = deepcopy(inv.store.row_uncommitted(inv.store.root_uncommitted(task.id)['id']))
                         before = s4snap(f)
+                        if boundary in worker_rows:
+                            queued = tuple(f.queue._queue._queue)
+                            assert sum(item[1] == f.source.id for item in queued) == int(positive), (boundary, queued)
+                            current = f.db.get_task(task.id)
+                            assert current.status == 'pending' and current.orchestration_step_count == task.orchestration_step_count
                         for delivery in range(5):
                             assert not dispatcher.queue_admission_allowed(task.id), (boundary, delivery)
                             dispatcher.notify_queued(task.id, SimpleNamespace(enqueue_if_absent=lambda *args: (_ for _ in ()).throw(AssertionError('failure requeued'))))
                         assert s4snap(f) == before
+                        if boundary in worker_rows:
+                            assert tuple(f.queue._queue._queue) == queued, (boundary, 'duplicate initiator wake')
                         assert inv.store.row_uncommitted(inv.store.root_uncommitted(task.id)['id']) == native
                         assert f.conn.execute("SELECT count(*) FROM audit_log WHERE action='workflow_seq_native_launch_failure'").fetchone()[0] == len(receipts)
                         if positive:
+                            event = json.loads(f.conn.execute("SELECT event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()[0])
+                            assert event['cause'] == 'launch_failed_before_start', (boundary, event)
+                            assert f.conn.execute("SELECT count(*) FROM workflow_seq_events WHERE kind='held'").fetchone()[0] == 1
+                            inbox = [tuple(row) for row in f.conn.execute('SELECT initiator_task_id,run_id FROM workflow_seq_inbox')]
+                            assert inbox == ([(f.source.id, f.ids.run_id)] if boundary in worker_rows else []), (boundary, inbox)
                             assert not any(e['id'] == inv.identity for e in ([] if native is None else native['journal']['entries']))
                             assert inv.identity not in inv.orch._team_moves._reservations
                             assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
                         else:
+                            assert f.conn.execute("SELECT count(*) FROM workflow_seq_events WHERE kind='held'").fetchone()[0] == 0
+                            assert f.conn.execute('SELECT count(*) FROM workflow_seq_inbox').fetchone()[0] == 0
                             assert any(e['id'] == inv.identity and e['phase'] == 'unknown' and e['context']['execution_unknown'] for e in native['journal']['entries'])
                         print('PASS U1 original boundary', boundary, 'five delivery checks; native receipts/no growth; provider NOT RUN', flush=True)
-            asyncio.run(original_failure_rows())
         elif case == 'terminal_fallback':
             with s4fixture() as f:
                 s4closed(f, f.ids.visit_id, summary=s4bsummary('pause'), terminal='success',
@@ -3749,6 +3796,53 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             expected = 'task_timed_out' if reason == 'timeout' else 'task_failed'
                             assert cause == expected + ('_without_result' if summary is None else '_after_result'), (reason, cause)
                             assert (proof['result_id'] is None) == (summary is None)
+        elif case == 'legacy_cause_history':
+            from runtime.workflows import sequential_business_hold as causes
+            # Historical input labels come from the pre-U1 cause table. The fixture
+            # writer is patched only to persist those original labels; the actual
+            # schema reader below runs unpatched against byte-unchanged saved rows.
+            legacy_rows = (
+                ('unknown_outcome', 'success', s4bsummary('REVISE')),
+                ('result_bad_shape', 'success', ''),
+                ('result_bad_shape', 'success', '{bad callback'),
+                ('result_too_large', 'success', s4bsummary(content=b'x' * 49153)),
+                ('revision_limit_exhausted', 'success', s4bsummary('revise')),
+                ('task_timed_out_after_result', 'timeout', s4bsummary()),
+                ('task_failed_after_result', 'failure', s4bsummary()),
+            )
+            for status in ('blocked', 'failed'):
+                for saved_cause, reason, summary in legacy_rows:
+                    with s4fixture() as f:
+                        s4closed(f, f.ids.visit_id, summary=summary, terminal=reason,
+                            native_status='failed', classification=status, callback_status=status)
+                        proof = causes.generic_closed_visit(f.conn,
+                            run=s4row(f, 'workflow_seq_runs', f.ids.run_id),
+                            visit=s4row(f, 'workflow_seq_visits', f.ids.visit_id), budget=seq_history._ReadBudget())
+                        with patch.object(causes, 'generic_hold_cause', return_value=(saved_cause, proof)):
+                            assert s4baccept(f) is None
+                        before = tuple(f.conn.iterdump())
+                        try:
+                            read_workflow_schema_for_org_load(f.conn, expected_org_slug='scratch')
+                        except ValueError as exc:
+                            raise AssertionError((case, 'legacy schema load rejected', status, saved_cause, str(exc))) from exc
+                        assert tuple(f.conn.iterdump()) == before, (case, 'history rewritten', status, saved_cause)
+                        event = json.loads(f.conn.execute("SELECT event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()[0])
+                        assert event['cause'] == saved_cause and event['closure'] == proof
+                        print('PASS U1 legacy saved cause/schema reader', status, saved_cause, 'unchanged rows', flush=True)
+                # A saved specialized label is not sufficient: its original output
+                # predicate must still hold, even with a valid negative callback.
+                for saved_cause in ('unknown_outcome', 'result_bad_shape', 'result_too_large', 'revision_limit_exhausted'):
+                    with s4fixture() as f:
+                        s4closed(f, f.ids.visit_id, summary=s4bsummary(), terminal='success',
+                            native_status='failed', classification=status, callback_status=status)
+                        proof = causes.generic_closed_visit(f.conn,
+                            run=s4row(f, 'workflow_seq_runs', f.ids.run_id),
+                            visit=s4row(f, 'workflow_seq_visits', f.ids.visit_id), budget=seq_history._ReadBudget())
+                        with patch.object(causes, 'generic_hold_cause', return_value=(saved_cause, proof)):
+                            assert s4baccept(f) is None
+                        s4refuses(f, lambda: read_workflow_schema_for_org_load(f.conn, expected_org_slug='scratch'),
+                            'workflow_seq_generic_hold_proof_conflict')
+                        print('PASS U1 legacy predicate refusal', status, saved_cause, flush=True)
         elif case == 'native_progress_prefix':
             with s4fixture() as f:
                 visit = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
@@ -3924,7 +4018,8 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             assert f.db.get_task(f.source.id) == f.source, case + ': S5 source behavior leaked'
                     if case != 'exhausted_at_4094':
                         assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
-        print('PASS S4b', case, 'real private production boundary; native multi-process NOT RUN', flush=True)
+        if case != 'nonrender_launch_failure':
+            print('PASS S4b', case, 'real private production boundary; native multi-process NOT RUN', flush=True)
     # S5 extends the existing private assignment/native fixture. Real SQL
     # transactions and TaskQueue insertion are observed; no provider is launched.
     from copy import deepcopy
@@ -4060,6 +4155,12 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         except BaseException:
             f.conn.rollback()
             raise
+
+    # The P1 worker cases reuse S5's real initiator/batch fixture. Run the
+    # S4b table after that fixture is defined, including in the full aggregate.
+    if original_failure_rows is not None:
+        asyncio.run(original_failure_rows())
+        print('PASS S4b nonrender_launch_failure real private production boundary; native multi-process NOT RUN', flush=True)
 
     for case in (S5_CASES if s5_case or not sys.argv[1:] else ()):
         if s5_case not in (None, 'all', case):

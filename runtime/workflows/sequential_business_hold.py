@@ -332,7 +332,8 @@ def generic_closed_visit(conn: sqlite3.Connection, *, run: dict, visit: dict, bu
 
 
 def generic_hold_cause(conn: sqlite3.Connection, *, run: dict, visit: dict, compiled: object,
-                       budget: _ReadBudget, unavailable: bool = False, launch_refused: bool = False) -> tuple[str, dict]:
+                       budget: _ReadBudget, unavailable: bool = False, launch_refused: bool = False,
+                       saved_cause: str | None = None) -> tuple[str, dict]:
     from runtime.platform.session_backend import TerminalReason
     from runtime.workflows.sequential_definition import SequentialContractError, parse_generic_callback
     proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget)
@@ -348,12 +349,13 @@ def generic_hold_cause(conn: sqlite3.Connection, *, run: dict, visit: dict, comp
     _require(proof['kind'] == 'settled', 'hold_cause_unavailable')
     # Authenticate first. Optional business classification cannot grant closure.
     cause = _specific_generic_hold_cause(conn, run=run, visit=visit, compiled=compiled,
-                                         budget=budget, proof=proof)
+                                         budget=budget, proof=proof, saved_cause=saved_cause)
     return cause or 'terminal_outcome_unhandled', proof
 
 
 def _specific_generic_hold_cause(conn: sqlite3.Connection, *, run: dict, visit: dict,
-                                 compiled: object, budget: _ReadBudget, proof: dict) -> str | None:
+                                 compiled: object, budget: _ReadBudget, proof: dict,
+                                 saved_cause: str | None = None) -> str | None:
     from runtime.platform.session_backend import TerminalReason
     from runtime.workflows.sequential_definition import SequentialContractError, parse_generic_callback
     terminal, _ = _proof(conn, run['id'], visit['id'], 'terminal', budget)
@@ -367,7 +369,12 @@ def _specific_generic_hold_cause(conn: sqlite3.Connection, *, run: dict, visit: 
     if proof['result_id'] is None:
         return 'missing_callback'
     status = conn.execute('SELECT status FROM task_results WHERE id=?', (proof['result_id'],)).fetchone()[0]
-    if status in ('blocked', 'failed'):
+    # Pre-U1 saved output refusals did not prioritize negative callback status.
+    # Replay must recheck their original output predicates after the same native
+    # closure authentication. New events retain the current status precedence.
+    legacy_output = saved_cause in ('result_bad_shape', 'result_too_large',
+                                    'unknown_outcome', 'revision_limit_exhausted')
+    if status in ('blocked', 'failed') and not legacy_output:
         return 'task_' + status + '_after_clean_exit'
     payload = generic_callback_bytes(conn, proof['result_id'], budget)
     if payload is None:

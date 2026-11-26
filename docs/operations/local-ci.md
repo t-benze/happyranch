@@ -4463,7 +4463,10 @@ Use the existing schema-shell venue with `WORKFLOW_SCHEMA_PYTHON=3.12` and `3.14
 `bash scripts/test-workflow-schema-load.sh --s4b=native_status_clean_exit`,
 `--s4b=clean_exit_no_callback`, `--s4b=terminal_fallback`,
 `--s4b=nonrender_launch_failure`, `--s4b=recovery_read_only`, and
-`--s5=u1_hold_atomicity`. New cases belong to existing aggregates/full execution.
+`--s5=u1_hold_atomicity`. `--s4b=legacy_cause_history` extends the cause/history
+matrix through the actual org-load schema reader with unchanged saved labels
+and negative callbacks; false original predicates remain refused. These cases
+belong to existing aggregates/full execution.
 `--draft-review=U1_policy` reuses the configured released Coding fixture for actual
 Final prompt/launch COMMIT/route ownership; the authority-omission script invokes
 that same keeper after its ordinary v2 preservation table. That script now honors
@@ -4475,7 +4478,7 @@ Lint and Web Lint (Node 24); no CI trigger/check or Product E2E change follows.
 | Native clean negatives / missing callback | Blocked/failed valid and malformed summaries and clean no-result Hold without changing native results/counters or making output/successor; repeat settlement stutters |
 | F1 / atomicity | Fault only the optional specific-cause label on an authentic-shaped closed tuple; persist fallback Held/inbox and replay after restoring classification. SQL refusal between deferred inbox and Held rolls back both; retry commits exactly one pair |
 | P0 | Original synchronous pre-reservation frame; no reservation/journal/effects/launch entered; explicit not-created intent/closed facts |
-| P1 | Original clean prepared invocation; unsuccessful return and throw before effects, safe original outer frame, observed close/release removal |
+| P1 | Original clean prepared invocation; unsuccessful return and actual queue_started → _run_agent → run_step_impl throws at AgentDef resolution/executor construction, real safe outer cleanup, observed close/release removal, one causal initiator inbox; actual cleanup failure and sticky unknown remain fenced |
 | P2 | No complete original scratch certificate is currently available: unproved P2 stays U, never a positive receipt or inferred compensation proof |
 | U0 | Actual original reservation call interrupted before preparation certainty; same unresolved journal/invocation retained |
 | U1/U2 | Controlled original-frame false returns/throws after preparation effects remain unknown; actual integrity/scratch failed-return wiring is NOT RUN in this fixture |

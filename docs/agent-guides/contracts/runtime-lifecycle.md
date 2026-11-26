@@ -1294,6 +1294,11 @@ and allocates nothing. A saved `terminal_outcome_unhandled` fallback authenticat
 its original closure digests/result and non-advancing disposition even when a
 later classifier knows a more specific cause. Authentication/history failures do
 not become fallback success.
+Saved pre-U1 `result_bad_shape`, `result_too_large`, `unknown_outcome` and
+`revision_limit_exhausted` labels are rechecked under their original output
+predicates, including blocked/failed callbacks after clean host exit. Their
+original closure bytes and ownership checks still apply. New events prioritize
+negative callback status; replay neither relabels nor rewrites saved events.
 
 Before any native removal, the **original invocation** may record a bounded
 `workflow_seq_native_launch_failure` intent (`workflow-sequential-native-launch-failure@1`,
@@ -1305,6 +1310,11 @@ receipt references the committed intent and the original tuple/fingerprint. It i
 no-launch proof, never terminal-process evidence. Receipt-backed business Hold
 leaves the native pending/unbound task truthful. A single-use local disposition
 prevents a later failed tail from re-closing that owner.
+For an observed original P1 exception, sequential dispatch hands execution
+failure to the original tail without first marking outer teardown incomplete.
+The real outer cleanup batch must still return safe before close/release can
+qualify. Cleanup failure, sticky unknown and possible launch remain fenced;
+Pause, team-move and authority deferrals keep their existing paths.
 
 P2 requires complete original preparation/scratch/outer proof. The current scratch
 unwind provides no complete certificate for this path: it remains U, never a

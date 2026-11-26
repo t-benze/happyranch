@@ -16,14 +16,18 @@ P2 with missing scratch/outer proof and U0–U5 retain sticky unknown. An interr
 intent cannot produce a positive receipt; no observer reconstructs native closure.
 The model freezes original results, launches and spent allowances, makes Held and
 its addressed inbox one atomic action, and models replay as stuttering.
+P1 execution failure now precedes a separate original outer-cleanup action:
+`OuterClean` admits the existing intent sequence, while `OuterUnknown` stays
+fenced. Execution failure supplies neither positive nor uncertain cleanup proof.
 
 | Action | Production owner |
 | --- | --- |
+| OuterClean / OuterUnknown | `SequentialDispatcher.dispatch` original P1 exception handoff, actual `run_step_impl` outer batch and unchanged `settle_failure` cleanup qualification |
 | Intent / RemoveNative / Receipt | `sequential_launch_failures.settle_failure`, original `TaskInvocation.close` and `TeamMoveCoordinator.release_task(failed=False)` |
 | Interrupted | Original failure before final closed receipt; retained intent/unsettled fence and native unknown |
 | Settle | `generic_closed_visit` / `generic_hold_cause`, dispatcher acceptance and deferred-FK `hold_and_wake_uncommitted` |
 | AuthorityReady | Existing admission writer becoming available; no access bypass |
-| Replay | Authenticated selected history and saved fallback closure; no allocation |
+| Replay | Authenticated selected history, saved legacy predicates and original fallback closure; no allocation or history rewrite |
 
 Use the pinned [TLC recipe](#run-tlc) with module `SequentialSettlement` and
 `sequential-settlement.cfg`: all invariants and conditional `Completion` must pass.
