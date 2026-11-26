@@ -527,10 +527,11 @@ def test_stale_and_ports(venue: Venue, monkeypatch: pytest.MonkeyPatch, case: st
     if case == "ports":
         # Drive the real four-bind probe on loopback; only its address predicate
         # and selected address are isolated, never its socket/bind implementation.
+        # Occupy the LAN-side bind on separate loopback from installed services.
         monkeypatch.setattr(headscale_service, "_dial_ip_valid", lambda ip: True)
-        monkeypatch.setattr(headscale_service, "preflight_ports", lambda ip: PORT_PREFLIGHT("127.0.0.1"))
+        monkeypatch.setattr(headscale_service, "preflight_ports", lambda ip: PORT_PREFLIGHT("127.0.0.2"))
         with socket.socket() as occupied:
-            occupied.bind(("127.0.0.1", 19090))
+            occupied.bind(("127.0.0.2", 8443))
             with pytest.raises(ActivationRefused): venue.coordinator().run(prepared)
     else:
         with pytest.raises(ActivationRefused): venue.coordinator().run(prepared)

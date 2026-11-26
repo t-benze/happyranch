@@ -804,7 +804,7 @@ class LifecycleManager(FakeManager):
         path = self.root / "etc/systemd/system" / unit
         loaded = path.is_file()
         state = self.states.get(unit, "inactive")
-        values = dict(FragmentPath=str(path) if loaded else "", DropInPaths="", NeedDaemonReload="no",
+        values = dict(Id=unit, FragmentPath=str(path) if loaded else "", DropInPaths="", NeedDaemonReload="no",
                       LoadState="loaded" if loaded else "not-found", ActiveState=state,
                       SubState="dead" if state == "inactive" else state,
                       MainPID="0", ControlPID="0", ControlGroup="", Job="")
