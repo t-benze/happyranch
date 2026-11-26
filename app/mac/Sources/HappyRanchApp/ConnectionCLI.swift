@@ -6,14 +6,21 @@ import HappyRanchSupervisor
 /// Noncanonical input has independent byte and monotonic 120-second bounds.
 final class ConnectionTerminal: @unchecked Sendable {
     private let descriptor: Int32
-    init() throws {
-        let descriptor = Darwin.open("/dev/tty", O_RDWR | O_CLOEXEC | O_NONBLOCK)
+    private let readTimeout: Duration
+    convenience init() throws {
+        try self.init(descriptor: Darwin.open("/dev/tty", O_RDWR | O_CLOEXEC | O_NONBLOCK))
+    }
+    /// Takes ownership, including on validation failure. Tests supply a PTY duplicate.
+    init(descriptor: Int32, readTimeout: Duration = .seconds(120)) throws {
         guard descriptor >= 0 else { throw ConnectionError(.unavailable) }
-        guard isatty(descriptor) == 1 else {
+        let flags = fcntl(descriptor, F_GETFL)
+        guard descriptor < Int32(FD_SETSIZE), isatty(descriptor) == 1, flags >= 0,
+              fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else {
             Darwin.close(descriptor)
             throw ConnectionError(.unavailable)
         }
         self.descriptor = descriptor
+        self.readTimeout = readTimeout
     }
     deinit { Darwin.close(descriptor) }
     func say(_ text: String) throws {
@@ -34,18 +41,24 @@ final class ConnectionTerminal: @unchecked Sendable {
             guard tcsetattr(descriptor, TCSAFLUSH, &mode) == 0 else { throw ConnectionError(.unavailable) }
             defer { _ = tcsetattr(descriptor, TCSAFLUSH, &original) }
             try say(prompt) // readiness is published only after echo is disabled
-            let deadline = ContinuousClock.now.advanced(by: .seconds(120))
+            let deadline = ContinuousClock.now.advanced(by: readTimeout)
             var bytes = [UInt8]()
             defer { _ = bytes.withUnsafeMutableBytes { $0.initializeMemory(as: UInt8.self, repeating: 0) } }
             while bytes.count <= limit {
                 try Task.checkCancellation()
                 guard ContinuousClock.now < deadline else { throw CancellationError() }
-                var input = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-                let ready = Darwin.poll(&input, 1, 100)
-                if ready < 0, errno == EINTR { continue }
-                guard ready >= 0, input.revents & Int16(POLLERR | POLLHUP | POLLNVAL) == 0 else {
-                    throw ConnectionError(.unavailable)
+                // Darwin poll does not support tty devices. Swift cannot import
+                // FD_SET's C macro; set the bit in Darwin's Int32 fd_set words.
+                // Initialization rejects descriptors outside FD_SETSIZE.
+                var input = fd_set()
+                withUnsafeMutableBytes(of: &input.fds_bits) { storage in
+                    let words = storage.bindMemory(to: Int32.self)
+                    words[Int(descriptor) / 32] |= Int32(bitPattern: UInt32(1) << UInt32(descriptor % 32))
                 }
+                var timeout = timeval(tv_sec: 0, tv_usec: 100_000)
+                let ready = Darwin.select(descriptor + 1, &input, nil, nil, &timeout)
+                if ready < 0, errno == EINTR { continue }
+                guard ready >= 0 else { throw ConnectionError(.unavailable) }
                 if ready == 0 { continue }
                 var byte: UInt8 = 0
                 let count = Darwin.read(descriptor, &byte, 1)
