@@ -65,7 +65,9 @@ export const createAgent = (
   slug: string,
   body: CreateAgentBody,
 ): Promise<{ name: string; canonical_id: string; addressable_name: string; team: string; role: 'worker' | 'manager' }> =>
-  request(`/orgs/${slug}/agents`, { method: 'POST', body });
+  // THR-402 A8: one POST per Create. A master-bearer 401 renews the bearer but
+  // is NOT re-sent (the next explicit Create uses the fresh bearer).
+  request(`/orgs/${slug}/agents`, { method: 'POST', body, replayOnUnauthorized: false });
 
 export const initAgents = (
   slug: string,

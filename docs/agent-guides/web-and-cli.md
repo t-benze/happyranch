@@ -1850,16 +1850,32 @@ source. Final independent full review/QA, applicable checks/hooks and guarded
 merge remain required. Source publication authorizes no deployment.
 See the [current naming contract](../specs/2026-10-09-identity-names-core.md).
 
-## Founder New agent dialog
+## Founder Create team / Create agent dialog
 
-New agent asks for a readable Name (1–64 ASCII letters, digits, underscores or
-hyphens, starting with a letter). It sends only `display_name` to founder
-`POST /agents`, alongside the existing role/team/executor/prompt fields. The
-server chooses the permanent ID and commits the initial name with enrollment.
-On success navigation uses returned `canonical_id`; agent detail displays
-Name · ID as read-only identity text. The dialog maps invalid, reserved, conflict
-and exhausted-ID errors to English and Simplified Chinese messages. The API's
-legacy `name` field still means an explicit ID; send exactly one name source.
+Agents (header and empty roster) offers **Create team** and **Create agent**,
+which open ONE shared form (`features/agents/AddAgentDialog.tsx`; rules in
+`createAgentForm.ts`, checked by `web/scripts/create-agent-form.test.mjs`).
+Create team fixes Role to Manager and sends `new_team`; Create agent defaults to
+Worker with an explicit existing-team chooser (no implicit selection) and sends
+`team`; choosing Manager there switches to `new_team`. Exactly one is sent.
+The form asks for a readable Name (1–64 ASCII letters, digits, underscores or
+hyphens, starting with a letter) and sends only `display_name`. A new team name
+must match `^[a-z][a-z0-9_]{0,63}$`, and `default` (any case) is reserved;
+existing nonconforming team keys stay selectable for workers. The team name is
+suggested from the manager name until edited; role changes never overwrite an
+edited team name, and a user-picked executor is never silently replaced.
+Server codes map to their field (`invalid_team_name`, `team_reserved`,
+`team_exists`, `unknown_team`, naming codes, `invalid_executor`) with other
+input kept. The create is a config owner (`agents.create`): single-flight, the
+request never re-sent on a 401 (`replayOnUnauthorized: false`), close/navigation/
+org switches held while pending or unknown. `agent_setup_incomplete` (500) shows
+"Agent created; setup incomplete" with `happyranch init-agent`; other lost or
+unrecognised answers show "Result unknown" and Check result, which re-reads the
+original org's roster and identities. Only a full match of the submitted fields
+resolves it; a name match alone stays unknown, and only absence allows a new
+create. On success navigation uses returned `canonical_id`; a failed readback
+says "Created; refresh unavailable". The API's legacy `name` field still means
+an explicit ID; send exactly one name source.
 See the [naming contract](contracts/threads-and-naming.md) for derivation,
 transaction and rollback details. No manager-session enrollment contract changes.
 

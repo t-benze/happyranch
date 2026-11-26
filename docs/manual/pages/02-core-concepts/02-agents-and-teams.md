@@ -47,16 +47,27 @@ tool for model diversity and specialization.
 Adding or enrolling agents can require founder approval depending on the org's
 rules. The v1 manual does not expand agent administration into a full reference.
 
-The current creation entry is **Agents → New agent**: Worker selects an existing
-team; Manager supplies a new team name and creates that team with its manager.
-The special **Default** team is managed by the human Founder and accepts new
-workers without another manager agent. Moving existing agents between teams is
-unsupported. Founder-created agents become active directly; agent-initiated
-enrollment retains its separate approval flow.
+**Agents** shows two actions, also offered on an empty roster:
+
+- **Create team** creates a new team together with its manager. Enter the
+  manager's name and the new team name (1–64 lowercase ASCII letters, digits or
+  `_`, starting with a letter; `default` is reserved). The team name is suggested
+  from the manager name until you edit it.
+- **Create agent** adds a Worker to an existing team you choose, including the
+  special **Default** team, which the human Founder manages without a manager
+  agent. Choosing Manager instead creates a new team, as above.
+
+After a successful create the new agent opens; Create team then offers Create
+agent in the new team. If the answer is lost, the form says **Result unknown**
+and keeps your values until **Check result** re-reads the roster. If the agent
+was enrolled but its workspace setup failed, it says **Agent created; setup
+incomplete** and shows the `happyranch init-agent` command that finishes setup.
+Nothing is retried or deleted automatically. Moving existing agents between
+teams is unsupported. Founder-created agents become active directly;
+agent-initiated enrollment retains its separate approval flow.
 
 The canonical [Create team and Create agent product specification](../../../product/prds/2026-11-26-team-and-agent-creation.md)
-defines the authorized completion work, including clearer entry points and
-failure recovery. Its `build-spec` status does not mean that work has shipped.
+defines this behavior and its acceptance checks.
 
 ## Grounded Technical Facts
 

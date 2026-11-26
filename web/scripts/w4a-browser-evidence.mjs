@@ -838,7 +838,7 @@ const VIEW_ROUTES = [
   {
     id: 'agents', route: 'agents', path: `/orgs/${ORG}/agents`,
     ready: () => `${bodyHas('support_bot')} && ${bodyHas('dev_agent')}`,
-    keys: ['agents.page.title', 'agents.page.meta', 'agents.page.newAgent', 'agents.tab.active', 'agents.tab.pending'],
+    keys: ['agents.page.title', 'agents.page.meta', 'agents.page.createAgent', 'agents.tab.active', 'agents.tab.pending'],
     verbatim: ['dev_agent', 'support_bot', 'lead', 'worker', 'manager'],
     checks: () => [['roster roles are exact daemon bytes', `(() => {
       const roster = document.querySelectorAll('aside')[1];
@@ -1024,18 +1024,18 @@ const SWITCH_ROUTES = [
     shot: 'zh-eligibility-editor-switch-1440',
   },
   {
-    // AddAgentDialog (Agents page "New agent"): the agent-name input.
+    // AddAgentDialog (Agents page "Create agent"): the agent-name input.
     id: 'add-agent-dialog', path: `/orgs/${ORG}/agents`,
     open: async (page, h) => {
       await h.waitTrue(page, bodyHas('support_bot'), 'agents roster');
-      await h.clickSrc(page, `[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === ${JSON.stringify(tr('en', 'agents.page.newAgent'))})`);
+      await h.clickSrc(page, `[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === ${JSON.stringify(tr('en', 'agents.page.createAgent'))})`);
       await h.waitTrue(page, `Boolean(document.getElementById('agent-name'))`, 'add agent dialog');
       await sleep(400);
     },
     control: `document.getElementById('agent-name')`,
     container: `(CONTROL || { closest: () => null }).closest('[role="dialog"]')`,
     draft: 'new_bot',
-    copy: (locale) => [tr(locale, 'agents.add.title'), tr(locale, 'agents.add.name'), tr(locale, 'agents.add.team'), tr(locale, 'agents.add.role'), tr(locale, 'agents.add.create')],
+    copy: (locale) => [tr(locale, 'agents.create.titleAgent'), tr(locale, 'agents.add.name'), tr(locale, 'agents.add.team'), tr(locale, 'agents.add.role'), tr(locale, 'agents.page.createAgent')],
     shot: 'zh-add-agent-dialog-switch-1440',
   },
   {

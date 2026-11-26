@@ -6,7 +6,8 @@
  * — to produce a unified, non-hard-coded option list. This hook is the single
  * source; create and edit cannot drift.
  */
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { usePrereqs } from '@/hooks/health';
 import { useRuntimeProfiles } from '@/hooks/runtime-executors';
 
@@ -25,6 +26,8 @@ export interface ExecutorOptionsResult {
   selectable: ExecutorOption[];
   unavailable: ExecutorOption[];
   state: 'loading' | 'error' | 'empty' | 'ready';
+  /** Re-read both live sources (the Retry action after a failed read). */
+  retry: () => void;
 }
 
 /**
@@ -43,13 +46,18 @@ export interface ExecutorOptionsResult {
 export function useExecutorOptions(): ExecutorOptionsResult {
   const prereqsQuery = usePrereqs();
   const profilesQuery = useRuntimeProfiles();
+  const qc = useQueryClient();
+  const retry = useCallback(() => {
+    void qc.refetchQueries({ queryKey: ['health', 'prereqs'] });
+    void qc.refetchQueries({ queryKey: ['runtime-profiles'] });
+  }, [qc]);
 
   return useMemo<ExecutorOptionsResult>(() => {
     if (prereqsQuery.isLoading || profilesQuery.isLoading) {
-      return { selectable: [], unavailable: [], state: 'loading' };
+      return { selectable: [], unavailable: [], state: 'loading', retry };
     }
     if (prereqsQuery.isError || profilesQuery.isError) {
-      return { selectable: [], unavailable: [], state: 'error' };
+      return { selectable: [], unavailable: [], state: 'error', retry };
     }
 
     const prereqs = prereqsQuery.data?.prereqs ?? [];
@@ -103,8 +111,8 @@ export function useExecutorOptions(): ExecutorOptionsResult {
     const unavailable = [...unavailableBuiltins, ...unavailableCustoms];
 
     if (selectable.length === 0) {
-      return { selectable: [], unavailable, state: 'empty' };
+      return { selectable: [], unavailable, state: 'empty', retry };
     }
-    return { selectable, unavailable, state: 'ready' };
-  }, [prereqsQuery, profilesQuery]);
+    return { selectable, unavailable, state: 'ready', retry };
+  }, [prereqsQuery, profilesQuery, retry]);
 }

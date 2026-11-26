@@ -129,10 +129,14 @@ export const realAgentsApi: AgentsApi = {
         agentsApi.createAgent(slug, body),
       onSuccess: async () => {
         await qc.cancelQueries({ queryKey: ['identities', slug] }, { revert: false });
-        qc.invalidateQueries({ queryKey: ['agents', slug] });
-        qc.invalidateQueries({ queryKey: ['agent-enrollments', slug] });
-        qc.invalidateQueries({ queryKey: ['teams', slug] });
-        await qc.invalidateQueries({ queryKey: ['identities', slug] });
+        // THR-402: settle every readback before the create resolves, so the
+        // form can tell "Created; refresh unavailable" from a fresh roster.
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: ['agents', slug] }),
+          qc.invalidateQueries({ queryKey: ['agent-enrollments', slug] }),
+          qc.invalidateQueries({ queryKey: ['teams', slug] }),
+          qc.invalidateQueries({ queryKey: ['identities', slug] }),
+        ]);
       },
     });
   },
