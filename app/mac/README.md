@@ -428,7 +428,8 @@ The page bootstrap returns only `hr_native_session`. Local calls read the
 existing daemon credential natively at the already verified port. Remote calls
 reuse ClientBridge's selected managed peer or DIY dial and in-memory credential
 from existing native/Keychain custody. The GUI no longer starts a proxy listener;
-the foreground CLI's `open`/loopback behavior remains. Redirects, cookies,
+the foreground CLI no longer starts one either; it checks access natively and
+observes it until Ctrl-C or denial. Redirects, cookies,
 page authorization and identity headers are not forwarded. The packaged
 `remote-client-config-policy.v1.json` supplies the same native config-write
 refusals as Linux; the daemon/home connector remote allowlist is unchanged.

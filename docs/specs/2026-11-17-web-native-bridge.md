@@ -2008,7 +2008,8 @@ schema remain unchanged. MAC-2a adds the existing `client.commitSwitch` and
 decisions are refused, and dialog/menu/Quit/close/Relaunch remain later slices. Remote config-write refusal reads the
 same packaged policy as Linux; no daemon remote allowlist or auth change occurs.
 GUI remote calls use the existing pinned direct dial, not a loopback listener;
-the separate foreground CLI retains its listener. Shared serialized multipart
+the foreground CLI also starts no listener, checking access natively and observing
+it until Ctrl-C or denial. Shared serialized multipart
 and blob download paths are reused. The Mac packager reconciles map removal
 with the main resource manifest and includes the native config policy.
 
