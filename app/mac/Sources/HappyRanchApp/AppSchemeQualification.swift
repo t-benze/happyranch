@@ -591,11 +591,77 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKScriptMe
             try await dialogStep("mac-recovery-settle", fields: ["locale": locale, "textPercent": scale]) {
                 try await Task.sleep(for: .milliseconds(200))
             }
+            let value = try await dialogStep("mac-recovery-scroll-plan", fields: ["locale": locale, "textPercent": scale]) {
+                try await view.callAsyncJavaScript(Self.dialogScrollPlan,
+                    arguments: [:], in: nil, contentWorld: .page)
+            }
+            guard let plan = value as? [[String: Any]], plan.count <= 8 else { throw AppAPIError.unavailable }
+            var seen = Set<String>()
+            @MainActor func captureRecovery(_ name: String, scroll: [String: Any]) async throws {
+                let value = try await dialogStep("mac-recovery-visibility", fields: ["name": name, "textPercent": scale]) {
+                    try await view.callAsyncJavaScript(Self.recoveryVisibility,
+                        arguments: ["scale": scale, "recheck": locale == "zh" ? "重新检查" : "Recheck",
+                            "reopen": locale == "zh" ? "更新后，请退出 HappyRanch 并重新打开。"
+                                : "After updating, quit HappyRanch and open it again."], in: nil, contentWorld: .page)
+                }
+                guard let visible = value as? [String: Bool], Set(visible.keys) == ["guidance", "reopen", "recheck"] else {
+                    throw AppAPIError.unavailable
+                }
+                for (key, shown) in visible where shown { seen.insert(key) }
+                try await captureDialogPage(view, frame: frame, name: name, locale: locale,
+                    theme: "dark", scale: scale, dialog: "main",
+                    scroll: scroll.merging(["recoveryVisible": visible]) { _, new in new })
+            }
             let suffix = scale == 100 ? "-100" : ""
-            try await captureDialogPage(view, frame: frame, name: "mac-recovery-no-relaunch-\(locale)\(suffix).png",
-                locale: locale, theme: "dark", scale: scale, dialog: "main", scroll: [:])
+            try await captureRecovery("mac-recovery-no-relaunch-\(locale)\(suffix).png", scroll: [:])
+            var count = 0
+            if scale == 200 {
+                for pane in plan {
+                    guard let index = pane["index"] as? Int, let pages = pane["pages"] as? Int,
+                          let step = pane["step"] as? Int, let maximum = pane["maximum"] as? Int,
+                          pages > 0, count + pages <= 16 else { throw AppAPIError.unavailable }
+                    for page in 1...pages {
+                        let value = try await dialogStep("mac-recovery-scroll-offset", fields: ["locale": locale,
+                            "textPercent": scale, "scrollIndex": index, "scrollPage": page]) {
+                            try await view.callAsyncJavaScript(Self.dialogScroll,
+                                arguments: ["index": index, "page": page, "step": step, "maximum": maximum],
+                                in: nil, contentWorld: .page)
+                        }
+                        guard let scroll = value as? [String: Any] else { throw AppAPIError.unavailable }
+                        count += 1
+                        try await captureRecovery("mac-recovery-no-relaunch-\(locale)-scroll-\(count).png", scroll: scroll)
+                    }
+                }
+                log.write("capture_complete", ["locale": locale, "theme": "dark", "textPercent": scale,
+                    "dialog": "recovery", "scrollCaptures": count, "scrollers": plan])
+            }
+            guard seen == ["guidance", "reopen", "recheck"] else { throw AppAPIError.unavailable }
         }
     }
+
+    /// Full on-screen rectangles, ancestor clipping and hit testing, at the
+    /// requested text size. DOM presence alone is not capture acceptance.
+    private static let recoveryVisibility = #"""
+        const pane = document.querySelector('[data-native-recovery="incompatible"]');
+        function visible(e) {
+            if (!e || parseFloat(getComputedStyle(document.documentElement).fontSize) !== 16 * scale / 100) return false;
+            const r = e.getBoundingClientRect();
+            let top = 0, bottom = innerHeight, left = 0, right = innerWidth;
+            for (let parent = e; parent; parent = parent.parentElement) {
+                const s = getComputedStyle(parent), clip = parent.getBoundingClientRect();
+                if (s.display === 'none' || s.visibility !== 'visible' || Number(s.opacity) === 0) return false;
+                if (/auto|scroll|hidden|clip/.test(s.overflowY)) { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom); }
+                if (/auto|scroll|hidden|clip/.test(s.overflowX)) { left = Math.max(left, clip.left); right = Math.min(right, clip.right); }
+            }
+            if (r.width <= 0 || r.height <= 0 || r.top < top - 1 || r.bottom > bottom + 1 || r.left < left - 1 || r.right > right + 1) return false;
+            const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+            return hit === e || e.contains(hit);
+        }
+        const paragraphs = [...(pane?.querySelectorAll('p') || [])];
+        return {guidance: visible(paragraphs[0]),
+            reopen: visible(paragraphs.find(e => e.textContent.trim() === reopen)),
+            recheck: visible([...(pane?.querySelectorAll('button') || [])].find(e => e.textContent.trim() === recheck))};
+        """#
 
     /// One real rendered Language choice, then later-opened dialogs in the same
     /// document. Saved is emitted by PreferencesSection only after the shipping

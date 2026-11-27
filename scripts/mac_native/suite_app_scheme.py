@@ -209,6 +209,11 @@ def screenshot_archive(folder: Path, locale: str,
                     captures.append((theme, scale, dialog, number, name))
     for scale, suffix in ((100, '-100'), (200, '')):
         captures.append(('dark', scale, 'main', 0, f'mac-recovery-no-relaunch-{locale}{suffix}.png'))
+    recovery_count = scroll_counts.get(('dark', 'recovery'), 0)
+    if type(recovery_count) is not int or not 0 <= recovery_count <= 16:
+        raise ValueError('recovery screenshot scroll count')
+    for number in range(1, recovery_count + 1):
+        captures.append(('dark', 200, 'main', number, f'mac-recovery-no-relaunch-{locale}-scroll-{number}.png'))
     for theme, scale, dialog, number, name in captures:
         descriptor = os.open(folder / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, 'rb') as source:
@@ -261,7 +266,8 @@ def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadlin
                 key = (event.get('theme'), event.get('dialog'))
                 count = event.get('scrollCaptures')
                 panes = event.get('scrollers')
-                if (key in counts or key[0] not in ('light', 'dark') or key[1] not in ('settings', 'connection', 'main')
+                if (key in counts or key[0] not in ('light', 'dark') or key[1] not in ('settings', 'connection', 'main', 'recovery')
+                        or (key[1] == 'recovery' and key[0] != 'dark')
                         or event.get('locale') != locale or event.get('textPercent') != 200
                         or type(count) is not int or not 0 <= count <= 16 or not isinstance(panes, list)
                         or len(panes) > 8 or any(not isinstance(pane, dict) or pane.get('index') != index
@@ -270,11 +276,19 @@ def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadlin
                         or sum(pane['pages'] for pane in panes) != count):
                     raise ValueError('incomplete scroll capture receipt')
                 counts[key] = count
-            if len(counts) != 6:
+            if len(counts) != 7:
                 raise ValueError('missing scroll capture completion')
             images = screenshot_archive(downloads, locale, counts)
             capture['screenshots'].extend(images)
             expected = {image['name']: image for image in images}
+            recovery = [event for event in receipts if str(event.get('name', '')).startswith('mac-recovery-no-relaunch-')]
+            visible_keys = {'guidance', 'reopen', 'recheck'}
+            if (any(not isinstance(event.get('recoveryVisible'), dict)
+                    or set(event['recoveryVisible']) != visible_keys
+                    or any(type(value) is not bool for value in event['recoveryVisible'].values()) for event in recovery)
+                    or any(not all(any(event['recoveryVisible'][key] for event in recovery
+                            if event.get('textPercent') == scale) for key in visible_keys) for scale in (100, 200))):
+                raise ValueError('recovery content not visibly captured at both scales')
             if (row['exit_code'] == 0 and len(receipts) == len(expected)
                     and {event.get('name') for event in receipts} == set(expected)
                     and all(event.get('webTheme') == event.get('theme') == expected[event['name']]['theme']

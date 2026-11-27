@@ -103,13 +103,13 @@ final class LifetimeFixture {
     func js(_ code: String, _ arguments: [String: Any] = [:]) async throws -> Any? {
         try await view.callAsyncJavaScript(code, arguments: arguments, in: nil, contentWorld: .page)
     }
-    func admit(summary: Bool = true, subscribe: Bool = true) async throws {
+    func admit(summary: Bool = true, subscribe: Bool = true, waitForAnchor: Bool = true) async throws {
         try await eventually { (try? await self.js("return typeof window.__hrAppContext === 'string';")) as? Bool == true }
         try await scheme.admitDocument()
         if summary { _ = try await call("app.ownersChanged", Self.clean) }
         if subscribe {
             _ = try await js("window.requests=[]; window.off=window.happyranchConnection.on('app.lifecycleRequested', raw => requests.push(JSON.parse(raw))); return true;")
-            if summary { try await eventually { self.scheme.lifecycleAnchor != nil } }
+            if summary && waitForAnchor { try await eventually { self.scheme.lifecycleAnchor != nil } }
             else { _ = try await call("app.status", "{}") }
         }
     }
@@ -249,7 +249,11 @@ final class MacAppLifetimeTests: XCTestCase {
         let old = try XCTUnwrap(f.app.appLifetime.token?.uuidString)
         _ = try await f.call("app.ownersChanged", #"{"schema":2,"blocking":"hold","counts":{"dirty":0,"failed":0,"pending":0,"unknown":1}}"#)
         f.scheme.documentDidStart()
-        try await f.admit()
+        // Retired unknown saves deliberately prevent an anchor even after the
+        // replacement relay and its subscription have been admitted.
+        try await f.admit(waitForAnchor: false)
+        XCTAssertEqual(f.scheme.switchRefusal, "owner_save_unknown")
+        XCTAssertNil(f.scheme.lifecycleAnchor)
         XCTAssertFalse(f.app.appLifetime.request(.close), "Empty replacement cannot reconcile old save")
         let stale = try await f.answer(id: old)
         XCTAssertTrue(stale.contains("\"effect\":\"none\""))
@@ -319,6 +323,9 @@ final class MacAppLifetimeTests: XCTestCase {
             XCTAssertTrue(child.isRunning); XCTAssertEqual(f.termination.closes, 0)
             try f.respond()
             _ = try await f.answer()
+            // The gate ACK precedes teardown. ManagedProcessStop pumps the
+            // run loop, so the JS completion can resume before effects finish.
+            try await f.eventually { !f.app.appLifetime.busy }
             XCTAssertFalse(child.isRunning)
             XCTAssertEqual(f.termination.closes, 1); XCTAssertEqual(f.termination.calls, 1)
             XCTAssertNil(f.scheme.lifecycleAnchor)
@@ -453,6 +460,7 @@ extension MacAppLifetimeTests {
         try f.respond()
         XCTAssertTrue(child.isRunning); XCTAssertEqual(releases, 0)
         _ = try await f.answer()
+        try await f.eventually { !f.app.appLifetime.busy }
         XCTAssertFalse(child.isRunning); XCTAssertEqual(releases, 1)
         XCTAssertEqual(f.termination.calls, 0, "Sparkle, not ordinary Quit, owns update installation")
         XCTAssertEqual(f.app.applicationShouldTerminate(NSApplication.shared), .terminateNow)

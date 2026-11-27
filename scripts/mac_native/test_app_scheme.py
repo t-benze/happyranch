@@ -75,11 +75,70 @@ def screenshot_files(folder: Path, locale: str, with_scroll: bool = False) -> li
         name = f'mac-recovery-no-relaunch-{locale}{suffix}.png'
         (folder / name).write_bytes(screenshot_png())
         records.append(dict(event='screenshot', name=name, locale=locale, theme='dark', webTheme='dark',
-                            textPercent=scale, dialog='main', width=760, height=560))
+                            textPercent=scale, dialog='main', width=760, height=560,
+                            recoveryVisible=dict(guidance=True, reopen=scale == 100, recheck=scale == 100)))
+    if with_scroll:
+        for number in (1, 2):
+            name = f'mac-recovery-no-relaunch-{locale}-scroll-{number}.png'
+            (folder / name).write_bytes(screenshot_png())
+            records.append(dict(event='screenshot', name=name, locale=locale, theme='dark', webTheme='dark',
+                                textPercent=200, dialog='main', width=760, height=560,
+                                recoveryVisible=dict(guidance=False, reopen=number == 1, recheck=number == 2)))
+        records.append(dict(event='capture_complete', locale=locale, theme='dark', textPercent=200,
+                            dialog='recovery', scrollCaptures=2, scrollers=[dict(index=0, pages=2, step=300, maximum=600)]))
     return records
 
 
 class DialogCaptureEvidenceTests(unittest.TestCase):
+    def test_recovery_visibility_rejects_clipped_hidden_occluded_or_wrong_scale_content(self) -> None:
+        # Same Node VM venue as live-switch DOM checks, executing the actual
+        # qualifier predicate against independently specified viewport geometry.
+        script = r"""
+            const assert = require('node:assert/strict');
+            const { readFileSync } = require('node:fs');
+            const { runInNewContext } = require('node:vm');
+            const source = readFileSync('app/mac/Sources/HappyRanchApp/AppSchemeQualification.swift', 'utf8');
+            const predicate = source.split('static let recoveryVisibility = #' + '"'.repeat(3))[1].split('"'.repeat(3) + '#')[0];
+            function check(scale, options = {}) {
+                const rect = (top, bottom, left = 100, right = 600) => ({top, bottom, left, right, width:right-left, height:bottom-top});
+                const root = {parentElement:null, getBoundingClientRect:() => rect(0, 560, 0, 760)};
+                const pane = {parentElement:root, getBoundingClientRect:() => rect(50, options.clipBottom ?? 510, 70, 700)};
+                const recheck = options.zh ? '重新检查' : 'Recheck';
+                const reopen = options.zh ? '更新后，请退出 HappyRanch 并重新打开。' : 'After updating, quit HappyRanch and open it again.';
+                const node = (textContent, bounds) => ({textContent, parentElement:pane, getBoundingClientRect:() => bounds, contains:() => false});
+                const guidance = node('Update this app to match the service.', rect(100, 180));
+                const again = node(reopen, options.reopenRect ?? rect(210, 280));
+                const button = node(recheck, options.buttonRect ?? rect(400, 440));
+                const nodes = [guidance, again, button];
+                pane.querySelectorAll = tag => tag === 'p' ? [guidance, again] : [button];
+                const document = {documentElement:root, querySelector:() => pane,
+                    elementFromPoint:(x,y) => options.occluded ? pane : nodes.find(e => {
+                        const r = e.getBoundingClientRect(); return x>=r.left && x<=r.right && y>=r.top && y<=r.bottom;
+                    })};
+                const getComputedStyle = e => ({fontSize:options.fontSize ?? `${16*scale/100}px`,
+                    visibility:options.hidden && e === pane ? 'hidden' : 'visible', display:'block',
+                    opacity:options.transparent && e === guidance ? '0' : '1',
+                    overflowY:e === pane ? 'auto' : 'visible', overflowX:e === pane ? 'hidden' : 'visible'});
+                return JSON.parse(JSON.stringify(runInNewContext(`(function () { ${predicate} })()`,
+                    {document, getComputedStyle, innerHeight:560, innerWidth:760, scale, recheck, reopen})));
+            }
+            for (const zh of [false, true]) {
+                for (const scale of [100, 200]) assert.deepEqual(check(scale, {zh}), {guidance:true,reopen:true,recheck:true});
+                assert.equal(check(200, {zh, buttonRect:{top:600,bottom:640,left:100,right:600,width:500,height:40}}).recheck, false);
+                for (const [top, bottom] of [[520,590], [-10,60]]) {
+                    assert.equal(check(200, {zh, reopenRect:{top,bottom,left:100,right:600,width:500,height:70}}).reopen, false);
+                }
+                assert.equal(check(200, {zh, clipBottom:430}).recheck, false, 'ancestor clips button');
+                assert.equal(check(200, {zh, buttonRect:{top:400,bottom:440,left:680,right:740,width:60,height:40}}).recheck, false);
+                assert.equal(check(200, {zh, transparent:true}).guidance, false);
+                for (const options of [{hidden:true}, {occluded:true}, {fontSize:'16px'}]) {
+                    assert.deepEqual(check(200, {zh, ...options}), {guidance:false,reopen:false,recheck:false});
+                }
+            }
+        """
+        result = subprocess.run(['node', '-e', script], cwd=ROOT, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_dispatcher_archives_full_bilingual_report_without_echoing_png_payloads(self) -> None:
         # Model twice build 80's EN-only report, at the real serialization/CLI
         # boundary. PNG validation belongs to the archive keeper below.
@@ -133,6 +192,17 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
             self.assertEqual([row['scroll_capture'] for row in scrolled if row['name'].startswith('en-dark-200-connection')], [0, 1, 2])
             last_scroll = next(row for row in scrolled if row['name'] == 'en-dark-200-connection-scroll-2.png')
             self.assertEqual(base64.b64decode(last_scroll['data']), screenshot_png())
+            for number in (1, 2):
+                (root / f'mac-recovery-no-relaunch-en-scroll-{number}.png').write_bytes(screenshot_png())
+            recovery_scrolled = screenshot_archive(root, 'en', {('dark', 'recovery'): 2})
+            self.assertEqual(len(recovery_scrolled), 16)
+            self.assertEqual([row['scroll_capture'] for row in recovery_scrolled if '-en-scroll-' in row['name']], [1, 2])
+            self.assertEqual(base64.b64decode(recovery_scrolled[-1]['data']), screenshot_png())
+            (root / 'mac-recovery-no-relaunch-en-scroll-1.png').unlink()
+            with self.assertRaises(OSError):
+                screenshot_archive(root, 'en', {('dark', 'recovery'): 2})
+            with self.assertRaises(ValueError):
+                screenshot_archive(root, 'en', {('dark', 'recovery'): 17})
             (root / 'en-dark-200-connection-scroll-1.png').unlink()
             with self.assertRaises(OSError):
                 screenshot_archive(root, 'en', {('dark', 'connection'): 2})
@@ -160,7 +230,9 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                         'duplicate-completion', 'missing-scroll', 'scroll-gap', 'duplicate-receipt', 'wrong-theme',
                         'partial-progress', 'navigation-timeout', 'recovery-missing-file-100',
                         'recovery-missing-file-200', 'recovery-missing-receipt-100', 'recovery-missing-receipt-200',
-                        'recovery-duplicate', 'recovery-wrong-scale', 'recovery-wrong-locale', 'recovery-wrong-theme'):
+                        'recovery-duplicate', 'recovery-wrong-scale', 'recovery-wrong-locale', 'recovery-wrong-theme',
+                        'recovery-scroll-missing-file', 'recovery-scroll-missing-receipt', 'recovery-scroll-missing-completion',
+                        'recovery-clipped-100', 'recovery-clipped-200', 'recovery-untyped-visibility'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder); downloads = root / 'downloads'; downloads.mkdir()
                 calls = []
@@ -183,6 +255,18 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                             receipt['locale'] = 'en'
                         elif failure == 'recovery-wrong-theme':
                             receipt['webTheme'] = 'light'
+                        elif failure == 'recovery-scroll-missing-file':
+                            (downloads / f'mac-recovery-no-relaunch-{locale}-scroll-1.png').unlink()
+                        elif failure == 'recovery-scroll-missing-receipt':
+                            rows = [row for row in rows if row.get('name') != f'mac-recovery-no-relaunch-{locale}-scroll-1.png']
+                        elif failure == 'recovery-scroll-missing-completion':
+                            rows = [row for row in rows if row.get('dialog') != 'recovery']
+                        elif failure.startswith('recovery-clipped-'):
+                            for row in rows:
+                                if row.get('textPercent') == int(failure.rsplit('-', 1)[1]) and 'recoveryVisible' in row:
+                                    row['recoveryVisible']['recheck'] = False
+                        elif failure == 'recovery-untyped-visibility':
+                            receipt['recoveryVisible']['recheck'] = 1
                     if locale == 'zh' and failure == 'missing-file':
                         (downloads / f'{locale}-dark-100-main.png').unlink()
                     if locale == 'zh' and failure == 'missing-receipt':
@@ -221,15 +305,18 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                 self.assertEqual(section['dialogs']['status'], 'PASS' if failure == 'none' else 'FAIL')
                 incomplete = failure in ('missing-file', 'missing-scroll', 'missing-completion', 'duplicate-completion',
                                          'partial-progress', 'navigation-timeout', 'recovery-missing-file-100',
-                                         'recovery-missing-file-200')
-                self.assertEqual(len(section['dialogs']['screenshots']), 26 if incomplete else 52)
+                                         'recovery-missing-file-200', 'recovery-scroll-missing-file',
+                                         'recovery-scroll-missing-completion')
+                self.assertEqual(len(section['dialogs']['screenshots']), 28 if incomplete else 56)
                 self.assertEqual([row['status'] for row in section['dialogs']['processes']],
                                  ['PASS', 'PASS' if failure == 'none' else 'FAIL'])
                 for locale in ('en',) if incomplete else ('en', 'zh'):
                     self.assertEqual({row['name'] for row in section['dialogs']['screenshots']
                                       if row['locale'] == locale and row['name'].startswith('mac-recovery-')},
                                      {f'mac-recovery-no-relaunch-{locale}-100.png',
-                                      f'mac-recovery-no-relaunch-{locale}.png'})
+                                      f'mac-recovery-no-relaunch-{locale}.png',
+                                      f'mac-recovery-no-relaunch-{locale}-scroll-1.png',
+                                      f'mac-recovery-no-relaunch-{locale}-scroll-2.png'})
                 if failure == 'partial-progress':
                     failed = section['dialogs']['processes'][1]
                     self.assertEqual(failed['exit_code'], 124)

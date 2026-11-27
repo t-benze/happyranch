@@ -205,6 +205,17 @@ dark-theme captures retain `mac-recovery-no-relaunch-en.png` and
 `mac-recovery-no-relaunch-en-100.png` and `mac-recovery-no-relaunch-zh-100.png`.
 These four PNGs are additional to every existing top/scroll capture below;
 the closed archive requires their matching locale/theme/scale receipts.
+At 200%, recovery also uses the maintained overlapping scroll plan, retaining
+`mac-recovery-no-relaunch-{en,zh}-scroll-N.png` through every visible pane's
+bottom (at most 16 companions per locale). The original EN 60 / ZH 52 capture
+sets remain required; exact counts increase by each locale's recovery
+`capture_complete` page count. Its seventh completion receipt uses
+`dialog: recovery`, dark theme and 200% text. Every recovery screenshot records
+`recoveryVisible` booleans for guidance, quit-and-reopen copy and Recheck,
+checked against the requested computed font size, viewport/ancestor clipping
+and hit testing. Each item must be fully on-screen in at least one retained
+capture at each scale; DOM presence alone cannot pass. QA still inspects the
+actual PNGs. Scroll companions preserve the 760×560 viewport and full copy.
 
 After independent exact-head review, the existing Jenkins `SUITE=app-scheme`
 still runs the full unfiltered XCTest + Swift Testing workload and transport
@@ -2691,6 +2702,12 @@ receipt deadline. Lost/unreadable receipts keep the existing save hold; ACK is
 not exit success. Consumed/incomplete effects retain native ownership across
 retirement/reload and cannot replay. When idle requires fresh observation,
 reservation, native consent and the current web gate.
+Native child tests wait for the consumed lifetime reservation to finish before
+checking final exit/close/release effects: the ACK may resume JavaScript during
+the stop's nested run loop. Replacement-document tests with retired unknown
+saves synchronize relay/subscription admission without waiting for a lifetime
+anchor; that anchor intentionally remains unavailable. This changes no exit
+policy or receipt deadline.
 
 Wire mapping: Main close = `close`; ordinary Quit and install-on-Quit = `quit`;
 Sparkle install-and-restart = `relaunch` because Sparkle performs that launch.
