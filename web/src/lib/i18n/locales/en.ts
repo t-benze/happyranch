@@ -1085,6 +1085,8 @@ export const en = {
   "settings.local.c6.remoteRecheck": "Recheck reads this computer’s service status again; readiness and compatibility are checked again the next time you start or restart it.",
   "settings.local.c6.serviceOld.title": "Update HappyRanch service on this computer",
   "settings.local.c6.serviceOld.body": "The HappyRanch service on this computer is older than this app supports. After updating it, use Restart HappyRanch below. The app rechecks compatibility when the service is ready.",
+  "settings.local.keep.macUnavailable": "Not available on Mac",
+  "settings.local.service.external": "This app does not own the observed daemon. Local controls are unavailable.",
   "settings.local.keep.title": "Keep running",
   "settings.local.keep.label": "Keep HappyRanch running after you close the app or log out",
   "settings.local.keep.state.on": "Fully on",

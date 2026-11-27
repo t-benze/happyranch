@@ -415,6 +415,29 @@ Only a fully passed Ready uses the OK tone. Recheck / Check again only re-read:
 under remote selection `local.status` and `local.update.status` (the earlier
 readmission is kept); under local selection those plus `app.status`, whose fresh
 answer supersedes the readmission. Nothing retries or replays a mutation.
+Mac MAC-3 (PR #1889, Founder THR-387 seq164) adds closed `appProcess` mode
+with Start/Stop/Restart of the existing owned child and `keepRunning:unavailable`.
+The keep-running row is plain **Not available on Mac / Mac 上不可用**, including
+while local status is loading; it has no switch/Repair/Turn off control. External
+daemons report observations and refuse mutations. Native custody survives Main
+loss until explicit settled status reconciliation. Mac invalidates local
+compatibility and reruns AppAPIHealth through the existing per-request
+LocalTokenCredentialProvider/daemon.token path. It adds no bootstrap custody,
+selects no target and preserves remote appState. Update status is unknown
+(no installed-daemon hint); normal Quit still stops the child. The legacy Main
+phase strip is removed. Mac native execution and visual acceptance remain QA.
+Real Restart sheet attachment is NOT VERIFIABLE in the SwiftPM XCTest venue
+(build92: inactive/nonrunning NSApp, Main without a screen/window number, and
+plain NSAlert probe without attachment). Production presentation is unchanged.
+Consent coverage checks the production alert construction in EN/ZH, computer
+name, Cancel first and Return-default, Restart second without a key equivalent,
+Cancel/timeout versus Restart response mapping, and no-Main/already-presenting
+guards. The real-child keeper drives Start/Stop through the bridge, verifies a
+mapped decline causes no restart, then drives the bridge's confirmed Restart
+branch with a mapped Restart response and AppDelegate's real post-consent effects.
+It checks PID replacement, busy→ready and synchronous Quit's
+per-PID absence before fallback. These checks do not prove sheet attachment.
+
 The Connection
 dialog body is `features/connection/ConnectionDialogBody.tsx`, composed by
 `routes.tsx` through `renderConnectionBody` exactly like Settings (see
@@ -426,6 +449,12 @@ target/status pill and candidate line, the persistent Access wasn't saved
 warning (opens Connection) and the explicit "… unavailable · Retry" action after
 a failed open; see the bridge spec “v2 dialog request event” for the exact copy
 and what counts as a failed open.
+The header is capped at one quarter of the shell height with internal vertical
+scrolling. Wrapped labels at 760×560 / 200% text keep their full content
+reachable while leaving room for
+Main and its navigation, including the smaller web viewport inside a 760×560
+native window. The existing capture planner includes this scroll pane and still
+steps by 75% of each visible viewport; its sixteen-page bound is unchanged.
 
 Linux keeps a plain default system title bar, with no custom GTK header or
 Quit/Relaunch/Exit anyway controls. Ctrl+Q and close retain native confirmation.

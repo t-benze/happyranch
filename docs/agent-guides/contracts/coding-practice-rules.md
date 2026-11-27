@@ -21,6 +21,8 @@ cover the future-only retry cap in PR #1865). Next model candidate: job lifecycl
 this PR).
 Existing model: [Linux local-service supervisor](../../specs/formal/local-service-supervisor/README.md) (PR #1815).
 
+Existing model: [Mac app-owned local controls](../../specs/formal/mac-local-controls/README.md) (MAC-3, PR #1889).
+
 Existing model: [Shared Artifacts transition journal](../../specs/formal/shared-artifacts/README.md).
 
 Model checks are review evidence and **NOT a CI gate** (founder test policy

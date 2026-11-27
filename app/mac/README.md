@@ -62,6 +62,43 @@ publishing or signed N→N+1 acceptance. Agents do not run these release operati
 
 ## Development
 
+### MAC-3: app-owned local controls
+
+Founder THR-387 seq164 retains the app-owned daemon child. Settings → HappyRanch
+on this computer owns Start, Stop and daemon-only Restart. Mac has no background
+keep-running control: it displays **Not available on Mac / Mac 上不可用**.
+Quit continues to stop the owned child; there is no LaunchAgent or service
+migration. External daemons remain observation-only. Native readmission uses
+AppAPIHealth and the existing LocalTokenCredentialProvider/daemon.token path.
+
+The closed projection is `mode:"appProcess"`, `keepRunning:"unavailable"`.
+Start/Stop/Restart use the one app-lifetime MacLocalControls owner, reserved before
+native Restart consent. External daemons refuse mutations. Reads remain available
+during effects; failures/lost documents retain custody until explicit settled
+local.status reconciliation. Main, its dialog, owners and selected remote target
+are retained. Health compatibility is invalidated before local interruption and
+rechecked after Start/Restart/reconnect with revision fencing. Start/Restart carry
+this computer’s readmission even under remote selection. No local bearer is
+cached: each native request rereads daemon.token through the existing provider.
+An `app.status` read preserves producer-published busy readiness without starting
+another health admission. Busy from local post-effect/health admission is instead
+refreshed by Recheck through a fresh AppAPIHealth read, fenced by the current
+document, readiness revision and generation. It publishes ready once health is
+compatible and not busy, preserving Main/generation and never repeating a
+lifecycle effect.
+Update status is unknown because Sparkle’s pending app update is not an
+installed-daemon update hint. No daemon auth/bootstrap policy changes.
+
+Linux maker checks use the existing Node 24 focused venue:
+`node --experimental-transform-types --test web/scripts/local-service.test.mjs web/scripts/local-service-page.test.mjs web/scripts/mac-local-relay.test.mjs`.
+The page render checks require the repository’s existing `npm ci` dependencies.
+Mac execution is NOT RUN by the maker. After independent exact-head review,
+QA’s unfiltered Swift Testing/XCTest selection must include MacLocalControlsTests,
+AppSchemeSwitchTests (including MacLocalAdmissionTests.swift extension) and
+MainDialogTests. Real-process Start/Stop/Restart, dialog preservation, phase-strip
+absence and bilingual compact/200% screenshots remain native QA acceptance.
+See the [finite model](../../docs/specs/formal/mac-local-controls/README.md).
+
 ### MAC-2b: Settings/Connection in Main
 
 The application menu requests the existing shared web Settings and Connection
@@ -103,9 +140,9 @@ The existing protected write/readback for the matching binding clears its
 warning. Confirmed removal also forgets only that binding's failed-save outcome,
 including revoked unsaved B while saved computer A remains selected. Failed or
 unknown removal retains the warning; saving another computer does not settle it.
-The legacy phase strip remains
-until MAC-3; local launchd controls, compatibility cutover and MAC-4 language/
-launch/close/Quit/Relaunch policy are outside this slice.
+MAC-3 removes the legacy phase strip without reserving height or adding fallback
+copy. Settings owns local controls. MAC-4 language/launch/close/Quit/Relaunch
+policy remains outside this cutover.
 
 After independent exact-head review, the existing Jenkins `SUITE=app-scheme`
 still runs the full unfiltered XCTest + Swift Testing workload and transport
@@ -123,6 +160,47 @@ rendered destination, focused dialog and locale. WebKit's page snapshot is compo
 frame; no screen-recording permission is requested. Only the commissioned
 qualification process sets its isolated launch language/theme/text size.
 
+At light 100% Settings retains its initial Preferences view; dark 100% shows the
+running local-service page with Stop/Restart enabled. At 200% it selects the
+local-service page: light shows stopped with Start/Restart enabled; dark shows
+running with Stop/Restart disabled by a reserved busy owner. Both locales must
+render the plain Mac-unavailable lifetime row before capture. These are synthetic
+visual inputs at the existing MacLocalControls backend boundary, with no child
+effect; they do not prove real-process lifecycle behavior.
+
+Real Restart sheet attachment is **NOT VERIFIABLE in the SwiftPM XCTest venue**:
+build92 observed NSApp not running/active, Main windowNumber 0/no screen, and
+no attachment even for a plain NSAlert on a throwaway window. Round7 keeps
+production presentation unchanged. The existing consent keeper exercises the
+production alert factory in EN and ZH (copy, computer name, Cancel first/Return,
+Restart second/no key equivalent), response mapping (Cancel/timeout false,
+Restart true), and the no-Main/already-presenting guards without presentation.
+Its test-side NSWindow models an already-owned sheet; it proves the guard, not
+AppKit attachment. Attachment waits and round6 probe/diagnostics are removed.
+
+`AppSchemeSwitchTests.testBridgeOwnsRealChildStartStopRestartAndQuit` runs in the
+existing unfiltered headless XCTest command. Start and Stop drive the actual Main
+JS bridge, MacLocalControls and AppDelegate supervisor. A Cancel response uses
+the production mapping at the existing backend boundary and proves bridge
+refusal with no restart. A mapped Restart response drives the real bridge's
+confirmed branch and AppDelegate's unchanged post-consent effects, retaining the
+controller's busy reservation, followed by synchronous Quit. Neither response
+claims an accepted native sheet.
+Child execution substitutes the executable at the existing ProcessControlling
+boundary: a minimal
+Python HTTP child (the native job already requires Python), since the SwiftPM
+test bundle has no frozen daemon. Real handles/PIDs, signals, exit callbacks,
+port files and authenticated loopback health are used with disposable data and
+a synthetic credential. The keeper observes bridge busy/ready/stopped events,
+refuses premature ready while child health remains busy, checks a new PID after
+Restart and no live child after Quit/queued callbacks. Every launched PID and
+its `isRunning` / `kill(pid, 0)` / errno census is logged. Teardown runs the
+same absence assertions after synchronous Quit even on failure, before any
+fallback cleanup can hide a leak; a fallback has a separately labelled census.
+This is automated child lifecycle coverage; it does not establish full
+bundled-daemon product behavior.
+Native execution of these revised cases is NOT RUN by the Linux maker.
+
 `probe.json.app_scheme.dialogs` retains each PNG's closed name, dimensions,
 locale/theme/text percentage, byte count, SHA256 and `base64` data through the
 existing JSON artifact collection. Decode `data` and verify `bytes`/`sha256`.
@@ -136,8 +214,19 @@ records retain pane ranges/page counts, and image receipts retain actual offsets
 Bounds are eight scrolling panes and sixteen additional captures per 200% view,
 2 MiB per PNG and 8 MiB per locale, within the unchanged 40-second process cap.
 Exhaustion fails qualification rather than claiming complete content.
-An open dialog owns its scroll plan: background Main overflow is excluded, and
-ancestor clipping is intersected with the viewport before calculating pages.
+The desktop header is capped at one quarter of the shell height and scrolls
+internally. At 760×560 outer-window / 200% text, native title-bar space leaves a
+shorter web viewport; the former 40% header cap plus fixed sidebar header/footer
+left about 65px for navigation (a 48px capture step). The smaller header leaves
+more navigation space; the planner still steps by 75% of its visible viewport.
+Header content remains reachable and is included by the existing scrolling-pane
+planner; no capture
+page, pane, image, byte or time budget is increased.
+When a dialog is open, planning is confined to that dialog and intersects ancestor
+clipping; covered Main panes cannot consume its scroll budget. Shape, pane-limit
+and page-limit failures identify `scroll-plan` (with bounded geometry for page
+exhaustion). A failure after successful admission is a capture `failure`, not
+`admission_failure`. The existing pane/page/image/time limits remain in force.
 The focused Node24 geometry regression runs with
 `node --experimental-transform-types --test web/scripts/desktop-dialogs.test.mjs`
 from the repository root; it executes the embedded planner without proving

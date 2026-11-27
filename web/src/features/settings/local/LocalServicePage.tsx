@@ -256,7 +256,7 @@ export function LocalServicePage(): JSX.Element {
 
   const service = view.service;
   const foreground = service?.mode === 'foreground';
-  const unsupported = !!service && (!service.supported || service.mode !== 'service');
+  const unsupported = !!service && (!service.supported || !['service', 'appProcess'].includes(service.mode));
   const known = !!service && !view.readFailed;
   const blocked = !!view.pending || view.unresolved || !!service?.busy || unsupported || !known;
   const running = view.readFailed ? 'unknown' : service?.running;
@@ -320,7 +320,7 @@ export function LocalServicePage(): JSX.Element {
       )}
 
       <KeepRunningRow
-        value={view.readFailed ? 'unknown' : service ? service.keepRunning : 'checking'}
+        value={(service?.mode ?? app?.local.mode) === 'appProcess' ? 'unavailable' : view.readFailed ? 'unknown' : service ? service.keepRunning : 'checking'}
         known={known}
         unsupported={unsupported}
         disabled={blocked}
@@ -377,6 +377,7 @@ function ServiceBadge({ running, view, foreground }: { running: LocalServiceSnap
 function serviceHint(t: (key: MessageKey, params?: MessageParams) => string, view: LocalView, running: string | undefined, foreground: boolean): string {
   if (!view.service && !view.readFailed) return t('settings.local.service.checking');
   if (foreground) return t('settings.local.service.foreground');
+  if (view.service?.mode === 'appProcess' && !view.service.supported) return t('settings.local.service.external');
   if (view.service && !view.service.supported) return t('settings.local.service.unsupported');
   if (view.unresolved) return t('settings.local.service.unresolved');
   if (view.service?.busy && !view.pending) return t('settings.local.service.busy');
@@ -603,6 +604,13 @@ function KeepRunningRow({
   const { t } = useTranslation();
   const labelId = useId();
   const hintId = useId();
+  if (value === 'unavailable') {
+    return (
+      <Row testId="local-keep-row" title={t('settings.local.keep.title')} badge={null}>
+        <p className="text-text-secondary text-sm">{t('settings.local.keep.macUnavailable')}</p>
+      </Row>
+    );
+  }
   const interactive = known && !unsupported && (value === 'on' || value === 'off') && !disabled;
   const checked = value === 'on' ? true : value === 'partial' ? 'mixed' : false;
   const badge: { tone: Tone; key: MessageKey } = unsupported
