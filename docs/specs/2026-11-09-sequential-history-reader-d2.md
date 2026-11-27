@@ -218,4 +218,35 @@ All sequential runs, regardless of stored state, and unrelated native/retained
 history still authenticate before returning exact obligations for terminal or
 nonterminal sources. Exhaustion refuses the entire discovery. No <=100ms
 rediscovery claim is made; measure complete discovery separately. STOP-1,
-source outer settlement, run list/detail and groups 6–8 are unchanged.
+source outer settlement, run list/detail and groups 6–8 were unchanged in group 5;
+group 6 is described below.
+
+
+## Settings, builtin registration and fresh creation — THR-404 group 6
+
+Settings Save/admission and immutable original lookup select definition/settings
+roots through `read_write_history`, with no run roots. Replay chooses the original
+operation's setting; fresh requests choose the requested registered definition.
+The complete identity-wide settings chain starts at generation 1 and authenticates
+one immutable operation/receipt per setting and all pinned definition versions.
+Post-INSERT validation reacquires that chain before original receipt readback.
+The latest CAS, Disabled/Allowed behavior, eligibility/independence, authority
+bookends, error codes and uncertain-publication behavior remain with their owner.
+No settings headroom policy is introduced. Admitted run pins remain immutable.
+A bounded absence probe retains the original COMPLETE legacy validation and
+`sequential_storage_unavailable` result when no sequential storage exists.
+
+Builtin registration selects the reviewed catalog definitions and settings roots,
+including settings whose missing definition must refuse rather than be repaired.
+It keeps the native census/safety and one nondurable reservation, pointer/cache
+bookends, original transaction and exact INSERT count/compiled readback/FK checks.
+No unrelated run graph is acquired. Readback remains the original post-INSERT
+qualification; no second retained-history allowance is replenished.
+
+Only `initialize_fresh_org_database` replaces its final whole-history read with
+exact structure, bounded positive emptiness of each owned data table and exact
+version/cutover seeds plus their original validator. Native pristine-seed/identity,
+full FK and physical installation checks remain. O_EXCL and inode identity are
+required; existing DBs cannot enter this path. Global install/load/bootstrap and
+Founder cutover keep COMPLETE certification under STOP-1. No budget, deadline,
+transaction, lock set/order or transition changes; no TLA+ change follows.

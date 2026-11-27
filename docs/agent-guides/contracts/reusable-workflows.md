@@ -257,6 +257,16 @@ from current settings and cannot authorize resending an uncertain operation.
 New admission storage-operation encoding discriminates the action in the
 existing tables; old Save/offline operation and receipt encodings stay intact.
 
+THR-404 group 6 scopes these Save/admission operations and original lookups to
+zero-run definition/settings roots. Fresh requests select the registered pin;
+replay selects the original operation's setting even when the new body conflicts.
+Every generation from 1 for the definition identity, its immutable operation and
+receipt, and all referenced definition versions authenticate. The appended chain
+is read again after INSERT before publication. Disconnected run payload corruption
+does not veto setup. Latest-generation CAS, role eligibility/independence, admission
+behavior, current-authority bookends and original locks/transactions/budgets stay.
+No future cancellation headroom policy is added to settings.
+
 The separate Allow new runs / Disable new runs controls use saved defaults;
 they neither Save a dirty draft nor start work. Dirty role edits survive an
 admission result and can later be explicitly Saved on the new valid CAS. One
@@ -1051,6 +1061,15 @@ does zero writes for an exact existing row and refuses mismatch. It creates no
 settings, admission, roles, runs or tasks; missing defaults remain Disabled and
 roles unset. Existing saved settings/admission/history stay exact. Native and
 authority qualification precede insertion, with original reader limits intact.
+THR-404 group 6 authenticates catalog definition/settings roots, including
+settings for a missing catalog definition, with zero run roots. Native census,
+safety, the single nondurable reservation, authority-pointer/cache checks, exact
+INSERT count, byte-exact compiled readback and FK checks retain their original
+order and budgets. Fresh creation checks the exact combined structure, bounded
+positive emptiness of every owned data table and exact version/cutover seeds,
+then retains native identity/FK and full physical installation checks. This path
+requires the original O_EXCL/inode proof; existing DBs never use it. Global
+load/install/bootstrap and Founder cutover retain COMPLETE certification (STOP-1).
 See the [A2 contract](../../specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
 Existing-org storage bootstrap remains A4; source delivery grants no live setup.
 

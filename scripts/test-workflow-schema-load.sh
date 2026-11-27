@@ -103,7 +103,8 @@ S7A_CASES = ('plural_links', 'held_cause', 'history_label', 'unavailable',
     'task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent',
     'write_settings_chain', 'write_headroom', 'start_admission', 'start_preflight', 'start_legacy',
     'initiator_scope', 'dispatch_scope', 'hold_scope', 'start_callback_scope',
-    'control_scope', 'cancel_fence_scope', 'cancel_finish_scope')
+    'control_scope', 'cancel_fence_scope', 'cancel_finish_scope',
+    'settings_scope', 'settings_corruption', 'builtin_scope')
 s7a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s7a='):
     s7a_case = sys.argv[1].split('=', 1)[1]
@@ -8266,9 +8267,9 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 assert (await s7read(f,'/workflows/sequential/views/v2/runs/'+ids.run_id))['run']['settings_id']==allowed['original']['id']
             if case=='rollback':
                 # Real owner transaction cut: fault its existing post-insert
-                # complete reader, never a new production injection hook.
+                # scoped reader, never a new production injection hook.
                 from runtime.workflows import sequential_settings as owner
-                original=owner.read_sequential_history
+                original=owner.read_write_history
                 def after_insert(conn,**kwargs):
                     if conn.execute('SELECT 1 FROM workflow_seq_settings_operations WHERE operation_key=?',('unit-a-rollback',)).fetchone():
                         raise ValueError('private precommit fault')
@@ -8277,7 +8278,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     tables=[r[0] for r in f.conn.execute("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'workflow_seq_*' OR name IN ('tasks','task_results')) ORDER BY name")]
                     return {table:tuple(tuple(r) for r in f.conn.execute('SELECT * FROM '+table+' ORDER BY rowid')) for table in tables}
                 before=business()
-                with patch.object(owner,'read_sequential_history',after_insert):
+                with patch.object(owner,'read_write_history',after_insert):
                     await setup_put(f,setup_admission(first,'unit-a-rollback',5),expected=409,code='sequential_history_unverified')
                 assert business()==before and not f.conn.in_transaction, 'A09 partial business append or retained transaction'
             # Original Save/admission are independent of newer opposite-kind work.
@@ -8394,7 +8395,8 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         if case in ('task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent',
                     'write_settings_chain', 'write_headroom', 'start_admission', 'start_preflight', 'start_legacy',
                     'initiator_scope', 'dispatch_scope', 'hold_scope', 'start_callback_scope',
-                    'control_scope', 'cancel_fence_scope', 'cancel_finish_scope'):
+                    'control_scope', 'cancel_fence_scope', 'cancel_finish_scope',
+                    'settings_scope', 'settings_corruption', 'builtin_scope'):
             from runtime.workflows import sequential_history, sequential_views
             from runtime.workflows.sequential_control import validate_control_write
             from runtime.workflows.sequential_task_history import read_write_history, read_cancellation_headroom
@@ -8880,6 +8882,111 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         assert body['detail']['code'] == 'history_unverified' and 'runs' not in body['detail']
                         scoped_refuses(f, 'generic_source_conflict', run_ids=frozenset((f.batch_ids[0].run_id,)))
                         print('PASS S7a task_corruption wait_membership', missing, flush=True)
+            if case in ('settings_scope', 'settings_corruption'):
+                def setting_command(f, key, generation):
+                    return dict(format='workflow-sequential-settings-put@2', operation_key=key,
+                        expected_generation=generation, definition=f.compiled.pin.model_dump(mode='json'),
+                        bindings=[dict(role=role, principal=requirement.default_agent)
+                            for role, requirement in f.compiled.definition.roles],
+                        limits=f.compiled.definition.limits.model_dump(mode='json', exclude_unset=True))
+
+                if case == 'settings_scope':
+                    with s4fixture() as f:
+                        pins = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                        damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                            ('0'*64, f.ids.run_id))
+                        work = setup_no_work(f)
+                        command = setting_command(f, 'scoped-save', 1)
+                        counts = lambda: tuple(f.conn.execute('SELECT count(*) FROM '+table).fetchone()[0]
+                            for table in ('workflow_seq_settings', 'workflow_seq_settings_operations'))
+                        initial = counts()
+                        saved = asyncio.run(setup_put(f, command)).json()
+                        assert counts() == tuple(value+1 for value in initial), 'Save must append exactly settings+operation'
+                        assert saved['original']['generation'] == 2 and saved['original']['snapshot']['admission'] == 'Allowed'
+                        disabled = setup_admission(command, 'scoped-disable', 2, 'Disabled')
+                        initial = counts()
+                        receipt = asyncio.run(setup_put(f, disabled)).json()
+                        assert counts() == tuple(value+1 for value in initial) and receipt['original']['generation'] == 3
+                        assert receipt['original']['snapshot']['admission'] == 'Disabled'
+                        before, changes = tuple(f.conn.iterdump()), f.conn.total_changes
+                        with patch('runtime.workflows.sequential_settings.native_writer', side_effect=AssertionError('replay acquired writer')):
+                            assert asyncio.run(setup_put(f, command)).json() == saved
+                            assert asyncio.run(setup_put(f, disabled)).json() == receipt
+                            assert asyncio.run(setup_request(f, 'GET', '/workflows/sequential/settings/v2/operations?operation_key=scoped-save')).json() == saved
+                            asyncio.run(setup_request(f, 'GET', '/workflows/sequential/settings/v2/operations?operation_key=absent',
+                                expected=404, code='sequential_settings_operation_not_found'))
+                        assert tuple(f.conn.iterdump()) == before and f.conn.total_changes == changes
+                        assert setup_no_work(f) == work and s4row(f, 'workflow_seq_runs', f.ids.run_id) == pins, 'settings rewrote admitted pins/work'
+                else:
+                    for defect, token in (('definition', 'digest_invalid'), ('current', 'digest_invalid'),
+                            ('earlier', 'digest_invalid'), ('generation', 'settings_generation_gap'),
+                            ('operation', 'settings_operation_missing'), ('receipt', 'digest_invalid')):
+                        with s4fixture() as f:
+                            command = setting_command(f, 'chain-save', 1)
+                            saved = asyncio.run(setup_put(f, command)).json()
+                            if defect == 'definition':
+                                damage(f, 'workflow_seq_definitions', 'UPDATE workflow_seq_definitions SET definition_digest=? WHERE id=?', ('0'*64, 's3-definition'))
+                            elif defect == 'generation':
+                                damage(f, 'workflow_seq_settings', 'UPDATE workflow_seq_settings SET generation=4 WHERE id=?', ('s3-settings',))
+                            elif defect == 'operation':
+                                damage(f, 'workflow_seq_settings_operations', 'DELETE FROM workflow_seq_settings_operations WHERE settings_id=?', ('s3-settings',))
+                            elif defect == 'receipt':
+                                damage(f, 'workflow_seq_settings_operations', 'UPDATE workflow_seq_settings_operations SET receipt_digest=? WHERE settings_id=?', ('0'*64, 's3-settings'))
+                            else:
+                                damage(f, 'workflow_seq_settings', 'UPDATE workflow_seq_settings SET snapshot_digest=? WHERE id=?',
+                                    ('0'*64, saved['original']['id'] if defect == 'current' else 's3-settings'))
+                            before, changes = tuple(f.conn.iterdump()), f.conn.total_changes
+                            scoped_refuses(f, token, definition_ids=frozenset(('s3-definition',)))
+                            asyncio.run(setup_put(f, setting_command(f, 'refuse-'+defect, 2), expected=409, code='sequential_history_unverified'))
+                            asyncio.run(setup_request(f, 'GET', '/workflows/sequential/settings/v2/operations?operation_key=chain-save',
+                                expected=409, code='sequential_history_unverified'))
+                            assert tuple(f.conn.iterdump()) == before and f.conn.total_changes == changes
+                            print('PASS S7a settings_corruption', defect, flush=True)
+            if case == 'builtin_scope':
+                from runtime.workflows.sequential_builtin import SequentialBuiltinStore
+                for defect in ('unrelated', 'missing', 'selected', 'pointer'):
+                    with s4fixture() as f:
+                        if defect in ('selected', 'missing'):
+                            command = setup_command(f, 'builtin-save')
+                            saved = asyncio.run(setup_put(f, command)).json()
+                            if defect == 'selected':
+                                damage(f, 'workflow_seq_settings', 'UPDATE workflow_seq_settings SET snapshot_digest=? WHERE id=?',
+                                    ('0'*64, saved['original']['id']))
+                        elif defect == 'unrelated':
+                            damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                                ('0'*64, f.ids.run_id))
+                        damage(f, 'workflow_seq_definitions', 'DELETE FROM workflow_seq_definitions WHERE identity=?' +
+                            ('' if defect == 'missing' else ' AND version=2'), ('release/happyranch/coding',))
+                        tables = [r[0] for r in f.conn.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+                        def inventory():
+                            return {table: tuple(tuple(r) for r in f.conn.execute('SELECT * FROM '+table+' ORDER BY rowid')) for table in tables}
+                        before, changes = inventory(), f.conn.total_changes
+                        authority = f.org.workflow_authority
+                        pointer = authority._pointer
+                        def drift(*args):
+                            result = pointer(*args)
+                            reserved = any(writer['publisher'] == 'builtin_sequential_registration'
+                                for writer in producer_move.owner_for(f.db).writers.values())
+                            return ('synthetic-pointer-drift',) if reserved else result
+                        with patch.object(authority, '_pointer', drift if defect == 'pointer' else pointer):
+                            try:
+                                SequentialBuiltinStore(f.org).ensure_registered()
+                            except ValueError as exc:
+                                assert defect != 'unrelated', ('unrelated run vetoed catalog', str(exc))
+                                assert dict(selected='digest_invalid', missing='foreign_key', pointer='sequential_builtin_authority_changed')[defect] in str(exc), str(exc)
+                            else:
+                                assert defect == 'unrelated', 'catalog ignored selected corruption or pointer drift'
+                        after = inventory()
+                        if defect == 'unrelated':
+                            assert f.conn.total_changes-changes == 1, 'catalog INSERT delta changed'
+                            assert all(after[t] == before[t] for t in tables if t != 'workflow_seq_definitions')
+                            assert len(after['workflow_seq_definitions']) == len(before['workflow_seq_definitions'])+1
+                            exact, count = inventory(), f.conn.total_changes
+                            SequentialBuiltinStore(f.org).ensure_registered()
+                            assert inventory() == exact and f.conn.total_changes == count, 'existing catalog wrote rows'
+                        else:
+                            assert after == before and f.conn.total_changes == changes, 'refused catalog mutated rows'
+                        print('PASS S7a builtin_scope', defect, flush=True)
             if case == 'write_settings_chain':
                 for defect in ('valid', 'gap', 'receipt'):
                     with s4fixture() as f:
@@ -9181,6 +9288,9 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 f.conn.execute('PRAGMA foreign_keys=ON')
                 value = asyncio.run(s7read(f, path))
                 assert value['storage'] == 'absent' and value['runs'] == [], 'unavailable: genuine absence misclassified'
+                before, changes = tuple(f.conn.iterdump()), f.conn.total_changes
+                asyncio.run(setup_put(f, setup_command(f, 'absent-storage'), expected=409, code='sequential_storage_unavailable'))
+                assert tuple(f.conn.iterdump()) == before and f.conn.total_changes == changes, 'unavailable settings mutated legacy storage'
         print('PASS S7a', case, 'served route/private fixtures; SELECT-only inventory + SQL evidence', flush=True)
 
     def s8b_selection(workspace, *, digest='1'*64):
@@ -13089,6 +13199,30 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
                     print('PASS A2-J refuses non-default native state with rollback:', field, flush=True)
                 finally:
                     db.close()
+
+        # A valid but nonempty workflow table cannot certify a fresh target.
+        # The old complete reader accepted this unused reviewed definition.
+        from runtime.infrastructure import workflow_task_ownership as fresh_owner
+        original_fresh_owner = fresh_owner.initialize_fresh_sequential_ownership
+        def nonpristine(conn):
+            original_fresh_owner(conn)
+            compiled = read_coding_release()
+            pin = compiled.pin
+            conn.execute('INSERT INTO workflow_seq_definitions VALUES (?,?,?,?,?,?,?,?,?,?)',
+                ('unexpected-definition', pin.identity, pin.version, compiled.raw, pin.definition_digest,
+                 pin.source_digest, pin.compiler, pin.validator, pin.interpreter, pin.capabilities))
+        with tempfile.TemporaryDirectory(prefix='a2-nonpristine-') as scratch:
+            path = Path(scratch)/'new.db'
+            with patch.object(fresh_owner, 'initialize_fresh_sequential_ownership', nonpristine):
+                try:
+                    initialize_fresh_org_database(path, expected_org_slug='scratch')
+                except ValueError as exc:
+                    assert str(exc) == 'workflow_fresh_creation_requires_empty_workflow_layout', str(exc)
+                else:
+                    raise AssertionError('fresh initializer accepted nonpristine workflow data')
+            with sqlite3.connect(path) as conn:
+                assert not conn.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_seq_definitions'").fetchone(), 'nonpristine creation left partial sequential schema'
+            print('PASS A2-J nonpristine owned workflow data refuses and rolls back', flush=True)
 
         with tempfile.TemporaryDirectory(prefix='a2-historical-') as scratch:
             # Historical constructor defaults are observed independently of the

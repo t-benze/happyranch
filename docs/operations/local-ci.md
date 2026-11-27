@@ -4860,3 +4860,25 @@ cancel_replay_finished, stale_hold_event, control_state_action_matrix and the
 capacity_running_cancel/held_cancel/running_refusal boundaries. Prior G1-G3
 selectors and real result/authority keepers remain. Full schema suites stay
 deferred to the final serial head. No required CI check or E2E trigger is added.
+
+
+THR-404 group 6 extends the existing private schema fixture with
+`--s7a=settings_scope`, `--s7a=settings_corruption` and `--s7a=builtin_scope`
+on Python 3.12/3.14. They observe served Save/Disable/original replay and exact
+settings/operation appends, immutable admitted pins, selected definition/current/
+earlier generation/receipt corruption, missing operation/definition, disconnected
+run isolation, exact catalog INSERT/zero-write replay and pointer-drift refusal.
+`--setup-admission=validation`, `replay`, `race`, `pins`, `rollback` and `history`
+retain kind/body conflicts, latest CAS, role/independence, uncertain publication
+and post-INSERT rollback coverage. The rollback fault now intercepts the real
+scoped target-validation seam; its persisted rollback assertions are unchanged.
+`--fresh-catalog=historical` extends the native-pristine table with a valid but
+nonempty owned workflow target: exclusive fresh creation must refuse and roll
+back. Existing `--fresh-catalog=route` / `registration` retain real POST creation,
+exact catalog delta, native safety and lost-authority checks. No new CI lane or
+required check; full schema suites remain for the final serial head.
+
+The existing `--s7a=unavailable` genuine legacy-storage fixture also asserts
+settings PUT returns `sequential_storage_unavailable` without writes. Its absent
+path retains the original complete legacy validator; installed sequential setup
+uses the scoped chain.
