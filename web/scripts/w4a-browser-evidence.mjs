@@ -45,11 +45,12 @@ import { runWorkHoursCases, workHoursFixture } from './work-hours-browser-cases.
 import { createFeatureFlagsFixture, runFeatureFlagsCases } from './feature-flags-browser-cases.mjs';
 import { createWorkflowSetupFixture, runWorkflowSetupCases } from './workflow-setup-browser-cases.mjs';
 import { createTaskAttrListFixture, runTaskAttrListCases } from './task-attr-list-browser-cases.mjs';
+import { createTaskAttributeDefinitionFixture, runTaskAttributeDefinitionCases } from './task-attribute-definition-browser-cases.mjs';
 import { createAgentsCreateFixture, runAgentsCreateCases } from './agents-create-autoselect-browser-cases.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -524,6 +525,7 @@ function startServer(root) {
           }
           if (selectedSlice === 'locale-activation' && p === '/api/v1/orgs' && ref.searchParams.has('localeStartup')) { HUNG.push(response); return; }
           if (selectedSlice === 'feature-flags' && ffFixture.handle(request, response, p, ref, row)) return;
+          if (selectedSlice === 'task-attr-definitions' && tadFixture.handle(request, response, p, url, row)) return;
           if (selectedSlice === 'task-attr-list' && talFixture.handle(request, response, p, url, row)) return;
           if (selectedSlice === 'agents-create' && acFixture.handle(request, response, p, url, row)) return;
           if (selectedSlice === 'workflow-setup') {
@@ -1064,7 +1066,7 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup', 'task-attr-list', 'agents-create'].includes(selectedSlice)) throw new Error('unknown --slice');
+if (!['all', 'kb', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup', 'task-attr-list', 'task-attr-definitions', 'agents-create'].includes(selectedSlice)) throw new Error('unknown --slice');
 const expectProfile = arg('expect-profile');
 const buildLog = arg('build-log') && resolve(arg('build-log'));
 if (selectedSlice === 'feature-flags' && (!['production', 'local', 'local-wh-off'].includes(expectProfile) || !buildLog || !existsSync(buildLog))) {
@@ -1073,6 +1075,7 @@ if (selectedSlice === 'feature-flags' && (!['production', 'local', 'local-wh-off
 }
 const ffFixture = createFeatureFlagsFixture(WH_SETTINGS, ORG);
 const talFixture = createTaskAttrListFixture(ORG);
+const tadFixture = createTaskAttributeDefinitionFixture(ORG);
 const acFixture = createAgentsCreateFixture(ORG);
 const wfFixture = selectedSlice === 'workflow-setup'
   ? createWorkflowSetupFixture(JSON.parse(readFileSync(arg('workflow-fixture'), 'utf8')), W4C_LEAD, ORG) : null;
@@ -1092,8 +1095,8 @@ const EMPTY_ZONE_SWITCH = {
   checks: locale => [...switchUsage.checks(locale), ...emptyZoneChecks()],
   shot: 'zh-usage-empty-zone-switch-1440',
 };
-const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup', 'task-attr-list', 'agents-create'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-'));
-const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup', 'task-attr-list', 'agents-create'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => selectedSlice === 'usage' && row.id.startsWith('usage-'));
+const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup', 'task-attr-list', 'task-attr-definitions', 'agents-create'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-'));
+const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement', 'feature-flags', 'workflow-setup', 'task-attr-list', 'task-attr-definitions', 'agents-create'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => selectedSlice === 'usage' && row.id.startsWith('usage-'));
 
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
@@ -1125,9 +1128,9 @@ async function main() {
     zhCatalogLiterals: Object.fromEntries(bundleKeys.map((key) => [key, literal(key) === '' || joined.includes(JSON.stringify(literal(key)).slice(1, -1)) || joined.includes(literal(key))])),
   };
   const { server, url: base } = await startServer(dist);
-  const userDataDir = `/tmp/w4a-${process.pid}`; // short: Chrome's singleton socket path limit
-  rmSync(userDataDir, { recursive: true, force: true });
-  mkdirSync(userDataDir, { recursive: true });
+  // Unique, private and short for Chrome's singleton socket. Never remove
+  // a pre-existing profile that may belong to another evidence run.
+  const userDataDir = mkdtempSync(`/tmp/w4a-${process.pid}-`);
   let chrome;
   let cdp;
   let chromeVersion = null;
@@ -1535,6 +1538,8 @@ async function main() {
       await runWorkflowSetupCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale }, { org: ORG, fixture: wfFixture, selected: arg('workflow-case', 'all') });
     } else if (selectedSlice === 'task-attr-list') {
       await runTaskAttrListCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, fixture: talFixture }, { org: ORG, only: arg('tal-case', '') });
+    } else if (selectedSlice === 'task-attr-definitions') {
+      await runTaskAttributeDefinitionCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, fixture: tadFixture }, { org: ORG, only: arg('tad-case', ''), context: arg('tad-context', ''), outcome: arg('tad-outcome', '') });
     } else if (selectedSlice === 'agents-create') {
       await runAgentsCreateCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, seedLocale, fixture: acFixture }, { org: ORG, only: arg('ac-case', '') });
     } else if (selectedSlice === 'feature-flags') {

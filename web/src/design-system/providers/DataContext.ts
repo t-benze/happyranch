@@ -754,7 +754,7 @@ export interface TaskAttributesQuery<T> extends QueryLike<T> {
 }
 
 export interface TaskAttributeActions {
-  create: (body: TaskAttributeTypes.AttributeDefinitionFields) => Promise<TaskAttributeTypes.AttributeDefinitionRead>;
+  create: (body: TaskAttributeTypes.AttributeDefinitionCreateFields) => Promise<TaskAttributeTypes.AttributeDefinitionRead>;
   update: (
     definitionId: string,
     body: Partial<TaskAttributeTypes.AttributeDefinitionFields> & { expected_version: number },

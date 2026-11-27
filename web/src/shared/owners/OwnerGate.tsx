@@ -81,6 +81,8 @@ export interface OwnerHandlers {
   discard?: () => void;
   /** Same-context reconciliation of an unknown result (Check result). */
   check?: () => Promise<void>;
+  acknowledgeUnknown?: () => boolean;
+  observation?: () => ReactNode;
 }
 
 /** Optional navigation interceptor (desktop: Settings routes open the dialog). */
@@ -395,7 +397,7 @@ function OwnerGatePrompt({
             {t(hold ? 'owners.gate.holdBody' : 'owners.gate.promptBody')}
           </DialogDescription>
         </DialogHeader>
-        <ul className="space-y-2" data-testid="owner-gate-owners">
+        <ul className="min-w-0 space-y-2" data-testid="owner-gate-owners">
           {blocking.owners.map((owner) => {
             const params = ownerContextParams(owner, t);
             const key =
@@ -411,7 +413,7 @@ function OwnerGatePrompt({
               <li
                 key={owner.id}
                 data-owner-status={owner.status}
-                className="border-border-default bg-surface-raised text-text-primary rounded-md border p-3 text-sm break-words"
+                className="border-border-default bg-surface-raised text-text-primary min-w-0 rounded-md border p-3 text-sm break-words"
               >
                 <p>{t(key, params)}</p>
                 {owner.status === 'unknown' && (
@@ -423,10 +425,20 @@ function OwnerGatePrompt({
                         disabled={state === 'running'}
                         onClick={() => void check(owner)}
                       >
-                        {t(state === 'running' ? 'owners.save.checking' : 'owners.save.checkResult')}
+                        {t(state === 'running' ? 'owners.save.checking' : owner.unknownAcknowledgement ? 'owners.save.checkList' : 'owners.save.checkResult')}
                       </Button>
                     ) : (
                       <p className="text-text-secondary text-xs">{t('owners.save.checkUnavailable', params)}</p>
+                    )}
+                    {owner.unknownAcknowledgement && (
+                      <>
+                        <p className="text-text-secondary text-xs">{t('owners.save.unknownCreate')}</p>
+                        {owner.canAcknowledgeUnknown && handlers.get(owner.id)?.observation?.()}
+                        <Button size="sm" variant="secondary" disabled={!owner.canAcknowledgeUnknown || state === 'running'}
+                          onClick={() => handlers.get(owner.id)?.acknowledgeUnknown?.()}>
+                          {t('owners.save.acknowledgeUnknown')}
+                        </Button>
+                      </>
                     )}
                     {state === 'failed' && (
                       <p role="alert" className="text-feedback-danger text-xs">

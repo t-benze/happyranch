@@ -17,7 +17,9 @@ Revision = Annotated[StrictInt, Field(ge=0)]
 
 class CreateDefinition(Closed):
     expected_version: Literal[0]
-    key: StrictStr
+    # Only omission requests generation; _body excludes unset defaults.
+    key: StrictStr = Field(default_factory=str,
+                           description="Omit to generate a unique stable key from name; explicit keys retain strict validation.")
     type: Literal["numeric", "string", "boolean"]
     name: StrictStr
     description: StrictStr | None = None

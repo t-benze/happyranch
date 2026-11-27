@@ -445,3 +445,38 @@ test('system prompt save: #1775 kept — an acknowledged save whose verification
     assert.equal(run.status, 'unknown', `${label}: held, not saved`);
   }
 });
+
+test('W07 close/Quit summaries recheck remaining owners after keyless acknowledgement', async () => {
+  const owners = await freshOwners();
+  const fake = fakeBridge();
+  __setNativeBridgeForTests(fake.bridge);
+  const r = createOwnerRegistry();
+  for (const id of ['keyless', 'other']) {
+    r.register(id, SETTINGS);
+    r.setDraft(id, { dirty: true, revision: 1 });
+  }
+  r.setUnknownAcknowledgement('keyless', true);
+  const ticket = r.beginSave('keyless');
+  const other = r.beginSave('other');
+  r.settleSave(ticket, 'unknown');
+  r.settleSave(other, 'unknown');
+  assert.equal(owners.toOwnersSummary(r.getSnapshot()).counts.unknown, 2);
+  assert.equal(r.acknowledgeUnknown('keyless'), false);
+  const check = r.beginUnknownCheck('keyless');
+  assert.equal(r.completeUnknownCheck(check), true);
+  assert.equal(r.acknowledgeUnknown('keyless'), true);
+  let summary = owners.toOwnersSummary(r.getSnapshot());
+  assert.deepEqual(summary, { schema: 2, blocking: 'hold', counts: { dirty: 0, failed: 0, pending: 0, unknown: 1 } });
+  assertValidOwners(owners.serializeOwnersSummary(summary));
+  assert.equal(await owners.answerLifecycle('ack-close-held', 'proceed', () => r.getSnapshot()), 'acked');
+  assert.equal(fake.owners().at(-1).gate.decision, 'keep', 'another owner still blocks close');
+  r.settleSave(ticket, 'saved');
+  assert.deepEqual(owners.toOwnersSummary(r.getSnapshot()), summary, 'late own success has no saved claim');
+  r.reconcile('other', 'saved');
+  summary = owners.toOwnersSummary(r.getSnapshot());
+  assert.equal(summary.blocking, 'none');
+  assert.equal(summary.counts.unknown, 0);
+  assertValidOwners(owners.serializeOwnersSummary(summary));
+  assert.equal(await owners.answerLifecycle('ack-quit-clear', 'proceed', () => r.getSnapshot()), 'acked');
+  assert.equal(fake.owners().at(-1).gate.decision, 'proceed', 'only an actually clear aggregate permits Quit');
+});

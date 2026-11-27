@@ -40,9 +40,12 @@
  * discardable: `discard` refuses while pending or unknown.
  *
  * Unknown results refuse new mutations: `beginSave` returns null while the
- * owner has an unreconciled unknown save. Only same-owner reconciliation
- * (Check result → `reconcile`) can clear it; `not_saved` turns it into a
- * confirmed failure, which permits an ordinary retry.
+ * owner has an unreconciled unknown save. Same-owner reconciliation
+ * (Check result → `reconcile`) can clear it; `not_saved` permits ordinary
+ * retry. Keyless creates instead opt into successful list observation and
+ * explicit acknowledgement: only that owner is forgotten, with no saved or
+ * failed attribution. Its own late response can settle before acknowledgement;
+ * after acknowledgement all of its late tickets/checks are inert.
  *
  * Editor teardown: `release` (the editor unmounted) forgets a clean/dirty
  * owner, but an owner with a pending or unknown save stays registered,
@@ -106,6 +109,9 @@ export interface OwnerRecord extends OwnerIdentity {
   savedRevision: number | null;
   /** True when a Check result reconciliation is available for `unknown`. */
   canCheck: boolean;
+  /** Opt-in list observation/acknowledgement (never write attribution). */
+  unknownAcknowledgement: boolean;
+  canAcknowledgeUnknown: boolean;
   /** True when the editor unmounted while a save was pending/unknown. */
   detached: boolean;
 }
@@ -140,6 +146,8 @@ interface MutableOwner extends OwnerIdentity {
   failedSeq: number | null;
   unknownSeqs: Set<number>;
   canCheck: boolean;
+  unknownAcknowledgement: boolean;
+  checkedUnknownSeq: number | null;
   detached: boolean;
 }
 
@@ -225,6 +233,12 @@ export interface OwnerRegistry {
    * ticket: the caller must not send) while a prior result is unknown.
    */
   beginSave: (id: string, revision?: number) => SaveTicket | null;
+  setUnknownAcknowledgement: (id: string, enabled: boolean) => void;
+  /** Bind an observation to this unknown episode; failures never complete it. */
+  beginUnknownCheck: (id: string) => SaveTicket | null;
+  completeUnknownCheck: (ticket: SaveTicket) => boolean;
+  /** Forget only this opted-in, successfully observed unknown owner. */
+  acknowledgeUnknown: (id: string) => boolean;
   settleSave: (ticket: SaveTicket, outcome: SaveOutcome) => SettleResult;
   /**
    * Reconcile an unknown result (Check result). `saved` acknowledges every
@@ -265,6 +279,9 @@ export function createOwnerRegistry(): OwnerRegistry {
         sentRevision: owner.sentRevision,
         savedRevision: owner.savedRevision,
         canCheck: owner.canCheck,
+        unknownAcknowledgement: owner.unknownAcknowledgement,
+        canAcknowledgeUnknown: owner.unknownAcknowledgement && owner.inFlight.size === 0
+          && owner.unknownSeqs.size > 0 && owner.checkedUnknownSeq === owner.latestSeq,
         detached: owner.detached,
       }));
     for (const listener of [...listeners]) listener();
@@ -307,6 +324,8 @@ export function createOwnerRegistry(): OwnerRegistry {
         failedSeq: null,
         unknownSeqs: new Set(),
         canCheck: false,
+        unknownAcknowledgement: false,
+        checkedUnknownSeq: null,
         detached: false,
       });
       publish();
@@ -350,6 +369,38 @@ export function createOwnerRegistry(): OwnerRegistry {
       owner.canCheck = canCheck;
       publish();
     },
+    setUnknownAcknowledgement(id, enabled) {
+      const owner = owners.get(id);
+      if (!owner || owner.unknownAcknowledgement === enabled) return;
+      owner.unknownAcknowledgement = enabled;
+      owner.checkedUnknownSeq = null;
+      publish();
+    },
+    beginUnknownCheck(id) {
+      const owner = owners.get(id);
+      if (!owner || !owner.unknownAcknowledgement || owner.unknownSeqs.size === 0 || owner.inFlight.size > 0) return null;
+      owner.checkedUnknownSeq = null;
+      publish();
+      return { ownerId: id, revision: owner.sentRevision ?? owner.draftRevision, seq: owner.latestSeq };
+    },
+    completeUnknownCheck(ticket) {
+      const owner = owners.get(ticket.ownerId);
+      if (!owner || !owner.unknownAcknowledgement || owner.inFlight.size > 0
+          || owner.latestSeq !== ticket.seq || !owner.unknownSeqs.has(ticket.seq)) return false;
+      owner.checkedUnknownSeq = ticket.seq;
+      publish();
+      return true;
+    },
+    acknowledgeUnknown(id) {
+      const owner = owners.get(id);
+      if (!owner || !owner.unknownAcknowledgement || owner.inFlight.size > 0 || owner.unknownSeqs.size === 0
+          || owner.checkedUnknownSeq !== owner.latestSeq) return false;
+      // Acknowledgement is neither saved nor failed. Removing this identity
+      // also makes every late response/check for its tickets inert.
+      owners.delete(id);
+      publish();
+      return true;
+    },
     beginSave(id, revision) {
       const owner = owners.get(id);
       // An unknown result is not retry authority: reconcile it first.
@@ -358,6 +409,7 @@ export function createOwnerRegistry(): OwnerRegistry {
       // awaited something (identity resolution) before sending.
       const ticket: SaveTicket = { ownerId: id, revision: revision ?? owner?.draftRevision ?? 0, seq: ++seq };
       if (!owner) return ticket;
+      owner.checkedUnknownSeq = null;
       owner.inFlight.set(ticket.seq, ticket.revision);
       owner.latestSeq = ticket.seq;
       owner.sentRevision = ticket.revision;
@@ -367,10 +419,13 @@ export function createOwnerRegistry(): OwnerRegistry {
     },
     settleSave(ticket, outcome) {
       const owner = owners.get(ticket.ownerId);
-      if (!owner || !owner.inFlight.has(ticket.seq)) {
+      const lateOwnResult = owner?.unknownAcknowledgement && owner.unknownSeqs.has(ticket.seq) && outcome !== 'unknown';
+      if (!owner || (!owner.inFlight.has(ticket.seq) && !lateOwnResult)) {
         return { current: owner?.draftRevision === ticket.revision, known: !!owner };
       }
       owner.inFlight.delete(ticket.seq);
+      owner.unknownSeqs.delete(ticket.seq);
+      owner.checkedUnknownSeq = null;
       const current = owner.draftRevision === ticket.revision;
       const newest = ticket.seq === owner.latestSeq;
       if (outcome === 'unknown') {
@@ -400,6 +455,7 @@ export function createOwnerRegistry(): OwnerRegistry {
       if (!owner || owner.unknownSeqs.size === 0 || outcome === 'unknown') return;
       const latestUnknown = Math.max(...owner.unknownSeqs);
       owner.unknownSeqs.clear();
+      owner.checkedUnknownSeq = null;
       if (outcome === 'not_saved') {
         if (latestUnknown >= owner.latestSeq) owner.failedSeq = latestUnknown;
       } else if (owner.sentRevision !== null && latestUnknown >= owner.latestSeq) {
