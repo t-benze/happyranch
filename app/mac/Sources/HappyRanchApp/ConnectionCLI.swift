@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 import HappyRanchSupervisor
 
-/// Only /dev/tty receives target/phrase/loopback URL, never stdout/stderr.
+/// Only /dev/tty receives target/phrase, never stdout/stderr.
 /// Noncanonical input has independent byte and monotonic 120-second bounds.
 final class ConnectionTerminal: @unchecked Sendable {
     private let descriptor: Int32
@@ -198,15 +198,14 @@ final class ConnectionCLI {
         }
         try Task.checkCancellation()
         guard let session else { throw ConnectionError(.unavailable) }
-        let url: URL
-        do { url = try await session.open(credential) } // authenticated health; never a loaded-UI claim
+        do { try await session.checkAccess(credential) } // reachability only; no runtime listener
         catch {
             if error as? HomeConnectionFailure == .revoked { revoked = credential }
             throw error
         }
         try Task.checkCancellation()
-        try terminal.say("Runtime reachable: " + url.absoluteString)
-        try terminal.say("Foreground connection; Ctrl-C or SIGTERM disconnects. Loaded RELEASE UI is unverified.")
+        try terminal.say(NativeCopy.runtimeReachable.text)
+        try terminal.say(NativeCopy.observingAccess.text)
         try Self.write(["state": "runtimeReachable", "effect": "confirmed", "savedAccess": savedAccess,
                     "code": saveCode as Any? ?? NSNull()])
         while true {

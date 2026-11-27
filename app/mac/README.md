@@ -740,9 +740,16 @@ unavailable observation. Separate `disconnect`, `cancel-attempt`, `retry`,
 Ctrl-C/SIGTERM in the owning invocation cancels/disconnects, preserves observed
 save/deletion settlement and performs independently bounded session teardown.
 Unconfirmed cleanup is `cleanupIncomplete`/unknown. Retry uses a new invocation
-and fresh consent. Authenticated runtime health/open is `runtimeReachable`, never
-Connected or a claim that the RELEASE page loaded. The loopback URL is shown only
-on the terminal and lasts only while the process lives. JSON stdout contains
+and fresh consent. Native `checkAccess(credential)` binds the existing device
+authority and checks authenticated health without starting ClientBridge's listener;
+subsequent checks run every five seconds until cancellation or denial. This is
+`runtimeReachable`, never Connected or a claim that the RELEASE page loaded.
+The terminal says “Runtime reachable.” / “运行时可连接。” and “Observing access;
+Ctrl-C disconnects.” / “正在检查访问权限；按 Ctrl-C 断开连接。”, using NativeCopy
+and the existing app language preference. No client runtime port/URL is created,
+printed, saved or retained; this command does not open a browser runtime. GUI
+native transport/join/health/cleanup still need ClientBridge, so the class and
+its tests remain. JSON stdout contains
 closed states/effects and generic saved-computer labels/opaque refs; no target,
 invite, phrase, URL, bearer, fingerprint or diagnostics. Exit 0 means completed
 read/action or cancellation, 1 a closed error, 2 invalid grammar without argument

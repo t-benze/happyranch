@@ -116,6 +116,7 @@ public protocol HomeInviteSession: Sendable {
     func open(_ credential: SavedDeviceCredential) async throws -> URL
     func openApp(_ credential: SavedDeviceCredential) async throws -> URL
     func appTransport() throws -> any AppAPITransport
+    func checkAccess(_ credential: SavedDeviceCredential) async throws
     func checkAccess() async throws
     func stop() async throws
 }
@@ -252,12 +253,17 @@ public final class ManagedHomeInviteSession: HomeInviteSession, @unchecked Senda
 
     /// GUI path: authorize the existing selected owner, with no loopback listener.
     public func openApp(_ credential: SavedDeviceCredential) async throws -> URL {
-        try active().useHomeCredential(credential)
-        try await checkAccess()
+        try await checkAccess(credential)
         return URL(string: "happyranch-app://app/")!
     }
 
     public func appTransport() throws -> any AppAPITransport { try active() }
+
+    /// Shared GUI/CLI admission: bind native authority and observe health only.
+    public func checkAccess(_ credential: SavedDeviceCredential) async throws {
+        try active().useHomeCredential(credential)
+        try await checkAccess()
+    }
 
     public func checkAccess() async throws { try await active().homeRequest(.health).requireAuthorized() }
 

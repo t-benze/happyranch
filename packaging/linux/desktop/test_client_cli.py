@@ -10,6 +10,7 @@ from pathlib import Path
 import pty
 import select
 import signal
+import socket
 import subprocess
 import sys
 import termios
@@ -51,6 +52,7 @@ class Session:
 
     def __init__(self, prefix: Path) -> None:
         self.instances.append(self)
+        self.health_checks = 0
 
     def join(self, invite: object, *, save_intent: bool) -> None:
         self.calls.append(("join", save_intent))
@@ -85,7 +87,10 @@ class Session:
 
     def health(self) -> None:
         self.calls.append('health')
-        if self.health_error:
+        self.health_checks += 1
+        if self.runtime_error:
+            raise cli.native.ClientError("accessUnavailable")
+        if self.health_error and self.health_checks > 1:
             raise cli.native.ClientError(self.health_error)
 
     def stop(self) -> None:
@@ -103,6 +108,7 @@ class ClientCLITests(unittest.TestCase):
         Terminal.choices, Terminal.output, Terminal.reads = [], [], []
         from gi.repository import Gio
         for target, name, value in ((cli.native, "ClientSession", Session), (cli, "Terminal", Terminal),
+                (cli._locale, "load", lambda: {"current": "en"}),
                 (cli.native, "decode_invite", lambda text: NS(**{field: getattr(record(), field) for field in record().__slots__})),
                 (Gio.DBusError, "get_remote_error", lambda e: e.remote if isinstance(e, RemoteError) else None)):
             active = patch.object(target, name, value)
@@ -146,7 +152,7 @@ class ClientCLITests(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertEqual(rows[0]['state'], 'runtimeReachable')
                 self.assertEqual(rows[-1], dict(code=denial, effect='unknown', savedAccess='saved'))
-                self.assertEqual(Session.calls.count('health'), 1)
+                self.assertEqual(Session.calls.count('health'), 2)
                 self.assertEqual(Session.calls.count('stop'), 1)
                 self.assertEqual(sum(isinstance(call, tuple) and call[0] == 'restore' for call in Session.calls), 1)
 
@@ -164,7 +170,7 @@ class ClientCLITests(unittest.TestCase):
         with patch.object(cli.native, "decode_invite", return_value=invite):
             code, rows = self.run_cli("accept-invite", ["unused-invite", "update"])
         self.assertEqual(code, 0)
-        self.assertEqual(Session.calls, ["recover", "open", "stop"])
+        self.assertEqual(Session.calls, ["recover", "health", "stop"])
         self.assertIn("Dial IP: 100.64.0.2", Terminal.output)
         self.assertIn("Control URL: " + invite.control_url, Terminal.output)
         self.assertEqual(cli.custody.decode(self.secret.items[0].raw, cli.native).dial_ip, invite.dial_ip)
@@ -250,7 +256,7 @@ class ClientCLITests(unittest.TestCase):
         self.assertEqual(Terminal.reads[0][1], dict(hidden=True, limit=16384))
         self.assertIn("Target: synthetic-home", Terminal.output)
         self.assertIn("Compare on Host: synthetic-comparison", Terminal.output)
-        self.assertEqual(Session.calls, [("join", True), "pair", "complete", "open", "stop"])
+        self.assertEqual(Session.calls, [("join", True), "pair", "complete", "health", "stop"])
         self.assertEqual(len(self.secret.writes), 1)
         self.assertNotIn("synthetic-invite-secret", str(Terminal.output))
         self.assertNotIn("connected", json.dumps(rows).lower())
@@ -277,7 +283,7 @@ class ClientCLITests(unittest.TestCase):
                                 if prompt in terminal and prompt not in sent:
                                     sent.add(prompt)
                                     os.write(master, answer)
-                            if b"Foreground connection;" in terminal and cancelled_at is None:
+                            if b"Observing access;" in terminal and cancelled_at is None:
                                 cancelled_at = time.monotonic()
                                 os.kill(process.pid, signum)
                                 deadline = cancelled_at + 1
@@ -319,7 +325,7 @@ class ClientCLITests(unittest.TestCase):
         self.assertEqual(rows[0]["computers"], [dict(computerRef=cli.custody.reference(record()), label="Saved computer 1")])
         self.assertEqual(self.run_cli("connect-saved", ["1", "connect"])[0], 0)
         self.assertEqual(Session.calls[0], ("restore", cli.custody.encode(record())))
-        self.assertEqual(Session.calls[-2:], ["open", "stop"])
+        self.assertEqual(Session.calls[-2:], ["health", "stop"])
         self.assertEqual(self.run_cli("remove-saved", ["1", ""])[1], [dict(state="cancelled", effect="none")])
         self.assertEqual(len(self.secret.items), 1)
         for choice in ("0", "33", "", "invalid", "１"):
@@ -397,7 +403,7 @@ class ClientCLITests(unittest.TestCase):
             code, rows = self.run_cli("accept-invite", ["synthetic-invite-secret", "connect", "save"])
         self.assertEqual((code, rows), (0, [dict(state="cancelled", effect="confirmed", savedAccess="saved")]))
         self.assertEqual(Session.calls[-2:], ["write", "stop"])
-        self.assertNotIn("open", Session.calls[-2:])
+        self.assertNotIn("health", Session.calls[-2:])
         Session.cleanup_error = True
         self.assertEqual(self.run_cli("accept-invite", ["synthetic-invite-secret", "connect", ""]),
                          (1, [dict(state="runtimeReachable", effect="confirmed", savedAccess="none", code=None),
@@ -407,13 +413,98 @@ class ClientCLITests(unittest.TestCase):
         Session.join_cancel = True
         self.assertEqual(self.run_cli("accept-invite", ["synthetic-invite-secret", "connect", ""])[0], 0)
         self.assertIn("stop", Session.calls)
-        self.assertNotIn("open", Session.calls)
+        self.assertNotIn("health", Session.calls)
         Session.join_cancel = False
         Session.runtime_error = True
         code, rows = self.run_cli("accept-invite", ["synthetic-invite-secret", "connect", ""])
         self.assertEqual(code, 1)
         self.assertEqual(rows, [dict(code="accessUnavailable", effect="unknown", savedAccess="none")])
         self.assertEqual(Session.calls[-1], "stop")
+
+
+class ForegroundListenerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        locale = patch.object(cli._locale, "load", return_value={"current": "en"})
+        locale.start()
+        self.addCleanup(locale.stop)
+
+    @staticmethod
+    def listeners() -> list[str]:
+        # Join process-owned socket inodes to both kernel TCP tables. Any read
+        # error fails the test; namespace-wide unrelated sockets are not ours.
+        inodes = set()
+        for fd in Path("/proc/self/fd").iterdir():
+            try:
+                target = os.readlink(fd)
+            except FileNotFoundError:
+                continue  # a bounded native worker may finish during enumeration
+            if target.startswith("socket:["):
+                inodes.add(target[8:-1])
+        rows = []
+        for family in ("tcp", "tcp6"):
+            for line in Path("/proc/self/net", family).read_text().splitlines()[1:]:
+                fields = line.split()
+                if fields[3] == "0A" and fields[9] in inodes:
+                    rows.append(family)
+        return sorted(rows)
+
+    def foreground(self) -> tuple[list[str], list[str], list[dict]]:
+        owner = cli.Client(Path("/unused-synthetic-prefix"))
+        owner.session = cli.native.ClientSession(owner.prefix)
+        owner.session._bearer = "hrpin_1_" + "b" * 64
+        owner.terminal = Terminal()
+        Terminal.output = []
+        observed, frames = [], []
+        class Output(io.StringIO):
+            def write(self, text: str) -> int:
+                count = super().write(text)
+                if text == "\n":
+                    frames.append(json.loads(self.getvalue().splitlines()[-1]))
+                    observed.extend(ForegroundListenerTests.listeners())
+                    raise cli.Cancelled()
+                return count
+        try:
+            # Only the remote peer reply is synthetic: CLI, native health,
+            # legacy proxy creation and kernel sockets remain production code.
+            with patch.object(owner.session, "_request", return_value=(200, b"{}")) as health, \
+                    redirect_stdout(Output()), self.assertRaises(cli.Cancelled):
+                owner.foreground()
+            self.assertEqual(health.call_args.args, ("/api/v1/health",))
+            self.assertEqual(health.call_count, 1)
+        finally:
+            self.assertTrue(owner.close())
+        return observed, list(Terminal.output), frames
+
+    def test_foreground_runtime_tcp_listener_census(self) -> None:
+        self.assertEqual(self.listeners(), [])
+        controls = []
+        try:
+            for family, address in ((socket.AF_INET, ("127.0.0.1", 0)),
+                                    (socket.AF_INET6, ("::1", 0))):
+                control = socket.socket(family)
+                controls.append(control)
+                control.bind(address)
+                control.listen(1)
+            self.assertEqual(self.listeners(), ["tcp", "tcp6"])
+            print("CENSUS positive-control: detected deliberate TCP4 and TCP6 listeners")
+        finally:
+            for control in controls:
+                control.close()
+        self.assertEqual(self.listeners(), [])
+        observed, _terminal, frames = self.foreground()
+        print("CENSUS CLI runtimeReachable: owned TCP listeners=" + str(len(observed)))
+        self.assertEqual(frames, [dict(state="runtimeReachable", effect="confirmed", savedAccess="none", code=None)])
+        self.assertEqual(observed, [], "CLI connect opened a runtime TCP listener")
+        self.assertEqual(self.listeners(), [])
+
+    def test_foreground_localized_health_only_copy(self) -> None:
+        for language, expected in (("en", ["Runtime reachable.", "Observing access; Ctrl-C disconnects."]),
+                ("zh-CN", ["运行时可连接。", "正在检查访问权限；按 Ctrl-C 断开连接。"])):
+            with self.subTest(language=language), patch.object(cli, "_locale", NS(load=lambda: {"current": language}), create=True):
+                observed, terminal, frames = self.foreground()
+                self.assertEqual(terminal, expected)
+                self.assertEqual(observed, [])
+                self.assertEqual(frames[0]["state"], "runtimeReachable")
 
 
 class TerminalTests(unittest.TestCase):
