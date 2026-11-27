@@ -9,8 +9,9 @@ Four-answer case record (E1-E8, including named parametrized subcases):
    provider-free boundaries. None owns these actual process/callback lifecycles.
 4. No production seam: source-bound test-side fault windows and fake CLI only.
 
-The main/proof-ref hosted runs supply attributable RED/GREEN evidence. Static
-checks cannot establish a lifecycle PASS. Populated-history lifecycle: NOT RUN.
+Exact-head hosted GREEN remains required; module RED is PROOF NOT RUN under
+the venue budget. Static checks cannot establish a lifecycle PASS.
+Populated-history lifecycle: NOT RUN.
 """
 from __future__ import annotations
 
@@ -39,6 +40,10 @@ POLICY_BEGIN = "<!-- BEGIN HAPPYRANCH ACTIVE TEAM POLICY -->"
 POLICY_END = "<!-- END HAPPYRANCH ACTIVE TEAM POLICY -->"
 
 
+class _CensusBusy(Exception):
+    """Only the finite polling loop may retry this exact read refusal."""
+
+
 def _bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 
@@ -60,7 +65,13 @@ def _wait(read: Callable, predicate: Callable = bool, *, label: str, timeout: fl
     deadline = time.monotonic() + timeout
     last = None
     while time.monotonic() < deadline:
-        last = read()
+        try:
+            last = read()
+        except _CensusBusy:
+            # The request already used part of this same deadline. No fresh
+            # deadline or retry of callbacks/non-poll assertions is granted.
+            time.sleep(min(.2, max(0, deadline - time.monotonic())))
+            continue
         if predicate(last):
             return last
         capture = os.environ.get("HAPPYRANCH_WORKFLOW_CAPTURE")
@@ -110,11 +121,51 @@ def _assessment(root: Path, task: str, sid: str) -> dict:
         what_not_to_escalate=dict(applicability="applies", confidence=100, uncertainty_codes=[]))
 
 
-def _counts(root: Path) -> dict:
+def _counts(root: Path, task: str) -> dict:
+    tree = "WITH RECURSIVE ancestors(id,parent_task_id) AS (SELECT id,parent_task_id FROM tasks WHERE id=? " \
+        "UNION SELECT t.id,t.parent_task_id FROM tasks t JOIN ancestors a ON t.id=a.parent_task_id), " \
+        "tree(id) AS (SELECT id FROM ancestors WHERE parent_task_id IS NULL " \
+        "UNION SELECT t.id FROM tasks t JOIN tree p ON t.parent_task_id=p.id), " \
+        "runs(id) AS (SELECT id FROM workflow_seq_runs WHERE source_task_id IN (SELECT id FROM tree)) "
     tables = ("tasks", "task_results", "audit_log", "authority_policy_v2_session_bindings", "authority_policy_v2_attempts",
               "workflow_seq_runs", "workflow_seq_visits", "workflow_seq_controls", "workflow_seq_outputs",
               "workflow_seq_evidence", "workflow_seq_inbox")
-    return {name: _rows(root, "SELECT count(*) AS n FROM " + name)[0]["n"] for name in tables}
+    scopes = dict(tasks="id IN (SELECT id FROM tree)", task_results="task_id IN (SELECT id FROM tree)",
+        audit_log="task_id IN (SELECT id FROM tree)",
+        authority_policy_v2_session_bindings="root_task_id IN (SELECT id FROM tree)",
+        authority_policy_v2_attempts="root_task_id IN (SELECT id FROM tree)",
+        workflow_seq_runs="id IN (SELECT id FROM runs)")
+    return {name: _rows(root, tree + "SELECT count(*) AS n FROM " + name + " WHERE " +
+        scopes.get(name, "run_id IN (SELECT id FROM runs)"), (task,))[0]["n"] for name in tables}
+
+
+def _closed_counts(root: Path, private: Path, task: str, sid: str) -> dict:
+    def closed() -> bool:
+        # Results can precede their original native tail. Observe that tail
+        # before asserting that a refused callback allocated nothing.
+        ancestors = _rows(root, "WITH RECURSIVE a(id,parent_task_id) AS (SELECT id,parent_task_id FROM tasks WHERE id=? "
+            "UNION SELECT t.id,t.parent_task_id FROM tasks t JOIN a ON t.id=a.parent_task_id) "
+            "SELECT id FROM a WHERE parent_task_id IS NULL", (task,))
+        source, = ancestors
+        for visit in _rows(root, "SELECT v.id FROM workflow_seq_visits v JOIN workflow_seq_runs r ON r.id=v.run_id "
+                          "WHERE r.source_task_id=? AND v.session_id IS NOT NULL AND v.session_id!=?", (source["id"], sid)):
+            kinds = {r["kind"] for r in _rows(root, "SELECT kind FROM workflow_seq_evidence WHERE visit_id=?", (visit["id"],))}
+            if not {"terminal", "outer"} <= kinds:
+                return False
+        for row in _rows(root, "SELECT session_id FROM task_results WHERE task_id=? AND session_id!=?", (source["id"], sid)):
+            path = private / ("source-closure-" + row["session_id"] + ".receipt.json")
+            if not path.exists() or not json.loads(path.read_bytes())["positive"]:
+                return False
+        return True
+    _wait(closed, label="prior committed results and original native closure")
+    return _counts(root, task)
+
+
+def _assert_counts(root: Path, task: str, before: dict, label: str) -> dict:
+    after = _counts(root, task)
+    assert after == before, dict(reason=label, before=before, after=after,
+                                deltas={k: after[k] - before[k] for k in before})
+    return after
 
 
 def _policy_diagnostics(root: Path, task: str, sid: str, variant: str) -> dict:
@@ -177,13 +228,13 @@ def _source_actor(private: Path, root: Path, case: dict, payload: dict, prompt: 
         _callback(private, payload, name=sid + "-start")
         if case.get("policy_variant"):
             observed = _policy_diagnostics(root, task, sid, variant)
-            before = _counts(root)
+            before = _closed_counts(root, private, task, sid)
             _callback(private, payload, name=sid + "-start-replay")
-            assert _counts(root) == before, "exact start replay allocated state"
+            after = _assert_counts(root, task, before, "exact start replay allocated state")
             assert _policy_diagnostics(root, task, sid, variant) == observed
-            _receipt(private, "policy-diagnostic", **observed, variant=variant, before=before, after=_counts(root))
+            _receipt(private, "policy-diagnostic", **observed, variant=variant, before=before, after=after)
         return
-    run = runs[0]
+    run = next((r for r in runs if r["state"] != "finished"), runs[0]) if case.get("cancel_queued") else runs[0]
     if case.get("cancel_queued") and run["state"] != "finished":
         action = "cancel"
     elif run["state"] == "held" and case.get("recovery"):
@@ -218,20 +269,20 @@ def _source_actor(private: Path, root: Path, case: dict, payload: dict, prompt: 
     payload.update(decision=dict(action="workflow_control", workflow=command), manager_self_evaluation=assessment)
     controls = _rows(root, "SELECT * FROM workflow_seq_controls WHERE run_id=?", (run["id"],))
     exhausted = bool(controls) and action != "cancel"
-    before = _counts(root)
+    before = _closed_counts(root, private, task, sid)
     result = _callback(private, payload, name=sid + "-control",
                        expected=None if action == "reassign" and case.get("coding") else not exhausted)
     if action == "reassign" and case.get("coding") and result.returncode:
         assert b"sequential_assignment_team_scope" in result.stdout + result.stderr, (result.stdout + result.stderr)[:2048]
-        assert _counts(root) == before, "ineligible manager reassignment allocated state"
-        _receipt(private, "reassign-refusal", action=action, run_id=run["id"], before=before, after=_counts(root),
+        after = _assert_counts(root, task, before, "ineligible manager reassignment allocated state")
+        _receipt(private, "reassign-refusal", action=action, run_id=run["id"], before=before, after=after,
                  positive_reassignment_lifecycle="NOT RUN: no second eligible manager in this team")
         _wait(lambda: (private / "release-source").exists(), label="reassignment refusal readback", timeout=30)
         return
     if exhausted:
-        assert _counts(root) == before, "recoveries:1 exhaustion allocated result/task/visit/SID/effect"
+        after = _assert_counts(root, task, before, "recoveries:1 exhaustion allocated result/task/visit/SID/effect")
         _receipt(private, "exhaustion", run_id=run["id"], actor_task_id=task, actor_sid=sid,
-                 action=action, before=before, after=_counts(root))
+                 action=action, before=before, after=after)
         # Keep this genuine initiating session alive for readback, then let the
         # fixture's owned daemon stop retire it. No invented result is submitted.
         _wait(lambda: (private / "release-source").exists(), label="exhaustion readback", timeout=30)
@@ -297,12 +348,12 @@ def _actor(argv: list[str]) -> None:
         content_base64=base64.b64encode(content).decode(), findings=findings)).decode()
     if case.get("assessment_on_visit") and visit["ordinal"] == 1:
         for name, value in (("null", None), ("object", {})):
-            before = _counts(root)
+            before = _closed_counts(root, private, task, sid)
             result = _callback(private, dict(payload, manager_self_evaluation=value),
                                name=sid + "-assessment-" + name, expected=False)
             message = result.stdout + result.stderr
             assert b"Error (400):" in message and b"manager_self_evaluation_not_available" in message
-            assert _counts(root) == before, "supplied sequential assessment allocated state"
+            _assert_counts(root, task, before, "supplied sequential assessment allocated state")
     _callback(private, payload, name=sid + "-node")
 
 
@@ -357,6 +408,7 @@ class Lifecycle:
         from runtime.daemon import paths
         from tests.integration.conftest import seed_workspace
         self.root, self.private = root, private
+        self.polls, self.busy_count, self.busy_seconds = 0, 0, 0.0
         self.base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
         self.headers = {"authorization": "Bearer " + paths.read_token(), "x-happyranch-surface": "cli"}
         for agent in ("engineering_head", "dev_agent", "code_reviewer", "qa_engineer", "payment_agent", "content_manager"):
@@ -364,15 +416,29 @@ class Lifecycle:
         plan.write_text("#!/usr/bin/env bash\nset -euo pipefail\npython " + shlex.quote(str(Path(__file__).resolve())) + ' --actor "$@"\n')
         self.script = Path(__file__).resolve().parents[2] / "scripts/daemon.sh"
 
-    def request(self, method: str, path: str, body: dict | None = None, *, status: int = 200) -> dict:
+    def request(self, method: str, path: str, body: dict | None = None, *, status: int = 200, poll: bool = False) -> dict:
         # Settings consumes canonical JSON bytes, as the public CLI does.
         headers = dict(self.headers)
         if body is not None:
             headers["content-type"] = "application/json"
+        started = time.monotonic()
         response = httpx.request(method, self.base + path, content=_bytes(body) if body is not None else None,
                                  headers=headers, timeout=10)
+        if poll:
+            self.polls += 1
+            if response.status_code == 503 and response.json() == {"detail": "census_database_busy"}:
+                self.busy_count += 1
+                self.busy_seconds += time.monotonic() - started
+                self.export_polls()
+                raise _CensusBusy
+            self.export_polls()
         assert response.status_code == status, (method, path, response.status_code, response.text[:2048])
         return response.json()
+
+    def export_polls(self) -> None:
+        _receipt(self.private, "polling", polls=self.polls, busy_count=self.busy_count,
+                 busy_seconds=self.busy_seconds,
+                 possible_lock_issue=self.busy_count > self.polls / 2 or self.busy_seconds > 30)
 
     def configure(self, *, coding: bool = False, **case: object) -> str:
         from runtime.workflows.sequential_release import generic_start_catalog
@@ -441,15 +507,41 @@ class Lifecycle:
     def assert_history(self) -> None:
         from runtime.workflows.sequential_history import read_sequential_history
         with closing(sqlite3.connect((self.root / "happyranch.db").as_uri() + "?mode=ro", uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
             read_sequential_history(conn, expected_org_slug="test")
 
     def assert_return(self) -> None:
         self.wait_run("finished")
-        _wait(lambda: self.request("GET", "/tasks/" + self.source)["task"],
+        _wait(lambda: self.request("GET", "/tasks/" + self.source, poll=True)["task"],
               lambda t: t["status"] == "completed", label="ordinary initiator finished")
         self.assert_history()
         assert len(self.rows("SELECT * FROM workflow_seq_source_wait_sets")) == 1
         assert self.rows("SELECT * FROM workflow_seq_consumed_notifications"), "initiator did not consume causal return"
+
+    def wait_source_closure(self, *, after_result: int) -> dict:
+        def read() -> dict | None:
+            results = self.rows("SELECT * FROM task_results WHERE task_id=? AND id>? ORDER BY id DESC",
+                                (self.source, after_result))
+            if not results:
+                return None
+            result = results[0]
+            path = self.private / ("source-closure-" + result["session_id"] + ".receipt.json")
+            if not path.exists():
+                return None
+            closure = json.loads(path.read_bytes())
+            assert closure["positive"], closure
+            assert closure["source_status"] not in ("failed", "cancelled", "superseded"), closure
+            assert json.loads(result["decision_json"])["action"] == "workflow_wait", result
+            return closure
+        return _wait(read, label="source committed wait and original native closure before second stop")
+
+    def export_cancellation_cause(self) -> list[dict]:
+        events = self.rows("SELECT id,run_id,event_bytes FROM workflow_seq_events WHERE kind='cancellation_finished'")
+        cancellations = [dict(id=e["id"], run_id=e["run_id"], payload=json.loads(e["event_bytes"])) for e in events]
+        source, = self.rows("SELECT id,status,current_session_id FROM tasks WHERE id=?", (self.source,))
+        results = self.rows("SELECT id,session_id,status,decision_json FROM task_results WHERE task_id=?", (self.source,))
+        _receipt(self.private, "restart-cause", source_status=source, cancellations=cancellations, source_results=results)
+        return cancellations
 
     def restart(self) -> None:
         from tests.integration.conftest import _nested_daemon_env
@@ -468,6 +560,7 @@ def lifecycle(live_daemon, runtime, workflow_lifecycle_capture, fake_claude_plan
     try:
         yield value
     finally:
+        value.export_polls()
         (value.private / "release-source").touch()
 
 
@@ -627,9 +720,16 @@ def test_real_restart_window(lifecycle, fault: str) -> None:
     lifecycle.restart()
     if fault == "closed-before-advance":
         lifecycle.wait_run("held")
+        lifecycle.wait_source_closure(after_result=before["source_result_id"])
         lifecycle.mailbox()
         lifecycle.restart()
+        cancellations = lifecycle.export_cancellation_cause()
+        assert not cancellations, {"STOP": "possible production defect: cancellation after healthy closed source",
+                                   "cancellations": cancellations}
         lifecycle.assert_inbox(1)
+        held = lifecycle.rows("SELECT id FROM workflow_seq_events WHERE kind='held'")
+        inbox = lifecycle.rows("SELECT event_id FROM workflow_seq_inbox")
+        assert len(held) == 1 and [r["event_id"] for r in inbox] == [held[0]["id"]]
         lifecycle.assert_history()
     else:
         lifecycle.mailbox()
@@ -708,7 +808,13 @@ def test_real_render_refusal(lifecycle) -> None:
     observations = (lifecycle.private / "observer.receipt.json").read_text()
     assert observations.count('"kind": "render-refusal"') == 3
     assert not lifecycle.rows("SELECT * FROM audit_log WHERE action='session_start' AND task_id IN (SELECT task_id FROM workflow_seq_visits)")
-    assert not lifecycle.rows("SELECT * FROM workflow_seq_evidence")
+    assert not lifecycle.rows("SELECT * FROM workflow_seq_evidence WHERE visit_id IS NOT NULL")
+    source_outer, = lifecycle.rows("SELECT * FROM workflow_seq_evidence WHERE visit_id IS NULL")
+    source_body = json.loads(source_outer["evidence_bytes"])
+    assert source_outer["kind"] == "outer" and source_body["format"] == "workflow-sequential-source-outer@2"
+    assert source_body["task_id"] == lifecycle.source and source_body["positive"] is True
+    assert not lifecycle.rows("SELECT * FROM task_pause_controls p,json_each(p.admission_journal_json,'$.entries') e "
+                             "WHERE json_extract(e.value,'$.task_id') IN (SELECT task_id FROM workflow_seq_visits)")
     assert not lifecycle.rows("SELECT * FROM task_results WHERE task_id IN (SELECT task_id FROM workflow_seq_visits)")
     refusals = lifecycle.rows("SELECT payload FROM audit_log WHERE action='workflow_sequential_preparation_free_refusal' ORDER BY id")
     assert [json.loads(r["payload"])["count"] for r in refusals] == [1, 2, 3]
@@ -724,9 +830,9 @@ def test_real_cancel_before_launch(lifecycle) -> None:
     _wait(lambda: lifecycle.run(), label="queued target")
     # The barrier is scoped to the target; the sibling's clean missing callback
     # supplies a genuine source continuation for the cancel control.
-    _wait(lambda: lifecycle.rows("SELECT * FROM workflow_seq_controls WHERE action='cancel'"),
+    _wait(lambda: lifecycle.rows("SELECT * FROM workflow_seq_controls WHERE action='cancel' AND run_id=?", (lifecycle.run()["id"],)),
           label="genuine initiating cancellation")
-    control, = lifecycle.rows("SELECT * FROM workflow_seq_controls WHERE action='cancel'")
+    control, = lifecycle.rows("SELECT * FROM workflow_seq_controls WHERE action='cancel' AND run_id=?", (lifecycle.run()["id"],))
     _assert_control_actor(lifecycle.root, control, lifecycle.source)
     lifecycle.update(fault="none")
     lifecycle.wait_run("finished")
@@ -736,7 +842,29 @@ def test_real_cancel_before_launch(lifecycle) -> None:
     visits = lifecycle.rows("SELECT * FROM workflow_seq_visits WHERE run_id=?", (target["id"],))
     assert len(visits) == 1 and visits[0]["session_id"] is None
     assert not lifecycle.rows("SELECT * FROM audit_log WHERE action='session_start' AND task_id=?", (visits[0]["task_id"],))
-    lifecycle.assert_inbox(1)
+    receipt = json.loads(control["receipt_bytes"])
+    assert receipt["format"] == "workflow-sequential-control-receipt@2"
+    assert (receipt["run_id"], receipt["event_id"]) == (target["id"], control["event_id"])
+    event, = lifecycle.rows("SELECT kind FROM workflow_seq_events WHERE id=?", (receipt["event_id"],))
+    assert event["kind"] == "cancellation_finished"
+    assert not lifecycle.rows("SELECT * FROM workflow_seq_evidence WHERE visit_id=?", (visits[0]["id"],))
+    assert not lifecycle.rows("SELECT * FROM task_pause_controls p,json_each(p.admission_journal_json,'$.entries') e "
+                             "WHERE json_extract(e.value,'$.task_id')=?", (visits[0]["task_id"],))
+    observations = (lifecycle.private / "observer.receipt.json").read_text().splitlines()
+    assert not [r for line in observations if (r := json.loads(line))["kind"] == "prepare-entry"
+                and r["task_id"] == visits[0]["task_id"]]
+    lifecycle.assert_inbox(0)
+    _wait(lambda: lifecycle.rows("SELECT state FROM workflow_seq_runs"),
+          lambda rows: len(rows) == 2 and all(r["state"] == "finished" for r in rows), label="both cancellation runs drained")
+    sibling, = lifecycle.rows("SELECT id FROM workflow_seq_runs WHERE id!=?", (target["id"],))
+    sibling_inbox = lifecycle.rows("SELECT event_id FROM workflow_seq_inbox WHERE run_id=?", (sibling["id"],))
+    held, = lifecycle.rows("SELECT id FROM workflow_seq_events WHERE run_id=? AND kind='held'", (sibling["id"],))
+    assert [r["event_id"] for r in sibling_inbox] == [held["id"]]
+    lifecycle.assert_return()
+    done, = [r for r in lifecycle.rows("SELECT id,decision_json FROM task_results WHERE task_id=?", (lifecycle.source,))
+             if json.loads(r["decision_json"])["action"] == "done"]
+    controls = lifecycle.rows("SELECT actor_result_id FROM workflow_seq_controls")
+    assert len(controls) == 2 and all(r["actor_result_id"] < done["id"] for r in controls)
     lifecycle.assert_history()
 
 

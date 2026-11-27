@@ -75,6 +75,8 @@ def export_case(binding: dict, destination: Path) -> None:
                     "restriction_excerpt", "synthetic", "effect", "head", "merge", "sid", "count", "before", "after",
                     "action", "actor_task_id", "actor_sid", "positive_reassignment_lifecycle", "initial", "snapshots", "completed"}
                 fields.update({"result_id", "carrier", "attempt_id", "audit_id", "diagnostic", "variant"})
+                fields.update({"positive", "source_status", "terminal", "native_phase", "close_removed", "release_removed",
+                               "polls", "busy_count", "busy_seconds", "possible_lock_issue", "cancellations", "source_results"})
                 metadata = {key: item for key, item in value.items() if key in fields}
             except ValueError:
                 pass  # JSONL observer stream is retained only as a bounded excerpt.
@@ -94,13 +96,17 @@ def export_case(binding: dict, destination: Path) -> None:
                 "results": "SELECT id,task_id,agent,session_id,status FROM task_results",
                 "custody": "SELECT id,run_id,visit_id,kind,evidence_digest FROM workflow_seq_evidence",
                 "attempts": "SELECT attempt_id,root_task_id,manager_session_id,result_id,binding_id,stage,finalization_state,assessment_digest FROM authority_policy_v2_attempts",
+                "source_tasks": "SELECT id,status,current_session_id FROM tasks WHERE id IN (SELECT source_task_id FROM workflow_seq_runs)",
+                "source_terminal": "SELECT task_id,payload FROM audit_log WHERE action='session_end' AND task_id IN (SELECT source_task_id FROM workflow_seq_runs)",
+                "cancellations": "SELECT id,run_id,event_bytes FROM workflow_seq_events WHERE kind='cancellation_finished'",
             }
             for label, sql in queries.items():
                 try:
                     rows = conn.execute(sql + " LIMIT 129").fetchall()
                     if len(rows) > 128:
                         raise RuntimeError("U3 retained identity inventory exceeds finite case bounds")
-                    state[label] = [dict(row) for row in rows]
+                    state[label] = [{key: json.loads(value) if key == "event_bytes" else value
+                                     for key, value in dict(row).items()} for row in rows]
                 except sqlite3.OperationalError as exc:
                     state[label] = dict(unavailable=type(exc).__name__)
     _write(destination, dict(source_sha=binding["revision"], source_hashes=binding["hashes"],
@@ -169,6 +175,36 @@ def _install_capture() -> None:
             raise RuntimeError("U3 original outer observation unavailable")
         return outer(self, invocation, *args, **kwargs)
     dispatch.SequentialDispatcher._generic_outer_settled = outer_window
+
+    source_outer = original(dispatch.SequentialDispatcher, "outer_settled")
+    @functools.wraps(source_outer)
+    def source_closure(self, invocation, **kwargs):
+        result = source_outer(self, invocation, **kwargs)
+        if invocation.owner in ("ordinary", "v2"):
+            terminal = getattr(invocation, "native_terminal_observation", None) or {}
+            receipt = terminal.get("receipt") or {}
+            close = kwargs.get("close_disposition") or {}
+            release = kwargs.get("release_disposition") or {}
+            cleanup = kwargs.get("cleanup")
+            with self._reader() as conn:
+                source = dict(conn.execute("SELECT id,status FROM tasks WHERE id=?", (invocation.task.id,)).fetchone())
+            positive = (kwargs.get("failed") is False and cleanup is not None and cleanup.kind == "safe"
+                and not cleanup.processes and not invocation.unsettled
+                and terminal.get("terminal_reason") == "success" and terminal.get("cleanup_error") is None
+                and receipt.get("terminal_reason") == "success" and receipt.get("quiescent") is True
+                and receipt.get("survivors") == [] and receipt.get("cleanup_status") in ("clean", "term", "kill")
+                and close.get("removed") is True and release.get("removed") is True
+                and release.get("owner_live") is False and release.get("cleanup_failed") is False
+                and self.org.sessions.get_active(invocation.task.id, invocation.agent) is None)
+            _write(private / ("source-closure-" + invocation.session_id + ".receipt.json"),
+                dict(task_id=invocation.task.id, session_id=invocation.session_id, positive=positive,
+                    source_status=source["status"], native_phase=(kwargs.get("native_entry") or {}).get("phase"),
+                    close_removed=close.get("removed"), release_removed=release.get("removed"),
+                    terminal={key: terminal.get(key) for key in ("terminal_reason", "cleanup_error", "attempt")} |
+                        dict(receipt={key: receipt.get(key) for key in
+                            ("backend", "terminal_reason", "quiescent", "survivors", "cleanup_status")})))
+        return result
+    dispatch.SequentialDispatcher.outer_settled = source_closure
 
     render = original(dispatch.SequentialDispatcher, "_render_node_instruction")
     @functools.wraps(render)

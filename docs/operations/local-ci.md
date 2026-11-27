@@ -2691,20 +2691,31 @@ Artifacts are uploaded on failure too and retained seven days.
 | E3 clean/refused | Actual process exits without an accepted callback, including a real malformed-CLI refusal; zero callback rows/output, one missing-callback Held/inbox. |
 | B3 policy / U1 visit assessment | Independent omitted, mismatched and valid ordinary starts retain exact carrier/attempt/audit and allocation-free replay, then finish identical traversal; supplied sequential assessment refuses HTTP400 without allocation. |
 | E4-O / E4-R | Manager Final under active policy, actual full launched prompt, authentic predecessor/Held/control lineage and authoritative read-only precedence over the unchanged authored merge duty. Rebrief supplement is checked on original prompt bytes; retry truthfully has no invented supplement. Each recovery/exhaustion subvariant has an independent run with unchanged Final recoveries:1. Ineligible alternate-manager reassignment must genuinely refuse without allocation; positive Final reassignment is then NOT RUN. No actual merge is attempted. |
-| E5 / E6 | Same-home real stop/start after original terminal+outer COMMIT but before business advance, versus missing original outer proof. The latter stays unheld and logs a stall under the observer's isolated fixed clock. No test-authored closure facts. |
+| E5 / E6 | Same-home real stop/start after original terminal+outer COMMIT but before business advance, versus missing original outer proof. E5 waits for the source's committed wait and original native closure before its second stop, exporting source status, terminal observation and cancellation cause; unexplained cancellation stops as a possible production defect. E6 stays unheld and logs a stall under the observer's isolated fixed clock. No test-authored closure facts. |
 | E7 / E7-render | Original-owner preparation/execution throws and failed returns, integrity and partial scratch, launch-COMMIT/possible-launch windows, close/release/receipt failure and five finite discovery/delivery cycles compared with the original pre-cycle snapshot. Preparation/invocation/prospective-SID, process/callback/custody and native obligation counts cannot grow. Three distinct render-refusal SIDs produce one Held without preparation. P2 lacks an original scratch-unwind certificate and is tested as U; positive P2 is NOT RUN. U5 may settle only from authentic original terminal/outer custody, otherwise remains unknown/alarmed. |
-| E8 | A sibling Held supplies an authentic initiating continuation while the pristine target stays behind a pre-preparation barrier. The initiating cancel wins, and stale delivery cannot bind a SID or spawn. |
+| E8 | A sibling Held supplies an authentic initiating continuation while the pristine target stays behind a pre-preparation barrier. Per manager ruling r3, the stored control receipt is the notification of the initiator's own cancel: target inbox zero, sibling Held inbox exactly one. Receipt/event and actor identities, zero target preparation/journal/session start/custody, both runs drained and genuine source done are asserted. Stale delivery cannot bind a SID or spawn. |
 | Populated history | `--start2=populated_long_batch`, native bounds and catalog/startup schema-shell keepers remain **P-only**. Populated real-daemon lifecycle is **NOT RUN**; this module does not establish capacity or pilot acceptance. |
 
-Chain qualification passed on both Pythons at the historical heads above. The
-r2 oracle and per-case isolation changes await exact-head hosted execution;
-lifecycle RED/GREEN remain **NOT VERIFIED**. The allocation remains **4/6 used,
-2 remain**, reserved for final-head GREEN and attributable renderer RED. Record
-the actual run IDs, exact heads, per-Python job conclusions, assertion failures,
-restored source hashes and artifact digests in the PR/task evidence before
-claiming executed proof. Renderer sensitivity must fail at the captured actual
-replacement-prompt assertion with identical fake plans/effect sink, then pass
-after exact restoration. Missing execution or fixture/import errors are not RED.
+Chain qualification passed on both Pythons at the historical heads above.
+Dispatch 5 (`45883681401`, head `969363e12`) passed chain 4/4 and failed
+23 of 36 lifecycle cases on each Python. Manager ruling r3 (`TASK-19478`,
+root `TASK-19318`) corrects the notification/custody/history oracles and
+requires case-scoped allocation counts after prior native closure, with table
+deltas on failure. Only finite polling retries exact HTTP 503
+`{"detail":"census_database_busy"}` within its existing deadline; other
+responses and non-poll assertions stay strict. Each case exports poll/busy
+counts and busy-response seconds; a majority of busy polls or over 30 seconds
+is flagged as a possible production lock issue.
+
+The allocation is **5/6 used, 1 remains**. Dispatch 6 is reserved for final
+pushed exact-head GREEN on both Pythons after all local non-integration checks
+and both required hosted lints succeed. The module's hosted RED remains
+**PROOF NOT RUN (venue budget)**; prior failed runs are retained as failures.
+The r3 lifecycle corrections remain **NOT VERIFIED** until that run succeeds.
+Record run/head, per-case counts, busy counts and artifact digests in the
+PR/task evidence. If dispatch 6 is not fully GREEN, stop without another
+run. No production, retired Python unit suite, general integration, E2E or CI
+trigger is changed.
 
 The project does not install/manage hooks for linked worktrees. Worktree-guard
 setup may remove only its known stale pre-PR607 injected hook configuration.
