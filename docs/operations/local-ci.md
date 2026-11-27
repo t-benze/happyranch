@@ -4318,8 +4318,9 @@ explicit rebind through publication, unchanged native uncertainty, and unrelated
 scoped, mismatched-journal, mixed-profile and partially-forward refusal evidence.
 A second startup after finalization covers both remove publishers: the org loads,
 the coordinator synchronizes without adoption, the published operation and journal
-remain unchanged, and native history stays UNKNOWN. Finalized refusal cases cover
-invocation/state/kind mismatch, active ordinary or latest installed ordinary journal,
+remain unchanged, and native history stays UNKNOWN, including after a later ordinary
+publication. Finalized refusal cases cover invocation/state/kind mismatch, an active
+ordinary journal, a missing or duplicate matching installed coordinator journal,
 multiple removes (same or different invocation), live/scoped and unrelated writers,
 a second UNKNOWN after failed operation insertion, another settled remove attempt,
 and tied, non-bracketing or timezone-naive writer timestamps. The insertion fault

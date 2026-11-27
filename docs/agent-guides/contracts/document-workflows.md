@@ -512,8 +512,11 @@ mirror in `forward_recovery_required`, and every original publication binding.
 Startup defers that component's synchronization to explicit rebind, retaining its
 fence until the existing finalizer can publish the coherent closure. Native history
 stays UNKNOWN. On a later boot after finalization, both startup callers also accept
-no active journal plus the namespace's latest installed (`cache_installed`)
-profile-coordinator journal matching exactly one operation, a `published` remove.
+no active journal plus exactly one installed (`cache_installed`) journal in the
+namespace whose invocation equals exactly
+`profile-coordinator:<coordinator_invocation>` for the single `published` remove.
+Later ordinary installed journals preserve this evidence; missing or duplicate
+matching journals fail closed.
 There must be exactly one remove operation in the org: the native record has no
 operation ID. Its creation timestamp must be strictly bracketed by the specific
 writer's timezone-aware ACTIVE and UNKNOWN audit timestamps, in audit ID order.
@@ -522,7 +525,7 @@ Another attempt, including settled or operation-less native history, duplicate o
 missing records, tied/invalid timestamps or a non-bracketing interval fails closed.
 No prepared fence remains, so this finalized case needs neither rebind adoption
 nor deferred synchronization. Other unsettled or unavailable native ownership,
-ordinary or mismatched journals, mixed-profile invocations and partially forward
+active ordinary or mismatched journals, mixed-profile invocations and partially forward
 groups retain their startup holds.
 
 Complete pointer, journal, dependency/store/registry, operation, lease and native

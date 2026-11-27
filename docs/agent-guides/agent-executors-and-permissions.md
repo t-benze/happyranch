@@ -555,9 +555,11 @@ journal. Coordinator reconciliation additionally requires the complete same-prof
 group, every captured mirror in `forward_recovery_required`, and valid original
 publication bindings. Recovery may retain its fence for unbound consumers; startup
 defers synchronization of that component to the explicit rebind. After finalization,
-both startup callers also accept no active journal and the namespace's latest
-installed (`cache_installed`) journal with a `profile-coordinator:` invocation matching exactly
-one operation, a `published` remove. The org must have exactly one remove operation
+both startup callers also accept no active journal and exactly one installed
+(`cache_installed`) journal in the namespace whose invocation equals exactly
+`profile-coordinator:<coordinator_invocation>` for the single `published` remove.
+Later ordinary installed journals preserve this evidence; a missing or duplicate
+matching journal keeps holding. The org must have exactly one remove operation
 in total. The specific writer's validated ACTIVE and UNKNOWN records, in audit
 ID order, must be the entire history of both remove publishers, with timezone-aware
 timestamps strictly bracketing operation creation. Another attempt, including
@@ -566,7 +568,7 @@ timestamps or a non-bracketing interval keeps holding. Finalized history needs n
 rebind adoption or deferred synchronization because no prepared fence remains. The
 native record stays unknown:
 no settlement is inferred. Other unsettled writers, unavailable
-native ownership, ordinary or mismatched journals, mixed-profile invocations and
+native ownership, active ordinary or mismatched journals, mixed-profile invocations and
 partially forward groups retain their startup holds.
 Live contention returns `profile_coordinator_busy`; process death
 releases the kernel lease and startup resumes the durable operation exactly

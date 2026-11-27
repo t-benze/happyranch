@@ -84,11 +84,20 @@ def startup_forward_remove_profile(org: OrgState, row: NativeWriterLifecycle,
     journal = authority._active_journal(org.db._conn, authority.namespace)
     finalized = journal is None
     if finalized:
-        journal = org.db._conn.execute(
+        removes = org.db._conn.execute(
+            "SELECT coordinator_invocation,state FROM workflow_profile_operations WHERE operation_kind='remove' LIMIT 2",
+        ).fetchall()
+        if len(removes) != 1 or removes[0]['state'] != 'published':
+            return None
+        # Later ordinary publications do not erase this remove's provenance.
+        journals = org.db._conn.execute(
             "SELECT publisher_invocation FROM workflow_publication_journals "
-            "WHERE namespace=? AND state='cache_installed' ORDER BY rowid DESC LIMIT 1",
-            (authority.namespace,),
-        ).fetchone()
+            "WHERE namespace=? AND state='cache_installed' AND publisher_invocation=? LIMIT 2",
+            (authority.namespace, 'profile-coordinator:' + removes[0]['coordinator_invocation']),
+        ).fetchall()
+        if len(journals) != 1:
+            return None
+        journal = journals[0]
     if journal is None or not journal['publisher_invocation'].startswith('profile-coordinator:'):
         return None
     invocation = journal['publisher_invocation'].removeprefix('profile-coordinator:')
@@ -104,11 +113,6 @@ def startup_forward_remove_profile(org: OrgState, row: NativeWriterLifecycle,
         # operation. Require this exact ACTIVE -> UNKNOWN audit pair to be the
         # only remove-publisher history, and to bracket operation creation.
         # Settled attempts and duplicate records also make provenance ambiguous.
-        removes = org.db._conn.execute(
-            "SELECT id FROM workflow_profile_operations WHERE operation_kind='remove' LIMIT 2",
-        ).fetchall()
-        if len(removes) != 1:
-            return None
         evidence = org.db._conn.execute(
             "SELECT task_id,agent,payload,timestamp FROM audit_log "
             "WHERE action='team_move_native_writer' AND json_extract(payload,'$.publisher') IN (?,?) "
