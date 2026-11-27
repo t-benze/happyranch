@@ -1191,7 +1191,11 @@ requests, keep/proceed and separate explicit recovery exit
 [`run_gui.request_lifecycle/exit_now`](../../packaging/linux/desktop/happyranch_window.py)).
 Pending/unknown/non-GET uncertainty remains held; document retirement drops
 requests and retains the coarse latch. No daemon route, auth, allowlist or v1
-schema changes. Mac remains pending. PR #1775's `app.owners` aggregate
+schema changes. Mac MAC-4b option A gates close/Quit/updater exits through native
+consent and the current Main owner receipt; pending/unknown saves and native
+custody hold exit. Mac recovery provides guidance + Recheck and tells the user
+to quit and reopen. Mac recovery Relaunch is deferred to a separate piece
+requiring founder approval (THR-387 seq178). PR #1775's `app.owners` aggregate
 placeholder refers to this concrete wire contract.
 
 The following are JSON values inside facade strings, without transport envelopes.
@@ -2154,6 +2158,9 @@ release. Owned local children stop even when remote is selected; Host service,
 grant and saved access survive. Incomplete stop holds controlled close/Quit and
 installation. When idle always re-enters fresh observation/reservation/consent
 and the current web gate; consent is not standing stop permission.
+The released update's platform termination admission is single-use and revoked
+on updater abort/installer error. A later Quit re-enters native consent and the
+current owner gate; ordinary Quit admission expires when platform delivery returns.
 
 Mac has no exit-anyway escape for unresolved save/native custody and no
 keep-running/LaunchAgent. Native execution and built-SPA qualification remain

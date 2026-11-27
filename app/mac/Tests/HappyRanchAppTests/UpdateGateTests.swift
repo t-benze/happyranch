@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import Testing
 import HappyRanchSupervisor
+@preconcurrency import Sparkle
 @testable import HappyRanchApp
 
 @Suite("Update gate", .serialized)
@@ -27,6 +28,31 @@ struct UpdateGateTests {
         #expect(releases == 1 && !f.app.hasPendingUpdate)
         f.app.applyUpdateGate(runningSessions: 0, choice: .restart)
         #expect(releases == 1)
+    }
+
+    @Test("aborted Sparkle release cannot admit later Quit with new protected owners", arguments: ["dirty", "pending", "unknown"])
+    func abortedReleaseRequiresFreshQuitGate(held: String) async throws {
+        let (f, factory, handle) = try await ownedDaemon(); defer { f.dispose() }
+        var releases = 0
+        f.app.postponeUpdateRelaunch { releases += 1 }
+        try f.respond()
+        let updateToken = try #require(f.app.appLifetime.token)
+        _ = try await f.answer()
+        #expect(releases == 1 && !handle.isRunning && factory.terminateCallCount == 1)
+        let controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
+        f.app.updater(controller.updater, didAbortWithError: NSError(domain: "SyntheticInstallerError", code: 1))
+        let blocking = held == "dirty" ? "prompt" : "hold"
+        let counts = ["dirty", "failed", "pending", "unknown"].map { "\"\($0)\":\($0 == held ? 1 : 0)" }.joined(separator: ",")
+        let summary = "{\"schema\":2,\"blocking\":\"\(blocking)\",\"counts\":{\(counts)}}"
+        _ = try await f.call("app.ownersChanged", summary)
+        #expect(f.app.applicationShouldTerminate(NSApplication.shared) == .terminateCancel)
+        #expect(f.app.appLifetime.token != updateToken && f.app.appLifetime.confirmation?.intent == .quit)
+        try f.respond()
+        let refusal = try await f.answer(summary: summary)
+        #expect(refusal.contains("\"effect\":\"none\""))
+        #expect(f.termination.calls == 0 && f.backend.effects == [.update])
+        #expect(f.app.lifetimeScheme === f.scheme && f.scheme.lifecycleAnchor != nil)
+        #expect(releases == 1 && factory.terminateCallCount == 1 && !f.app.hasPendingUpdate)
     }
 
     @Test("When idle re-enters fresh consent; Later retains the download until explicit resume")
@@ -180,6 +206,8 @@ struct UpdateGateTests {
         try f.respond(); _ = try await f.answer()
         #expect(!handle.isRunning && factory.terminateCallCount == 1)
         #expect(releases == 0 && f.termination.calls == 1)
+        #expect(f.app.applicationShouldTerminate(NSApplication.shared) == .terminateCancel,
+                "A returned ordinary delivery must not leave standing exit permission")
         f.app.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
         #expect(!f.app.hasPendingUpdate && releases == 0)
     }

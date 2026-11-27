@@ -14,7 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     private var mainWindowOwner: MacMainWindowOwner?
     private var lifecycleAlert: NSAlert?
     private var lifecycleAlertDeadline: Task<Void, Never>?
-    private var admittedTermination = false
+    private enum TerminationAdmission: Equatable { case quit, update }
+    private var admittedTermination: TerminationAdmission?
     private lazy var updaterController = SPUStandardUpdaterController(
         startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
     private var updaterObservation: AnyCancellable?
@@ -98,7 +99,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if admittedTermination { return .terminateNow }
+        if let admission = admittedTermination {
+            admittedTermination = nil
+            if admission == .quit || updateStopping { return .terminateNow }
+        }
         appLifetime.request(.quit)
         return .terminateCancel
     }
@@ -332,6 +336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        admittedTermination = nil
         terminating = true
         updateTask?.cancel()
         pendingUpdateInstall = nil
@@ -447,7 +452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         guard appLifetime.isExecuting(token, intent: .update), !terminating, let install = pendingUpdateInstall else { return false }
         pendingUpdateInstall = nil; hasPendingUpdate = false
         updateTask?.cancel(); updateStopping = true
-        admittedTermination = true
+        admittedTermination = .update
         diagnostics.recordUpdaterEvent("Lifecycle admitted; owned exit observed; releasing install")
         install(); return true
     }
@@ -571,8 +576,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         guard appLifetime.isExecuting(token, intent: intent) else { return false }
         pendingRestart = false
         guard stopOwnedChildForExit(), appLifetime.frontendStillCurrent(token, intent: intent) else { return false }
-        admittedTermination = true
         mainWindowOwner?.closeAfterAdmission(); mainScheme?.close()
+        admittedTermination = .quit
+        defer { admittedTermination = nil }
         terminationDelivery.completeQuit()
         return true
     }
@@ -587,6 +593,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        if admittedTermination == .update { admittedTermination = nil }
         if appLifetime.intent == .update, let token = appLifetime.token { appLifetime.cancelUnstarted(token: token) }
         updateRequestID = UUID()
         updateTask?.cancel()

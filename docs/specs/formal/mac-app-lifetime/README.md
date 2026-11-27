@@ -18,6 +18,15 @@ Quit or Sparkle release, exactly once after exit. External processes receive no
 signals, but their update still requires gate admission. When idle re-enters
 Request and fresh Consent; no earlier click authorizes a later stop.
 
+Round-1 F1 correspondence: Complete grants the update's one platform termination
+admission; PlatformTermination consumes it. AbortUpdate maps to the Sparkle
+didAbortWithError callback and revokes an unused grant. NewProtectedOwner models
+new dirty/pending/unknown-save or native custody after abort. LaterQuit observes
+applicationShouldTerminate routing to a fresh gate rather than admitting an
+exit from the old update. Historical first-update gate/effect facts remain
+unchanged; laterGate is the separate later-Quit admission boundary. This finite
+extension does not model the later sheet/receipt or prove Swift execution.
+
 The finite model uses at most two unstarted attempts and one consumed effect.
 There is no liveness promise: unknown saves, an unresponsive web process or an
 incomplete stop can remain held. It abstracts clocks, all owner generations,
@@ -41,6 +50,11 @@ Run owned and external (expected exit 0) and negative-pre-gate-install (expected
 invariant counterexample exit 12), sequentially. The negative models an updater
 release before either gate, including an unowned daemon. Results belong in the
 PR/task evidence; no CI trigger or new execution venue is added.
+Also run negative-aborted-admission (expected exit 12 at LaterQuitRequiresGate):
+RetainAbortedAdmission deliberately retains the pre-fix grant after abort and
+allows the later protected Quit to bypass its gate. The normal configs revoke
+it and explore all four new-owner cases. Native regression execution and native
+pre-fix/restored proof remain NOT RUN / PROOF NOT RUN on Linux.
 
 Author TLC evidence (TASK-19582, OpenJDK 21.0.13.1 / TLC 2.19, pinned jar,
 one worker/fp0/seed1): owned exit 0 (1179 generated / 522 distinct, depth 10),
@@ -51,3 +65,11 @@ and retirement incorrectly dropping a post-stop reservation (exit 12); both
 were repaired before these final complete runs. These are finite-model
 results, not a Swift/OS/Sparkle behavior pass. Exact logs remain in
 `dev_agent/output/TASK-19582/tlc-*.log`.
+
+Round-1 author evidence (TASK-19594, same pinned jar/JDK/options): owned exit 0
+(1331 generated / 598 distinct, depth 14); external exit 0 (1259 / 550, depth 13),
+both queues empty. Pre-gate-install negative exit 12 at EffectsAfterGate
+(50 / 42, depth 3); aborted-admission negative exit 12 at LaterQuitRequiresGate
+(1179 / 534, depth 10), showing release → abort → new unknown save → later Quit
+with staleExit TRUE and laterGate FALSE. These are model results only; logs are
+`dev_agent/output/TASK-19594/tlc-*.stdout.txt`.

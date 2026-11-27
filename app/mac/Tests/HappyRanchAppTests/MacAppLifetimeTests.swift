@@ -456,5 +456,7 @@ extension MacAppLifetimeTests {
         XCTAssertFalse(child.isRunning); XCTAssertEqual(releases, 1)
         XCTAssertEqual(f.termination.calls, 0, "Sparkle, not ordinary Quit, owns update installation")
         XCTAssertEqual(f.app.applicationShouldTerminate(NSApplication.shared), .terminateNow)
+        XCTAssertEqual(f.app.applicationShouldTerminate(NSApplication.shared), .terminateCancel,
+                       "One platform termination callback consumes the update grant")
     }
 }

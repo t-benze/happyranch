@@ -72,8 +72,11 @@ selector. Candidate readiness and ordinary Disconnect do not choose the next
 startup target. Missing and invalid records are distinct; a saved, unsaved or
 unavailable remote choice must not silently start or select this computer.
 Confirmed removal or revocation clears the matching startup reference.
-MAC-4b owns subsequent close/Quit/Relaunch and updater gates; MAC-4a preserves
-the MAC-3 app-owned child and its Quit teardown, with no keep-running migration.
+MAC-4b option A gates close, Quit and updater exits through current Main owners
+and preserves the app-owned child teardown. Mac recovery offers guidance +
+Recheck and tells the user to quit and reopen. Mac recovery Relaunch is deferred
+to a separate piece requiring founder approval (THR-387 seq178), with no
+keep-running migration.
 
 `AppPreferences.swift` stores bounded nonsecret records in
 `~/Library/Application Support/HappyRanchApp/locale` and `startup-selection`.
@@ -193,8 +196,9 @@ warning. Confirmed removal also forgets only that binding's failed-save outcome,
 including revoked unsaved B while saved computer A remains selected. Failed or
 unknown removal retains the warning; saving another computer does not settle it.
 MAC-3 removes the legacy phase strip without reserving height or adding fallback
-copy. Settings owns local controls. MAC-4b close/Quit/Relaunch
-policy remains outside this cutover.
+copy. Settings owns local controls. MAC-4b option A adds close/Quit/updater
+gates; Mac recovery Relaunch remains deferred to a separately founder-approved
+piece, with quit-and-reopen guidance + Recheck available now.
 
 After independent exact-head review, the existing Jenkins `SUITE=app-scheme`
 still runs the full unfiltered XCTest + Swift Testing workload and transport
@@ -1444,7 +1448,12 @@ admission-close route is added. Controlled Quit/Main close now stay open if boun
 Check for Updates is user-initiated. Pending relaunches disable that action;
 Install Downloaded Update lets the user revisit Later. Updater startup/abort and
 download errors are retained in a bounded, redacted Diagnostics → Updates log
-and its JSON export. Background errors produce no app-owned alert. The first
+and its JSON export. A released update grants only one platform termination
+callback; updater abort/installer error revokes any unused grant. A later Quit
+requires fresh native consent and the current Main owner gate, including new
+dirty drafts and pending/unknown saves. Ordinary Quit grants admission only
+during its synchronous platform delivery; a returned delivery retains no grant.
+Background errors produce no app-owned alert. The first
 launch from Downloads, `/Volumes`, a read-only volume or AppTranslocation shows
 one notice asking the user to move the app to Applications and reopen it.
 
