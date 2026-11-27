@@ -62,6 +62,19 @@ publishing or signed N→N+1 acceptance. Agents do not run these release operati
 
 ## Development
 
+### MAC-4a delivery boundary
+
+Language is an installation-local native preference: shared web content changes
+live, while native menus and dialogs use the confirmed preference on the next
+ordinary launch. Language changes never trigger a relaunch or lifecycle prompt.
+Startup selection records only the committed computer, using a nonsecret stable
+selector. Candidate readiness and ordinary Disconnect do not choose the next
+startup target. Missing and invalid records are distinct; a saved, unsaved or
+unavailable remote choice must not silently start or select this computer.
+Confirmed removal or revocation clears the matching startup reference.
+MAC-4b owns subsequent close/Quit/Relaunch and updater gates; MAC-4a preserves
+the MAC-3 app-owned child and its Quit teardown, with no keep-running migration.
+
 ### MAC-3: app-owned local controls
 
 Founder THR-387 seq164 retains the app-owned daemon child. Settings → HappyRanch
