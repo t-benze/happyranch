@@ -28,6 +28,20 @@ owns routes, closed formats, refusal codes, recovery and fixture commands. Exist
 fresh admission. Source delivery performs
 no live setup/Allow, deployment/restart or pilot.
 
+## Ordinary native journal growth
+
+The complete reader streams all `task_pause_controls` rows through the same
+native storage/value gates and strict journal decoder. Each ordinary row has a
+fresh bounded observation; it does not consume the cumulative Coding allowance.
+A journal containing a Coding owner or an original Coding source invocation is
+reacquired on that unchanged cumulative allowance and compared in full before
+all existing source/owner/SID/settlement checks. Invalid ordinary journals still
+refuse. No row is exempted from validation by its owner label. The enclosing
+complete-read SQL/deadline guards and all per-value caps remain in force.
+This prevents accumulated ordinary journal history from exhausting Coding's
+16 MiB/32768-step allowance on routine generic controls and callbacks; it changes
+no admitted run limits, retries, authority, refusal categories or live state.
+
 ## S9 retained Coding reader boundary
 
 S9 defers the shared-reader naming extraction: common bounded primitives still

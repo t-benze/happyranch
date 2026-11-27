@@ -4406,6 +4406,19 @@ THR-243 seq42; Product E2E NOT RUN. Required local CI remains
 `bash scripts/local_ci.sh all`, OpenAPI `--check` and normal hooks, through durable
 jobs for long commands. No new CI/E2E trigger or gate is added.
 
+## Ordinary pause-history regression
+
+Run `WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --start2=ordinary_pause_history`
+and the same selector with `3.14`. The existing isolated ASGI venue retains 512
+valid ordinary native journals totaling more than 16 MiB, then observes a genuine
+initiator retry callback committing its result, control, replacement visit and
+consumption receipt exactly once while preserving its sibling and wider source.
+The complete reader still refuses malformed/duplicate journals, wrong native
+storage, per-value overflow and an orphan Coding owner. Ordinary history streams
+within unchanged per-value gates; Coding/source candidates retain the original
+cumulative allowance, SQL/deadline guards and semantic checks. The selector is
+included in Start@2/full aggregates; it adds no CI/E2E trigger or live run.
+
 ## MAC-1 app-scheme focused checks
 
 `python3 -B -m unittest scripts.mac_native.test_app_scheme -v` exercises the

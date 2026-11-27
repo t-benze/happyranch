@@ -1545,6 +1545,14 @@ UNVERIFIED; no live install/settings/admission/deploy/restart is authorized.
 
 ### Complete-reader recognition and native carrier preflight
 
+Ordinary native pause journals are validated one bounded row at a time rather
+than charged to Coding's shared retained-history allowance. Coding owner and
+original Coding source journals still consume that cumulative allowance, with
+all original identity/closure/uncertainty checks. Complete-read SQL and deadline
+guards still cover the scan. See [ordinary journal growth](coding-workflow.md#ordinary-native-journal-growth).
+No lifecycle transition, callback authentication, native settlement or live
+control authority changes with this resource-accounting correction.
+
 The complete same-snapshot reader recognizes the entire closed sequential
 callback in `task_results.decision_json`. In `workflow_coding_schema.py`,
 `_validate_coding_data` passes its already validated sequential inventory and
