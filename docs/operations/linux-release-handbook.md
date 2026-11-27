@@ -13,8 +13,8 @@ consent, invite display and credential dialogs remain in `client_ui.py` and
 
 The GUI uses the in-process RemoteDaemon adapter and opens no RuntimeProxy
 listener. If Main is absent or closed, a remote open reports runtime unavailable
-and cleans up its candidate. Foreground CLI use still owns its RuntimeProxy and
-prints `Runtime reachable: <url>` on its controlling terminal.
+and cleans up its candidate. Foreground CLI use checks authenticated native health and observes access;
+it creates no RuntimeProxy and prints no client runtime port/URL.
 
 If WebKit or the packaged bridge fails, retain the honest load error. Use the
 installed CLI in a terminal: `happyranch connection host --help` or
@@ -671,11 +671,11 @@ the [Mac foreground client CLI](../../app/mac/README.md#thr-379-slice-5c-foregro
 
 ### Linux foreground client CLI fallback (slice 5b)
 
-The payload ships `client_cli.py` beside the existing ClientSession, RuntimeProxy,
+The payload ships `client_cli.py` beside the existing ClientSession,
 ClientModel projection and login-only SecretStore owners. Fixed system Python
 `/usr/bin/python3 -I` needs neither WebKit nor a healthy local daemon. No new IPC,
 control socket, daemon route, service, dependency or credential path is added;
-the existing per-session runtime proxy is unchanged.
+the foreground CLI does not call `open_runtime` or create a RuntimeProxy.
 
 ```sh
 happyranch connection client --help
@@ -715,9 +715,13 @@ C19 acceptance belongs to slice 7 and is **NOT RUN**.
 
 Connections live only in this foreground invocation. Authenticated native health
 yields `runtimeReachable`, never `Connected`: CLI cannot observe the GUI's loaded
-RELEASE UI. Open the loopback URL printed only on the terminal and keep CLI
-running. The Linux foreground owner continues authenticated health reads at
-one-second intervals. A later explicit revocation reply reports `revoked`;
+RELEASE UI. The CLI calls `ClientSession.health` internally and creates, prints,
+saves and retains no client runtime port/URL. It does not open a browser runtime.
+The terminal says “Runtime reachable.” / “运行时可连接。” and “Observing access;
+Ctrl-C disconnects.” / “正在检查访问权限；按 Ctrl-C 断开连接。”, using the existing
+native language preference and bilingual copy convention. Keep the CLI running
+for access observation. The Linux foreground owner continues authenticated health
+reads at one-second intervals. A later explicit revocation reply reports `revoked`;
 generic access denial reports `accessUnavailable`. Both terminate through
 bounded cleanup without deleting saved access or retrying transport.
 Ctrl-C/SIGTERM cancels/disconnects this owner with bounded cleanup.
@@ -751,10 +755,9 @@ Retry save remains available in the Connection dialog.
 No plaintext, file or substitute credential store is used. One unreadable saved
 item does not hide readable peers. Remove is local-only and never claims Host
 revocation. Cancel during saving waits for write/readback before teardown, while
-fencing later connection/load callbacks. The foreground CLI runtime proxy answers bootstrap with an unrelated session
-token, strips browser authority headers, and injects the device bearer only
-on the private helper hop. Session stop seals admission and closes owned streams
-before bounded helper terminate/kill/reap; forced kill reports cleanup incomplete
+fencing later connection/load callbacks. The foreground CLI uses native
+authenticated health without opening a runtime proxy. Session stop seals admission
+and closes owned streams before bounded helper terminate/kill/reap; forced kill reports cleanup incomplete
 because helper scratch removal cannot be confirmed.
 
 ```sh
