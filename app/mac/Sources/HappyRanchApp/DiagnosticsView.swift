@@ -16,11 +16,11 @@ struct DiagnosticsView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
             HStack {
-                Text("Diagnostics")
+                Text(NativeCopy.diagnostics.text)
                     .font(.title2)
                     .bold()
                 Spacer()
-                Button("Export Bundle") {
+                Button(NativeCopy.exportBundle.text) {
                     exportDiagnostics()
                 }
                 .buttonStyle(.bordered)
@@ -37,25 +37,25 @@ struct DiagnosticsView: View {
                         crashIndicator
                     }
 
-                    GroupBox("App") {
-                        infoRow("Version", bundle["app_version"] as? String ?? "—")
-                        infoRow("Build", bundle["app_build"] as? String ?? "—")
+                    GroupBox(NativeCopy.app.text) {
+                        infoRow(NativeCopy.version.text, bundle["app_version"] as? String ?? "—")
+                        infoRow(NativeCopy.build.text, bundle["app_build"] as? String ?? "—")
                         infoRow("macOS", bundle["macos_version"] as? String ?? "—")
-                        infoRow("Architecture", bundle["architecture"] as? String ?? "—")
+                        infoRow(NativeCopy.architecture.text, bundle["architecture"] as? String ?? "—")
                         if let sha = bundle["build_sha"] as? String {
-                            infoRow("Build SHA", sha)
+                            infoRow(NativeCopy.buildSHA.text, sha)
                         }
-                        infoRow("Runtime Home", bundle["runtime_home"] as? String ?? "—")
+                        infoRow(NativeCopy.runtimeHome.text, bundle["runtime_home"] as? String ?? "—")
                         if let path = bundle["active_runtime_path"] as? String {
-                            infoRow("Runtime Path", path)
+                            infoRow(NativeCopy.runtimePath.text, path)
                         }
                         if let cmd = bundle["start_command"] as? String {
-                            infoRow("Start Command", cmd)
+                            infoRow(NativeCopy.startCommand.text, cmd)
                         }
                     }
 
                     if let log = bundle["updater_log"] as? String {
-                        GroupBox("Updates") {
+                        GroupBox(NativeCopy.updates.text) {
                             Text(log)
                                 .font(.system(.caption, design: .monospaced))
                                 .textSelection(.enabled)
@@ -63,26 +63,26 @@ struct DiagnosticsView: View {
                         }
                     }
 
-                    GroupBox("Daemon") {
-                        infoRow("State", supervisor.state.description)
+                    GroupBox(NativeCopy.daemon.text) {
+                        infoRow(NativeCopy.state.text, supervisor.state.description)
                         if let pid = bundle["daemon_pid"] {
                             infoRow("PID", "\(pid)")
                         }
                         if let port = bundle["daemon_port"] {
-                            infoRow("Port", "\(port)")
+                            infoRow(NativeCopy.port.text, "\(port)")
                         }
-                        infoRow("Bind Host", bundle["daemon_bind_host"] as? String ?? "127.0.0.1")
+                        infoRow(NativeCopy.bindHost.text, bundle["daemon_bind_host"] as? String ?? "127.0.0.1")
                         if let code = bundle["last_exit_code"] {
-                            infoRow("Last Exit Code", "\(code)")
+                            infoRow(NativeCopy.lastExitCode.text, "\(code)")
                         }
                         if let sig = bundle["last_exit_signal"] {
-                            infoRow("Last Signal", "\(sig)")
+                            infoRow(NativeCopy.lastSignal.text, "\(sig)")
                         }
                     }
 
                     // Daemon stdout (captured)
                     if let stdout = bundle["daemon_stdout"] as? String, !stdout.isEmpty {
-                        GroupBox("Daemon Stdout (captured)") {
+                        GroupBox(NativeCopy.daemonStdout.text) {
                             ScrollView {
                                 Text(stdout)
                                     .font(.system(.caption, design: .monospaced))
@@ -95,7 +95,7 @@ struct DiagnosticsView: View {
 
                     // Daemon stderr (Req 3)
                     if let stderr = bundle["daemon_stderr"] as? String, !stderr.isEmpty {
-                        GroupBox("Daemon Stderr (captured)") {
+                        GroupBox(NativeCopy.daemonStderr.text) {
                             ScrollView {
                                 Text(stderr)
                                     .font(.system(.caption, design: .monospaced))
@@ -106,33 +106,33 @@ struct DiagnosticsView: View {
                         }
                     }
 
-                    GroupBox("Managed Connection Health (latest cached record)") {
+                    GroupBox(NativeCopy.managedHealth.text) {
                         Text(bundle["tsnet_health"] as? String ?? "unavailable")
                             .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
-                    GroupBox("Health Probe") {
+                    GroupBox(NativeCopy.healthProbe.text) {
                         if let success = bundle["last_health_probe_success"] as? Bool {
                             HStack {
-                                Text("Result:")
+                                Text(NativeCopy.result.text)
                                 Image(systemName: success ? "checkmark.circle.fill" : "xmark.circle.fill")
                                     .foregroundColor(success ? .green : .red)
-                                Text(success ? "Success" : "Failed")
+                                Text(success ? NativeCopy.success.text : NativeCopy.failed.text)
                             }
                             .font(.caption)
                         }
                         if let latency = bundle["last_health_probe_latency_ms"] {
-                            infoRow("Latency", "\(latency) ms")
+                            infoRow(NativeCopy.latency.text, "\(latency) ms")
                         }
                         if let error = bundle["last_health_probe_error"] as? String {
-                            infoRow("Error", error)
+                            infoRow(NativeCopy.error.text, error)
                         }
                     }
 
                     if let log = bundle["daemon_log_tail"] as? String, !log.isEmpty {
-                        GroupBox("Daemon Log (tail, redacted)") {
+                        GroupBox(NativeCopy.daemonLog.text) {
                             ScrollView {
                                 Text(log)
                                     .font(.system(.caption, design: .monospaced))
@@ -144,7 +144,7 @@ struct DiagnosticsView: View {
                     }
 
                     if let log = bundle["launcher_log"] as? String, !log.isEmpty {
-                        GroupBox("Launcher Log (redacted)") {
+                        GroupBox(NativeCopy.launcherLog.text) {
                             ScrollView {
                                 Text(log)
                                     .font(.system(.caption, design: .monospaced))
@@ -156,9 +156,9 @@ struct DiagnosticsView: View {
                     }
 
                     // On-disk diagnostics path (Req 3)
-                    GroupBox("Diagnostics Location") {
+                    GroupBox(NativeCopy.diagnosticsLocation.text) {
                         HStack(alignment: .top) {
-                            Text("Path:")
+                            Text(NativeCopy.path.text)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(width: 60, alignment: .leading)
@@ -171,7 +171,7 @@ struct DiagnosticsView: View {
 
                     // Env/PATH summary
                     if let envSummary = bundle["env_path_summary"] as? String, !envSummary.isEmpty {
-                        GroupBox("Environment Summary (redacted)") {
+                        GroupBox(NativeCopy.environmentSummary.text) {
                             ScrollView {
                                 Text(envSummary)
                                     .font(.system(.caption, design: .monospaced))
@@ -209,11 +209,11 @@ struct DiagnosticsView: View {
                 .font(.title3)
             VStack(alignment: .leading, spacing: 2) {
                 Text(supervisor.state == .crashed
-                     ? "Daemon Crashed"
-                     : "Daemon Failed")
+                     ? NativeCopy.daemonCrashed.text
+                     : NativeCopy.daemonFailed.text)
                     .font(.headline)
                     .foregroundColor(.red)
-                Text("Review the captured stderr and diagnostics below to identify the cause.")
+                Text(NativeCopy.crashGuidance.text)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -242,7 +242,7 @@ struct DiagnosticsView: View {
 
     private func exportDiagnostics() {
         let savePanel = NSSavePanel()
-        savePanel.title = "Export Diagnostics"
+        savePanel.title = NativeCopy.exportDiagnostics.text
         let dateStr = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
         savePanel.nameFieldStringValue = "happyranch-diagnostics-\(dateStr).zip"
@@ -252,9 +252,9 @@ struct DiagnosticsView: View {
             if response == .OK, let url = savePanel.url {
                 do {
                     try diagnostics.exportZip(to: url)
-                    exportMessage = "Exported to \(url.lastPathComponent)"
+                    exportMessage = NativeCopy.exported.format(value: url.lastPathComponent)
                 } catch {
-                    exportMessage = "Export failed: \(error.localizedDescription)"
+                    exportMessage = NativeCopy.exportFailed.format(value: error.localizedDescription)
                 }
             }
         }

@@ -70,7 +70,7 @@ struct HappyRanchApp: App {
                 Divider()
 
                 // Status line — disabled to appear as a non-interactive indicator
-                Text("\(AppLocalePreference.shared.nativeChinese ? "状态" : "Status"): \(appDelegate.stateText)")
+                Text("\(AppLocalePreference.shared.nativeChinese ? "状态" : "Status"): \(NativeCopy.localize(appDelegate.stateText))")
             }
         }
     }
