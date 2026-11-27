@@ -6534,7 +6534,12 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             async def post(value, *, code=200, payload=None):
                 body=payload or dict(session_id=f.source.current_session_id,agent='s3_manager',status='completed',
                     confidence=80,output_summary='Private Start2 public '+case,decision=value)
-                response=await client.post('/api/v1/orgs/scratch/tasks/'+f.source.id+'/completion',headers=dict(cli,authorization='Bearer synthetic-public'),json=body)
+                with ExitStack() as stack:
+                    if case == 'scope':
+                        from runtime.workflows import sequential_history
+                        stack.enter_context(patch.object(sequential_history, 'read_sequential_history',
+                            side_effect=AssertionError('native start callback reached complete validation')))
+                    response=await client.post('/api/v1/orgs/scratch/tasks/'+f.source.id+'/completion',headers=dict(cli,authorization='Bearer synthetic-public'),json=body)
                 assert response.status_code==code,(case,value.get('action'),code,response.status_code,response.text)
                 return response,body
             def consume():
@@ -6725,6 +6730,10 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         discovery=await client.get('/api/v1/orgs/scratch/workflows/sequential/start-context/v2',
                             params={'session_id':f.source.current_session_id},headers=cli)
                         assert discovery.status_code==200 and discovery.json()['availability']=='admission-supported'
+                        if case == 'scope':
+                            old = s7legacy(f)
+                            damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                                ('0'*64, old.run_id))
                         value=deepcopy(f.value)
                         if case=='admission':
                             value['workflows'][0]['role_overrides']=[dict(role='developer',principal='s3_alt')]
@@ -6797,6 +6806,20 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         conflict=dict(original_payload,output_summary='changed normalized payload')
                         await post(value,payload=conflict,code=409)
                         assert inventory()==before,'B10 conflict mutated'
+                        if case == 'scope':
+                            # Stop at the callback boundary: source outer settlement
+                            # intentionally still uses complete validation.
+                            await sid('g3-native-wait')
+                            before = inventory()
+                            response, _ = await post(dict(action='workflow_wait', run_ids=[old.run_id]), code=409)
+                            assert 'workflow_run_not_owned' in response.text and inventory() == before
+                            response, _ = await post(dict(action='workflow_wait', run_ids=[],
+                                consume_notifications=['not-delivered']), code=409)
+                            assert 'consume_not_delivered' in response.text and inventory() == before
+                            assert f.db.get_task(f.source.id).completed_at is None
+                            print('PASS S7a start_callback_scope HTTP200 allocation/result/receipt/replay; '
+                                'foreign run/undelivered notification HTTP409; no complete callback validation', flush=True)
+                            return
                         if case=='replay':
                             for mode in ('defaults','disable'):
                                 await settings_change(mode)
@@ -8280,30 +8303,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     # another and observes a route error, never empty success.
                     pass
             if case == 'start_callback_scope':
-                with s5fixture(admitted=False) as f:
-                    old = s7legacy(f)
-                    damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
-                        ('0'*64, old.run_id))
-                    sid = 'g3-first-start-callback'
-                    s6sid(f, sid)
-                    s6bind_v2(f, sid)
-                    value = dict(action='workflow_start', workflows=[dict(f.command, operation_key='g3-native-start')])
-                    # The shipping native callback includes preflight, allocation,
-                    # first empty delivery, dependencies, effects and consumption.
-                    with patch.object(sequential_history, 'read_sequential_history',
-                            side_effect=AssertionError('native start callback reached complete validation')):
-                        row = s6callback(f, sid, value)
-                    runs = list(f.conn.execute('SELECT id FROM workflow_seq_runs WHERE source_task_id=?', (f.source.id,)))
-                    assert len(runs) == 1
-                    receipt = f.conn.execute('SELECT result_id,receipt_bytes FROM workflow_seq_consumption_receipts').fetchone()
-                    assert receipt['result_id'] == row['id']
-                    body = json.loads(receipt['receipt_bytes'])
-                    assert body['effects']['run_ids'] == [runs[0]['id']] and body['consume_notifications'] == []
-                    before = s5snap(f)
-                    assert f.db.admit_task_completion_callback(**f.s6_last_kwargs) and s5snap(f) == before
-                    assert not f.db.admit_task_completion_callback(**dict(f.s6_last_kwargs, agent='foreign'))
-                    assert s5snap(f) == before
-                print('PASS S7a start_callback_scope native start COMMIT/replay, no complete validation', flush=True)
+                asyncio.run(start2_public('scope'))
             if case == 'initiator_scope':
                 from runtime.workflows.sequential_initiator import observe_dependencies
                 for stage in ('dependencies', 'delivery', 'consumption'):
@@ -8371,6 +8371,8 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         elif defect == 'sibling_event':
                             damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
                                 ('0'*64, f.batch_ids[1].run_id))
+                        f.conn.execute('UPDATE task_results SET confidence_score=80 WHERE confidence_score IS NULL')
+                        f.conn.commit()
                         before = s5snap(f)
                         source, parent = f.db.get_task(f.source.id), f.db.get_task('s5-parent')
                         sibling = s4row(f, 'workflow_seq_runs', f.batch_ids[1].run_id)
