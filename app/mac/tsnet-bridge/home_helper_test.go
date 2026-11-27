@@ -110,7 +110,8 @@ func TestHomeProcessChild(t *testing.T) {
 			t.Fatal("fixture launch refused")
 		}
 		req, _ := http.NewRequest("GET", homeControlURL+"/key", nil)
-		switch os.Getenv("HOME_PROXY_CACHE") {
+		cache, _, _ := strings.Cut(os.Getenv("HOME_PROXY_CACHE"), "-")
+		switch cache {
 		case "http":
 			_, _ = http.ProxyFromEnvironment(req)
 		case "https":
@@ -132,6 +133,49 @@ func TestHomeProcessChild(t *testing.T) {
 			t.Fatal("unsafe effective proxy selection admitted")
 		}
 		fmt.Fprintln(os.Stdout, "PROXY_REFUSED")
+		return
+	}
+	if mode == "derp-proxy" {
+		cfg, err := readHomeLaunch(os.Stdin)
+		if err != nil {
+			t.Fatal("fixture launch refused")
+		}
+		cached := os.Getenv("HOME_PROXY_CACHE") == "masked"
+		if cached {
+			req, _ := http.NewRequest("GET", homeControlURL, nil)
+			if selected, err := tshttpproxy.ProxyFromEnvironment(req); err != nil || selected != nil {
+				t.Fatal("home bypass fixture did not mask cached proxy")
+			}
+		}
+		h, err := prepareHomeProcess(cfg)
+		if err != nil {
+			if !cached || h != nil {
+				t.Fatal("clean lifetime fixture failed startup")
+			}
+			fmt.Fprintln(os.Stdout, "STARTUP_REFUSED")
+			return
+		}
+		defer h.Close()
+		if !cached {
+			// A normal link-change invalidation must not adopt new environment
+			// proxies after startup has frozen the clean selector configuration.
+			t.Setenv("HTTP_PROXY", os.Getenv("HOME_TEST_PROXY"))
+			t.Setenv("HTTPS_PROXY", os.Getenv("HOME_TEST_PROXY"))
+			tshttpproxy.InvalidateCache()
+		}
+		client := derphttp.NewRegionClient(key.NewNode(), logger.Discard, netmon.NewStatic(), func() *tailcfg.DERPRegion {
+			return &tailcfg.DERPRegion{RegionID: 1, Nodes: []*tailcfg.DERPNode{{Name: "outside-bypass", RegionID: 1, HostName: "outside.happyranch.invalid", IPv4: "192.168.1.41", IPv6: "none", DERPPort: 8443}}}
+		})
+		defer client.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if client.Connect(ctx) == nil {
+			t.Fatal("outside-home DERP node admitted")
+		}
+		if h.ctx.Err() != nil {
+			t.Fatal("destination refusal reached upstream verifier")
+		}
+		fmt.Fprintln(os.Stdout, "DERP_REFUSED")
 		return
 	}
 	if mode == "environment" {
@@ -562,7 +606,7 @@ func TestHomeProcessEnvironmentResolverAndIsolation(t *testing.T) {
 
 func TestHomeProxySelectionRefusals(t *testing.T) {
 	ca := makeHomeCA(t, true)
-	for _, cache := range []string{"http", "https", "all", "bypass", "netns"} {
+	for _, cache := range []string{"http", "https", "http-masked", "https-masked", "http-idna-masked", "https-idna-masked", "all", "bypass", "netns"} {
 		t.Run(cache, func(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run=^TestHomeProcessChild$", "-test.v")
 			cmd.Env = []string{"HOME_BRIDGE_TEST_MODE=proxy-cache", "HOME_PROXY_CACHE=" + cache,
@@ -570,10 +614,50 @@ func TestHomeProxySelectionRefusals(t *testing.T) {
 			if cache == "bypass" {
 				cmd.Env = append(cmd.Env, "NO_PROXY=*")
 			}
+			if strings.HasSuffix(cache, "-masked") {
+				bypass := homeControlName + ",192.168.1.40"
+				if strings.Contains(cache, "-idna-") {
+					bypass += ",\u00ad" // IDNA maps this exception to an empty-host matcher.
+				}
+				cmd.Env = append(cmd.Env, "NO_PROXY="+bypass)
+			}
 			cmd.Stdin = bytes.NewReader(homeFrame(t, homeLaunchFixture(ca.der)))
 			out, err := cmd.CombinedOutput()
 			if err != nil || !bytes.Contains(out, []byte("PROXY_REFUSED")) {
 				t.Fatal("unsafe effective proxy was not refused")
+			}
+		})
+	}
+}
+
+func TestHomeDERPProxyConfinement(t *testing.T) {
+	for _, cache := range []string{"masked", "late-environment"} {
+		t.Run(cache, func(t *testing.T) {
+			var connects atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				connects.Add(1)
+				w.WriteHeader(http.StatusBadGateway)
+			}))
+			defer server.Close()
+			cmd := exec.Command(os.Args[0], "-test.run=^TestHomeProcessChild$", "-test.v")
+			cmd.Env = []string{"HOME_BRIDGE_TEST_MODE=derp-proxy", "HOME_PROXY_CACHE=" + cache, "HOME_TEST_PROXY=" + server.URL}
+			if cache == "masked" {
+				cmd.Env = append(cmd.Env, "HTTP_PROXY="+server.URL, "HTTPS_PROXY="+server.URL, "NO_PROXY="+homeControlName+",192.168.1.40")
+			}
+			cmd.Stdin = bytes.NewReader(homeFrame(t, homeLaunchFixture(makeHomeCA(t, true).der)))
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("DERP confinement probe failed: %s", out)
+			}
+			if connects.Load() != 0 {
+				t.Fatalf("engine DERP bypassed owned transport through ambient proxy: %d requests", connects.Load())
+			}
+			receipt := "STARTUP_REFUSED"
+			if cache == "late-environment" {
+				receipt = "DERP_REFUSED"
+			}
+			if !bytes.Contains(out, []byte(receipt)) {
+				t.Fatalf("missing %s receipt", receipt)
 			}
 		})
 	}

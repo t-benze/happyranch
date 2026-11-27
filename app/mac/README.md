@@ -1155,13 +1155,24 @@ owned x/net dialer, before proxy environment caches initialize. HTTP(S) proxy
 variables and upper/lower bypass variants stay absent. Before tsnet starts,
 startup requires netns to return that exact owned wrapper and rejects effective
 standard HTTP or Tailscale HTTP/system proxy selection, stale caches and bypass
-wrappers. Registered upstream debug caches are reset too. A nonempty inherited
+wrappers. Local HTTP/HTTPS selector probes include a NUL-only host, which cannot
+match per-host `NO_PROXY` entries in the pinned matchers: environment values
+cannot contain NUL and successful IDNA normalization cannot produce it. Only
+global `*` can mask it, disabling all environment proxy destinations. These
+selector calls send no network request. Accepted selector configs
+stay cached for the process lifetime, including across link-change invalidation.
+Darwin has no system-proxy hook in this pin. Linux uses its immutable distro
+cache; the Client helper refuses Synology before roots/engine startup because
+its dynamic `/etc/proxy.conf` hook has no exported disabling API. Other helper
+platforms also refuse. Thus engine DERP cannot select an ambient proxy before
+netns or bypass the owned outer verifier later. Registered upstream debug caches
+are reset too. A nonempty inherited
 `SSLKEYLOGFILE` refuses before roots
 or clients: pinned tlsdial caches it at package init, so clearing it later would
 not revoke key logging. No keylog file is opened. The immutable process resolver
 and `dnscache.Get().Forward` answer only the fixed home name with admitted IPv4,
 return empty AAAA and refuse other names through in-memory pipes. No host DNS
-configuration or resolver socket changes. Only then is tsnet constructed with
+configuration or resolver socket changes. Only then is tsnet started with
 the canonical URL. The C archive installs none of these globals.
 
 Upstream dial/verifier failure, parent EOF, shutdown or cancellation closes

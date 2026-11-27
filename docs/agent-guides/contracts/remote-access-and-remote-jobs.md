@@ -1362,7 +1362,17 @@ Dialer/ContextDialer before proxy caches initialize and selects it with a privat
 `ALL_PROXY` scheme. It clears upper/lower HTTP(S)/ALL/NO_PROXY variants first,
 installs the fixed in-memory resolver, rejects effective HTTP/system proxy or
 bypass selection, and verifies that netns selects the exact owned wrapper before
-tsnet starts. Control key/Noise and engine DERP dials therefore use verified
+tsnet starts. Local HTTP/HTTPS selector probes with a NUL-only host expose cached
+proxies hidden by per-host `NO_PROXY`: environment values cannot contain NUL and
+successful IDNA normalization cannot produce it. No network request is sent;
+only global `*` masks these probes, disabling every environment
+proxy destination. Accepted configs stay cached across later environment changes
+and link-change invalidation. The pinned Darwin selector has no system hook;
+Linux's hook uses the same immutable distro cache. The Client helper refuses
+Synology before roots/engine startup because its dynamic `/etc/proxy.conf` hook
+cannot be disabled through an exported API; other platforms also refuse. This
+prevents lifetime HTTP/OS proxy adoption on DERP's pre-netns path. Control
+key/Noise and engine DERP dials therefore use verified
 outer home TLS and inner process-local `net.Pipe` TLS. Only the admitted name/IP
 on 443/8443 is accepted; both map to literal admitted IP:8443. Refused targets
 never reach a forwarding dialer. Exact CA fingerprint/name/IP admission, no

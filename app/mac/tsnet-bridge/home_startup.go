@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"tailscale.com/net/netns"
 	"tailscale.com/net/tshttpproxy"
 	"tailscale.com/types/logger"
+	"tailscale.com/version/distro"
 )
 
 const homeProxyScheme = "happyranch-home"
@@ -36,6 +38,19 @@ func prepareHomeProcess(cfg homeLaunch) (*homeTransport, error) {
 	homeProcessMu.Lock()
 	defer homeProcessMu.Unlock()
 	if homeProcessStarted {
+		return nil, errHomeTrust
+	}
+	// The pinned Darwin selector has no OS hook. Linux's hook uses this same
+	// immutable distro cache and returns no proxy except on Synology, where
+	// /etc/proxy.conf can change after startup. There is no exported hook override:
+	// refuse that platform (and unknown platforms) before roots or engine startup.
+	switch runtime.GOOS {
+	case "darwin":
+	case "linux":
+		if distro.Get() == distro.Synology {
+			return nil, errHomeTrust
+		}
+	default:
 		return nil, errHomeTrust
 	}
 	if _, err := validateHomeLaunch(cfg); err != nil {
@@ -105,8 +120,9 @@ func prepareHomeProcess(cfg homeLaunch) (*homeTransport, error) {
 	return h, nil
 }
 
-// verifyRouting refuses stale caches, NO_PROXY wrappers, disabled netns and
-// HTTP/system proxies (whose upstream paths can bypass netns entirely).
+// verifyRouting freezes proxy-free HTTP selectors before engine startup, and
+// refuses NO_PROXY wrappers and disabled netns. DERP's HTTP proxy path precedes
+// netns, so confinement must hold without a later DialContext recheck.
 func (h *homeTransport) verifyRouting() error {
 	if h.ctx.Err() != nil || os.Getenv("ALL_PROXY") != homeProxyURL {
 		return errHomeTrust
@@ -119,7 +135,15 @@ func (h *homeTransport) verifyRouting() error {
 	if netns.NewDialer(logger.Discard, netmon.NewStatic()) != h {
 		return errHomeTrust
 	}
-	for _, authority := range []string{homeControlName + ":8443", homeControlName + ":443", h.dialIP + ":8443", h.dialIP + ":443"} {
+	// Probe the pinned selectors locally with a NUL-only host: no IP/domain
+	// exception can match it. OS environment values cannot contain NUL, successful
+	// IDNA normalization cannot produce it, and it has no domain suffix. Only '*'
+	// masks this probe, disabling ALL environment proxy destinations. Empty host
+	// is insufficient: IDNA can map a soft-hyphen exception to an empty matcher.
+	// No HTTP request is sent. Per-home bypasses cannot hide a cached proxy here.
+	// Accepted caches cannot adopt later environment edits; InvalidateCache only
+	// resets the OS retry time, and dynamic OS selection was excluded above.
+	for _, authority := range []string{"\x00", homeControlName + ":8443", homeControlName + ":443", h.dialIP + ":8443", h.dialIP + ":443"} {
 		for _, scheme := range []string{"http", "https"} {
 			req := &http.Request{URL: &url.URL{Scheme: scheme, Host: authority}}
 			for _, selectProxy := range []func(*http.Request) (*url.URL, error){http.ProxyFromEnvironment, tshttpproxy.ProxyFromEnvironment} {
