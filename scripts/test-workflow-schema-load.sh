@@ -105,6 +105,12 @@ S7A_CASES = ('plural_links', 'held_cause', 'history_label', 'unavailable',
     'initiator_scope', 'dispatch_scope', 'hold_scope', 'start_callback_scope',
     'control_scope', 'cancel_fence_scope', 'cancel_finish_scope',
     'settings_scope', 'settings_corruption', 'builtin_scope')
+CODING_READER_CASES = ('facts', 'selected_corruption', 'unrelated', 'dependencies', 'point_dependency', 'source', 'default')
+coding_reader_case = None
+if len(sys.argv) == 2 and sys.argv[1].startswith('--coding-reader='):
+    coding_reader_case = sys.argv[1].split('=', 1)[1]
+    assert coding_reader_case in ('all', *CODING_READER_CASES)
+    sys.argv[1:] = ['--sequential-uncommitted']
 s7a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s7a='):
     s7a_case = sys.argv[1].split('=', 1)[1]
@@ -17875,7 +17881,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         assert conn.execute('SELECT status FROM tasks WHERE id=?', (issuer['task_id'],)).fetchone()[0] == 'completed'
 
 
-    def populate_coding_start(db):
+    def populate_coding_start(db, *, reader_only=False, suffix='', prepared=None, parent=None, revisit=None):
         # Preserved private reproducer for the step20 27/30-column limitation.
         # It deliberately reaches the unchanged full-reader refusal and is
         # never enrolled as a passing corruption-phase baseline.
@@ -17883,7 +17889,9 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         from runtime.workflows.coding_bootstrap import encode_row, identity, initial_scope, journal_rows, pinned_rows, task_brief
         from runtime.workflows.coding_start_history import claim_for
 
-        saved = populate_coding_mapping(db)
+        saved = populate_coding_mapping(db) if prepared is None else prepared['saved']
+        inventory = (read_sequential_history(db._conn, expected_org_slug='scratch').retained[1]
+                     if prepared is None else prepared['inventory'])
         conn = db._conn
         encode = seq_history._bytes
         digest = lambda raw: hashlib.sha256(raw).hexdigest()
@@ -17896,43 +17904,45 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             values = cursor.fetchone()
             assert values is not None and cursor.fetchone() is None
             return dict(zip((column[0] for column in cursor.description), values, strict=True))
-        command = dict(format='workflow-coding-start@2', operation_key='synthetic-coding-start',
+        command = dict(format='workflow-coding-start@2', operation_key='synthetic-coding-start' + suffix,
             release=mapping['release'], mapping=saved['explicit']['mapping'],
             settings=dict(generation=saved['explicit']['generation'], snapshot_digest=digest(encode(saved['explicit']))),
             work=dict(brief='Synthetic retained work', repository_id=mapping['repository_references'][0]['repository_id'],
                       object_format='sha1', base='1' * 40, paths=['runtime']), implementer_override=None)
         manager = roles['agent_manager']['principal']
-        source_id, carrier_id, leaf_id = 'synthetic-start-source', 'synthetic-start-carrier', 'synthetic-start-leaf'
+        source_id, carrier_id, leaf_id = (name + suffix for name in
+            ('synthetic-start-source', 'synthetic-start-carrier', 'synthetic-start-leaf'))
         db.insert_task(TaskRecord(id=source_id, task_type='task', assigned_agent=manager, team='engineering',
             brief='Synthetic retained start source', status='in_progress', orchestration_step_count=1,
-            current_session_id='synthetic-start-session'))
+            current_session_id=('synthetic-start-session' + suffix), parent_task_id=parent, revisit_of_task_id=revisit))
         conn.execute('UPDATE tasks SET created_at=?,updated_at=? WHERE id=?', (at, at, source_id))
         source_before = row('tasks', 'id=?', (source_id,))
         start_id = conn.execute('INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES(?,?,?,?,?)',
             (source_id, manager, 'session_start', encode(dict(workspace='synthetic',
-                session_id='synthetic-start-session', invocation_purpose='manager_decision',
+                session_id=('synthetic-start-session' + suffix), invocation_purpose='manager_decision',
                 executor='synthetic', model=None)).decode(), at)).lastrowid
         result_id = conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,decision_json,created_at) '
-            'VALUES(?,?,?,?,?,?)', (source_id, manager, 'synthetic-start-session', 'completed',
+            'VALUES(?,?,?,?,?,?)', (source_id, manager, ('synthetic-start-session' + suffix), 'completed',
             encode(dict(action='workflow_start', workflow=command)).decode(), at)).lastrowid
         callback = row('task_results', 'id=?', (result_id,))
-        native = dict(id='synthetic-start-invocation', org='scratch', root_task_id=source_id,
-            task_id=source_id, agent=manager, session_id='synthetic-start-session', owner='ordinary',
+        native = dict(id='synthetic-start-invocation' + suffix, org='scratch', root_task_id=parent or source_id,
+            task_id=source_id, agent=manager, session_id=('synthetic-start-session' + suffix), owner='ordinary',
             owner_identity={}, fingerprint=dict(status='pending', block_kind=None, count=0,
-                session_id=None, agent=manager, fanout=None, jobs=None, parent=None,
+                session_id=None, agent=manager, fanout=None, jobs=None, parent=parent,
                 brief_digest=digest(source_before['brief'].encode())), generation=0, phase='running',
             retry={}, context={}, started_at=at, captured_generation=None)
-        source = dict(task_id=source_id, session_id='synthetic-start-session', principal=manager,
+        source = dict(task_id=source_id, session_id=('synthetic-start-session' + suffix), principal=manager,
             result=dict(id=result_id, record=encode_row(callback)),
             result_claim=dict(native_claim=claim_for(source_before, result_id),
                 owner_invocation_id=native['id'], action_fingerprint=digest(callback['decision_json'].encode())),
-            parent_task_id=None, root_ancestor_id=source_id,
+            parent_task_id=parent, root_ancestor_id=parent or source_id,
             budgets=dict(source_step=1, source_revision=0, session_timeout_seconds=None,
                 max_revise_rounds=3, coding_attempt_limit=64, coding_event_limit=4096,
                 coding_revision_limit=3, coding_same_principal_retry_limit=1))
-        native_source = dict(ancestors=[], session_start=row('audit_log', 'id=?', (start_id,)),
+        ancestors = [] if parent is None else [encode_row(row('tasks', 'id=?', (parent,)))]
+        native_source = dict(ancestors=ancestors, session_start=row('audit_log', 'id=?', (start_id,)),
             invocation=dict(id=native['id'], owner='ordinary', entry=native),
-            checkpoints=[dict(source=encode_row(source_before), ancestors=[])])
+            checkpoints=[dict(source=encode_row(source_before), ancestors=ancestors)])
         instance = identity('root', 'scratch', source_id, result_id, digest(encode(command)))
         attempt_id = identity('attempt', instance, 1)
         event_id = identity('event', 'scratch', instance, 'agent:' + manager, command['operation_key'])
@@ -17986,7 +17996,7 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
                 key=command['operation_key'], request_digest=digest(encode(command))), previous_digest=None,
             before=before, after=after, created_at=at, evidence=dict(kind='run_started', command=command,
                 origin=dict(kind='manager_result', principal=manager, task_id=source_id,
-                    session_id='synthetic-start-session', result_id=result_id, claim=None), authority=authority,
+                    session_id=('synthetic-start-session' + suffix), result_id=result_id, claim=None), authority=authority,
                 native_task_observations=[], rows=journal_rows(pins), facts=dict(source=source,
                     carrier_task_id=carrier_id, release=command['release'], mapping_id=command['mapping']['id'],
                     mapping_digest=command['mapping']['digest'], context_id=identity('context', instance),
@@ -18003,6 +18013,15 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
             conn.execute('UPDATE workflow_task_ownership SET kind=?,owner_id=? WHERE task_id=?', (kind, owner, task_id))
         conn.commit()
         conn.execute('PRAGMA foreign_keys=ON')
+        if reader_only:
+            # Exercise the retained reader directly. The existing complete-schema
+            # reproducer below retains its documented 27/30-column refusal.
+            from runtime.workflows.coding_start_history import read_queued
+            with _schema_snapshot(conn):
+                queued = read_queued(conn, 'scratch', _Budget(), inventory.mappings, inventory.release)
+            assert instance in queued.runs
+            return dict(saved=saved, inventory=inventory, instance=instance, source=source,
+                        command=command, native=native, payload=payload, carrier_id=carrier_id, leaf_id=leaf_id)
         history = read_sequential_history(conn, expected_org_slug='scratch')
         assert history.status == 'storage readable'
         entry = history.retained[1].queued.runs[instance]
@@ -18010,6 +18029,275 @@ if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-load'], ['--seque
         assert history.retained[1].mappings.selected.source_capture.payload['after']['admission'] == 'disabled'
         return dict(saved=saved, instance=instance, source=source, command=command, native=native, payload=payload)
 
+
+    if coding_reader_case or not sys.argv[1:]:
+        from runtime.workflows.coding_start_history import read_queued, same, rows
+        from runtime.workflows.coding_saved_records import _canonical, _hash
+        from runtime.workflows.coding_cancellation import affected, write_uncommitted
+        cases = CODING_READER_CASES if coding_reader_case in (None, 'all') else (coding_reader_case,)
+        for case in cases:
+            with sequential_fixture() as (db, root, sql):
+                populate_sequential(db)
+                conn = db._conn
+                if case == 'source':
+                    from runtime.workflows._coding_mapping_admission import _MappingCaptures
+                    from runtime.workflows._coding_source_admission import source_storage
+                    from runtime.workflows.coding_mapping_history import _read_mapping_storage
+                    from runtime.workflows.coding_authority_history import _SetupHistoryReader
+                    import base64
+                    populate_coding_source(db)
+                    def source_read(selected):
+                        budget = _Budget()
+                        setups = _SetupHistoryReader(conn, 'scratch', budget)
+                        roots = (dict(task_ids=frozenset({'synthetic-capability-source'})) if selected == 'task' else
+                                 dict(authorization_ids=frozenset({'synthetic-source-refinement'})) if selected else {})
+                        captures = _MappingCaptures(conn, 'scratch', budget, **roots)
+                        with _schema_snapshot(conn):
+                            mappings, _ = _read_mapping_storage(conn, expected_org_slug='scratch', budget=budget,
+                                                               setups=setups, captures=captures)
+                            return source_storage(conn, 'scratch', budget, setups, captures, mappings, **roots)
+                    baseline = source_read(False)
+                    scoped = source_read(True)
+                    assert set(scoped[0]) == {'synthetic-source-capability', 'synthetic-source-refinement'}
+                    assert baseline[1] == scoped[1]
+                    assert source_read('task')[1] == baseline[1]
+                    def source_refuses(selected, code):
+                        try:
+                            source_read(selected)
+                        except ValueError as exc:
+                            assert str(exc) == code, (str(exc), code)
+                        else:
+                            raise AssertionError('source selected original refusal lost')
+                    for selected_task in (False, True):
+                        conn.execute('SAVEPOINT source_damage')
+                        try:
+                            conn.execute('INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES(?,?,?,?,?)',
+                                ('synthetic-capability-source' if selected_task else 'TASK-seq-load', 'synthetic',
+                                 'coding_source_operation', '{', '2026-11-14T00:00:07.000000Z'))
+                            if selected_task:
+                                source_refuses(True, 'coding_mapping_history_invalid')
+                            else:
+                                assert source_read(True)[1] == baseline[1]
+                            source_refuses(False, 'coding_mapping_history_invalid')
+                        finally:
+                            conn.execute('ROLLBACK TO source_damage')
+                            conn.execute('RELEASE source_damage')
+                    conn.execute('SAVEPOINT source_missing')
+                    try:
+                        conn.execute("DELETE FROM audit_log WHERE action='coding_source_operation' AND payload LIKE '%synthetic-source-capability%'")
+                        source_refuses(True, 'coding_source_history_invalid')
+                        source_refuses(False, 'coding_source_history_invalid')
+                    finally:
+                        conn.execute('ROLLBACK TO source_missing')
+                        conn.execute('RELEASE source_missing')
+                    conn.execute('SAVEPOINT source_conflict')
+                    try:
+                        audit_id, raw = conn.execute("SELECT id,payload FROM audit_log WHERE action='coding_source_operation' AND payload LIKE '%synthetic-source-refinement%'").fetchone()
+                        operation = json.loads(raw)
+                        command = json.loads(base64.b64decode(operation['command_bytes_base64']))
+                        command['operation_key'] = 'synthetic-nonallocating-source'
+                        command_raw = _canonical(command)
+                        operation.update(command_bytes_base64=base64.b64encode(command_raw).decode(), command_digest=_hash(command_raw))
+                        conn.execute('UPDATE audit_log SET payload=? WHERE id=?', (_canonical(operation).decode(), audit_id))
+                        source_refuses(True, 'coding_mapping_history_invalid')
+                        source_refuses(False, 'coding_mapping_history_invalid')
+                    finally:
+                        conn.execute('ROLLBACK TO source_conflict')
+                        conn.execute('RELEASE source_conflict')
+                    print('PASS Coding retained selected reader:', case, flush=True)
+                    continue
+                if case == 'dependencies':
+                    db.insert_task(TaskRecord(id='synthetic-reader-root', assigned_agent='synthetic_agent_manager',
+                        team='engineering', brief='Private shared ancestor', status='pending'))
+                    conn.execute("UPDATE tasks SET created_at=?,updated_at=? WHERE id='synthetic-reader-root'",
+                        ('2026-11-14T00:00:00.000000Z',) * 2)
+                    conn.commit()
+                saved = populate_coding_start(db, reader_only=True,
+                    parent='synthetic-reader-root' if case == 'dependencies' else None)
+                inventory = saved['inventory']
+                def read(*, tasks=None, instances=None, budget=None):
+                    kwargs = {} if tasks is None and instances is None else dict(task_ids=tasks, instance_ids=instances)
+                    with _schema_snapshot(conn):
+                        return read_queued(conn, 'scratch', _Budget() if budget is None else budget,
+                                           inventory.mappings, inventory.release, **kwargs)
+                def selected(**kwargs):
+                    return read(instances=frozenset({saved['instance']}), **kwargs)
+                def refuses(operation, code):
+                    before, transaction = conn.total_changes, conn.in_transaction
+                    try:
+                        operation()
+                    except (ValueError, PauseControlError) as exc:
+                        assert str(exc) == code, (case, type(exc).__name__, str(exc), code)
+                    else:
+                        raise AssertionError(case + ': original refusal was lost: ' + code)
+                    assert conn.total_changes == before and conn.in_transaction == transaction
+                @contextmanager
+                def damaged(table, operation):
+                    conn.execute('SAVEPOINT coding_reader_damage')
+                    triggers = list(conn.execute("SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND tbl_name=?", (table,)))
+                    for name, ddl in triggers:
+                        conn.execute('DROP TRIGGER "' + name.replace('"', '""') + '"')
+                    try:
+                        operation()
+                        for name, ddl in triggers:
+                            conn.execute(ddl)
+                        yield
+                    finally:
+                        conn.execute('ROLLBACK TO coding_reader_damage')
+                        conn.execute('RELEASE coding_reader_damage')
+                def pause(root_id, entries):
+                    conn.execute('INSERT INTO task_pause_controls(root_task_id,schema_version,held,generation,updated_at,actor,admission_journal_json) '
+                        'VALUES(?,1,0,0,?,?,?)', (root_id, '2026-11-14T00:00:04.000000Z', 'synthetic',
+                        _canonical(dict(version=1, entries=entries)).decode()))
+                def leaf_owner(graph):
+                    task = next(rows(conn, 'tasks', _Budget(), where='id=?', args=(graph['leaf_id'],)))
+                    return dict(graph['native'], id='synthetic-leaf-owner-' + graph['leaf_id'], task_id=task['id'],
+                        agent=task['assigned_agent'], session_id='synthetic-prepared-session', owner='coding', phase='prepared',
+                        started_at=None, fingerprint=dict(status=task['status'], block_kind=task['block_kind'],
+                            count=task['orchestration_step_count'], session_id=task['current_session_id'], agent=task['assigned_agent'],
+                            fanout=task['active_fanout'], jobs=task['blocked_on_job_ids'], parent=task['parent_task_id'],
+                            brief_digest=_hash(task['brief'].encode())))
+                def cancel(target):
+                    prior = read()
+                    with db._lock, ExitStack() as captures:
+                        conn.execute('BEGIN IMMEDIATE')
+                        members, instances = affected(conn, target, True, prior, _Budget())
+                        write_uncommitted(SimpleNamespace(db=db, slug='scratch', orchestrator=None), target,
+                            cascade=True, rationale='Private reader proof', actor='synthetic', transitions=[], captures=captures,
+                            saved=prior, selected=members, instances=instances, budget=_Budget(), canonical_audits=True)
+                        # Canonical retained input, not writer acceptance: the
+                        # old ordinary overlay writer uses spaced native JSON.
+                        for audit_id, payload in conn.execute("SELECT id,payload FROM audit_log WHERE action='coding_ordinary_cancellation'").fetchall():
+                            conn.execute('UPDATE audit_log SET payload=? WHERE id=?', (_canonical(json.loads(payload)).decode(), audit_id))
+                        conn.commit()
+                baseline = read()
+                assert set(baseline.runs) == {saved['instance']} and len(baseline.owners) == 3
+                if case == 'facts':
+                    other = populate_coding_start(db, reader_only=True, suffix='-other', prepared=saved)
+                    before = conn.total_changes
+                    complete, scoped = read(), selected()
+                    assert set(complete.runs) == {saved['instance'], other['instance']}
+                    assert same({saved['instance']: complete.runs[saved['instance']]}, scoped.runs)
+                    assert same(baseline.runs, scoped.runs) and baseline.admitted == scoped.admitted
+                    assert scoped.owners == {key: value for key, value in complete.owners.items() if value[1] == saved['instance']}
+                    assert same(scoped.runs, read(tasks=frozenset({saved['leaf_id']})).runs)
+                    assert scoped.cancellation_dependencies == baseline.cancellation_dependencies
+                    assert scoped.cancellation_comparisons == baseline.cancellation_comparisons
+                    reused = _Budget(consumed=1024, accepted_rows=1, traversed=10)
+                    assert same(scoped.runs, selected(budget=reused).runs)
+                    assert reused.consumed > 1024 and reused.accepted_rows > 1 and reused.traversed > 10
+                    assert read(instances=frozenset()).runs == {}
+                    refuses(lambda: read(instances=frozenset({'missing-instance'})), 'coding_saved_record_invalid')
+                    assert conn.total_changes == before and not conn.in_transaction
+                elif case == 'point_dependency':
+                    other = populate_coding_start(db, reader_only=True, suffix='-other', prepared=saved,
+                        revisit=saved['source']['task_id'])
+                    assert set(selected().runs) == {saved['instance'], other['instance']}
+                    assert set(read(instances=frozenset({other['instance']})).runs) == {saved['instance'], other['instance']}
+                    with damaged('workflow_coding_events', lambda: conn.execute('UPDATE workflow_coding_events SET event_digest=? WHERE instance_id=?',
+                            ('0' * 64, other['instance']))):
+                        refuses(selected, 'coding_saved_record_invalid')
+                elif case == 'selected_corruption':
+                    for table, mutation, code in (
+                        ('workflow_coding_events', lambda: conn.execute('UPDATE workflow_coding_events SET event_digest=? WHERE instance_id=?',
+                            ('0' * 64, saved['instance'])), 'coding_saved_record_invalid'),
+                        ('workflow_coding_attempts', lambda: conn.execute('UPDATE workflow_coding_attempts SET scope_digest=? WHERE instance_id=?',
+                            ('0' * 64, saved['instance'])), 'coding_saved_record_invalid'),
+                        ('task_results', lambda: conn.execute('UPDATE task_results SET session_id=? WHERE task_id=?',
+                            ('foreign', saved['source']['task_id'])), 'coding_source_history_invalid'),
+                        ('audit_log', lambda: conn.execute('INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES(?,?,?,?,?)',
+                            (saved['source']['task_id'], 'synthetic', 'coding_ordinary_cancellation', '{',
+                             '2026-11-14T00:00:05.000000Z')), 'coding_saved_record_invalid'),
+                    ):
+                        with damaged(table, mutation):
+                            refuses(selected, code)
+                            refuses(read, code)
+                    with damaged('task_pause_controls', lambda: pause(saved['source']['root_ancestor_id'], [])):
+                        conn.execute('UPDATE task_pause_controls SET admission_journal_json=?', ('{',))
+                        refuses(selected, 'pause_control_unavailable')
+                        refuses(read, 'pause_control_unavailable')
+                    with damaged('task_pause_controls', lambda: pause(saved['source']['root_ancestor_id'], [dict(saved['native'], owner='coding')])):
+                        refuses(selected, 'coding_saved_record_invalid')  # Source is never a Coding attempt.
+                        refuses(read, 'coding_saved_record_invalid')
+                    with damaged('task_pause_controls', lambda: pause(saved['source']['root_ancestor_id'],
+                            [dict(saved['native'], fingerprint=dict(saved['native']['fingerprint'], brief_digest='0' * 64))])):
+                        refuses(selected, 'coding_saved_record_invalid')  # Original source invocation identity.
+                        refuses(read, 'coding_saved_record_invalid')
+                    with damaged('task_pause_controls', lambda: pause('TASK-seq-load',
+                            [dict(saved['native'], fingerprint=dict(saved['native']['fingerprint'], brief_digest='0' * 64))])):
+                        refuses(selected, 'coding_saved_record_invalid')  # Reverse source reference in another root's row.
+                        refuses(read, 'coding_saved_record_invalid')
+                elif case == 'unrelated':
+                    other = populate_coding_start(db, reader_only=True, suffix='-other', prepared=saved)
+                    for table, mutation, code in (
+                        ('workflow_coding_events', lambda: conn.execute('UPDATE workflow_coding_events SET event_digest=? WHERE instance_id=?',
+                            ('0' * 64, other['instance'])), 'coding_saved_record_invalid'),
+                        ('audit_log', lambda: conn.execute('INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES(?,?,?,?,?)',
+                            (other['source']['task_id'], 'synthetic', 'coding_ordinary_cancellation', '{',
+                             '2026-11-14T00:00:05.000000Z')), 'coding_saved_record_invalid'),
+                        ('task_pause_controls', lambda: pause(other['source']['root_ancestor_id'], []), 'pause_control_unavailable'),
+                    ):
+                        with damaged(table, mutation):
+                            if table == 'task_pause_controls':
+                                conn.execute('UPDATE task_pause_controls SET admission_journal_json=?', ('{',))
+                            before = conn.total_changes
+                            scoped = selected()
+                            assert same(baseline.runs, scoped.runs) and baseline.admitted == scoped.admitted
+                            refuses(read, code)
+                            assert conn.total_changes == before
+                elif case == 'dependencies':
+                    other = populate_coding_start(db, reader_only=True, suffix='-other', prepared=saved, parent='synthetic-reader-root')
+                    assert set(selected().runs) == {saved['instance'], other['instance']}
+                    assert selected().cancellation_dependencies == {'synthetic-reader-root'}
+                    with damaged('workflow_coding_events', lambda: conn.execute('UPDATE workflow_coding_events SET event_digest=? WHERE instance_id=?',
+                            ('0' * 64, other['instance']))):
+                        refuses(selected, 'coding_saved_record_invalid')
+                    pause('synthetic-reader-root', [leaf_owner(saved)])
+                    conn.commit()
+                    cancel(saved['source']['task_id'])
+                    cancel(other['source']['task_id'])
+                    cancel('synthetic-reader-root')
+                    complete, scoped = read(), selected()
+                    assert same(complete.runs, scoped.runs) and complete.admitted == scoped.admitted
+                    assert scoped.cancellation_dependencies == {'synthetic-reader-root'}
+                    assert scoped.cancellation_comparisons and all(r['id'] == 'synthetic-reader-root' for r in scoped.cancellation_comparisons)
+                    assert all(e['run']['state'] == 'cancelled' for e in scoped.runs.values())
+                    overlay = conn.execute("SELECT id,payload FROM audit_log WHERE action='coding_ordinary_cancellation'").fetchone()
+                    assert overlay is not None and len(json.loads(overlay[1])['retained']) == 2
+                    with damaged('audit_log', lambda: conn.execute('UPDATE audit_log SET payload=? WHERE id=?', ('{', overlay[0]))):
+                        refuses(selected, 'coding_saved_record_invalid')
+                    wrong_anchor = json.loads(overlay[1])
+                    wrong_anchor['retained'][1]['event_digest'] = '0' * 64
+                    with damaged('audit_log', lambda: conn.execute('UPDATE audit_log SET payload=? WHERE id=?',
+                            (_canonical(wrong_anchor).decode(), overlay[0]))):
+                        refuses(selected, 'coding_saved_record_invalid')
+                    with damaged('audit_log', lambda: conn.execute("UPDATE audit_log SET payload='{}' WHERE action='task_cancelled'")):
+                        refuses(selected, 'coding_saved_record_invalid')
+                    with damaged('task_pause_controls', lambda: conn.execute('DELETE FROM task_pause_controls')):
+                        missing = selected().runs[saved['instance']]
+                        assert missing['native']['stages'][missing['attempt']['id']]['ownership_unknown'] is True
+                        assert missing['native']['ownership_unknown'] is True
+                        assert missing['native']['source_settled'] is False
+                elif case == 'default':
+                    other = populate_coding_start(db, reader_only=True, suffix='-other', prepared=saved)
+                    before = conn.total_changes
+                    ledger = _Budget()
+                    complete = read(budget=ledger)
+                    assert set(complete.runs) == {saved['instance'], other['instance']} and len(complete.owners) == 6
+                    assert same(baseline.runs[saved['instance']], complete.runs[saved['instance']])
+                    for table in ('workflow_coding_runs', 'workflow_coding_attempts', 'workflow_coding_events'):
+                        for row in rows(conn, table, _Budget()):
+                            assert complete.matches(table, row), ('default complete row missing', table, row.get('id'))
+                    golden = _canonical(dict(admitted={table: sorted(raw.hex() for raw in values)
+                        for table, values in complete.admitted.items()}, owners=complete.owners,
+                        dependencies=sorted(complete.cancellation_dependencies),
+                        ledger=[ledger.consumed, ledger.accepted_rows, ledger.traversed]))
+                    if os.environ.get('CODING_READER_GOLDEN_OUTPUT'):
+                        Path(os.environ['CODING_READER_GOLDEN_OUTPUT']).write_bytes(golden)
+                    assert conn.total_changes == before and not conn.in_transaction
+                print('PASS Coding retained selected reader:', case, flush=True)
+        if coding_reader_case:
+            raise SystemExit(0)
 
     if sys.argv[1:] in ([], ['--sequential-reuse'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted']):
         corruptions = (

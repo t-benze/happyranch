@@ -4882,3 +4882,26 @@ The existing `--s7a=unavailable` genuine legacy-storage fixture also asserts
 settings PUT returns `sequential_storage_unavailable` without writes. Its absent
 path retains the original complete legacy validator; installed sequential setup
 uses the scoped chain.
+
+THR-404 group 7a-C1 uses the same private schema shell with
+`WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --coding-reader=all`
+and Python 3.12. Individual selectors are `facts`, `selected_corruption`,
+`unrelated`, `dependencies`, `point_dependency`, `source` and `default`.
+They compare selected reader facts with the complete retained reader; damage
+selected event/attempt/callback/audit/native ownership; exclude disconnected
+event, ordinary-audit and journal corruption; close shared-root and reverse
+revisit dependencies; retain exact ordinary-overlay/native-audit checks and
+missing-preparation uncertainty; and exercise source refinement/operation
+conflicts plus complete defaults. `CODING_READER_GOLDEN_OUTPUT` on `default`
+exports canonical admitted bytes/ownership/dependency facts for a base/head
+comparison. No new test venue, required check or Product E2E trigger is added.
+
+The queued fixture drives original retained readers directly inside the caller's
+snapshot. Its older complete-schema reproducer keeps the documented 27/30-column
+expected-row mismatch and is not labeled passing global certification. Private
+ordinary-overlay input is canonicalized for the retained reader; this is not
+acceptance of the old writer's spaced native JSON. Neither limitation changes
+production in C1. Run Python 3.14/3.12 verification and clean-head local CI/OpenAPI
+through persistent jobs; authenticate receipts before publication. Full schema
+suites stay with the final serial head; integration stays SKIPPED under THR-243,
+retired units and Product E2E are NOT RUN.

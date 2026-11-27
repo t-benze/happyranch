@@ -367,6 +367,31 @@ is authorized by this source delivery.
 
 ## S7a: additive Founder read projections @2
 
+THR-404 group 7a-C1 adds opt-in task/instance roots to the retained Coding
+readers only. `coding_start_history.read_queued` closes task ancestry, children,
+revisit/reverse references, complete instance attempts/events, source callbacks,
+cancellation batch members/retained anchors and native journal namespaces to a
+fixed point before original replay. Addressed ordinary cancellation audits and
+reverse references still authenticate their exact native audits, full membership,
+overlays and deferred equality obligations. `cancellation_dependencies` includes
+unchanged causal rows as before. Selected native journals retain original source
+invocation equality, unknown-owner refusal and missing-settlement uncertainty.
+
+Selected source/capture inventories close capability ancestry, own/source
+admissions, operation and owner/result conflicts. Operation keys are encoded in
+original commands, so all operations of a selected principal remain in scope.
+Mapping witnesses, human publications and setup history retain their original
+complete shared contracts; `_SetupHistoryReader._load` and mapping `_history`
+are unchanged. Every acquisition uses the caller's existing ledger/deadline.
+
+Absent selection keeps complete behavior for every existing caller. Explicit
+empty queued roots select no runs; missing selected instances refuse. These
+reader options are not wired to a writer or a selected schema/mixed certificate
+in C1. Group 7a-C2 owns that integration and snapshot-local result. STOP-1,
+all-run rediscovery, run list/detail, document certification, mixed cancel and
+historical Final remain with their existing owners. No write-latency claim,
+budget/deadline increase, lock/transaction change or new required check follows.
+
 The existing @1 definition/settings/run/detail/singular-task-link APIs keep their
 original wire records, settings operations and R-M3-6 accepted Final redaction.
 They select @1 records in mixed storage; no generic record is cast into @1.

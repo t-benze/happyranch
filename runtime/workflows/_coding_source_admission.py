@@ -43,18 +43,27 @@ def decode_operation(audit, org_slug, budget):
     return body
 
 
-def source_storage(conn, org_slug, budget, setups, captures, mappings):
-    """Complete positive row expectations; unknown/future families still refuse."""
+def source_storage(conn, org_slug, budget, setups, captures, mappings, *,
+                   task_ids: frozenset[str] | None = None, authorization_ids: frozenset[str] | None = None):
+    """Original positive expectations; selected roots share the capture closure."""
     expected, histories, identities, admissions = {}, {}, set(), set()
     rows = {}
     prefix = f'org/{org_slug}/coding-capability/'
+    where, args = 'source_pin=? OR substr(namespace,1,?)=?', ('workflow-coding-capability@1', len(prefix), prefix)
+    if task_ids is not None or authorization_ids is not None or captures.selected:
+        _check(captures.selected and (task_ids is None or set(task_ids) <= captures.task_ids)
+               and (authorization_ids is None or set(authorization_ids) <= captures.authorization_ids))
+        captures.load()
+        from runtime.workflows.coding_start_history import _in
+        where, args = _in('id', captures.authorization_ids)
     for row in _bounded_rows(conn, 'workflow_authorization_revisions', _COLUMNS,
             tuple((kind,) for kind in _TYPES), budget,
-            where='source_pin=? OR substr(namespace,1,?)=?',
-            args=('workflow-coding-capability@1', len(prefix), prefix), maximum=1024):
+            where=where, args=args, maximum=1024):
         values = budget.row(row, _TYPES, counted=True, charged=True)
         _check(values[0] not in rows)
         rows[values[0]] = dict(zip(_COLUMNS, values, strict=True))
+    if captures.selected:
+        _check(captures.authorization_ids <= rows.keys())
     if not rows and mappings is None:
         return {}, {}
     captures.load()
