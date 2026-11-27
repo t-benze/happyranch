@@ -62,7 +62,7 @@ publishing or signed N→N+1 acceptance. Agents do not run these release operati
 
 ## Development
 
-### MAC-4a delivery boundary
+### MAC-4a: language preference and startup selection
 
 Language is an installation-local native preference: shared web content changes
 live, while native menus and dialogs use the confirmed preference on the next
@@ -74,6 +74,45 @@ unavailable remote choice must not silently start or select this computer.
 Confirmed removal or revocation clears the matching startup reference.
 MAC-4b owns subsequent close/Quit/Relaunch and updater gates; MAC-4a preserves
 the MAC-3 app-owned child and its Quit teardown, with no keep-running migration.
+
+`AppPreferences.swift` stores bounded nonsecret records in
+`~/Library/Application Support/HappyRanchApp/locale` and `startup-selection`.
+Locale accepts only `en`/`zh-CN`. Missing/invalid/unreadable locale falls back to
+native preferred language with `persisted:false`; valid saved data reports true.
+The Main dispatcher independently validates duplicate-free `app.locale.set`,
+serializes write → reply → delivered full-state publication → next choice, and
+rejects retired queued documents before writing. Writes use a private 0600 file,
+complete unbuffered write, file fsync, same-directory atomic replacement and
+parent-directory fsync (including newly created ancestor entries). Any failure,
+including after replacement, is session-only. Status reads retain that choice.
+App-owned native copy freezes at launch; ordinary GUI entry also sets the
+process-only AppleLanguages domain for system menus. No locale setter changes
+UserDefaults, target generation, daemon requests, transport or owner state.
+
+Startup records are `local`, `remote:<saved-network-profile-UUID>` or
+`remote:unsaved`; they contain no endpoint, computer name, invite or credential.
+A missing record defaults to local; invalid/unsafe/unreadable data gives remote
+recovery. Local launch configures/discovers the existing daemon and starts the
+owned child only if startable. Saved launch discovers Keychain metadata and
+resumes only the exact profile, then commits through Main's existing owner gate.
+A removed/unreadable profile, unsaved choice or failed reconnect leaves named
+Connection recovery with no local start or sole-record substitution. Readiness
+and Disconnect leave the startup choice unchanged. Confirmed Remove/Revoke of
+the matching binding clears it to local; confirmed save of selected session
+access promotes an unsaved choice to its saved profile. A failed startup-record
+write retains the actual session selection with `persisted:false` internally;
+next launch reads the last durable bytes, so no persistence promise is made.
+CLI invocations do not update GUI startup selection.
+
+Headless native coverage is in `AppPreferencesTests` and the `startup*` cases in
+`HomeInviteModelTests` (including `remoteAndInvalidStartupNeverLaunchLocalAndLocalStartsOnce`).
+After independent exact-head review, on an authorized Mac:
+`swift test --package-path app/mac --filter 'AppPreferencesTests|HomeInviteModelTests'`.
+The existing unfiltered native suite includes both. No sheet attachment is
+required by these cases. Native compile/tests and syscall-stage failure proof
+are **NOT RUN on Linux**, including post-replacement fsync fault injection;
+Linux Node relay evidence does not prove native durability or platform routing.
+No Mac build is authorized for the maker; MAC-4's shared allowance remains 0/8.
 
 ### MAC-3: app-owned local controls
 
@@ -154,7 +193,7 @@ warning. Confirmed removal also forgets only that binding's failed-save outcome,
 including revoked unsaved B while saved computer A remains selected. Failed or
 unknown removal retains the warning; saving another computer does not settle it.
 MAC-3 removes the legacy phase strip without reserving height or adding fallback
-copy. Settings owns local controls. MAC-4 language/launch/close/Quit/Relaunch
+copy. Settings owns local controls. MAC-4b close/Quit/Relaunch
 policy remains outside this cutover.
 
 After independent exact-head review, the existing Jenkins `SUITE=app-scheme`
@@ -385,10 +424,11 @@ protection before replying `"{}"`. Voluntary document navigation refuses missing
 dirty/failed or unresolved owner evidence and native non-GET transfers. Document
 loss retains unresolved-save uncertainty; a replacement clean summary cannot
 clear it. Unsolicited lifecycle decisions are refused; lifecycle actions remain
-a later slice. The locale field reports the native launch language. MAC-2b adds
-Settings/Connection hosting and app-menu entry as described above. Locale setters,
-local controls and launch policy remain later slices; the transport PR alone
-does not qualify those contracts.
+MAC-4b. MAC-4a's locale field reports the live native session preference and its
+acknowledged persistence, with native chrome fixed at launch. MAC-2b adds
+Settings/Connection hosting and app-menu entry; MAC-3 supplies local controls.
+See the MAC-4a section for selection-driven startup. The transport PR alone did
+not qualify those later contracts.
 
 CLIENT→HOME uses the same Main disconnect gate: absent Main or pending/unknown
 owner evidence preserves CLIENT and its bridge. Successful admission retires
@@ -822,8 +862,8 @@ for the same endpoint is a no-op and cannot reselect a disconnected target.
 No shared-web/protocol/schema, daemon credential, remote-allowlist, dependency
 or auth change is included.
 
-Dialog/menu/screenshot work is MAC-2b; Track B owns the web header. Quit/close/Relaunch gating and
-language remain MAC-4. Native tests use the existing SwiftPM targets; on an
+Dialog/menu/screenshot work is MAC-2b; Track B owns the web header. Quit/close/Relaunch gating remains MAC-4b.
+MAC-4a implements language and committed startup selection as described above. Native tests use the existing SwiftPM targets; on an
 authorized Mac after review: `swift test --package-path app/mac --filter 'HomeCandidateOwnershipTests|AppSchemeSwitchTests|ManagedOwnerFenceTests|ConnectionOwnershipStateTests|ManagedCandidateMembershipTests|HomeInviteModelTests'`.
 No native execution or Mac/Jenkins build is authorized for the maker.
 

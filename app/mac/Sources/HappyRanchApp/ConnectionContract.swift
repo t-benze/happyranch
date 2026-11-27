@@ -411,8 +411,9 @@ final class ConnectionComputerCatalog {
     func computers(known: Bool) -> Any {
         guard known, records.count <= 32 else { return NSNull() }
         return records.keys.sorted { $0.uuidString < $1.uuidString }.enumerated().map { index, id in
-            ["computerRef": records[id]!.ref, "label": Locale.preferredLanguages.first?.hasPrefix("zh") == true
-                ? "已保存的电脑 \(index + 1)" : "Saved computer \(index + 1)"]
+            // Existing web displayLabel owns live localization of this canonical
+            // generated token; a launch-language label would remain stale.
+            ["computerRef": records[id]!.ref, "label": "Saved computer \(index + 1)"]
         }
     }
 }

@@ -70,8 +70,21 @@ forwarding and placeholder-only page bootstrap. Its facade accepts the existing
 `app.ownersChanged` summary and acknowledges only after native validation/storage,
 so registered saves can pass their receipt gate. Native protects document
 navigation with owner evidence/non-GET transfers and retains lost unresolved-save
-uncertainty. Status/cancel and owner receipt do not implement the later Mac dialog/menu/locale/local-control slices;
-the separate native Connection view remains. Native timing and packaging
+uncertainty. MAC-2b hosts Settings/Connection in retained Main with native menu
+entry; MAC-3 supplies owned-child local controls. MAC-4a / PR #1909 adds the
+closed `app.locale.set` native preference: write/file fsync/atomic replace/
+directory fsync → reply → delivered full-state publication, with failed writes
+reported session-only. Web copy changes live; app-owned native menus/dialogs
+follow the preference on the next ordinary launch, with no automatic relaunch
+or locale owner prompt. Nonsecret `startup-selection` records committed local,
+exact saved profile or unsaved remote choice. Missing defaults local; invalid,
+unsaved and unavailable saved choices retain Connection recovery without local
+startup or sole-record substitution. Saved reconnect commits through Main's
+owner gate; readiness and Disconnect do not change the record. Confirmed matching
+Remove/Revoke clears it. Native files live under
+`~/Library/Application Support/HappyRanchApp/`, independently of daemon config,
+Keychain and target/org. Native compile/tests and platform acceptance are NOT RUN
+on Linux; MAC-4b lifecycle/updater/relaunch remains separate. Native timing and packaging
 acceptance are pending exact-reviewed-head QA; see
 [Mac app-scheme qualification](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
 Mac Connected requires the expected current document completion plus fresh

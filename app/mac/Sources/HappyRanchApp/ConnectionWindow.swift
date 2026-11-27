@@ -149,7 +149,7 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
     required init?(coder: NSCoder) { nil }
 
     private static func copy(_ en: String, _ zh: String) -> String {
-        Locale.preferredLanguages.first?.hasPrefix("zh") == true ? zh : en
+        AppLocalePreference.shared.nativeChinese ? zh : en
     }
 
     func invalidate(showNotice: Bool = true) {

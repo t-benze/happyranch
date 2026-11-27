@@ -9,7 +9,7 @@ final class HomeInviteModel: ObservableObject {
         case idle, checkingSavedAccess, validating, joining, pairing, awaitingApproval, saving, opening, readyToSwitch, connected, runtimeBusy, stopping
         case failed(HomeConnectionFailure), keychain(SavedAccessFailure)
 
-        var message: String {
+        @MainActor var message: String {
             switch self {
             case .idle: return "Idle"
             case .checkingSavedAccess: return "Checking saved access in login Keychain"
@@ -19,9 +19,9 @@ final class HomeInviteModel: ObservableObject {
             case .awaitingApproval: return "Awaiting Linux approval"
             case .saving: return "Saving access in login Keychain"
             case .opening: return "Opening runtime"
-            case .readyToSwitch: return Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "可以切换" : "Ready to switch"
+            case .readyToSwitch: return AppLocalePreference.shared.nativeChinese ? "可以切换" : "Ready to switch"
             case .connected: return "Connected"
-            case .runtimeBusy: return Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "忙碌" : "Busy"
+            case .runtimeBusy: return AppLocalePreference.shared.nativeChinese ? "忙碌" : "Busy"
             case .stopping: return "Closing local session; waiting for any storage write/readback to settle"
             case .failed(let failure): return failure.localizedDescription
             case .keychain(let failure): return failure.localizedDescription
@@ -107,6 +107,9 @@ final class HomeInviteModel: ObservableObject {
             self.observation = observation
         }
     }
+    /// App-owned nonsecret startup record. CLI and standalone models do not
+    /// change a GUI installation's startup selection.
+    var startupSelection: AppStartupSelection?
     private var active: ActiveSession?
     // Failed/unknown cleanup keeps its original owner alive and blocks identity reuse.
     private var retiring: [UUID: ActiveSession] = [:]
@@ -168,7 +171,7 @@ final class HomeInviteModel: ObservableObject {
             default: stage = "signing_in"
             }
         }
-        let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+        let zh = AppLocalePreference.shared.snapshot.current == "zh-CN"
         return ["kind": "remote", "id": id.uuidString, "name": zh ? "远程电脑" : "Remote computer",
                 "phase": stage, "deadline": expiresAt.map(ConnectionClientProjection.timestamp) as Any? ?? NSNull()]
     }
@@ -210,6 +213,9 @@ final class HomeInviteModel: ObservableObject {
         selectedFailure = nil
         connectionStates.commitCandidate(id: id)
         startActiveMonitor()
+        if let profile = credential.networkProfileID, unsaved == nil {
+            startupSelection?.commit(.saved(profile))
+        } else { startupSelection?.commit(.unsaved, profile: credential.networkProfileID) }
         if let previous { retire(previous) }
         return AppScheme.Target(id: id.uuidString, transport: transport, remote: true,
                                 health: health, accessUnsaved: hasUnsavedAccessWarning)
@@ -230,7 +236,10 @@ final class HomeInviteModel: ObservableObject {
     private func retire(_ previous: ActiveSession, revoked: Bool = false) {
         guard retirementTasks[previous.id] == nil else { return }
         retiring[previous.id] = previous; cleanupOutcomes[previous.id] = "unknown"
-        if revoked { revokedRetiring[previous.id] = previous }
+        if revoked {
+            revokedRetiring[previous.id] = previous
+            if let profile = previous.credential.networkProfileID { startupSelection?.clear(profile) }
+        }
         retirementTasks[previous.id] = Task {
             do {
                 try await previous.session.stop()
@@ -336,7 +345,14 @@ final class HomeInviteModel: ObservableObject {
             "Connect to your home network / Retry. Saved access needs no new invite while its grant remains valid."
     }
 
-    func prepare(reconnectSingle: Bool = true) {
+    func startupUnavailable() {
+        guard !prepared, !busy else { return }
+        selectedFailure = .identityUnavailable
+        phase = .failed(.identityUnavailable)
+        needsNewInvite = true
+    }
+
+    func prepare(reconnectSingle: Bool = true, startupProfile: UUID? = nil) {
         guard !prepared, !busy else { return }
         prepared = true
         let token = lifetime
@@ -362,8 +378,13 @@ final class HomeInviteModel: ObservableObject {
                 selectedHomeID = savedHomes.first?.id
                 phase = .idle
                 operation = nil
-                // A single saved computer is the ordinary quit/reopen path.
-                if reconnectSingle, savedHomes.count == 1 { reconnect() }
+                if let startupProfile {
+                    // Resolve the exact durable profile. Never substitute the
+                    // sole/first saved computer if it disappeared.
+                    selectedHomeID = savedHomes.first(where: { $0.id == startupProfile })?.id
+                    if selectedHomeID != nil { reconnect() }
+                    else { selectedFailure = .identityUnavailable; phase = .failed(.identityUnavailable) }
+                } else if reconnectSingle, savedHomes.count == 1 { reconnect() }
             } catch {
                 guard lifetime == token else { return }
                 phase = .keychain((error as? SavedAccessFailure) ?? .unavailable)
@@ -602,6 +623,7 @@ final class HomeInviteModel: ObservableObject {
         needsReplacementConsent = false
         if candidateID == nil, active?.credential.binding == credential.binding {
             active?.unsaved = nil; active?.saveFailure = nil
+            startupSelection?.commit(.saved(id))
         }
     }
 
@@ -642,6 +664,7 @@ final class HomeInviteModel: ObservableObject {
                     try await store.save(credential)
                     guard active === selected else { return }
                     selected.unsaved = nil; selected.saveFailure = nil
+                    if let id = credential.networkProfileID { startupSelection?.commit(.saved(id)) }
                     unconfirmedSaves.removeAll { $0.binding == credential.binding }
                     if let id = credential.networkProfileID {
                         records[id] = credential
@@ -840,6 +863,7 @@ final class HomeInviteModel: ObservableObject {
         webURL = nil
         candidateOutcome = "failed"; connectionStates.cancelCandidate()
         if failure == .revoked {
+            if let profile = activeCredential?.networkProfileID { startupSelection?.clear(profile) }
             pendingRemoval = activeCredential
             unsaved = nil; candidateSaveFailure = nil
         }
@@ -866,7 +890,10 @@ final class HomeInviteModel: ObservableObject {
         // immediate; teardown waits for its independently observed result.
         if let saving { cancelledSave = saving }
         else { old?.cancel() }
-        if finalPhase == .failed(.revoked) { pendingRemoval = activeCredential }
+        if finalPhase == .failed(.revoked) {
+            if let profile = activeCredential?.networkProfileID { startupSelection?.clear(profile) }
+            pendingRemoval = activeCredential
+        }
         attemptID = UUID(); let token = lifetime
         confirmation = nil; loadedURL = nil
         expiryTask?.cancel(); navigationDeadline?.cancel(); candidateMonitor?.cancel(); candidateMonitor = nil
@@ -1047,6 +1074,7 @@ final class HomeInviteModel: ObservableObject {
         guard let id = credential.networkProfileID,
               pendingRemoval?.binding == credential.binding,
               pendingRemoval?.networkProfileID == id else { return }
+        startupSelection?.clear(id)
         records.removeValue(forKey: id); savedHomes.removeAll { $0.id == id }
         unconfirmedSaves.removeAll { $0.binding == credential.binding }
         if selectedHomeID == id { selectedHomeID = savedHomes.first?.id }

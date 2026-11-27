@@ -14,6 +14,11 @@ public enum AppEntry {
             AppSchemeQualification.run(arguments)
         }
         guard arguments.first?.hasPrefix("--connection-client") == true else {
+            // Process-only system-menu language, derived from the durable store.
+            // It never persists UserDefaults or changes language during this launch.
+            var domain = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+            domain["AppleLanguages"] = [AppLocalePreference.shared.launchLocale]
+            UserDefaults.standard.setVolatileDomain(domain, forName: UserDefaults.argumentDomain)
             HappyRanchApp.main()
             return
         }

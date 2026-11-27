@@ -79,3 +79,32 @@ test('Mac capture excludes panes clipped by hidden ancestors instead of exhausti
   assert.deepEqual(scrollers, [settings]);
   assert.equal(result.reduce((n, p) => n + p.pages, 0), 5);
 });
+
+test('Mac locale relay preserves exact JSON, admission, string errors and state delivery without retries', async () => {
+  const posts = [];
+  const refusal = JSON.stringify({ code: 'invalidRequest', effect: 'none', recovery: 'none' });
+  const page = relay(async item => {
+    posts.push(item);
+    if (item.command === 'app.locale.set') throw new Error(refusal);
+    return '{}';
+  });
+  const raw = '{"schema":2,"locale":"en","locale":"zh-CN"}';
+  const call = page.happyranchConnection.call('app.locale.set', raw);
+  await Promise.resolve();
+  assert.equal(posts.length, 0);
+  page.__hrAppAdmit(page.__hrAppContext);
+  await assert.rejects(call, error => error === refusal);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].command, 'app.locale.set');
+  assert.equal(posts[0].data, raw, 'native must receive duplicates unchanged for independent validation');
+  await assert.rejects(page.happyranchConnection.call('app.locale.set', {}), error => JSON.parse(error).code === 'invalidRequest');
+  assert.equal(posts.length, 1, 'invalid type cannot enter native and failures never retry');
+  const states = [];
+  const off = page.happyranchConnection.on('app.stateChanged', raw => states.push(raw));
+  const state = '{"schema":2,"locale":{"current":"zh-CN","persisted":false}}';
+  page.__hrAppState(state);
+  off();
+  page.__hrAppState('ignored');
+  assert.deepEqual(states, [state]);
+  assert.equal(posts.filter(item => item.command !== 'subscribe').length, 1, 'locale never sends a lifecycle/target command');
+});

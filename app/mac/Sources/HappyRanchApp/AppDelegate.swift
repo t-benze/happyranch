@@ -76,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             if let old = self.clientBridge { self.homeInvite.retireBridge(old); self.clientBridge = nil }
             return true
         }
+        resumeStartupSelection()
         scheme.actionResult = { [weak self] in
             guard let self else { return [:] }
             let outcomes = self.homeInvite.cleanupOutcomes.values
@@ -101,7 +102,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// Explicit direct-connection completion rebinds the retained Main. Candidate
     /// readiness never calls this; its only selection path is commitSwitch.
     func selectMainTransport(id: String, transport: any AppAPITransport, remote: Bool, promptURL: String? = nil) -> String? {
-        mainScheme?.selectTransport(id: id, transport: transport, remote: remote, promptURL: promptURL)
+        let refusal = mainScheme?.selectTransport(id: id, transport: transport, remote: remote, promptURL: promptURL)
+        if refusal == nil {
+            startupProfile = nil
+            startupSelection.commit(remote ? .unsaved : .local)
+        }
+        return refusal
     }
 
     func showConnection() {
@@ -157,7 +163,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         didSet { if oldValue !== clientBridge { appTargetGeneration = UUID() } }
     }
     let managedJoin = ManagedJoinModel()
-    let homeInvite = HomeInviteModel()
+    let homeInvite: HomeInviteModel
+    private let startupSelection: AppStartupSelection
+    private var startupProfile: UUID?
+    private var startupCandidate: UUID?
+    private var startupBegan = false
     @Published var clientLane: ClientBridge.Lane = .managed {
         didSet { if oldValue != clientLane { connectionWindow?.invalidate() } }
     }
@@ -165,8 +175,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     private var managedJoinObservation: AnyCancellable?
     private var homeInviteObservations: Set<AnyCancellable> = []
 
-    override init() {
+    override convenience init() { self.init(startupSelection: .shared) }
+
+    init(startupSelection: AppStartupSelection, homeInvite: HomeInviteModel = HomeInviteModel()) {
+        self.startupSelection = startupSelection
+        self.homeInvite = homeInvite
         super.init()
+        homeInvite.startupSelection = startupSelection
         managedJoinObservation = managedJoin.$phase.sink { [weak self] phase in
             guard let self, self.clientLane == .managed, !self.homeInvite.hasActiveSession else { return }
             self.connectionState = phase.connectionState
@@ -180,6 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             Task { @MainActor in
                 guard let self else { return }
                 if self.clientLane == .managed { self.connectionState = self.homeInvite.connectionStates.state }
+                self.resumeStartupSelection()
                 self.objectWillChange.send()
             }
         }.store(in: &homeInviteObservations)
@@ -221,6 +237,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// Both paths consume the current launch's exit at most once.
     private var managedExitSettled = false
 
+    /// Cold-launch policy only. Dialog entry/status reads never call this.
+    func beginStartupSelection(home: String) {
+        guard !startupBegan else { return }
+        startupBegan = true
+        switch startupSelection.choice {
+        case .local:
+            connectionRolePreference = .home
+            supervisor.configure(homeDir: home)
+            discoverExistingDaemon(home: home)
+            refreshDerivedState()
+            if canStart { startDaemon() }
+        case .saved(let profile):
+            connectionRolePreference = .client
+            startupProfile = profile
+            homeInvite.prepare(reconnectSingle: false, startupProfile: profile)
+        case .unsaved, .unavailable:
+            connectionRolePreference = .client
+            homeInvite.startupUnavailable()
+            // Main remains available with Connection recovery; no saved access
+            // is guessed and no local child/discovery is started.
+        }
+        refreshDerivedState()
+    }
+
+    /// An exact saved choice may complete through the existing Main owner gate.
+    /// Failure/cancellation never substitutes another target or starts local.
+    func resumeStartupSelection() {
+        guard let profile = startupProfile else { return }
+        if homeInvite.candidateOutcome != nil || homeInvite.selectedFailure != nil {
+            startupProfile = nil; return
+        }
+        if let candidate = homeInvite.candidateID {
+            if let original = startupCandidate, original != candidate { startupProfile = nil; return }
+            startupCandidate = candidate
+        }
+        guard homeInvite.phase == .readyToSwitch else { return }
+        guard homeInvite.bridgeActiveComputerID == profile else { startupProfile = nil; return }
+        if let mainScheme, mainScheme.commitSwitch() == nil { startupProfile = nil }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Foreground the app as a regular Dock-present application so a bare
         // `swift run` executable gets a visible window without requiring a .app bundle.
@@ -248,17 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             AppDelegate.launchDiagnosticLogLine(resolvedHome: home)
         )
 
-        // Only configure the supervisor when the user intent is HOME or undetermined.
-        // For CLIENT machines, skip supervisor.configure entirely — the role will
-        // be derived from the explicit preference (ConnectionRole.detect returns
-        // .client before the preference is consulted, and the preference takes priority).
-        if connectionRolePreference != .client {
-            supervisor.configure(homeDir: home)
-        }
-        refreshDerivedState()
-
-        // Check for existing daemon
-        discoverExistingDaemon()
+        beginStartupSelection(home: home)
         configureUpdater()
         showMoveToApplicationsNoticeIfNeeded()
     }
@@ -393,10 +439,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             diagnostics.recordUpdaterEvent("Install postponed by user")
         case .confirmRestart:
             let alert = NSAlert()
-            alert.messageText = "Restart HappyRanch to install the update?"
-            alert.informativeText = "HappyRanch will stop and restart. Any agent work that starts before it stops will be interrupted."
-            alert.addButton(withTitle: "Restart now")
-            alert.addButton(withTitle: "Later")
+            alert.messageText = (AppLocalePreference.shared.nativeChinese ? "重新启动 HappyRanch 以安装更新？" : "Restart HappyRanch to install the update?")
+            alert.informativeText = (AppLocalePreference.shared.nativeChinese ? "HappyRanch 将停止并重新启动。在停止前开始的智能体工作将被中断。" : "HappyRanch will stop and restart. Any agent work that starts before it stops will be interrupted.")
+            alert.addButton(withTitle: (AppLocalePreference.shared.nativeChinese ? "立即重新启动" : "Restart now"))
+            alert.addButton(withTitle: (AppLocalePreference.shared.nativeChinese ? "稍后" : "Later"))
             let requestID = updateRequestID
             let handle = currentHandle
             let response = alert.runModal()
@@ -416,11 +462,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             }
         case .prompt(let count):
             let alert = NSAlert()
-            alert.messageText = count == nil ? "Work status is unavailable" : "Agent work is running"
-            alert.informativeText = "HappyRanch must stop its daemon before updating. You can also update when you quit."
-            alert.addButton(withTitle: "Update when they finish")
-            alert.addButton(withTitle: "Update now and stop them")
-            alert.addButton(withTitle: "Later")
+            alert.messageText = count == nil ? (AppLocalePreference.shared.nativeChinese ? "工作状态不可用" : "Work status is unavailable") : (AppLocalePreference.shared.nativeChinese ? "智能体工作正在运行" : "Agent work is running")
+            alert.informativeText = (AppLocalePreference.shared.nativeChinese ? "HappyRanch 必须先停止后台服务才能更新。你也可以在退出时更新。" : "HappyRanch must stop its daemon before updating. You can also update when you quit.")
+            alert.addButton(withTitle: (AppLocalePreference.shared.nativeChinese ? "工作完成后更新" : "Update when they finish"))
+            alert.addButton(withTitle: (AppLocalePreference.shared.nativeChinese ? "立即更新并停止工作" : "Update now and stop them"))
+            alert.addButton(withTitle: (AppLocalePreference.shared.nativeChinese ? "稍后" : "Later"))
             alert.buttons[1].isEnabled = count != nil
             let requestID = updateRequestID
             let handle = currentHandle
@@ -485,9 +531,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         UserDefaults.standard.set(true, forKey: key)
         diagnostics.recordUpdaterEvent("Move to Applications notice shown")
         let alert = NSAlert()
-        alert.messageText = "Move HappyRanch to Applications"
-        alert.informativeText = "Move HappyRanch to your Applications folder and reopen it there so automatic updates can be installed."
-        alert.addButton(withTitle: "OK")
+        alert.messageText = (AppLocalePreference.shared.nativeChinese ? "将 HappyRanch 移到“应用程序”" : "Move HappyRanch to Applications")
+        alert.informativeText = (AppLocalePreference.shared.nativeChinese ? "请将 HappyRanch 移到“应用程序”文件夹并从那里重新打开，以便安装自动更新。" : "Move HappyRanch to your Applications folder and reopen it there so automatic updates can be installed.")
+        alert.addButton(withTitle: (AppLocalePreference.shared.nativeChinese ? "好" : "OK"))
         alert.runModal()
     }
 
@@ -579,8 +625,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
 
     // MARK: - External daemon discovery
 
-    private func discoverExistingDaemon() {
-        let home = daemonHome()
+    private func discoverExistingDaemon(home: String) {
         let portFile = URL(fileURLWithPath: "\(home)/daemon.port")
         let pidFile = URL(fileURLWithPath: "\(home)/daemon.pid")
 
@@ -1152,7 +1197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
 
     func confirmLocalRestart() async -> Bool {
         guard let window = mainScheme?.localPromptWindow, window.attachedSheet == nil else { return false }
-        let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+        let zh = AppLocalePreference.shared.nativeChinese
         let name = Host.current().localizedName ?? (zh ? "此电脑" : "This computer")
         let alert = Self.localRestartAlert(zh: zh, computerName: name)
         let timeout = Task { @MainActor in

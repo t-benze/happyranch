@@ -16,42 +16,42 @@ struct HappyRanchApp: App {
             CommandGroup(replacing: .newItem) {}
 
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") { appDelegate.checkForUpdates() }
+                Button(AppLocalePreference.shared.nativeChinese ? "检查更新…" : "Check for Updates…") { appDelegate.checkForUpdates() }
                     .disabled(!appDelegate.canCheckForUpdates || appDelegate.hasPendingUpdate)
                 if appDelegate.hasPendingUpdate {
-                    Button("Install Downloaded Update…") { appDelegate.resumePendingUpdate() }
+                    Button(AppLocalePreference.shared.nativeChinese ? "安装已下载的更新…" : "Install Downloaded Update…") { appDelegate.resumePendingUpdate() }
                 }
             }
 
             CommandGroup(replacing: .appSettings) {
-                Button(Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "设置…" : "Settings…") {
+                Button(AppLocalePreference.shared.nativeChinese ? "设置…" : "Settings…") {
                     appDelegate.showSettings()
                 }
                 .keyboardShortcut(",", modifiers: .command)
-                Button(Locale.preferredLanguages.first?.hasPrefix("zh") == true ? "连接…" : "Connection…") {
+                Button(AppLocalePreference.shared.nativeChinese ? "连接…" : "Connection…") {
                     appDelegate.showConnection()
                 }
             }
 
-            CommandMenu("Daemon") {
-                Button("Start Daemon") {
+            CommandMenu(AppLocalePreference.shared.nativeChinese ? "后台服务" : "Daemon") {
+                Button(AppLocalePreference.shared.nativeChinese ? "启动后台服务" : "Start Daemon") {
                     appDelegate.startDaemon()
                 }
                 .disabled(!appDelegate.canStart)
 
-                Button("Stop Daemon") {
+                Button(AppLocalePreference.shared.nativeChinese ? "停止后台服务" : "Stop Daemon") {
                     appDelegate.stopDaemonWithConfirmation()
                 }
                 .disabled(!appDelegate.canStop)
 
-                Button("Restart Daemon") {
+                Button(AppLocalePreference.shared.nativeChinese ? "重启后台服务" : "Restart Daemon") {
                     appDelegate.restartDaemon()
                 }
                 .disabled(!appDelegate.canRestart)
 
                 Divider()
 
-                Button("Show Remote Access…") {
+                Button(AppLocalePreference.shared.nativeChinese ? "显示远程访问…" : "Show Remote Access…") {
                     appDelegate.showRemoteAccess = true
                 }
 
@@ -63,14 +63,14 @@ struct HappyRanchApp: App {
 
                 Divider()
 
-                Button("Show Diagnostics…") {
+                Button(AppLocalePreference.shared.nativeChinese ? "显示诊断…" : "Show Diagnostics…") {
                     appDelegate.showDiagnostics = true
                 }
 
                 Divider()
 
                 // Status line — disabled to appear as a non-interactive indicator
-                Text("Status: \(appDelegate.stateText)")
+                Text("\(AppLocalePreference.shared.nativeChinese ? "状态" : "Status"): \(appDelegate.stateText)")
             }
         }
     }
@@ -92,8 +92,8 @@ struct HappyRanchApp: App {
         alert.messageText = title
         alert.informativeText = body
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Switch")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: AppLocalePreference.shared.nativeChinese ? "切换" : "Switch")
+        alert.addButton(withTitle: AppLocalePreference.shared.nativeChinese ? "取消" : "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
     }
 
@@ -108,17 +108,17 @@ struct HappyRanchApp: App {
         _ appDelegate: AppDelegate,
         confirmed: @MainActor (String, String) -> Bool = HappyRanchApp.presentRoleSwitchAlert
     ) {
-        let title = "Change Connection Role"
+        let title = (AppLocalePreference.shared.nativeChinese ? "更改连接角色" : "Change Connection Role")
         let body: String
 
         if appDelegate.roleSwitchRequiresTeardown {
             body = appDelegate.connectionRole == .home
-                ? "Switching to Client will stop the running daemon. Are you sure?"
-                : "Switching to Home will disconnect from the remote runtime. Are you sure?"
+                ? (AppLocalePreference.shared.nativeChinese ? "切换到客户端将停止正在运行的后台服务。确定继续吗？" : "Switching to Client will stop the running daemon. Are you sure?")
+                : (AppLocalePreference.shared.nativeChinese ? "切换到本机会断开远程运行时的连接。确定继续吗？" : "Switching to Home will disconnect from the remote runtime. Are you sure?")
         } else {
             body = appDelegate.connectionRole == .home
-                ? "Switch to Client mode? You will connect to a remote HappyRanch runtime."
-                : "Switch to Home mode? You will run the HappyRanch daemon locally."
+                ? (AppLocalePreference.shared.nativeChinese ? "切换到客户端模式？你将连接到远程 HappyRanch 运行时。" : "Switch to Client mode? You will connect to a remote HappyRanch runtime.")
+                : (AppLocalePreference.shared.nativeChinese ? "切换到本机模式？你将在本地运行 HappyRanch 后台服务。" : "Switch to Home mode? You will run the HappyRanch daemon locally.")
         }
 
         if confirmed(title, body) {
