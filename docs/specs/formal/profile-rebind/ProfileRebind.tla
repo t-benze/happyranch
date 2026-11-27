@@ -7,10 +7,10 @@ vars == <<pending, canonical, publishedRoster, phase, owner, binding, held,
           startupEvidence, startupChecked, startupHeld, nativeState>>
 StartupVars == <<startupEvidence, startupChecked, startupHeld, nativeState>>
 Evidence == {"matching", "unrelated", "ordinary", "mixed", "partial", "active", "live", "scoped",
-             "ambiguous-remove", "other-invocation", "not-published", "ordinary-installed"}
+             "ambiguous-remove", "other-invocation", "not-published", "missing-installed"}
 Home == [c \in Consumers |-> c]
 Forward == \A o \in Orgs : phase[o] = "prepared"
-Finalized == \A o \in Orgs : phase[o] = "published"
+Finalized == \A o \in Orgs : phase[o] \in {"published", "later-installed"}
 
 Init == /\ pending = Consumers
         /\ canonical = [c \in Consumers |-> "removed-profile"]
@@ -56,6 +56,12 @@ Publish(o) == /\ startupChecked /\ ~startupHeld
               /\ publishedRoster' = [c \in Consumers |-> IF Home[c] = o THEN canonical[c] ELSE publishedRoster[c]]
               /\ UNCHANGED <<pending, canonical, owner, binding, held, StartupVars>>
 
+(* A later ordinary journal preserves the original installed remove evidence. *)
+OrdinaryPublish(o) == /\ startupChecked /\ ~startupHeld /\ Finalized
+                      /\ phase[o] = "published"
+                      /\ phase' = [phase EXCEPT ![o] = "later-installed"]
+                      /\ UNCHANGED <<pending, canonical, publishedRoster, owner, binding, held, StartupVars>>
+
 (* Crash drops only process-local ownership. Original identity, operation kind,
    member set and generation are constants, never a new operation or owner. *)
 Crash == /\ startupChecked /\ held' = FALSE
@@ -63,12 +69,12 @@ Crash == /\ startupChecked /\ held' = FALSE
          /\ UNCHANGED <<pending, canonical, publishedRoster, phase, owner, binding, startupEvidence, nativeState>>
 
 Next == Classify \/ Adopt \/ Reconnect \/ Release \/ Crash
-        \/ (\E c \in Consumers : Move(c)) \/ (\E o \in Orgs : Publish(o))
+        \/ (\E c \in Consumers : Move(c)) \/ (\E o \in Orgs : Publish(o) \/ OrdinaryPublish(o))
 Spec == Init /\ [][Next]_vars
 TypeOK == /\ pending \subseteq Consumers
           /\ canonical \in [Consumers -> {"removed-profile", "builtin", "reconnected-profile"}]
           /\ publishedRoster \in [Consumers -> {"removed-profile", "builtin", "reconnected-profile"}]
-          /\ phase \in [Orgs -> {"prepared", "published"}]
+          /\ phase \in [Orgs -> {"prepared", "published", "later-installed"}]
           /\ held \in BOOLEAN
           /\ startupEvidence \in Evidence
           /\ startupChecked \in BOOLEAN /\ startupHeld \in BOOLEAN
@@ -76,7 +82,7 @@ TypeOK == /\ pending \subseteq Consumers
 OriginalOwner == /\ owner = "original-remove"
                  /\ \A o \in Orgs : binding[o] = owner
 ClosureFence == pending # {} => \A o \in Orgs : phase[o] = "prepared"
-CurrentRoster == \A c \in Consumers : phase[Home[c]] = "published" => publishedRoster[c] = canonical[c]
+CurrentRoster == \A c \in Consumers : phase[Home[c]] \in {"published", "later-installed"} => publishedRoster[c] = canonical[c]
 StartupIsolation == /\ (startupChecked /\ ~startupHeld => startupEvidence = "matching")
                     /\ (held => startupChecked /\ ~startupHeld)
 EligibleStartup == startupChecked /\ startupEvidence = "matching" /\ (Forward \/ Finalized) => ~startupHeld

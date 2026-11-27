@@ -10,10 +10,12 @@ remove evidence permits explicit adoption while unrelated, ordinary-journal,
 mixed-profile, partially-forward, active, live and scoped evidence holds it.
 Classification and adoption preserve the native record's unknown state.
 TASK-18959 extends classification through finalization: matching published remove
-and latest installed journal evidence with nothing active also permits startup.
+and its exact installed journal evidence with nothing active also permits startup.
 No prepared fence remains, so this case enables neither adoption nor deferral.
 Evidence classes include ambiguous removes, mismatched invocation or operation
-state, and an ordinary latest installed journal; they retain their holds.
+state, and missing installed evidence; they retain their holds.
+TASK-19521 adds `OrdinaryPublish`: later ordinary installed journals preserve the
+original remove evidence through Crash and Classify, without adoption or deferral.
 
 | Action / invariant | Production boundary |
 | --- | --- |
@@ -21,7 +23,7 @@ state, and an ordinary latest installed journal; they retain their holds.
 | Move / Reconnect | Consumer canonical segment plus `rebind_consumer`; ordinary/claimed profile writer with the existing validated adapter binder. |
 | Publish / ClosureFence | `_finalize` and `_republish` retain every prepared journal while any captured org has incoherent dependencies. |
 | CurrentRoster | Consumer completion captures the changed canonical roster outside leases, validates its bookends, and passes it to bound publication; startup recovery also uses its captured roster. |
-| Classify / StartupIsolation / EligibleStartup | `startup_forward_remove_profile` checks local unknown remove evidence. The forward case retains the original prepared journal, complete-group `_rebind_adoption` and deferred synchronization. With nothing active, finalized evidence requires a single published remove matching the latest namespace-installed coordinator journal and exactly one remove in the org plus the unambiguous writer audit pair described below; it needs no adoption or deferral. Other native ownership still holds. |
+| Classify / StartupIsolation / EligibleStartup | `startup_forward_remove_profile` checks local unknown remove evidence. The forward case retains the original prepared journal, complete-group `_rebind_adoption` and deferred synchronization. With nothing active, finalized evidence requires a single published remove matching exactly one namespace-installed journal by exact `profile-coordinator:<coordinator_invocation>` identity and exactly one remove in the org plus the unambiguous writer audit pair described below; it needs no adoption or deferral. Other native ownership still holds. |
 | UnknownPreserved | Neither startup exception writes or settles the historical native record. |
 | Crash | Process-local interval ownership and startup classification are lost. Durable operation, binding and native evidence remain. |
 
@@ -32,15 +34,18 @@ validation, filesystem/SQLite crash atomicity or unconditional liveness. Partial
 file-phase publication and its original recovery owner remain the existing
 publication protocol's responsibility. The finite evidence classes abstract the
 Python predicates and cross-org checks. All-published phase abstracts the matching
-published operation and installed journal together; operation/journal mismatches
+published operation and installed journal together, including the later-installed
+phase after an ordinary publication; operation/journal mismatches
 and multiple removes are ineligible evidence classes. The ambiguous-remove class
 also abstracts competing native remove attempts, including insertion failure
 before an operation exists. Finalized Python classification additionally requires
 that the specific writer's validated ACTIVE/UNKNOWN pair is the entire history
 of both remove publishers, in audit ID order, with timezone-aware timestamps
-strictly bracketing operation creation. Missing/duplicate records, settled
-competitors and tied/invalid/non-bracketing timestamps retain the hold. The model
-does not prove SQL row selection or writer-to-operation binding. The finite model
+strictly bracketing operation creation. Missing/duplicate matching installed
+journals or audit records, settled competitors and tied/invalid/non-bracketing
+timestamps retain the hold. The missing-installed evidence class abstracts absent
+or nonunique installed provenance. The model does not prove SQL row selection or
+writer-to-operation binding. The finite model
 reaches finalized startup through Publish, Crash and Classify; the standalone restart
 regressions exercise those actual boundaries. A retained startup hold is not an
 enabled adoption. No runtime dependency, CI gate or scheduled run is added.
@@ -61,11 +66,11 @@ and ClosureFence respectively; they are never passing production modes.
 `negative-startup.cfg` deliberately exempts every native evidence class and must
 violate StartupIsolation at Classify.
 
-Actual TLC2.19 / OpenJDK21 results, 2026-11-24, workers1/fp0/seed1:
+Actual TLC2.19 / OpenJDK21.0.13.1 results, 2026-11-27, workers1/fp0/seed1:
 
 | Config | Exit | Result |
 | --- | --- | --- |
-| current.cfg | 0 | No error; 164 generated / 87 distinct, queue0, depth8. TypeOK, OriginalOwner, ClosureFence, CurrentRoster, StartupIsolation, EligibleStartup, UnknownPreserved. |
+| current.cfg | 0 | No error; 244 generated / 123 distinct, queue0, depth10. TypeOK, OriginalOwner, ClosureFence, CurrentRoster, StartupIsolation, EligibleStartup, UnknownPreserved. |
 | negative-owner.cfg | 12 expected | OriginalOwner counterexample at Adopt, depth3; 25 generated/distinct. |
 | negative-closure.cfg | 12 expected | ClosureFence counterexample after Classify, Adopt, one consumer Move and Publish of that consumer's org, depth5; 51 generated / 37 distinct. |
 | negative-startup.cfg | 12 expected | StartupIsolation counterexample at Classify, depth2; 14 generated/distinct. |

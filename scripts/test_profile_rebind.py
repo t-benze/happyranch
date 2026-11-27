@@ -155,10 +155,19 @@ async def test_restart_forward_remove_allows_explicit_rebind(tmp_path: Path, act
 
 
 @pytest.mark.parametrize('publisher', ['remove_runtime_executor_profile', 'remove_adapter_entry'])
-async def test_restart_finalized_remove_loads_without_adoption(tmp_path: Path, publisher: str) -> None:
+@pytest.mark.parametrize('later_publication', [False, True], ids=['latest-remove', 'later-ordinary'])
+async def test_restart_finalized_remove_loads_without_adoption(
+        tmp_path: Path, publisher: str, later_publication: bool) -> None:
     async with removed(tmp_path, publisher=publisher) as f:
         with f.coordinator.operation(['dsh'], operation_kind='register', publisher='direct_connect_projection'):
             bind_direct_connect_adapter(f.entry, operation_id='synthetic-finalized', via='direct_connect')
+        if later_publication:
+            f.org.workflow_authority.publish_current(publisher='founder_create_agent')
+            latest = f.org.db._conn.execute(
+                'SELECT publisher_invocation,state FROM workflow_publication_journals ORDER BY rowid DESC LIMIT 1',
+            ).fetchone()
+            assert latest['state'] == 'cache_installed'
+            assert latest['publisher_invocation'].startswith('workflow-writer:founder_create_agent:')
         before, old_fence = operation(f.org), fence(f.org)
         assert before['state'] == 'published'
         history = NativeWriterStore(f.org.db, f.org.slug).history_uncommitted()
@@ -173,7 +182,7 @@ async def test_restart_finalized_remove_loads_without_adoption(tmp_path: Path, p
 
 
 @pytest.mark.parametrize('case', ['other-invocation', 'not-published', 'ordinary-journal',
-                                  'ordinary-installed', 'scoped-agent', 'scoped-team', 'active',
+                                  'missing-installed', 'duplicate-installed', 'scoped-agent', 'scoped-team', 'active',
                                   'unrelated', 'ambiguous-remove', 'mixed-profile', 'not-remove',
                                   'failed-insertion', 'settled-remove-attempt', 'writer-time-tie',
                                   'writer-time-outside', 'writer-time-naive'])
@@ -215,14 +224,19 @@ async def test_restart_ineligible_finalized_remove_stays_held(tmp_path: Path, ca
             conn.execute("UPDATE workflow_profile_operations SET coordinator_invocation='other'")
         elif case == 'not-published':
             conn.execute("UPDATE workflow_profile_operations SET state='store_committed'")
-        elif case in ('ordinary-journal', 'ordinary-installed'):
+        elif case == 'missing-installed':
+            conn.execute("UPDATE workflow_publication_journals SET publisher_invocation='profile-coordinator:other' "
+                         "WHERE publisher_invocation=?", ('profile-coordinator:' + operation(f.org)['coordinator_invocation'],))
+        elif case in ('ordinary-journal', 'duplicate-installed'):
             row = dict(conn.execute('SELECT * FROM workflow_publication_journals ORDER BY rowid DESC LIMIT 1').fetchone())
-            row.update(id='WAJ-synthetic-ordinary', publisher='ordinary', publisher_invocation='workflow-writer:ordinary',
+            row.update(id='WAJ-synthetic-extra',
                        expected_generation=row['generation'], generation=row['generation'] + 1,
                        state='prepared' if case == 'ordinary-journal' else 'cache_installed')
+            if case == 'ordinary-journal':
+                row.update(publisher='ordinary', publisher_invocation='workflow-writer:ordinary')
             conn.execute('INSERT INTO workflow_publication_journals VALUES (' + ','.join('?' for _ in row) + ')',
                          tuple(row.values()))
-            if case == 'ordinary-installed':
+            if case == 'duplicate-installed':
                 conn.execute('UPDATE workflow_authority_pointers SET current_generation=?,journal_id=?',
                              (row['generation'], row['id']))
         elif case in ('ambiguous-remove', 'mixed-profile'):
