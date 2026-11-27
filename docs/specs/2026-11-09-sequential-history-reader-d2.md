@@ -278,8 +278,8 @@ snapshot; there is no second A/B allowance or comparison. Complete validation
 predicates/default callers are unchanged. Exhaustion yields no partial result.
 
 Unused C1 selected retained readers and their documentation are normally reverted.
-The known 27/30-column retained reconstruction and ordinary-overlay serialization
-are unchanged; follow-up notes belong in the PR. No writer call site is wired in
+Complete retained readers remain unchanged; follow-up repair notes belong in
+the PR. No writer call site is wired in
 7R. 7b remains next; retired historical @1 Final consumers (7c), STOP-1 global
 certification, ten-core equality, all-run returned IDs and full run views remain
 complete. Locks/order, schema, deadlines/caps, transactions, audit/replay and

@@ -4905,8 +4905,8 @@ for an exact base/head comparison, never a live database.
 
 C1's unused selected-reader APIs/tests/docs are removed by normal revert; the
 original complete retained corruption keepers remain. This is an unwired adapter,
-not mixed-writer acceptance or latency evidence. The known complete retained
-27/30 reconstruction and ordinary-overlay serialization remain unchanged. 7b
+not mixed-writer acceptance or latency evidence. Complete retained-reader
+behavior remains unchanged. 7b
 owns wiring; historical @1 Final/7c and STOP-1 stay complete. Four authoring answers
 and attributable fail/restored-pass evidence stay in the existing PR body. No new
 required check, venue or trigger; integration SKIPPED THR243, retired units and
