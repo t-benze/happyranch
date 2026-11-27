@@ -264,6 +264,19 @@ final class MacAppLifetimeTests: XCTestCase {
                     for kind in [MacAppLifetime.Kind.exit, .updateIdle, .updateBusy(3), .updateBusy(nil)] {
                         let prompt = MacAppLifetime.Prompt(token: UUID(), intent: .quit, kind: kind)
                         let alert = AppDelegate.lifecycleAlert(for: prompt, zh: zh, ownedRunning: owned, remote: remote, accessUnsaved: true)
+                        switch kind {
+                        case .exit:
+                            XCTAssertEqual(alert.messageText, zh ? "退出 HappyRanch？" : "Quit HappyRanch?")
+                            XCTAssertEqual(alert.buttons[1].title, zh ? "退出" : "Quit")
+                        case .updateIdle:
+                            XCTAssertEqual(alert.messageText, zh ? "重新启动 HappyRanch 以安装更新？" : "Restart HappyRanch to install the update?")
+                            XCTAssertEqual(alert.buttons[1].title, zh ? "立即重新启动" : "Restart now")
+                        case .updateBusy(let count):
+                            XCTAssertEqual(alert.messageText, count == nil ? (zh ? "工作状态不可用" : "Work status is unavailable")
+                                : (zh ? "智能体工作正在运行" : "Agent work is running"))
+                            XCTAssertEqual(alert.buttons[1].title, zh ? "工作完成后更新" : "Update when they finish")
+                            XCTAssertEqual(alert.buttons[2].title, zh ? "立即更新并停止工作" : "Update now and stop them")
+                        }
                         XCTAssertEqual(alert.buttons[0].title, zh ? "取消" : "Cancel")
                         XCTAssertEqual(alert.buttons[0].keyEquivalent, "\r")
                         XCTAssertTrue(alert.buttons.dropFirst().allSatisfy { $0.keyEquivalent.isEmpty })
