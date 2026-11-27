@@ -8,8 +8,9 @@ import XCTest
 final class MainDialogTests: XCTestCase {
     @MainActor
     private func eventually(_ condition: () async throws -> Bool) async rethrows -> Bool {
-        let deadline = Date().addingTimeInterval(5)
-        while Date() < deadline {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while clock.now < deadline {
             if try await condition() { return true }
             try? await Task.sleep(for: .milliseconds(10))
         }
@@ -67,6 +68,15 @@ final class MainDialogTests: XCTestCase {
             arguments: [:], in: nil, contentWorld: .page) as? String
         let client = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(snapshot).utf8)) as? [String: Any])
         XCTAssertNotNil(client["stage"]); XCTAssertNil(client["protocol"], "Main unwraps the existing v1 result")
+        let localRaw = try await view.callAsyncJavaScript("return await window.happyranchConnection.call('local.status', '{}');",
+            arguments: [:], in: nil, contentWorld: .page) as? String
+        let local = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(localRaw).utf8)) as? [String: Any])
+        XCTAssertEqual((local["service"] as? [String: Any])?["mode"] as? String, "appProcess")
+        XCTAssertEqual((local["service"] as? [String: Any])?["keepRunning"] as? String, "unavailable")
+        let refusal = try await view.callAsyncJavaScript("try { await window.happyranchConnection.call('local.restart', '{\"target\":\"remote\"}'); return ''; } catch (error) { return String(error); }",
+            arguments: [:], in: nil, contentWorld: .page) as? String
+        let error = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(refusal).utf8)) as? [String: String])
+        XCTAssertEqual(error, ["code": "invalidRequest", "effect": "none", "recovery": "none"])
         XCTAssertEqual(scheme.generation, initial)
         try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#)
         view.reload()
@@ -80,9 +90,31 @@ final class MainDialogTests: XCTestCase {
         let next = await eventually { scheme.requestDialog("connection") }; XCTAssertTrue(next)
         _ = try await view.callAsyncJavaScript("off();", arguments: [:], in: nil, contentWorld: .page)
         let unsubscribed = await eventually { !scheme.requestDialog("settings") }; XCTAssertTrue(unsubscribed)
+        // Readmission retains the actual loaded document, dialog and draft.
+        try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#)
+        let localTransport = SwitchTransport()
+        XCTAssertNil(scheme.selectTransport(id: "local", transport: localTransport, remote: false))
+        let localGeneration = scheme.generation
+        let context = try await view.callAsyncJavaScript("window.localDraft = 'retained'; window.off = window.happyranchConnection.on('app.dialogRequested', raw => dialogs.push(JSON.parse(raw))); return window.__hrAppContext;",
+            arguments: [:], in: nil, contentWorld: .page) as? String
+        let listening = await eventually { scheme.requestDialog("settings") }; XCTAssertTrue(listening)
+        let revision = scheme.localServiceWillChange(starting: true)
+        scheme.localServiceDidChange(transport: localTransport, promptURL: nil, health: nil, revision: revision)
+        let refreshed = try await view.callAsyncJavaScript("return await window.happyranchConnection.call('app.status', '{}');",
+            arguments: [:], in: nil, contentWorld: .page) as? String
+        let status = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(refreshed).utf8)) as? [String: Any])
+        XCTAssertEqual(status["state"] as? String, "ready", "Explicit Recheck repeats only health admission")
+        try await Task.sleep(for: .milliseconds(100))
+        let preserved = try await view.callAsyncJavaScript("return window.__hrAppContext === context && window.localDraft === 'retained';",
+            arguments: ["context": try XCTUnwrap(context)], in: nil, contentWorld: .page) as? Bool
+        XCTAssertEqual(preserved, true)
+        XCTAssertEqual(loads, 2, "Local readmission must not reload Main")
+        XCTAssertTrue(scheme.requestDialog("connection"), "Main keeps its existing dialog listener")
+        XCTAssertEqual(scheme.generation, localGeneration)
+        XCTAssertNil(scheme.switchRefusal)
         scheme.documentDidStart()
         XCTAssertFalse(scheme.requestDialog("settings"))
-        XCTAssertEqual(scheme.generation, initial, "Dialog entry never selects a target")
+        XCTAssertEqual(scheme.generation, localGeneration, "Document retirement never selects a target")
     }
 
     @MainActor

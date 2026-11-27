@@ -203,7 +203,7 @@ struct WebView: NSViewRepresentable {
 }
 
 /// Main content view: full-window WebView; its header owns window controls.
-/// Daemon controls live in the Daemon menu bar menu.
+/// Settings owns local daemon controls; no native phase-strip overlay.
 struct ContentView: View {
     @EnvironmentObject var appDelegate: AppDelegate
 
@@ -227,10 +227,6 @@ struct ContentView: View {
                     },
                     onFailed: { selected, _ in appDelegate.homeInvite.webFailed(url: selected, lifetime: lifetime) })
                     .id("happyranch-main-document")
-                if appDelegate.connectionRole == .client && appDelegate.clientLane == .managed {
-                    HomeSessionStatus(model: appDelegate.homeInvite)
-                        .environmentObject(appDelegate)
-                }
                 if appDelegate.supervisor.state == .unhealthy ||
                    appDelegate.supervisor.state == .failed {
                     unhealthyBanner
@@ -418,20 +414,6 @@ struct ContentView: View {
         )
         .padding(.horizontal, 16)
         .padding(.top, 8)
-    }
-}
-
-/// Retained legacy phase strip; its MAC-3 cutover is separate from the web header.
-private struct HomeSessionStatus: View {
-    @ObservedObject var model: HomeInviteModel
-    var body: some View {
-        if model.phase != .connected {
-            HStack {
-                if model.phase != .connected { Text(model.phase.message) }
-            }
-            .padding(10)
-            .background(.regularMaterial)
-        }
     }
 }
 

@@ -148,7 +148,7 @@
       "required": ["supported", "mode", "running", "prompt_base_url"],
       "properties": {
         "supported": { "type": "boolean" },
-        "mode": { "enum": ["service", "foreground", "unsupported"] },
+        "mode": { "enum": ["service", "foreground", "unsupported", "appProcess"] },
         "running": { "enum": ["running", "starting", "stopped", "unknown"] },
         "prompt_base_url": {
           "type": ["string", "null"],
@@ -255,15 +255,19 @@
       "required": ["supported", "mode", "running", "keepRunning", "busy"],
       "properties": {
         "supported": { "type": "boolean" },
-        "mode": { "enum": ["service", "foreground", "unsupported"] },
+        "mode": { "enum": ["service", "foreground", "unsupported", "appProcess"] },
         "running": { "enum": ["running", "starting", "stopped", "unknown"] },
-        "keepRunning": { "enum": ["checking", "off", "on", "partial", "unknown"] },
+        "keepRunning": { "enum": ["checking", "off", "on", "partial", "unknown", "unavailable"] },
         "busy": { "type": "boolean" }
       },
       "allOf": [{
         "if": { "properties": { "supported": { "const": true } } },
-        "then": { "properties": { "mode": { "const": "service" } } },
-        "else": { "properties": { "mode": { "enum": ["foreground", "unsupported"] } } }
+        "then": { "properties": { "mode": { "enum": ["service", "appProcess"] } } },
+        "else": { "properties": { "mode": { "enum": ["foreground", "unsupported", "appProcess"] } } }
+      }, {
+        "if": { "properties": { "mode": { "const": "appProcess" } } },
+        "then": { "properties": { "keepRunning": { "const": "unavailable" } } },
+        "else": { "properties": { "keepRunning": { "not": { "const": "unavailable" } } } }
       }]
     },
     "localStatusResult": {

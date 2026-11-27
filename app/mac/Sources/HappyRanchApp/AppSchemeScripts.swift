@@ -57,6 +57,17 @@ enum AppSchemeScripts {
       if (['client.commitSwitch','client.disconnect'].includes(command) && data === '{}') {
         return native.postMessage({context, command, data});
       }
+      if (['local.status','local.update.status','local.start','local.stop','local.restart',
+           'local.keepRunning.set','local.repair','local.turnOff'].includes(command)) {
+        if (typeof data !== 'string') throw JSON.stringify({code:'invalidRequest', effect:'none', recovery:'none'});
+        try { return await native.postMessage({context, command, data}); }
+        catch (error) {
+          // WithReply may reject with a JavaScript Error. The facade's fixed
+          // refusal contract is a string; unreadable errors remain unknown.
+          throw typeof error === 'string' ? error : typeof error?.message === 'string'
+            ? error.message : JSON.stringify({code:'outcomeUnknown', effect:'unknown', recovery:'nativeRecovery'});
+        }
+      }
       if (['bridge.hello','client.status','client.savedComputers','client.health',
            'client.acceptInvite','client.connectSaved','client.removeSaved',
            'client.cancelAttempt','client.retry','client.retrySave'].includes(command)

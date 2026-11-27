@@ -1035,6 +1035,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "settings.local.c6.remoteRecheck": "重新检查会再次读取此电脑的服务状态；下次启动或重启该服务时，会再次检查就绪和兼容性。",
   "settings.local.c6.serviceOld.title": "更新此电脑上的 HappyRanch 服务",
   "settings.local.c6.serviceOld.body": "此电脑上的 HappyRanch 服务低于本应用支持的版本。更新后，请使用下方的“重启 HappyRanch”。服务就绪后，应用会重新检查兼容性。",
+  "settings.local.keep.macUnavailable": "Mac 上不可用",
+  "settings.local.service.external": "此应用不拥有观测到的守护进程。本地控制项不可用。",
   "settings.local.keep.title": "后台运行",
   "settings.local.keep.label": "关闭应用或退出登录后，保持 HappyRanch 运行",
   "settings.local.keep.state.on": "已完全开启",

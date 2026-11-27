@@ -585,7 +585,7 @@ credential or fingerprint field is exposed. Names are presentation only.
 | `target` | `null` for `no_target`; otherwise exactly `{kind, id, name}`, with kind `local` or `remote`, id `local` for local or the saved-computer id for remote, and display name. |
 | `state` | `no_target`, `target_starting`, `ready`, `unreachable`, `incompatible`, `busy`. Selected but stopped local service is `unreachable` with `local.running = stopped`; keep its target identity. |
 | `incompatible` | `null` except in state `incompatible`, when it is exactly `{side, host_contract, client_contract, min_daemon}`. Side is `host`, `app` or `unknown`; contract constants are `1`/`1`. `host_contract` is exactly integer `{current, min_client}`, or `null` for missing/invalid metadata; null requires side `host`. |
-| `local` | Exactly `{supported, mode, running, prompt_base_url}`: Boolean supported; mode `service`, `foreground` or `unsupported`; running `running`, `starting`, `stopped` or `unknown`. Unsupported foreground fallback reports supported false. The base URL is the verified local daemon URL, or null; it must be null for a remote target and never disclose a remote address. |
+| `local` | Exactly `{supported, mode, running, prompt_base_url}`: Boolean supported; mode `service`, `foreground`, `unsupported` or `appProcess`; running `running`, `starting`, `stopped` or `unknown`. Unsupported foreground fallback reports supported false. The base URL is the verified local daemon URL, or null; it must be null for a remote target and never disclose a remote address. |
 | `candidate` | `null` or exactly `{kind, id, name, phase, deadline}`. Kind is `local`/`remote`; phase is `signing_in`, `awaiting_approval`, `ready_to_switch`, `failed` or `cancelled`; deadline is an ISO8601/RFC3339 date-time or null. Candidate identity is sanitized and separate from the active target. |
 | `access_unsaved` | Boolean for the persistent native badge and Connection detail; confirmed protected save settles the matching binding's warning. Mac also settles confirmed removal of that exact binding (MAC-2b). |
 | `locale` | Exactly `{current, persisted}`: locale identifier and Boolean; false means session-only. Desktop web (S8-1-W, PR #1812) treats it as the native locale authority: first `app.status` seeds the first frame, later `app.status`/`app.stateChanged` reports apply only when no local choice is pending; see "v2 app locale setter". |
@@ -751,7 +751,7 @@ main baseline. The historical S6-L/S6-W3-L and temporary Connection-routing sour
 merged main `7535eaad416d1b0311f99796b49822bfe6220527` (#1776/#1782/#1781).
 This is source inspection, not live/native acceptance. `AS` =
 `packaging/linux/desktop/app_scheme.py`; `WK` =
-`packaging/linux/desktop/app_scheme_webkit.py`. For the dialog, lifecycle, locale, local-control and Connection-command rows, Mac remains **pending**, except MAC-2a ownership/commit/disconnect source delivery recorded below. MAC-1 transport status is recorded below; it does not qualify those later rows. Web status is summarized after the table
+`packaging/linux/desktop/app_scheme_webkit.py`. Mac dialog/Connection ownership and transport source status are recorded in the MAC-1/MAC-2 sections below. MAC-3 local controls/readmission source status is recorded in its row; Mac lifecycle and live locale setters remain MAC-4. Source delivery does not qualify native acceptance. Web status is summarized after the table
 (S5-W1); Main Connection and locale updates are reconciled to main `59e29630` (#1811/#1812/#1813). S7-L2/DOC-5, S8-2b and S7-L3 status rows are reconciled to main `26585a430e8d0885b2984c45590284ed647555c4` (#1815/#1816/#1817/#1819); current linked citations resolve at that base, with AppScheme/window symbols replacing moved line numbers. Existing v1 bridge result errors
 (`code/effect/recovery`) are a different envelope and are not reclassified here.
 
@@ -788,13 +788,28 @@ This is source inspection, not live/native acceptance. `AS` =
 | `app.ownersChanged` / `app.lifecycleRequested` (web) | **S6-W2b implemented (#1804, merge 521b0e45):** [owners.ts](../../web/src/lib/native/owners.ts), [NativeOwnersBridge.tsx](../../web/src/shared/owners/NativeOwnersBridge.tsx), [useConfigOwner.tsx](../../web/src/shared/owners/useConfigOwner.tsx). Initial + per-change all-owner summary via `call()`, serialized and deduped against the last acknowledged summary; a registered save is sent only after native acknowledged its pending summary, and a refused/lost push holds it (settled failed, nothing sent); lifecycle keep/proceed answered once per ID on the same call; browser mode no-op. **Native lifecycle requests implemented by S7-L3 #1819 (merge 26585a43, reviewed/QA head 5542618bd; code_reviewer APPROVE TASK-18579, qa_engineer PASS TASK-18581).** Maker and QA observed built-Main WebKit/Broadway dirty-owner Quit prompts with Keep/Discard, EN/zh-CN, light/dark; Keep retained dirty drafts. Synthetic API/local-profile bundle and long org names were used. Installed package / actual installed relaunch, real remote pair, systemd/logind/session-end, actual WebKit crash, long remote-computer-name web prompt, Product E2E, Mac: **NOT RUN**. Launcher BASE62/HEAD66 retains inherited **31 failures/40 errors — NOT PASS**. |
 | Main Connection command admission | **S6-W3-L (#1782), S7-L1 (#1813) implemented:** [AppScheme.bridge_message](../../packaging/linux/desktop/app_scheme_webkit.py), `APP_PAGE`/`APP_RELAY` admit all eight existing v1 Host commands and ten existing v1 Client commands, plus `client.commitSwitch`, with closed args and validated v1 bodies. `host.stateChanged` remains; `bridge.hello`/`client.stateChanged` retired with the Linux shell, and Main uses v2 `app.status`/`app.stateChanged`. Main's AppScheme uses [host_bridge.HostBridge](../../packaging/linux/desktop/host_bridge.py#L116) for the bus/busy slot, bounded Status sharing and visible-Main three-second polling; errors preserve native effect/recovery. Linux S7-L1 uses the app scheme by default, retires the native Connection window and GUI proxy, and routes Connection/badge entry through `app.dialogRequested`. |
 | S7-L1 Linux topology | Main always uses happyranch-app://app; Connection/badge request the SPA dialog; GUI uses only the in-process adapter. connection_window.py and Linux shell assets are retired. Foreground CLI RuntimeProxy remains. Debian packaging validates the main resource manifest. Native/live acceptance is tracked separately. |
-| S7-L2 Linux local controls | Implemented PR #1815, merge **c3c473f3**, reviewed/QA'd head **fba03199**. Admitted Main dispatches all eight local commands ([AppScheme.bridge_message](../../packaging/linux/desktop/app_scheme_webkit.py)) through the existing ServiceMode queue: mutation slot reserved before native consent, named busy refusal, reads available, explicit failed-effect reconciliation ([LocalControls.request](../../packaging/linux/desktop/happyranch_window.py), [LocalControls.process](../../packaging/linux/desktop/happyranch_window.py), [run_gui.confirm_local](../../packaging/linux/desktop/happyranch_window.py)). Start/Restart recheck compatibility and refresh the cached local bearer through existing bootstrap without selecting a target or rebuilding Main ([AppScheme.local_service_changed](../../packaging/linux/desktop/app_scheme_webkit.py)). Main/dialog/owners and remote selection survive service-only Restart; Settings owns local controls ([SettingsDialogBody.tsx:151](../../web/src/features/settings/SettingsDialogBody.tsx#L151)); Main's strip/reserved height is retired ([run_gui.show_web](../../packaging/linux/desktop/happyranch_window.py)). Native/live acceptance recorded separately; Mac pending. |
-| S7-L2 local readmission | Implemented PR #1815, merge **c3c473f3**, reviewed/QA'd head **fba03199**. Start/Restart replies require closed readmission for this computer: ready/unreachable/incompatible/unknown, existing incompatibility detail only for incompatible and otherwise null; the other four mutations omit it ([LocalControls.process](../../packaging/linux/desktop/happyranch_window.py), [AppScheme.local_service_changed](../../packaging/linux/desktop/app_scheme_webkit.py), [web parser:142](../../web/src/features/settings/local/localService.ts#L142)). Pre-interruption background admission is cancelled and its completion discarded; local status reads remain available ([AppScheme.local_service_changed](../../packaging/linux/desktop/app_scheme_webkit.py)). Local C6 uses app.status with named settled disagreement; remote C6 uses only local readmission ([LocalServicePage.tsx:491](../../web/src/features/settings/local/LocalServicePage.tsx#L491)). F3 retains the result during pending/failed/unreadable/timed-out local Recheck unless a fresh parsed local publication arrives after the new read is issued; preexisting reads are drained and only the same outcome is superseded ([LocalServicePage.tsx:178](../../web/src/features/settings/local/LocalServicePage.tsx#L178), [fresh read:200](../../web/src/features/settings/local/LocalServicePage.tsx#L200), [Recheck:249](../../web/src/features/settings/local/LocalServicePage.tsx#L249)). Remote appState/selection stay remote; no URL/credential or effect retry authority. Native/live acceptance recorded separately; Mac pending. |
+| S7-L2 Linux local controls | Implemented PR #1815, merge **c3c473f3**, reviewed/QA'd head **fba03199**. Admitted Main dispatches all eight local commands ([AppScheme.bridge_message](../../packaging/linux/desktop/app_scheme_webkit.py)) through the existing ServiceMode queue: mutation slot reserved before native consent, named busy refusal, reads available, explicit failed-effect reconciliation ([LocalControls.request](../../packaging/linux/desktop/happyranch_window.py), [LocalControls.process](../../packaging/linux/desktop/happyranch_window.py), [run_gui.confirm_local](../../packaging/linux/desktop/happyranch_window.py)). Start/Restart recheck compatibility and refresh the cached local bearer through existing bootstrap without selecting a target or rebuilding Main ([AppScheme.local_service_changed](../../packaging/linux/desktop/app_scheme_webkit.py)). Main/dialog/owners and remote selection survive service-only Restart; Settings owns local controls ([SettingsDialogBody.tsx:151](../../web/src/features/settings/SettingsDialogBody.tsx#L151)); Main's strip/reserved height is retired ([run_gui.show_web](../../packaging/linux/desktop/happyranch_window.py)). Native/live acceptance recorded separately; see the MAC-3 row for Mac. |
+| S7-L2 local readmission | Implemented PR #1815, merge **c3c473f3**, reviewed/QA'd head **fba03199**. Start/Restart replies require closed readmission for this computer: ready/unreachable/incompatible/unknown, existing incompatibility detail only for incompatible and otherwise null; the other four mutations omit it ([LocalControls.process](../../packaging/linux/desktop/happyranch_window.py), [AppScheme.local_service_changed](../../packaging/linux/desktop/app_scheme_webkit.py), [web parser:142](../../web/src/features/settings/local/localService.ts#L142)). Pre-interruption background admission is cancelled and its completion discarded; local status reads remain available ([AppScheme.local_service_changed](../../packaging/linux/desktop/app_scheme_webkit.py)). Local C6 uses app.status with named settled disagreement; remote C6 uses only local readmission ([LocalServicePage.tsx:491](../../web/src/features/settings/local/LocalServicePage.tsx#L491)). F3 retains the result during pending/failed/unreadable/timed-out local Recheck unless a fresh parsed local publication arrives after the new read is issued; preexisting reads are drained and only the same outcome is superseded ([LocalServicePage.tsx:178](../../web/src/features/settings/local/LocalServicePage.tsx#L178), [fresh read:200](../../web/src/features/settings/local/LocalServicePage.tsx#L200), [Recheck:249](../../web/src/features/settings/local/LocalServicePage.tsx#L249)). Remote appState/selection stay remote; no URL/credential or effect retry authority. Native/live acceptance recorded separately; see the MAC-3 row for Mac. |
+| MAC-3 local controls / readmission | **Source implemented PR #1889; native execution/build NOT RUN by maker.** [MacLocalControls](../../app/mac/Sources/HappyRanchApp/MacLocalControls.swift) owns reservation, consent-before-effect, busy/read access, closed refusals and unknown recovery outside document lifetime. [AppDelegate](../../app/mac/Sources/HappyRanchApp/AppDelegate.swift) reuses owned children; external processes are observation-only. [AppScheme](../../app/mac/Sources/HappyRanchApp/AppScheme.swift) invalidates compatibility and fences stale local admission; Start/Restart return fresh local readmission without remote appState/selection changes. Producer-published busy survives immediate `app.status` reads without another admission. Busy from local post-effect/health admission is refreshed by Recheck through AppAPIHealth, fenced by document/readiness revision/generation; it publishes ready once health is compatible and not busy, without a lifecycle effect or Main/generation change. Credentials retain LocalTokenCredentialProvider/daemon.token custody. The Mac mode is appProcess with keepRunning unavailable; the shared page renders a plain bilingual state. ContentView’s phase strip is removed; native Main/dialog preservation and visual acceptance await QA. [Formal model](formal/mac-local-controls/README.md) covers reservation/recovery/external/C5 invariants. MAC-4 remains pending. |
 | S7-L3 Linux startup/lifecycle | **Implemented PR #1819, merge 26585a43, reviewed/QA head 5542618bd; code_reviewer APPROVE TASK-18579, qa_engineer PASS TASK-18581.** [app_startup_selection.load/set/clear_reference](../../packaging/linux/desktop/app_startup_selection.py) persists local/opaque saved-remote/unsaved selection. Local launch starts the service once (an absent selection record defaults to local); saved-remote, missing/locked saved-remote entry, unsaved and corrupt/unreadable selections start none. Connection/Settings never start it. [run_gui.request_lifecycle/exit_now, lifecycle_copy/confirm_lifecycle, relaunch_assets](../../packaging/linux/desktop/happyranch_window.py) implement correlated close/Quit/Relaunch, separate Stay-default recovery exit, truthful EN/zh-CN service-consequence confirmations including already-stopped/keep-running On, and installed-assets relaunch admission: malformed bridge/policy resources refuse before shutdown. [build-payload.sh](../../packaging/linux/build-payload.sh) copies `app_startup_selection.py`. Maker evidence: 20-cell keep-running/local/remote/owner-state harness, six real WebKit/Broadway startup cases, native confirmation screenshots EN/zh-CN light/dark, TLC positive exit 0 and expected negative exit 12. Installed package / actual installed relaunch, real remote pair, systemd/logind/session-end, actual WebKit crash, long remote-computer-name web prompt, Product E2E, Mac: **NOT RUN**. Launcher BASE62/HEAD66 retains inherited **31 failures/40 errors — NOT PASS**. |
 | S8-2b remote read-only enforcement | **Linux native S8-2b implemented in PR #1817 (merge 01b37dc4, reviewed/QA head 041cc479f):** Main loads the shipped v1 remote-client configuration policy and denies all 21 matching committed-remote method/path templates with HTTP 403 `remote_read_only` before generation admission, body access, bootstrap or peer I/O ([AppScheme.handle/forward](../../packaging/linux/desktop/app_scheme_webkit.py)). Local config and unmatched remote operations/GETs retain existing behavior. Schedule PATCH is configuration. Web S8-2b in the same PR: [web/src/lib/remotePolicy](../../web/src/lib/remotePolicy) imports the same policy JSON through the `@happyranch/remote-client-config-policy` build alias and, while native `app.status` reports a remote target, shows every policy-entry control visible but read-only ("Read-only on this connection. Change this on {Host}."); host-wide create organization and custom-CLI retry/forget are unavailable remotely; Capacity and Coding are named unavailable. A `403 remote_read_only` is recognised from the response itself (also across a mid-request target switch) and keeps the draft with the read-only refusal (draftless actions: "Nothing was sent."), never C3 or Result unknown; purge is unchanged. Maker evidence: native stand-in (21 denials, zero peer requests), Chromium mock bridge + temp-home stand-in peer, WebKitGTK happyranch-app://app smoke on Broadway (Xvfb absent); real remote, installed package and Mac **NOT RUN**. |
 | DOC-5 status reconciliation | DOC-5 landed PR #1816, merge **59f44964**, head **df5173d9**; S7-L2 implementation/readmission status is recorded above. |
 | Compatibility before activation, reconnect/Restart | **S5-L1 implemented.** Native admission progresses without page API traffic. After observed transport loss, cached compatibility/bearer cannot publish ready: fresh successful health/compatibility admission is required, with bootstrap if needed (`AS:302–364`). Reset/reselection/readiness/Restart invalidate cached compatibility: `WK:391–410` (`refresh_status`), `WK:412–415` (`invalidate_document`), `AS:198–206` (`reset`). Existing launcher reconstruction remains; active/candidate ownership remains S5-L2. |
 | L-2 bearer refresh | **S5-L1 implemented and focused regression verified.** Reset clears bearer; a 401 invalidates native bearer/health admission for the next request’s bootstrap. The already-forwarded request is returned once and never replayed: `AS:198–206` (`reset`), `AS:406–437` (`LocalDaemon.send`), `test_app_scheme.py:test_reset_and_401_rebootstrap_without_replaying_mutation`. |
+
+**MAC-3 round7 consent verification:** real sheet attachment is NOT VERIFIABLE
+in the SwiftPM XCTest venue (build92: NSApp not running/active, Main windowNumber
+0/no screen, plain NSAlert probe also unattached). Production consent behavior
+is unchanged. The existing keeper verifies the production EN/ZH alert factory,
+computer name, ordered buttons (Cancel first/Return default; Restart second/no
+key equivalent), response mapping (Cancel/timeout false; Restart true), and the
+no-Main/already-presenting guards. Real-child Start/Stop retain the bridge →
+MacLocalControls → AppDelegate path; mapped declined consent proves no restart,
+and a mapped Restart response drives the real bridge's confirmed branch and
+unchanged AppDelegate post-consent effects with the busy reservation retained.
+New PID/old PID absence, busy→ready with no premature ready, and synchronous
+Quit/per-PID census before fallback remain required. No successful sheet
+attachment is claimed by this venue.
 
 **Web (S5-W1, TASK-18159).** The web consumes this contract as described in
 [`docs/agent-guides/web-and-cli.md`](../agent-guides/web-and-cli.md#native-bridge-v2-target-generation-thr-387-s5-w1):
@@ -1310,15 +1325,23 @@ appRelaunch definition below accepts `{}` for its app lifecycle intent/reply.
 | `local.update.status` | Exactly `{}` | `localUpdateStatusResult` | Existing read-only `update_installed(prefix)` observation; never install, restart or relaunch. |
 
 **State vocabulary.** `service` is the closed `localServiceStatus` projection:
-`supported`, `mode`, `running`, `keepRunning`, `busy`. Only `mode:"service"`
-has `supported:true`; foreground fallback is `supported:false, mode:"foreground"`
-and local lifecycle/keep-running mutations are unsupported. Another unavailable
-mode is `"unsupported"`. Preserve the existing fallback's owned-child stop/reap
-on app exit; this bridge grants no fallback controls. `running` independently
-uses `running|starting|stopped|unknown`; it is not inferred from keep-running.
+`supported`, `mode`, `running`, `keepRunning`, `busy`. `supported:true` allows
+`mode:"service"` (Linux) or additive `mode:"appProcess"` (Mac app-owned child).
+Mac `appProcess` always reports `keepRunning:"unavailable"`; this value is forbidden
+in other modes. Its Start/Stop/Restart are supported when ownership is established;
+an external daemon is observation-only (`supported:false, mode:"appProcess"`).
+Mac keep-running is the plain **Not available on Mac / Mac 上不可用** state, with
+no switch, Repair or Turn off control. Founder THR-387 seq164 retains normal
+owned-child stop on Quit: no LaunchAgent, migration, keep-running after Quit,
+new Mac lifecycle row or hosting. Unsupported foreground fallback remains
+`supported:false, mode:"foreground"`; its mutations are unsupported. Another
+unavailable mode is `"unsupported"`. Preserve the fallback's stop/reap on app exit.
+`running` independently uses `running|starting|stopped|unknown`; it is not inferred
+from keep-running. Linux producers, payloads and lifetime semantics are unchanged.
 
 | `keepRunning` | Presentation and evidence |
 | --- | --- |
+| `unavailable` | Not available on Mac / Mac 上不可用; appProcess only, a plain state with no lifetime controls. |
 | `checking` | Checking / 正在检查; initial or fresh inspection in progress, controls noninteractive. |
 | `off` | Off / 已关闭; fresh inspection confirms both unit enablement and linger off. Default is opt-out; missing/failed evidence is not Off. |
 | `on` | Fully on / 完全开启; fresh inspection confirms both enablement and linger on. |
@@ -1362,7 +1385,7 @@ successful mutation resolves only after the supervisor result and fresh status
 observation; `command` must match its call. Success is not permission for the
 next effect. A partial observed lifetime state remains `partial`, not Fully on.
 
-**Restart is service-only and always presented when supported.** Keep Restart
+**Restart is daemon-only and always presented when supported.** Keep Restart
 visible whenever local controls are supported, even without an installed-update
 hint; disable while checking/busy or when current ownership/consent cannot be
 established, with the reason. Native Cancel-default confirmation warns of local
@@ -1375,6 +1398,11 @@ load separately; page Retry after service success is not another Restart.
 Before publishing local readiness after Start/Restart, native invalidates cached
 local compatibility and bearer, re-runs health compatibility admission and
 refreshes its cached local bearer through the **existing loopback bootstrap**.
+On Mac, there is no cached local bearer or loopback-bootstrap custody to reset:
+`LocalAppAPITransport` uses the existing `LocalTokenCredentialProvider` to reread
+`daemon.token` for every request. MAC-3 invalidates compatibility before effects
+and reconnect, then reruns `AppAPIHealth` through that credential path. This is
+the Mac readmission mapping; it adds no bootstrap route or credential custody.
 No credential is exposed to this payload or logged, and no bootstrap/auth policy
 changes. After Restart, C6's update → explicit service-only Restart → readiness/
 compatibility recheck ends in ready or the existing named host/app/unknown
@@ -1431,8 +1459,17 @@ changing a selected remote target ([AppScheme.local_service_changed](../../packa
 Main's control/remote-access strip and reserved height are removed
 ([run_gui.show_web](../../packaging/linux/desktop/happyranch_window.py));
 Settings owns local controls. Native/live acceptance recorded separately: real
-systemd/logind/display acceptance is NOT RUN here; Mac remains pending separate
-authorization.
+systemd/logind/display acceptance is NOT RUN here. Mac MAC-3 source is implemented
+in PR #1889: the admitted Main dispatcher delegates to app-lifetime
+`MacLocalControls`, separate from Connection’s replay ledger. It reserves before
+Cancel-default Restart consent and uses existing AppDelegate child operations.
+Failure/document loss retains custody until explicit settled status reconciliation;
+reads remain available. Keep-running.set/Repair/TurnOff refuse unavailable.
+AppScheme invalidates local admission before effects, fences stale reconnects,
+and publishes only to the same selected local target/revision. Mac update status
+is `unknown`: Sparkle’s pending app installation is not an installed-daemon hint.
+Main’s legacy phase strip is removed. Quit is unchanged. Mac execution/build,
+visual strip absence and real-process acceptance are NOT RUN by the Linux maker.
 
 The web Settings → HappyRanch on this computer page consumes all eight commands
 with exact closed data; Start/Restart require `readmission` (missing/unreadable
@@ -1458,6 +1495,15 @@ publication retain the result and Recheck; no mutation is retried or replayed
 
 The examples below are versioned payloads, each checked against its named
 definition and the root; local no-argument `{}` remains empty call args.
+
+#### Valid: Mac app-owned child (no keep-running control)
+
+```json
+{"schema":2,"service":{"supported":true,"mode":"appProcess","running":"running","keepRunning":"unavailable","busy":false}}
+```
+
+An external observation uses the same mode/keepRunning values with
+`supported:false`; lifecycle mutations refuse unavailable, effect none.
 
 #### Valid: localStatusResult with Partly on
 
@@ -1858,8 +1904,9 @@ matching protected write/readback success or confirmed removal settles only
 that binding's warning. Revoked unsaved B's confirmed removal preserves saved A;
 failed/unknown removal retains the warning. No active target and
 an unrelated computer's successful save are not confirmation. Native labels follow
-the launch locale; live locale setters remain MAC-4. MAC-3 local controls and
-legacy phase-strip/compatibility cutover remain separate.
+the launch locale; live locale setters remain MAC-4. MAC-3 local controls,
+phase-strip removal and compatibility readmission are delivered separately in
+PR #1889 as recorded in the implementation-status row above.
 
 The existing `SUITE=app-scheme` collector additionally captures native 760×560
 Settings, Connection and Main web-viewport PNGs at 100%/200% text,
@@ -1877,7 +1924,14 @@ per image, 8 MiB per locale and the existing 40-second process cap bound capture
 incomplete/over-budget capture fails. Below the desktop breakpoint, the sidebar
 footer centers the profile avatar without horizontal insets so it fits the
 56px rail at 200% text in the supported narrow Mac window. The wider sidebar
-keeps its existing insets. No Jenkins job/config change is included.
+keeps its existing insets. The desktop header is capped at one quarter of the
+shell height with internal vertical scrolling: wrapped English status/candidate/
+warning content leaves space for Main navigation at 200% text, and its full
+content stays reachable
+through the existing scrolling-pane captures. The outer native window includes
+the title bar; each capture step remains 75% of the actual visible pane viewport.
+All capture budgets are unchanged.
+No Jenkins job/config change is included.
 Every navigation/admission and dialog/theme/locale/scroll/settle/snapshot/PNG
 step fsyncs a `capture_progress` record before starting. Native background timers
 allocate up to 10 seconds for navigation and 2 seconds for later steps, even if
@@ -1900,6 +1954,15 @@ tests depend on libraries, and only the `HappyRanchLauncher` executable target
 owns `@main`. Its explicit product remains `HappyRanchApp`. The split unfiltered
 XCTest/Swift Testing runs and timeout diagnostics remain unchanged; no runtime
 test-environment sniff or test removal/filter/skip is introduced.
+The existing headless XCTest workload also includes
+`AppSchemeSwitchTests.testBridgeOwnsRealChildStartStopRestartAndQuit`: the actual
+Main bridge drives AppDelegate's owned-child supervisor, with a minimal Python
+health executable substituted only at the existing ProcessControlling boundary
+(the SwiftPM test bundle has no frozen daemon). Real PIDs, loopback health and
+exit callbacks establish Start, Stop, a new PID after consented Restart,
+busy-before-ready bridge publication and no orphan after app termination. All
+data/credentials are disposable/synthetic. This automated lifecycle test needs
+no Jenkins change; execution and full bundled-daemon acceptance remain distinct.
 A required portless cold-client qualification uses the real ContentView/
 AppDelegate composition and production resource lookup; it checks focused
 Settings/Connection from explicit menu actions, absence of a native toolbar, no

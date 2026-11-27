@@ -2,7 +2,9 @@
  * Typed native `local.*` commands for Settings → HappyRanch on this computer
  * (THR-387 S7-L2; handoff v2.4 §6, C5/C6).
  *
- * Linux Main admits exactly eight closed commands, routed to the app's one
+ * Main admits exactly eight closed command names. Mac supports owned-child
+ * Start/Stop/Restart with appProcess/unavailable and refuses lifetime mutations.
+ * Linux routes to the app's one
  * existing ServiceMode supervisor (packaging/linux/desktop
  * `LocalControls` / `AppScheme.bridge_message`):
  *
@@ -25,8 +27,8 @@ import type { AppIncompatible } from '@/lib/native/appStatus';
 import { nativeBridge } from '@/lib/native/target';
 
 export type LocalRunning = 'running' | 'starting' | 'stopped' | 'unknown';
-export type KeepRunning = 'on' | 'off' | 'partial' | 'checking' | 'unknown';
-export type LocalMode = 'service' | 'foreground' | 'unsupported';
+export type KeepRunning = 'on' | 'off' | 'partial' | 'checking' | 'unknown' | 'unavailable';
+export type LocalMode = 'service' | 'foreground' | 'unsupported' | 'appProcess';
 export type UpdateStatus = 'restart_required' | 'not_detected' | 'unknown' | 'unsupported';
 
 export interface LocalServiceSnapshot {
@@ -82,8 +84,8 @@ export class LocalRefusal extends Error {
 type Obj = Record<string, unknown>;
 
 const RUNNING: readonly string[] = ['running', 'starting', 'stopped', 'unknown'];
-const KEEP: readonly string[] = ['on', 'off', 'partial', 'checking', 'unknown'];
-const MODES: readonly string[] = ['service', 'foreground', 'unsupported'];
+const KEEP: readonly string[] = ['on', 'off', 'partial', 'checking', 'unknown', 'unavailable'];
+const MODES: readonly string[] = ['service', 'foreground', 'unsupported', 'appProcess'];
 const UPDATES: readonly string[] = ['restart_required', 'not_detected', 'unknown', 'unsupported'];
 const EFFECTS: readonly string[] = ['none', 'confirmed', 'unknown'];
 const RECOVERIES: readonly string[] = ['refresh', 'explicitRetry', 'newInviteOnHost', 'nativePermission', 'nativeRecovery', 'operatorRecovery', 'none'];
@@ -114,7 +116,8 @@ function isSnapshot(value: unknown): value is LocalServiceSnapshot {
     oneOf(value.mode, MODES) &&
     oneOf(value.running, RUNNING) &&
     oneOf(value.keepRunning, KEEP) &&
-    typeof value.busy === 'boolean'
+    typeof value.busy === 'boolean' &&
+    (value.mode === 'appProcess' ? value.keepRunning === 'unavailable' : value.keepRunning !== 'unavailable')
   );
 }
 
