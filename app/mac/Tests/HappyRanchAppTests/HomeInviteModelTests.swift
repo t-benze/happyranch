@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import AppKit
 import Combine
 import CryptoKit
@@ -1430,6 +1431,16 @@ final class HomeCandidateOwnershipTests: XCTestCase {
 
 
 extension HomeInviteModelTests {
+    private func startupDirectory() throws -> URL {
+        // Match the physical-path fixtures used by the no-follow AppScheme loader.
+        let physical = try XCTUnwrap(realpath(FileManager.default.temporaryDirectory.path, nil))
+        defer { free(physical) }
+        let root = URL(fileURLWithFileSystemRepresentation: physical, isDirectory: true, relativeTo: nil)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
     private func startupWait(_ predicate: @MainActor () -> Bool) async -> Bool {
         let clock = ContinuousClock(), deadline = ContinuousClock.now.advanced(by: .seconds(5))
         while !predicate(), clock.now < deadline { try? await clock.sleep(for: .milliseconds(10)) }
@@ -1438,8 +1449,7 @@ extension HomeInviteModelTests {
 
     @Test("Startup resolves exact saved profile; readiness/Disconnect do not choose; commit and Remove persist")
     func startupExactProfileCommitDisconnectAndRemoval() async throws {
-        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let root = try startupDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let startup = AppStartupSelection(directory: root)
         startup.commit(.local)
@@ -1488,8 +1498,7 @@ extension HomeInviteModelTests {
 
     @Test("Confirmed revoked saved startup selection clears even while session teardown fails")
     func startupConfirmedRevocationClearsBeforeCleanup() async throws {
-        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let root = try startupDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = HomeStoreFixture(), session = HomeSessionFixture(), id = UUID()
         let trust = try RemoteInvite.parse(invite()).trust
@@ -1512,8 +1521,7 @@ extension HomeInviteModelTests {
 extension HomeInviteModelTests {
     @Test("Remote/invalid startup starts no local child; local starts exactly once")
     func remoteAndInvalidStartupNeverLaunchLocalAndLocalStartsOnce() throws {
-        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let root = try startupDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         for choice in [AppStartupSelection.Choice.saved(UUID()), .unsaved, .unavailable, .local] {
             let store = AppStartupSelection(directory: root)
@@ -1537,8 +1545,7 @@ extension HomeInviteModelTests {
 extension HomeInviteModelTests {
     @Test("Cold saved restore waits for Main owner clearance and commits exactly once")
     func startupRestoreUsesMainOwnerGate() async throws {
-        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let root = try startupDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let startup = AppStartupSelection(directory: root), id = UUID()
         startup.commit(.saved(id))
@@ -1578,8 +1585,7 @@ extension HomeInviteModelTests {
 extension HomeInviteModelTests {
     @Test("A failed cold restore cannot auto-commit a later explicit reconnect")
     func startupFailedRestoreDoesNotAutoCommitExplicitRetry() async throws {
-        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let root = try startupDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let startup = AppStartupSelection(directory: root), id = UUID()
         startup.commit(.saved(id))

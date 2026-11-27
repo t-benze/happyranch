@@ -1,12 +1,17 @@
 import XCTest
 import Foundation
+import Darwin
 import CryptoKit
 import HappyRanchSupervisor
 @testable import HappyRanchApp
 
 final class AppPreferencesTests: XCTestCase {
     private func directory() throws -> URL {
-        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        // Foundation can strip /private and reintroduce the /var symlink.
+        // The production stores deliberately refuse symlinked parent paths.
+        let physical = try XCTUnwrap(realpath(FileManager.default.temporaryDirectory.path, nil))
+        defer { free(physical) }
+        let root = URL(fileURLWithFileSystemRepresentation: physical, isDirectory: true, relativeTo: nil)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
