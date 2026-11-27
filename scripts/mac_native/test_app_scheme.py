@@ -213,6 +213,101 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
 
 
 class LiveSwitchEvidenceTests(unittest.TestCase):
+    def test_collector_retains_failed_dom_diagnostic_when_captures_are_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            diagnostic = dict(event='live-switch-dom-failure', surface='main',
+                              failed=['mainHeading'], visibleText='连接你的智能体 CLI。')
+            def command(argv: list[str], *args: object, **kwargs: object) -> tuple[int, bytes]:
+                Path(argv[-3]).write_text(json.dumps(diagnostic) + '\n')
+                return 1, b''
+            section = {}
+            with patch('scripts.mac_native.suite_app_scheme._command', side_effect=command):
+                qualify_live_switch(['product', '--qualify-app-scheme', 'assets', 'policy', '0'], {},
+                                    root, time.monotonic() + 10, section, root)
+            retained = json.loads(json.dumps(section))['live_switch']
+            self.assertEqual(retained['status'], 'FAIL')
+            self.assertEqual(retained['diagnostic_events'], [diagnostic])
+            self.assertEqual(retained['screenshots'], [])
+
+    def test_chinese_dom_matches_zero_org_main_and_requires_chinese_on_every_surface(self) -> None:
+        self.check_chinese_dom(r"""
+            assert.equal(check('main'), true, 'zero-org ConnectRuntimeStep must pass');
+            assert.equal(check('settings'), true);
+            assert.equal(check('connection'), true);
+            for (const surface of ['main', 'settings', 'connection']) {
+                assert.equal(check(surface, { english: true, lang: 'en' }), false, `${surface}: English-only DOM`);
+                assert.equal(check(surface, { english: true }), false, `${surface}: lang alone is insufficient`);
+                assert.equal(check(surface, { lang: 'en' }), false, `${surface}: wrong document language`);
+            }
+            for (const overrides of [
+                { heading: '欢迎使用 HappyRanch。' }, { heading: 'Connect your agentic CLI.' },
+                { label: 'Window controls' }, { settings: 'Settings' }, { connection: 'Connection' },
+                { dialog: 'settings' }, { missingHeader: true }, { missingMain: true },
+            ]) assert.equal(check('main', overrides), false, JSON.stringify(overrides));
+            for (const surface of ['settings', 'connection']) {
+                for (const overrides of [{ title: 'English' }, { copy: 'English' }, { dialog: 'other' }, { dialog: null }]) {
+                    assert.equal(check(surface, overrides), false, `${surface}: ${JSON.stringify(overrides)}`);
+                }
+            }
+        """)
+
+    def test_chinese_dom_failure_diagnostic_names_clauses_and_bounds_visible_text(self) -> None:
+        self.check_chinese_dom(r"""
+            const visible = '可见'.repeat(3000);
+            const diagnostic = check('main', { heading: 'English', settings: 'Settings', visible }, true);
+            assert.deepEqual(JSON.parse(JSON.stringify(diagnostic)), {
+                surface: 'main', failed: ['headerSettings', 'mainHeading'], visibleText: visible.slice(0, 2048),
+            });
+            assert.ok(!diagnostic.visibleText.includes('hidden-secret'));
+            assert.deepEqual(Array.from(check('main', {}, true).failed), []);
+            for (const surface of ['main', 'settings', 'connection']) {
+                const failure = check(surface, { english: true, lang: 'en' }, true);
+                assert.ok(failure.failed.includes('documentLanguage'));
+                assert.ok(failure.failed.includes(surface === 'main' ? 'mainHeading' : 'dialogTitle'));
+                assert.ok(failure.failed.includes(surface === 'main' ? 'headerLabel' : 'dialogCopy'));
+            }
+        """)
+
+    def check_chinese_dom(self, assertions: str) -> None:
+        # Existing Node VM venue, executing the actual qualifier JavaScript.
+        # DOM inputs are independent EN/zh-CN literals, never an oracle read
+        # from the predicate or the DOM being checked. No browser/native claim.
+        script = r"""
+            const assert = require('node:assert/strict');
+            const { readFileSync } = require('node:fs');
+            const { runInNewContext } = require('node:vm');
+            const source = readFileSync('app/mac/Sources/HappyRanchApp/AppSchemeQualification.swift', 'utf8');
+            const predicate = source.split('static let liveSwitchChineseDOM = #' + '"'.repeat(3))[1].split('"'.repeat(3) + '#')[0];
+            function check(surface, overrides = {}, diagnose = false) {
+                const english = overrides.english ?? false;
+                const values = {
+                    lang: 'zh-CN', dialog: surface === 'main' ? null : surface,
+                    label: english ? 'Window controls' : '窗口控件',
+                    settings: english ? 'Settings' : '设置', connection: english ? 'Connection' : '连接',
+                    heading: english ? 'Connect your agentic CLI.' : '连接你的智能体 CLI。',
+                    title: english ? (surface === 'settings' ? 'Settings' : 'Connection') : (surface === 'settings' ? '设置' : '连接'),
+                    copy: english ? (surface === 'settings' ? 'Language' : 'This computer') : (surface === 'settings' ? '语言' : '此电脑'),
+                    visible: english ? 'Connect your agentic CLI. Settings Connection' : '连接你的智能体 CLI。 设置 连接', ...overrides,
+                };
+                const header = { getAttribute: () => values.label, querySelector: selector => ({
+                    textContent: selector.includes('settings') ? values.settings : values.connection,
+                }) };
+                const pane = values.dialog === null ? null : { getAttribute: () => values.dialog,
+                    querySelector: () => ({ textContent: values.title }), textContent: values.copy };
+                const main = values.missingMain ? null : { textContent: values.heading };
+                const document = { documentElement: { lang: values.lang },
+                    body: { innerText: values.visible, textContent: values.visible + 'hidden-secret' },
+                    querySelector: selector => selector === '[data-desktop-dialog]' ? pane :
+                        selector === '[data-desktop-header]' ? (values.missingHeader ? null : header) :
+                        selector === 'main' || selector === 'main h1' ? main : null };
+                return runInNewContext(`(function () { ${predicate} })()`, { document, surface, diagnose });
+            }
+        """
+        result = subprocess.run(['node', '-e', script + assertions], cwd=ROOT,
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_archive_retains_separate_closed_images_and_refuses_invalid_files(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

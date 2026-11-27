@@ -112,7 +112,7 @@ The existing unfiltered native suite includes both. No sheet attachment is
 required by these cases. Native compile/tests and syscall-stage failure proof
 are **NOT RUN on Linux**, including post-replacement fsync fault injection;
 Linux Node relay evidence does not prove native durability or platform routing.
-No Mac build is authorized for the maker; MAC-4's shared allowance remains 0/8.
+No Mac build is authorized for the maker; MAC-4's shared allowance is 3/8 used.
 
 ### MAC-3: app-owned local controls
 
@@ -288,9 +288,18 @@ exit; missing, duplicate, partial, error or session-only evidence fails the suit
 Original bilingual dialog predicates, equality checks, fixtures, limits and failure
 paths are unchanged. Both processes retain the 35-second watchdog / 40-second
 command cap and existing total suite deadline. Jenkins configuration is unchanged.
+The zero-org fixture remains on ConnectRuntimeStep until Continue/Skip: Main's
+heading must be `连接你的智能体 CLI。`, alongside `窗口控件` / `设置` / `连接`
+in the header. The later welcome heading is not present at this point. Expectations
+are independent zh-CN catalog literals; English or mixed-locale content fails.
+On a live-switch Chinese DOM failure only, `live-switch-dom-failure` records the
+surface, failed predicate clauses and the first 2,048 UTF-16 units of visible body
+text in the existing diagnostic stream. It reads no input values or hidden text;
+this process uses only the synthetic qualification fixture.
 Linux maker: native compile, UI execution/captures and native regression proof are
-NOT RUN. QA owns MAC-4 build 3/8 after independent exact-head review round 5 APPROVE;
-2/8 builds have been used. Native GUI rendering is not verifiable on Jenkins
+NOT RUN. QA owns MAC-4 build 4/8 after independent exact-head review round 6 APPROVE;
+3/8 builds have been used (97 fixture failure, 98 success, 99 live-switch predicate
+failure). Native GUI rendering is not verifiable on Jenkins
 (no display); copy is verified there by headless native tests, subject to QA's
 actual result. This source addition itself supplies no Mac PASS.
 

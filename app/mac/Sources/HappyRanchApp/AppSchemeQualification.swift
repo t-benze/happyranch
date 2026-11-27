@@ -639,7 +639,15 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKScriptMe
             for dialog in ["main", "settings", "connection"] {
                 if dialog != "main" { try await openDialog(dialog) }
                 try await dialogStep("live-switch-chinese-dom", fields: ["dialog": dialog, "theme": theme, "textPercent": scale]) {
-                    try await requireDOM(Self.liveSwitchChineseDOM, arguments: ["surface": dialog])
+                    do {
+                        try await requireDOM(Self.liveSwitchChineseDOM, arguments: ["surface": dialog, "diagnose": false])
+                    } catch {
+                        if let diagnostic = try? await view.callAsyncJavaScript(Self.liveSwitchChineseDOM,
+                            arguments: ["surface": dialog, "diagnose": true], in: nil, contentWorld: .page) as? [String: Any] {
+                            log.write("live-switch-dom-failure", diagnostic)
+                        }
+                        throw error
+                    }
                     _ = try await view.callAsyncJavaScript(Self.dialogScrollPlan, arguments: [:], in: nil, contentWorld: .page)
                     try await Task.sleep(for: .milliseconds(200))
                 }
@@ -653,18 +661,29 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKScriptMe
     }
 
     private static let liveSwitchChineseDOM = #"""
-        if (document.documentElement.lang !== 'zh-CN') return false;
+        const checks = {documentLanguage: document.documentElement.lang === 'zh-CN'};
         const pane = document.querySelector('[data-desktop-dialog]');
         if (surface === 'main') {
             const header = document.querySelector('[data-desktop-header]');
-            return !pane && header?.getAttribute('aria-label') === '窗口控件' &&
-                header.querySelector('[data-desktop-header-open="settings"]')?.textContent.trim() === '设置' &&
-                header.querySelector('[data-desktop-header-open="connection"]')?.textContent.trim() === '连接' &&
-                document.querySelector('main')?.textContent.includes('欢迎使用 HappyRanch。');
+            Object.assign(checks, {
+                noDialog: !pane,
+                headerLabel: header?.getAttribute('aria-label') === '窗口控件',
+                headerSettings: header?.querySelector('[data-desktop-header-open="settings"]')?.textContent.trim() === '设置',
+                headerConnection: header?.querySelector('[data-desktop-header-open="connection"]')?.textContent.trim() === '连接',
+                // The zero-org fixture is still on ConnectRuntimeStep.
+                mainHeading: document.querySelector('main h1')?.textContent.trim() === '连接你的智能体 CLI。',
+            });
+        } else {
+            const title = surface === 'settings' ? '设置' : '连接';
+            Object.assign(checks, {
+                dialogSurface: pane?.getAttribute('data-desktop-dialog') === surface,
+                dialogTitle: pane?.querySelector('h2')?.textContent.trim() === title,
+                dialogCopy: (surface === 'settings' ? pane?.textContent.includes('语言') : pane?.textContent.includes('此电脑')) === true,
+            });
         }
-        const title = surface === 'settings' ? '设置' : '连接';
-        return pane?.getAttribute('data-desktop-dialog') === surface && pane.querySelector('h2')?.textContent.trim() === title &&
-            (surface === 'settings' ? pane.textContent.includes('语言') : pane.textContent.includes('此电脑'));
+        const failed = Object.keys(checks).filter(key => !checks[key]);
+        if (diagnose) return {surface, failed, visibleText: (document.body?.innerText || '').slice(0, 2048)};
+        return failed.length === 0;
         """#
 
     private static let dialogTheme = #"""

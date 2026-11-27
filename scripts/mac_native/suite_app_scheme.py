@@ -326,7 +326,7 @@ def qualify_live_switch(argv: list[str], env: dict[str, str], scratch: Path, dea
         capture['events'] = [row for row in evidence if row.get('event') in ('live-switch-step', 'live-switch-screenshot')]
         capture['diagnostic_events'] = [row for row in evidence if row.get('event') in (
             'startup', 'capture_progress', 'capture_step', 'capture_navigation', 'admission_failure', 'failure',
-            'watchdog', 'navigation_failure', 'content_process_terminated')]
+            'watchdog', 'navigation_failure', 'content_process_terminated', 'live-switch-dom-failure')]
         images = live_switch_archive(downloads)
         capture['screenshots'] = images
         steps = [row for row in evidence if row.get('event') == 'live-switch-step']
