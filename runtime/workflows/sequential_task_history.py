@@ -13,7 +13,7 @@ from runtime.infrastructure.workflow_sequential_ownership import (
 )
 from runtime.infrastructure.workflow_sequential_schema import sequential_tables
 from runtime.workflows.sequential_history import (
-    SequentialHistory, _ReadBudget, _auxiliary, _definitions, _native_contract,
+    SequentialHistory, _ReadBudget, _auxiliary, _decode, _definitions, _hashed, _native_contract,
     _outputs, _read_layout, _require, _run_history, _sql_budget,
 )
 from runtime.workflows.sequential_run_validation import (
@@ -161,6 +161,18 @@ def _native_metadata(conn: sqlite3.Connection, data: dict[str, list[dict]], budg
              if key.endswith('task_id') and value is not None}
     results = {value for rows in data.values() for row in rows for key, value in row.items()
                if key.endswith('result_id') and value is not None}
+    generic_runs = {row['id'] for row in data['workflow_seq_runs'] if row.get('engine_version', 1) == 2}
+    for row in data['workflow_seq_evidence']:
+        budget.step()
+        if row['run_id'] not in generic_runs or row['kind'] not in ('terminal', 'outer'):
+            continue
+        # Replay authenticated these proofs in this snapshot. Pending/rejected
+        # callbacks can be trusted before any scalar result_id is populated.
+        # Source-outer IDs are also retained (and already match the run column).
+        proof = _decode(_hashed(row['evidence_bytes'], row['evidence_digest']), budget)
+        for reference in (proof, proof.get('callback')):
+            if reference is not None and reference.get('result_id') is not None:
+                results.add(reference['result_id'])
     try:
         for table, identities in (('tasks', tasks), ('task_results', results)):
             columns = [row[1] for row in _structure_cells(conn, 'SELECT * FROM pragma_table_xinfo(?)',

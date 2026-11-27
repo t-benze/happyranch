@@ -8164,7 +8164,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     # another and observes a route error, never empty success.
                     pass
             if case == 'task_corruption':
-                for defect in ('hash', 'orphan_visit', 'pin', 'ownership', 'native_metadata'):
+                for defect in ('hash', 'orphan_visit', 'pin', 'ownership', 'native_metadata', 'pending_callback'):
                     with s4fixture() as f:
                         if defect == 'hash':
                             damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
@@ -8178,6 +8178,17 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         elif defect == 'native_metadata':
                             damage(f, 'task_results', 'UPDATE task_results SET decision_json=? WHERE id=?',
                                 ('{"action":"workflow_start","workflow":{"identity":"release/happyranch/coding"}}', f.actor.result_row_id))
+                        elif defect == 'pending_callback':
+                            s4closed(f, f.ids.visit_id, summary=s4bsummary(), terminal='success', positive=False)
+                            baseline = asyncio.run(s7read(f, '/tasks/' + f.ids.visit_task_id + '/sequential-workflows'))
+                            assert [run['id'] for run in baseline['runs']] == [f.ids.run_id]
+                            assert baseline['runs'][0]['progress'] == 'result_pending_settlement'
+                            evidence = f.conn.execute("SELECT result_id,evidence_bytes FROM workflow_seq_evidence "
+                                "WHERE visit_id=? AND kind='terminal'", (f.ids.visit_id,)).fetchone()
+                            assert evidence[0] is None and s4row(f, 'workflow_seq_visits', f.ids.visit_id)['result_id'] is None
+                            callback = json.loads(evidence[1])['callback']['result_id']
+                            damage(f, 'task_results', 'UPDATE task_results SET decision_json=? WHERE id=?',
+                                ('{"action":"workflow_start","workflow":{"identity":"release/happyranch/coding"}}', callback))
                         else:
                             damage(f, 'workflow_task_ownership', 'UPDATE workflow_task_ownership SET owner_id=? WHERE task_id=?',
                                 ('missing-owner', f.ids.visit_task_id))
