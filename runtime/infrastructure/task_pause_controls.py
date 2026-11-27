@@ -14,7 +14,10 @@ import threading
 import time
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
+
+if TYPE_CHECKING:
+    from runtime.models import TaskRecord
 
 
 PAUSE_SCHEMA_SQL = """CREATE TABLE task_pause_controls (
@@ -305,6 +308,26 @@ class TaskPauseStore:
             task_id = task["parent_task_id"]
         raise PauseControlError("pause_control_unavailable")
 
+    def _projection_root_uncommitted(self, task_id: str, tasks: dict[str, dict]) -> dict:
+        """Resolve read-only ancestry without fetching task payload columns."""
+        seen: set[str] = set()
+        for _ in range(1024):
+            if task_id in seen:
+                break
+            seen.add(task_id)
+            if task_id not in tasks:
+                row = self.db._conn.execute(
+                    "SELECT id, parent_task_id, status, block_kind FROM tasks WHERE id=?", (task_id,),
+                ).fetchone()
+                if row is None:
+                    raise PauseControlError("unknown_task" if len(seen) == 1 else "pause_control_unavailable")
+                tasks[task_id] = dict(row)
+            task = tasks[task_id]
+            if task["parent_task_id"] is None:
+                return task
+            task_id = task["parent_task_id"]
+        raise PauseControlError("pause_control_unavailable")
+
     def gate(self, root_id: str) -> threading.RLock:
         with self._gates_lock:
             return self._gates.setdefault(root_id, threading.RLock())
@@ -425,9 +448,9 @@ class TaskPauseStore:
             return True
 
     def projection(self, task_id: str, *, deadline: float | None = None) -> dict:
-        """A coherent read; never reconcile, probe a PID, cache or write."""
+        """A coherent read; never reconcile, probe a PID or write."""
         with self.db.coherent_read_view() as conn:
-            root = self.root_uncommitted(task_id)
+            root = self._projection_root_uncommitted(task_id, {})
             stamp = now()
             deadline = deadline if deadline is not None else time.monotonic() + 0.25
             blockers: list[dict] = []
@@ -458,7 +481,10 @@ class TaskPauseStore:
                     block("unknown", root["id"], "tree", "scan_incomplete")
                     break
                 parent = frontier.pop()
-                children = conn.execute("SELECT * FROM tasks WHERE parent_task_id=? LIMIT 10001", (parent,)).fetchall()
+                children = conn.execute(
+                    "SELECT id, parent_task_id, status, block_kind FROM tasks WHERE parent_task_id=? LIMIT 10001",
+                    (parent,),
+                ).fetchall()
                 for child in children:
                     task = dict(child)
                     if task["id"] in tasks or len(tasks) >= 10000:
@@ -520,3 +546,32 @@ class TaskPauseStore:
                     "paused_at": row["paused_at"] if row else None,
                     "resumed_at": row["resumed_at"] if row else None,
                     "blockers": blockers, "evidence_complete": complete, "observed_at": stamp}
+
+
+class TaskPauseListReader:
+    """Request-local reuse, owned by the task list's one coherent read view.
+
+    Fully scanned observations, including unknown evidence, are reused.
+    Truncated scans retain their ordinary retry/refusal behavior; no cached
+    value survives the request.
+    """
+
+    def __init__(self, store: TaskPauseStore, tasks: list[TaskRecord]) -> None:
+        self.store = store
+        self.tasks = {task.id: {"id": task.id, "parent_task_id": task.parent_task_id,
+                               "status": task.status.value, "block_kind": task.block_kind}
+                      for task in tasks}
+        self.roots: dict[str, dict] = {}
+
+    def projection(self, task_id: str) -> dict:
+        root = self.store._projection_root_uncommitted(task_id, self.tasks)
+        root_id = root["id"]
+        if root_id not in self.roots:
+            result = self.store.projection(root_id)
+            if not any(blocker["reason"] == "scan_incomplete" for blocker in result["blockers"]):
+                self.roots[root_id] = result
+            return result
+        result = self.roots[root_id]
+        stamp = now()
+        return {**result, "observed_at": stamp,
+                "blockers": [{**blocker, "observed_at": stamp} for blocker in result["blockers"]]}
