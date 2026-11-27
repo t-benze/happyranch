@@ -65,6 +65,7 @@ def validate_firewall_transition(before: FirewallRecord | None, after: FirewallR
         return
     if new == 'remove_intent' and old != 'skipped_subnet_rejected':
         return
-    if old == 'remove_intent' and new == 'removed':
+    if new == 'removed' and old in ('remove_intent', 'pending', 'skipped_ufw_absent',
+                                   'skipped_ufw_inactive', 'skipped_ufw_lock_unavailable'):
         return
     raise HomeActivationError('transition')

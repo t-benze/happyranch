@@ -4263,9 +4263,10 @@ retains its existing reloads and read-only manager inspection. Every subsequent
 check, admission and runtime gate is strict. The later `managed_services`
 re-stamp remains, with timer enable before verifier socket/target enable and
 managed target start. Ready Enable may start exact enabled owned units as at boot, verify joined and reconcile the scoped F3 UFW plan below; it never replays activation. I3a fresh-auth recovery
-still only verifies and
-publishes (or rolls over to prepared); it never renews policy, links the timer or
-replays any other effect. A later forward Enable runs the existing effect path.
+verifies and publishes (or rolls over to prepared). After joined recovery it may
+reconcile that same scoped F3 UFW plan, the only effect exception; it never
+renews policy, links the timer or replays any other effect. A later forward
+Enable runs the existing effect path.
 The existing managed-fragment check also validates both renewal units before
 any mutating manager call: exact `/usr/lib/systemd/system/<unit>` FragmentPath,
 empty DropInPaths, Names containing only that unit, loaded state without a
@@ -5089,8 +5090,20 @@ different action/log collision untouched and reports it as blocking. Any
 collision vetoes add, even alongside an exact owned rule. Only no-match adds.
 The fixed system-Python worker holds UFW's POSIX lock across fresh inspection
 and execution of `/usr/sbin/ufw` with fixed-action argv in the same process,
-closing the inspection/add race. UFW already supplies its Python modules; no
-new dependency or privilege model is added. No shell, ufw enable/disable/reset,
+closing the inspection/add race. The distro CLI releases this process-wide
+POSIX lock itself. The worker closes its old handle, re-acquires the native
+lock, then constructs a fresh frontend and verifies the exact persisted spec
+under that re-acquired lock; an unlocked CLI return is never verification.
+A fixed supervisor retains the existing activation-directory flock descriptor
+until the native worker group and all descendants are killed and reaped, on
+success, timeout or backend death. Parent-death binding requests that cleanup
+without killing the custody holder. Supervisor and worker share one absolute
+cap, the earlier of the existing eight-second worker budget and the original
+operation deadline. It is never extended after a lock wait. The worker checks
+it after native lock acquisition and immediately before the rule command.
+An uncertain native lifetime keeps custody; a later Turn off cannot claim
+cleanup while that group could still act. UFW already supplies its Python
+modules; no new dependency or privilege model is added. No shell, ufw enable/disable/reset,
 insert, reorder or separate reload is issued.
 UFW imports and CLI output use a binary-capable capture, including its
 import-time stdout binding. Success messages such as `Rule added` cannot
@@ -5100,10 +5113,16 @@ existing rollback/recovery behavior.
 
 The existing protected activation journal has an optional nonsecret `firewall`
 record: exact subnet and two ordered port states. Older journals omit it and
-retain their byte encoding, effect order and recovery behavior. Each add/remove
-intent is durable before its command; completion follows verified readback.
-After add/delete, a fresh backend read under the same UFW lock checks the exact
-encoded spec independently of collision-prioritized summaries. Add succeeds
+retain their byte encoding, effect order and recovery behavior. Each native
+add/remove intent is durable before its command; completion follows verified readback.
+Pending and absent/inactive/lock-unavailable skips never attempted a rule.
+No-effect cleanup retains that durable provenance through its audit intent,
+then commits `removed` directly, without publishing a native `remove_intent`.
+An interruption therefore needs neither UFW nor its lock to finish cleanup.
+An existing `remove_intent` still represents uncertain native removal and
+requires verified cleanup; absence of UFW never erases that uncertainty.
+After add/delete, a fresh backend read under the re-acquired UFW lock checks
+the exact encoded spec independently of collision-prioritized summaries. Add succeeds
 only when that exact rule exists; removal succeeds only when it is absent.
 A successful CLI exit with a surviving rule retains `remove_intent` in the
 journal and Status and an uncertain audit outcome, including rollback,

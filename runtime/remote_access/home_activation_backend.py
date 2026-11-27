@@ -1,7 +1,8 @@
 """Guarded activation composition, mounted by the fixed root helper.
 
-Public lifecycle calls use the fixed helper admission gate. Recovery executes only the
-existing Ruling 12/12a verify/publication path, never activation effects.
+Public lifecycle calls use the fixed helper admission gate. Recovery follows the
+Ruling 12/12a verify/publication path, with only the scoped F3 firewall reconciliation
+after joined recovery; it never replays activation effects.
 """
 from __future__ import annotations
 

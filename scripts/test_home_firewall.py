@@ -97,17 +97,48 @@ Four answers (no test-only production seams in any case):
   preserving the unrelated rule and existing Ruling 7/B7 sequence. Regression =
   omit exception/Turn off firewall cleanup. Earlier first-add-only coverage
   did not reach either later boundary. Faults remain in the existing fixture.
+
+TASK-19599 authoring answers (all use existing venues, no production test seam):
+* test_interrupted_no_effect_cleanup [pending/absent/inactive/lock-unavailable]:
+  observable = persisted first cleanup write, then fresh-owner cleanup twice
+  and Enable while UFW is absent. Regression = replace no-effect provenance
+  with native remove_intent. test_no_firewall_effect never interrupted cleanup;
+  test_owned_lock_unavailable instead owns genuinely uncertain removal.
+* test_worker_lifetime [helper-timeout/native-timeout/successful-reply]:
+  observable = no late effect after original custody becomes available, strict
+  success only after descendant reaping, and bounded cleanup of real processes.
+  Regression = kill only the backend/worker or release custody before reaping.
+  Existing Crash fixtures have no surviving OS processes. The harmless worker
+  body is substituted only in the test's backend process; launcher, supervisor,
+  descriptor inheritance, group signaling and helper transport remain real.
+* test_worker_deadline_after_lock: observable = activation refusal, no native
+  rule command and no acquired rule after the existing lock consumes the worker
+  budget. Regression = omit the worker's post-lock absolute deadline check.
+  Distinct risk from lifetime tests: a still-live worker may otherwise reset or
+  ignore its deadline before an effect. Existing fixtures never advance that
+  clock across lock acquisition. Clock/lock substitutions are test-side only.
+* test_worker_posix_readback_lock: observable = a separate process cannot acquire
+  the private native lock during fresh rule matching and activation reaches
+  READY. Regression = omit re-acquisition after the distro CLI releases its
+  nested lockf handle. NativeUFW's older boolean lock cannot observe POSIX
+  process-wide unlock semantics. Real distro locking plus the separate probe
+  owns that gap; all rule effects remain synthetic.
+NativeUFW's Popen adapter preserves its worker/CLI assertions and supports the
+old launcher for fail-before execution; no existing assertion is weakened.
 """
 from __future__ import annotations
 
 import builtins
 import contextlib
+import ctypes
 import errno
+import fcntl
 import importlib.util
 import io
 import json
 import os
 import stat
+import subprocess
 import sys
 import time
 from dataclasses import replace
@@ -153,6 +184,7 @@ class NativeUFW:
         monkeypatch.setattr(f, 'host_firewall', SimpleNamespace(observe_ufw=lambda **kw:
             host_firewall.UFWObservation('clear', 'active' if self.active else 'inactive')))
         monkeypatch.setattr(f.subprocess, 'run', self.run)
+        monkeypatch.setattr(f.subprocess, 'Popen', self.popen)
 
     def rule(self, port: int, proto: str, *, comment: str = COMMENT, action: str = 'allow',
              subnet: str = '192.168.1.0/24', log: bool = False) -> Any:
@@ -203,8 +235,24 @@ class NativeUFW:
             self.worker_util.msg('Rule deleted' if remove else 'Rule added')
         raise SystemExit(0)
 
+    def popen(self, argv: tuple, **kwargs: Any) -> Any:
+        native = self
+        class Child:
+            returncode = 0
+            finished = False
+            output = b''
+            def communicate(self, data: bytes | None = None, timeout: float | None = None) -> tuple:
+                if not self.finished:
+                    self.finished = True
+                    self.output = native.run(argv, input=data, **kwargs).stdout
+                return self.output, None
+            def terminate(self) -> None:
+                self.finished, self.returncode = True, -15
+        return Child()
+
     def run(self, argv: tuple, **kwargs: Any) -> Any:
-        assert argv == ('/usr/bin/python3', '-I', '-c', f._WORKER)
+        assert argv == ('/usr/bin/python3', '-I', '-c', f._WORKER) or argv == (
+            '/usr/bin/python3', '-I', '-c', f._SUPERVISOR, f._WORKER, str(os.getpid()))
         assert kwargs['cwd'] == '/' and kwargs['env'] == {'LC_ALL': 'C', 'LANG': 'C', 'PATH': '/usr/sbin:/usr/bin:/sbin:/bin'}
         self.worker_sys = SimpleNamespace(stdin=io.StringIO(kwargs['input'].decode()), argv=['-c'])
         ui = SimpleNamespace(get_status=lambda: 'Status: active' if self.active else 'Status: inactive',
@@ -574,6 +622,195 @@ def test_no_firewall_effect(venue: Venue, monkeypatch: pytest.MonkeyPatch, avail
     owner.enable()
     assert set(owner.status(timeout=1).values()) == {'skipped_ufw_' + availability}
     owner.cleanup()
+
+
+@pytest.mark.parametrize('state', ['pending', 'skipped_ufw_absent', 'skipped_ufw_inactive',
+                                  'skipped_ufw_lock_unavailable'])
+def test_interrupted_no_effect_cleanup(venue: Venue, monkeypatch: pytest.MonkeyPatch, state: str) -> None:
+    v = venue
+    v.coordinator().run(v.prepared)
+    monkeypatch.setattr(f, 'selected_subnet', lambda dial: '192.168.1.0/24')
+    monkeypatch.setattr(f, 'host_firewall', SimpleNamespace(observe_ufw=lambda **kw:
+        host_firewall.UFWObservation('unknown', 'absent')))
+    monkeypatch.setattr(f, '_ufw', lambda *a, **kw: pytest.fail('no-effect cleanup requires no UFW or lock'))
+    owner = f.HomeLANFirewall(v.transactions)
+    owner.enable()
+    # A pending plan is also durable proof that no native add was attempted.
+    if state != 'skipped_ufw_absent':
+        path = v.path('/var/lib/happyranch-remote-access/home-activation-txn.json')
+        txn = v.transactions.read_optional()
+        path.write_bytes(replace(txn, firewall=FirewallRecord(txn.firewall.subnet, (state,) * 2)).to_bytes())
+    publish = v.transactions._publish_record
+    def interrupt(path: str, raw: bytes, **kwargs: Any) -> None:
+        publish(path, raw, **kwargs)
+        # Same first cleanup-publication boundary: pre-fix remove_intent;
+        # fixed no-effect cleanup commits removed directly.
+        if json.loads(raw).get('firewall', {}).get('states', [None])[0] in ('remove_intent', 'removed'):
+            raise Crash()
+    with monkeypatch.context() as crash:
+        crash.setattr(v.transactions, '_publish_record', interrupt)
+        with pytest.raises(Crash):
+            owner.cleanup()
+    fresh = f.HomeLANFirewall(type(v.transactions)(root=v.root, root_owner=v.owner_ids))
+    fresh.cleanup()
+    fresh.cleanup()
+    assert v.transactions.read_optional().firewall.states == ('removed',) * 2
+    fresh.enable()  # Recovery permits a later Enable with UFW still absent.
+    assert v.transactions.read_optional().firewall.states == ('skipped_ufw_absent',) * 2
+
+
+def test_worker_posix_readback_lock(composition: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    real_popen = subprocess.Popen
+    native = NativeUFW(composition, monkeypatch)
+    from ufw.util import create_lock, release_lock
+    path = tmp_path / 'native.lock'
+    path.touch()
+    probe = "import fcntl,sys; f=open(sys.argv[1],'w');\ntry: fcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB);print('FREE')\nexcept BlockingIOError: print('HELD')"
+    def held() -> bool:
+        with real_popen((sys.executable, '-I', '-c', probe, str(path)), stdout=subprocess.PIPE) as process:
+            output, _ = process.communicate(timeout=2)
+        assert process.returncode == 0
+        return output.strip() == b'HELD'
+    tracking_lock, tracking_unlock, cli, match = native.lock, native.unlock, native.cli, native.Rule.match
+    after_cli = False
+    readbacks = []
+    def lock(name: str) -> Any:
+        tracking_lock(name)
+        return create_lock(str(path))
+    def unlock(handle: Any) -> None:
+        release_lock(handle)
+        tracking_unlock(handle)
+    def nested_cli(*args: Any, **kwargs: Any) -> None:
+        nonlocal after_cli
+        after_cli = False
+        assert held()
+        inner = create_lock(str(path))
+        release_lock(inner)  # The real CLI's process-wide POSIX unlock.
+        assert not held()
+        try:
+            cli(*args, **kwargs)
+        finally:
+            after_cli = True
+    def checked_match(left: Any, right: Any) -> int:
+        if after_cli:
+            readbacks.append(held())
+            assert readbacks[-1], 'fresh rule readback lost the native POSIX lock'
+        return match(left, right)
+    monkeypatch.setattr(native, 'lock', lock)
+    monkeypatch.setattr(native, 'unlock', unlock)
+    monkeypatch.setattr(native, 'cli', nested_cli)
+    monkeypatch.setattr(native.Rule, 'match', staticmethod(checked_match))
+    try:
+        start(composition)
+    finally:
+        assert readbacks and all(readbacks), 'fresh rule readback lost the native POSIX lock'
+    assert composition.transactions.read_optional().firewall.states == ('added',) * 2
+
+
+def test_worker_deadline_after_lock(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    native = NativeUFW(composition, monkeypatch)
+    monotonic, lock = time.monotonic, native.lock
+    elapsed = 0.0
+    def delayed_lock(path: str) -> Any:
+        nonlocal elapsed
+        handle = lock(path)
+        elapsed += 9.0  # A blocking native lock outlasted this worker's 8 s cap.
+        return handle
+    monkeypatch.setattr(time, 'monotonic', lambda: monotonic() + elapsed)
+    monkeypatch.setattr(native, 'lock', delayed_lock)
+    with pytest.raises(ActivationRefused):
+        start(composition)
+    assert native.commands == [] and native.rules == []
+    assert composition.transactions.read_optional().firewall.states == ('removed',) * 2
+
+
+@pytest.mark.parametrize('termination', ['helper-timeout', 'native-timeout', 'successful-reply'])
+def test_worker_lifetime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, termination: str) -> None:
+    """Real helper -> backend -> worker -> descendant; only temp-file effects."""
+    from runtime.remote_access import helper_generation as generation
+    gate, pids, effect, custody = (tmp_path / name for name in ('gate', 'pids', 'effect', 'custody'))
+    custody.mkdir()
+    descendant = ("import fcntl,os,pathlib; "
+        f"pathlib.Path({str(pids)!r}).open('a').write(str(os.getpid())+'\\n'); "
+        f"gate=open({str(gate)!r},'w'); fcntl.lockf(gate,fcntl.LOCK_EX); "
+        f"pathlib.Path({str(effect)!r}).write_text('late native effect')")
+    worker = ("import json,os,pathlib,subprocess,sys,time; json.load(sys.stdin); "
+        f"pathlib.Path({str(pids)!r}).open('a').write(str(os.getpid())+'\\n'); "
+        f"child=subprocess.Popen([sys.executable,'-I','-c',{descendant!r}]);\n"
+        f"while len(pathlib.Path({str(pids)!r}).read_text().splitlines())<2: time.sleep(.005)\n"
+        + ("child.wait(); " if termination != 'successful-reply' else '') +
+        "print(json.dumps(dict(active=True,states=['missing','missing'],mutated=True)))")
+    backend = ("import fcntl,inspect,json,os,sys; "
+        f"sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r}); "
+        "from runtime.remote_access import home_firewall as f; "
+        f"fd=os.open({str(custody)!r},os.O_RDONLY|os.O_DIRECTORY); fcntl.flock(fd,fcntl.LOCK_EX); "
+        f"f._WORKER={worker!r}; "
+        # Signature compatibility lets exactly the same subprocess assertion
+        # exercise the old owner; no production behavior is substituted.
+        "kw={'custody_fd':fd} if 'custody_fd' in inspect.signature(f._ufw).parameters else {}; "
+        f"print(json.dumps(f._ufw('add','192.168.1.0/24','192.168.1.40',0,timeout={.3 if termination == 'native-timeout' else 8},**kw)))")
+    monkeypatch.setattr(generation, 'LIFECYCLE_COMMAND', (sys.executable, '-I', '-c', backend))
+    libc = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    assert libc.prctl(37, ctypes.byref(previous), 0, 0, 0) == 0
+    assert libc.prctl(36, 1, 0, 0, 0) == 0  # Reap any pre-fix orphan ourselves.
+    try:
+        with gate.open('w') as locked:
+            fcntl.lockf(locked, fcntl.LOCK_EX)
+            result, category = None, None
+            try:
+                result = generation.HomeLifecycleClient('Enable', max(1000, os.getuid()))._call('enable', 'synthetic', .8)
+            except generation.GenerationUnavailable as error:
+                category = error.category
+            assert pids.exists() and len(pids.read_text().splitlines()) == 2, 'native substitute never reached its lock'
+            # A subsequent Turn off cannot enter until the original directory
+            # flock is free. The supervisor must retain it while reaping native
+            # workers after backend death; mere helper timeout is not cleanup.
+            descriptor = os.open(custody, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                until = time.monotonic() + 2
+                while True:
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        assert time.monotonic() < until, 'native custody did not settle'
+                        time.sleep(.01)
+            finally:
+                os.close(descriptor)
+            fcntl.lockf(locked, fcntl.LOCK_UN)
+        # The old worker writes after helper timeout when the lock is released.
+        until = time.monotonic() + .4
+        while not effect.exists() and time.monotonic() < until:
+            time.sleep(.01)
+        assert not effect.exists(), 'worker/descendant acted after operation timeout and released custody'
+        if termination == 'successful-reply':
+            assert result == dict(active=True, states=['missing', 'missing'], mutated=True)
+        else:
+            assert category == ('timeout' if termination == 'helper-timeout' else 'unknown')
+        descriptor = os.open(custody, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(descriptor)
+    finally:
+        # Bounded cleanup of the deliberately failing pre-fix lifetime case.
+        for pid in (map(int, pids.read_text().splitlines()) if pids.exists() else ()):
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+        until = time.monotonic() + 2
+        while time.monotonic() < until:
+            try:
+                waited, _ = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if not waited:
+                time.sleep(.01)
+        else:
+            pytest.fail('subprocess custody cleanup did not reap all descendants')
+        assert libc.prctl(36, previous.value, 0, 0, 0) == 0
 
 
 @pytest.mark.parametrize('case', ['wide', 'public', 'missing', 'ambiguous'])

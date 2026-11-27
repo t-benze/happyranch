@@ -4272,6 +4272,20 @@ The `native_add` row of `test_failed_enable_rolls_back` likewise refuses READY
 when add exits zero without a persisted rule; the existing `journal_commit`
 row retains the later lost-commit rollback check.
 
+TASK-19599 adds `test_interrupted_no_effect_cleanup` for pending and all three
+no-effect skip states: crash immediately after the first cleanup journal write,
+fresh-owner cleanup twice, then Enable with UFW still absent. Pre-fix this
+boundary published `remove_intent`; fixed no-effect cleanup commits `removed`
+directly. `test_worker_posix_readback_lock` uses real distro lockf acquisition
+and release on a private file and an independent subprocess probe during fresh
+rule matching. `test_worker_lifetime` drives real helper/backend/supervisor/
+worker/descendant processes with a private blocking lock and harmless effect
+file: after helper/native timeout or a successful reply and custody release,
+unlocking cannot produce a late effect. `test_worker_deadline_after_lock`
+advances the native fixture clock across lock acquisition and requires refusal
+before any rule command. All spawned processes are reaped. These tests grant
+no live UFW effects.
+
 TASK-19580 extends this venue with a legacy READY refresh (the receipt has no
 firewall member), identical untagged TCP/UDP/both plus the retained foreign-rule
 case, crashes after either add and before READY followed by Enable/Turn off,

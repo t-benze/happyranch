@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import secrets
 import time
@@ -17,11 +18,10 @@ from runtime.remote_access.home_audit import AUDIT_PATH, Component, Event, HomeA
 
 # UFW ships these Python modules with /usr/sbin/ufw. Its own rule reader and
 # UFWRule.match are authoritative, including comment/log/action collisions.
-# Keep its POSIX lock across inspection and CLI execution IN THE SAME PROCESS:
-# a separate CLI process would deadlock or introduce a rule-replacement race.
-# runpy runs only the fixed distro CLI with fixed-action argv; no shell/API writes.
+# The fixed distro CLI runs with its own security checks. Its nested lockf
+# unlock drops this process's lock too, so reacquire before fresh verification.
 _WORKER = r'''
-import contextlib, errno, gettext, io, json, os, runpy, stat, sys
+import contextlib, errno, gettext, io, json, os, runpy, stat, sys, time
 from ipaddress import ip_address, ip_network
 gettext.install('ufw')
 # UFW's msg() binds stdout at import time and writes through its binary buffer.
@@ -33,7 +33,12 @@ with contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
     from ufw.frontend import UFWFrontend
     from ufw.util import create_lock, release_lock, hex_encode
 request = json.load(sys.stdin)
-assert request.keys() == {'action', 'subnet', 'dial_ip', 'index'}
+assert request.keys() == {'action', 'subnet', 'dial_ip', 'index', 'deadline'}
+deadline = request['deadline']
+def check_deadline():
+    if time.monotonic() >= deadline:
+        raise TimeoutError('firewall')
+check_deadline()
 action, subnet, dial_ip, index = (request[k] for k in ('action', 'subnet', 'dial_ip', 'index'))
 assert action in ('inspect', 'add', 'remove') and type(index) is int and index in (0, 1)
 network, address = ip_network(subnet), ip_address(dial_ip)
@@ -61,6 +66,7 @@ finally:
     os.close(probe)
 lock = create_lock('/run/ufw.lock')
 try:
+    check_deadline()
     # Bound the distro reader's inputs before constructing its frontend.
     for path in ('/etc/ufw/user.rules', '/etc/ufw/user6.rules'):
         info = os.stat(path, follow_symlinks=False)
@@ -96,15 +102,23 @@ try:
                 'allow', 'proto', protocol, 'from', subnet, 'to', dial_ip, 'port', str(port),
                 'comment', 'happyranch-home-headscale']
             try:
+                check_deadline()
                 runpy.run_path('/usr/sbin/ufw', run_name='__main__')
             except SystemExit as result:
                 if result.code not in (None, 0):
                     raise RuntimeError('ufw command failed')
+            # Closing ANY handle on this inode drops our POSIX locks. Close
+            # the old handle before reacquiring, then keep the new one through
+            # frontend construction and exact persisted-rule comparison.
+            release_lock(lock)
+            lock = None
+            lock = create_lock('/run/ufw.lock')
         if mutate or action == 'remove':
             # A successful CLI exit is not proof of the effect. Read the
             # persisted rules afresh under the same lock and compare the exact
             # encoded spec, independently of collision-prioritized states.
             sys.argv = ['/usr/sbin/ufw']
+            check_deadline()
             readback = UFWFrontend(False)
             rules = (readback.backend.get_rules_ipv6() if network.version == 6
                      else readback.backend.get_rules_ipv4())
@@ -113,7 +127,77 @@ try:
                 raise RuntimeError('ufw effect unverified')
     print(json.dumps({'active': active, 'states': states, 'mutated': mutate}))
 finally:
-    release_lock(lock)
+    if lock is not None:
+        release_lock(lock)
+'''
+
+# This supervisor, rather than the killable backend, retains the inherited
+# activation-directory flock until every native descendant is dead and reaped.
+# Parent death requests cleanup; it must NOT kill the custody holder outright.
+# The worker and the stock CLI's children stay in one private process group.
+_SUPERVISOR = r'''
+import ctypes, json, os, signal, subprocess, sys, time
+cancelled = False
+def cancel(signum, frame):
+    global cancelled
+    cancelled = True
+signal.signal(signal.SIGTERM, cancel)
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0 or libc.prctl(36, 1, 0, 0, 0) != 0:
+    raise RuntimeError('firewall custody')
+if os.getppid() != int(sys.argv[2]):
+    raise SystemExit(1)
+request = json.load(sys.stdin)
+deadline = request['deadline']
+if cancelled or time.monotonic() >= deadline:
+    raise SystemExit(1)
+worker = subprocess.Popen(('/usr/bin/python3', '-I', '-c', sys.argv[1]),
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    start_new_session=True, cwd='/', env=dict(os.environ))
+try:
+    worker.stdin.write(json.dumps(request).encode())
+    worker.stdin.close()
+    os.set_blocking(worker.stdout.fileno(), False)
+    output = b''
+    while True:
+        remaining = deadline - time.monotonic()
+        if cancelled or remaining <= 0:
+            raise TimeoutError('firewall')
+        try:
+            chunk = os.read(worker.stdout.fileno(), 1025)
+        except BlockingIOError:
+            chunk = b''
+        output += chunk
+        if len(output) > 1024:
+            raise RuntimeError('firewall output')
+        # Keep the group leader unreaped until killpg: its PID/PGID cannot be
+        # recycled into an unrelated process group while we signal descendants.
+        if os.waitid(os.P_PID, worker.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+            try:
+                output += os.read(worker.stdout.fileno(), 1025)
+            except BlockingIOError:
+                pass
+            break
+        time.sleep(min(.01, remaining))
+finally:
+    # Even a successful CLI may have left descendants. Do not acknowledge any
+    # result or release custody before killing and reaping the entire group.
+    try:
+        os.killpg(worker.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    worker.wait()
+    while True:
+        try:
+            os.waitpid(-1, 0)
+        except InterruptedError:
+            continue
+        except ChildProcessError:
+            break
+    # All descendants were adopted by this subreaper and have now been reaped.
+if cancelled or worker.returncode != 0 or len(output) > 1024 or time.monotonic() >= deadline:
+    raise SystemExit(1)
+sys.stdout.buffer.write(output)
 '''
 
 
@@ -142,17 +226,34 @@ def selected_subnet(dial_ip: str) -> str | None:
         return None
 
 
-def _ufw(action: str, subnet: str, dial_ip: str, index: int, *, timeout: float = 8.0) -> dict:
+def _ufw(action: str, subnet: str, dial_ip: str, index: int, *, timeout: float = 8.0,
+         deadline: float | None = None, custody_fd: int | None = None) -> dict:
     if action not in ('inspect', 'add', 'remove') or index not in (0, 1) or not valid_subnet(subnet, dial_ip):
         raise HomeActivationError()
-    result = subprocess.run(('/usr/bin/python3', '-I', '-c', _WORKER),
-        input=json.dumps(dict(action=action, subnet=subnet, dial_ip=dial_ip, index=index)).encode(),
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        env={'LC_ALL': 'C', 'LANG': 'C', 'PATH': '/usr/sbin:/usr/bin:/sbin:/bin'},
-        cwd='/', timeout=timeout, check=False)
-    if result.returncode != 0 or len(result.stdout) > 1024:
+    deadline = min(time.monotonic() + timeout, deadline) if deadline is not None else time.monotonic() + timeout
+    if deadline <= time.monotonic() or (action != 'inspect' and custody_fd is None):
         raise HomeActivationError('firewall')
-    value = json.loads(result.stdout)
+    process = subprocess.Popen(('/usr/bin/python3', '-I', '-c', _SUPERVISOR, _WORKER, str(os.getpid())),
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        pass_fds=() if custody_fd is None else (custody_fd,),
+        env={'LC_ALL': 'C', 'LANG': 'C', 'PATH': '/usr/sbin:/usr/bin:/sbin:/bin'},
+        cwd='/')
+    try:
+        output, _ = process.communicate(json.dumps(dict(action=action, subnet=subnet,
+            dial_ip=dial_ip, index=index, deadline=deadline)).encode(), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        # The outer helper may kill this backend at its original deadline.
+        # The supervisor still owns custody and finishes native group cleanup.
+        process.communicate()
+        raise HomeActivationError('firewall') from None
+    except BaseException:
+        process.terminate()
+        process.communicate()
+        raise
+    if process.returncode != 0 or len(output) > 1024:
+        raise HomeActivationError('firewall')
+    value = json.loads(output)
     if value == {'skipped': 'ufw lock unavailable'}:
         raise _UFWLockUnavailable('firewall')
     if (type(value) is not dict or value.keys() != {'active', 'states', 'mutated'}
@@ -173,6 +274,15 @@ class HomeLANFirewall:
         if remaining <= 0:
             raise HomeActivationError('firewall')
         return remaining
+
+    def _native(self, action: str, txn: HomeActivationTransaction, index: int, *, timeout: float) -> dict:
+        directory = getattr(self.transactions, '_directory', None)
+        if directory is None and action != 'inspect':
+            with self.transactions.locked() as directory:
+                return _ufw(action, txn.firewall.subnet, txn.dial_ip, index, timeout=timeout,
+                            deadline=self.deadline, custody_fd=directory)
+        return _ufw(action, txn.firewall.subnet, txn.dial_ip, index, timeout=timeout,
+                    deadline=self.deadline, custody_fd=directory)
 
     def _write(self, txn: HomeActivationTransaction, record: FirewallRecord) -> HomeActivationTransaction:
         updated = replace(txn, firewall=record)
@@ -232,7 +342,7 @@ class HomeLANFirewall:
             settled = ('skipped_ufw_' + observation.availability,) * 2
         else:
             try:
-                live = _ufw('inspect', txn.firewall.subnet, txn.dial_ip, 0, timeout=self._budget(8.0))
+                live = self._native('inspect', txn, 0, timeout=self._budget(8.0))
             except _UFWLockUnavailable:
                 if any(state not in skipped for state in txn.firewall.states):
                     raise  # Never erase an acquired rule or an uncertain add.
@@ -256,7 +366,7 @@ class HomeLANFirewall:
                 elif observation.availability != 'active':
                     raise HomeActivationError('firewall')
                 else:
-                    result = _ufw('add', txn.firewall.subnet, txn.dial_ip, index, timeout=self._budget(8.0))
+                    result = self._native('add', txn, index, timeout=self._budget(8.0))
                     state = ('skipped_ufw_inactive' if not result['active'] else
                              'added' if result['mutated'] or result['states'][index] == 'owned'
                              else result['states'][index])
@@ -279,12 +389,16 @@ class HomeLANFirewall:
                 continue
             skipped = txn.firewall.states[index] in (
                 'skipped_ufw_absent', 'skipped_ufw_inactive', 'skipped_ufw_lock_unavailable', 'pending')
-            txn = self._state(txn, index, 'remove_intent')
+            # A skipped/pending port never attempted an effect. Preserve that
+            # durable fact until removed commits; do not turn it into an
+            # uncertain native removal that would require UFW after a crash.
+            if not skipped:
+                txn = self._state(txn, index, 'remove_intent')
             audit, intent = self._audit(index, remove=True)
             try:
                 if not skipped:
-                    _ufw('remove', txn.firewall.subnet, txn.dial_ip, index, timeout=self._budget(8.0))
-                    check = _ufw('inspect', txn.firewall.subnet, txn.dial_ip, index, timeout=self._budget(8.0))
+                    self._native('remove', txn, index, timeout=self._budget(8.0))
+                    check = self._native('inspect', txn, index, timeout=self._budget(8.0))
                     if check['states'][index] == 'owned':
                         raise HomeActivationError('firewall')
                 txn = self._state(txn, index, 'removed')
@@ -302,7 +416,7 @@ class HomeLANFirewall:
         settled = {'added', 'preexisting_not_owned', 'blocked_by_existing'}
         if live and txn.firewall.subnet is not None and any(state in settled for state in states):
             try:
-                observed = _ufw('inspect', txn.firewall.subnet, txn.dial_ip, 0, timeout=timeout)
+                observed = self._native('inspect', txn, 0, timeout=timeout)
                 current = (tuple('added' if state == 'owned' else
                                  'unverified' if state == 'missing' else state
                                  for state in observed['states']) if observed['active']

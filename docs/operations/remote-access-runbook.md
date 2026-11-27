@@ -56,9 +56,10 @@ allow is left untouched (`preexisting_not_owned`: already allowed by your
 existing rule); a different action/log collision is left untouched
 (`blocked_by_existing`: your existing rule blocks this port). Turn off does not
 remove either. An exact tagged HappyRanch rule is adopted. Only no-match adds.
-The helper holds UFW's own lock across matching, its fixed rule command and
-fresh exact-spec readback. Specs use the distro's hex encoding for the fixed
-comment, matching persisted UFW rules without changing its matcher. A zero CLI
+The helper holds UFW's own lock across matching and its fixed rule command.
+Because the distro CLI releases this process-wide POSIX lock, the helper closes
+the old handle and re-acquires the lock before fresh exact-spec readback. Specs
+use the distro's hex encoding for the fixed comment, matching persisted UFW rules without changing its matcher. A zero CLI
 exit alone does not establish an add or removal: readback must prove the exact
 tagged rule present or absent, respectively. If a rule survives deletion,
 rollback/replacement cleanup/Turn off refuse success; Status and the journal
@@ -95,7 +96,18 @@ fixed comment AND exact allow/source/destination/port/protocol specification.
 The protected activation journal records each intent before the effect and
 completion afterward, so interrupted add/delete remains recoverable. Old
 journals without the optional firewall record still recover. If cleanup is
-uncertain it retains the intent and refuses successful cleanup.
+uncertain it retains the intent and refuses successful cleanup. Pending and
+absent/inactive/lock-unavailable skip records retain their no-effect provenance
+until cleanup commits `removed` directly; interrupted no-effect cleanup requires
+neither UFW nor its lock. Existing native `remove_intent` records still fail
+closed until verified removal.
+A native supervisor retains the original activation-directory custody until the
+worker process group and all descendants are killed and reaped, including on
+backend death. The worker and supervisor share one absolute cap, bounded by
+the original operation deadline and existing eight-second worker budget. It is
+never extended after lock acquisition and is checked immediately before effects. A later Turn off cannot
+enter while an earlier worker could still act. Fresh-auth joined recovery may
+reconcile the scoped F3 plan; renewal/timer/activation replay remain forbidden.
 Repeating Enable with unchanged firewall facts leaves settled journal/audit
 bytes untouched. Making UFW inactive later retains ownership so Turn off still
 removes the exact tagged rules from its persisted configuration.
