@@ -95,7 +95,7 @@ export function ArchiveDefinitionDialog({
         sentVersion.current = expected;
         return actions.archive(definitionId, expected);
       },
-      (error) => (classifyWriteError(error).kind === 'unknown' ? 'unknown' : 'failed'),
+      (error) => (classifyWriteError(error, 'archive').kind === 'unknown' ? 'unknown' : 'failed'),
     );
     if (result.ok) {
       void actions.refreshList();
@@ -105,7 +105,7 @@ export function ArchiveDefinitionDialog({
     if (result.refused) return setStatus(owner.saveRefused ? { s: 'unknown', checking: false, refreshFailed: false } : { s: 'idle' });
     // Desktop admission refused: nothing was sent.
     if ((result.error as Error | null)?.name === 'OwnersReceiptError') return setStatus({ s: 'failed' });
-    const failure = classifyWriteError(result.error);
+    const failure = classifyWriteError(result.error, 'archive');
     if (failure.kind === 'unknown') return setStatus({ s: 'unknown', checking: false, refreshFailed: false });
     const current = currentDefinitionRead(failure.detail);
     const code = failure.detail?.code ?? failure.code;

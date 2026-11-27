@@ -5,6 +5,8 @@ Models the THR-390 PR10 store writer and opted-in browser owner contract.
 lowest free bounded key; commit retains it historically, rollback retains none.
 An initial historical reservation represents archived/renamed-away ownership.
 A separate other-tab create and later metadata edit cannot attribute our write.
+The `Lose` action includes an ordinary answered 5xx such as post-forward 502
+`incomplete_body`: an HTTP error status is no evidence of rollback/no send.
 Response loss can precede commit/rollback; delayed work can commit after a list
 check or acknowledgement. Only each original response marks its request saved.
 

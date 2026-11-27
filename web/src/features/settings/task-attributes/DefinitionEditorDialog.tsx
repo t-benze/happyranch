@@ -306,7 +306,7 @@ export function DefinitionEditorDialog(props: {
         }
         return actions.update(definitionId as string, body as Partial<AttributeDefinitionFields> & { expected_version: number });
       },
-      (error) => (classifyWriteError(error).kind === 'unknown' ? 'unknown' : 'failed'),
+      (error) => (classifyWriteError(error, mode).kind === 'unknown' ? 'unknown' : 'failed'),
     );
     if (!result.ok) {
       if (result.refused) return setStatus(owner.saveRefused ? { s: 'unknown', checking: false, refreshFailed: false } : { s: 'idle' });
@@ -332,7 +332,7 @@ export function DefinitionEditorDialog(props: {
   };
 
   const handleFailure = (error: unknown): void => {
-    const failure = classifyWriteError(error);
+    const failure = classifyWriteError(error, mode);
     if (failure.kind === 'unknown') {
       observedDefinitionsRef.current = null;
       setObservedDefinitions(null);

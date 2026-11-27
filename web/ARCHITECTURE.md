@@ -557,7 +557,10 @@ still loaded) and run once Retry clears it.
 - **Write outcomes.** Definite responses render the PR2 envelope; name-key
   generation exhaustion points to the visible name input. Stable-ID edit and
   archive keep full-field/version reconciliation. A keyless create lost or
-  unreadable response stays unknown: the list can never attribute Saved or
+  unreadable response, or any 5xx (including post-forward 502 `incomplete_body`),
+  stays unknown: no 5xx status/code alone proves no effect. Native owner
+  admission refusal remains retryable because it occurs before the write
+  callback runs; validation 4xx handling is unchanged. The list can never attribute Saved or
   Not saved, even with identical rows, metadata changes or a delayed POST.
   Save/Enter/Retry are blocked. Check list displays the current definitions
   without changing that outcome. After successful observation in this unknown

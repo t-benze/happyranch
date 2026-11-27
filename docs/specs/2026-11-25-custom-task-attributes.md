@@ -424,7 +424,10 @@ CLI has no definition-create verb. Discover returned/current keys with
 their existing meanings.
 
 A keyless create has no list-based write identity. Lost/unreadable own response
-means **unknown**, regardless of zero/one/many matching rows, metadata edits,
+or any 5xx (including a post-forward 502 `incomplete_body`) means **unknown**:
+no 5xx status/code alone proves no effect. Native owner admission refusal is
+retryable because the write callback has not run; validation 4xx handling is
+unchanged. The outcome remains unknown regardless of zero/one/many matching rows, metadata edits,
 other-tab creates, or a delayed original POST. Save, Enter and Retry send
 nothing. **Check list** fetches and displays current definitions for inspection;
 it never claims Saved or Not saved. After a successful check in this unknown

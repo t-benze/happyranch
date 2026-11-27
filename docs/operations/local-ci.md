@@ -83,7 +83,9 @@ locale-width-web/desktop combination) and `--tad-outcome unknownCommit` (or
 another named unknown scenario). Each selected group renders en/zh-CN, 390×844/1440×900 and both the
 web route and shared desktop Settings presentation. W01/W02 record keyless
 POST/read-only-key PATCH request ledgers; W03 records field/refusal drafts;
-W04/W07 use unreadable own replies, other-tab rows, delayed commits and failed
+W04/W07 use unreadable own replies, committed POSTs followed by ordinary JSON
+502 `incomplete_body` (`unknown502` in the editor, `unknown502Gate` in the shared
+hold panel), other-tab-only rows with our POST having no effect, delayed commits and failed
 list checks, then dialog/shared-gate acknowledgement without attribution or
 resend. W05 preserves nodes/focus/selection/draft across locale switches. W06
 captures create geometry; other groups capture their affected states too.

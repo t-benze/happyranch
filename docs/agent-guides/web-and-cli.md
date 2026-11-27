@@ -6443,8 +6443,11 @@ create transaction; exhaustion returns 422 on `name` and asks for another name.
 CLI has no definition-create verb; `attributes list/show` discovers keys and
 `history --key` remains a filter.
 
-A lost/unreadable keyless-create response stays unknown: Save, Enter and Retry
-are disabled. Check list shows current definitions without attributing any row
+A lost/unreadable keyless-create response or any 5xx (including post-forward
+502 `incomplete_body`) stays unknown: no 5xx status/code alone proves no effect.
+Native owner admission refusal is retryable because the write callback has not
+run; validation 4xx handling is unchanged. Save, Enter and Retry are disabled
+while unknown. Check list shows current definitions without attributing any row
 to that request. Only a successful check in this unknown episode enables
 Acknowledge and close, which closes/forgets this owner without claiming Saved
 or Not saved. Both actions also appear in its shared hold panel and desktop

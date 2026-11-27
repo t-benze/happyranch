@@ -37,11 +37,13 @@ export function createTaskAttributeDefinitionFixture(org) {
         if (state.mode === 'pending') { state.delayed = () => send(res, 201, read(commit(body))); return; }
         if (state.mode === 'unknownShape') { send(res, 201, {}); return; }
         if (state.mode.startsWith('unknown')) {
-          if (['unknownCommit', 'unknownOther', 'unknownMetadata'].includes(state.mode)) {
+          if (['unknownCommit', 'unknownMetadata', 'unknown502', 'unknown502Gate'].includes(state.mode)) {
             const d = commit(body);
             if (state.mode === 'unknownMetadata') d.name = 'Changed by another tab';
           }
           if (state.mode === 'unknownDelayed') state.delayed = () => commit(body);
+          // Ordinary JSON error after forwarding/commit, as emitted by the Linux bridge.
+          if (state.mode === 'unknown502' || state.mode === 'unknown502Gate') { send(res, 502, { detail: { code: 'incomplete_body' } }); return; }
           // Real HTTP success headers with an unreadable/truncated JSON body.
           // No automatic resend or list-derived attribution is authorized.
           res.writeHead(201, { 'content-type': 'application/json' }); res.end('{'); return;
@@ -81,7 +83,7 @@ export async function runTaskAttributeDefinitionCases(h, { org, only = '', conte
   const selected = new Set(only ? only.split(',') : validCases);
   if ([...selected].some((id) => !validCases.includes(id))) throw new Error('unknown --tad-case (W08 has no Settings prototype renderer)');
   if (context && !/^(en|zh-CN)-(390|1440)-(web|desktop)$/.test(context)) throw new Error('unknown --tad-context');
-  if (outcome && !['unknownCommit', 'unknownNoCommit', 'unknownOther', 'unknownMetadata', 'unknownDelayed', 'unknownShape'].includes(outcome)) throw new Error('unknown --tad-outcome');
+  if (outcome && !['unknownCommit', 'unknownNoCommit', 'unknownOther', 'unknownMetadata', 'unknownDelayed', 'unknownShape', 'unknown502', 'unknown502Gate'].includes(outcome)) throw new Error('unknown --tad-outcome');
   const editor = `document.querySelector('[data-testid="ta-editor-body"]')?.closest('[role="dialog"]')`;
   const button = (key, locale, scope = editor) => `[...(${scope})?.querySelectorAll('button') ?? []].find(b => b.textContent.trim() === ${JSON.stringify(tr(locale, key))})`;
   const text = (key, locale) => `document.body.textContent.includes(${JSON.stringify(tr(locale, key))})`;
@@ -195,12 +197,18 @@ export async function runTaskAttributeDefinitionCases(h, { org, only = '', conte
       for (const release of fixture.state.holdRead.splice(0)) release();
       await closePage(page); endCase();
     }
-    if (selected.has('W04') || selected.has('W07')) for (const mode of ['unknownCommit', 'unknownNoCommit', 'unknownOther', 'unknownMetadata', 'unknownDelayed', 'unknownShape'].filter((mode) => !outcome || mode === outcome)) {
+    if (selected.has('W04') || selected.has('W07')) for (const mode of ['unknownCommit', 'unknownNoCommit', 'unknownOther', 'unknownMetadata', 'unknownDelayed', 'unknownShape', 'unknown502', 'unknown502Gate'].filter((mode) => !outcome || mode === outcome)) {
       beginCase(`W04-W07-${mode}-${tag}`, 'list cannot attribute unknown create; acknowledgement from dialog/shared gate');
       const page = await open(locale, width, desktop, mode);
       await createDraft(page, locale);
       if (mode === 'unknownOther') fixture.state.rows.push(definition('other-before-post', 'other_before_post', 'Synthetic new'));
+      const rowsBeforePost = fixture.state.rows.map(d => d.definition_id);
       await save(page, locale);
+      await waitTrue(page, `${text('owners.save.unknownCreate', locale)} || !!(${button('settings.taskAttributes.editor.retry', locale)})`, 'POST settles');
+      if (mode === 'unknownOther') {
+        check('only other-tab row exists; our POST has no effect', fixture.state.rows.map(d => d.definition_id), rowsBeforePost);
+        check('other-tab identical row is present', fixture.state.rows.filter(d => d.name === 'Synthetic new').map(d => d.definition_id), ['other-before-post']);
+      }
       check('unknown copy', await waitTrue(page, text('owners.save.unknownCreate', locale), 'unknown'), true);
       check('save disabled', await evaluate(page, `(${button('settings.taskAttributes.editor.saveCreate', locale)}).disabled`), true);
       check('ack disabled before observation', await evaluate(page, `(${button('owners.save.acknowledgeUnknown', locale)}).disabled`), true);
@@ -210,7 +218,7 @@ export async function runTaskAttributeDefinitionCases(h, { org, only = '', conte
       check('unknown Enter keeps acknowledgement disabled', await evaluate(page, `(${button('owners.save.acknowledgeUnknown', locale)}).disabled`), true);
       check('no Retry for unknown create', await evaluate(page, `!!(${button('settings.taskAttributes.editor.retry', locale)})`), false);
       check('unknown Enter/Save sends nothing', fixture.state.posts.length, 1);
-      const panel = mode === 'unknownOther' || mode === 'unknownDelayed';
+      const panel = mode === 'unknownOther' || mode === 'unknownDelayed' || mode === 'unknown502Gate';
       if (panel) {
         await clickSrc(page, button('settings.taskAttributes.editor.cancel', locale));
         check('shared hold panel', await waitTrue(page, `!!document.querySelector('[data-owner-gate="hold"]')`, 'hold panel'), true);
