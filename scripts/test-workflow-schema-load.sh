@@ -119,7 +119,7 @@ S6A_CASES = ('control_result_binding', 'workflow_wait', 'done_outstanding_refuse
     'initiator_event_run_B_live', 'ordinary_done_lag', 'modern_missing_no_fallback', 'final_done_after_drain',
     'blocked_job_wait_passthrough', 'settled_history_not_veto', 'event_session_dispatch_refused',
     'legacy_summary_workflow_not_terminal', 'resume_publishes_ready_initiator',
-    'resume_queue_refused_retains_release', 'manager_work_not_terminal')
+    'resume_queue_refused_retains_release', 'manager_work_not_terminal', 'fanout_metadata_refused')
 s6a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s6a='):
     s6a_case = sys.argv[1].split('=', 1)[1]
@@ -5407,11 +5407,18 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     native = s4bytes(dict(legs=[dict(agent='s3_review', prompt='next ordinary chain leg')], step_index=0, step_audit_id=1)).decode()
                     f.conn.execute('UPDATE tasks SET active_chain=? WHERE id=?', (native, f.source.id))
                 else:
-                    native = s4bytes(dict(children_ids=[child.id], children_details=[], width=1,
-                        manager_agent=f.source.assigned_agent, status='spawned')).decode()
+                    from runtime.orchestrator.fanout import FanoutState
+                    sibling = s6ordinary(f, parent=f.source.id, task_id='TASK-' + 'x' * 123)
+                    native = FanoutState(children_ids=[child.id, sibling.id], children_details=[
+                        dict(agent=member.assigned_agent, prompt='Native fanout 中文') for member in (child, sibling)],
+                        width=2, manager_agent=f.source.assigned_agent, join_summary='Join both children').serialize()
                     f.conn.execute('UPDATE tasks SET active_fanout=? WHERE id=?', (native, f.source.id))
                 f.conn.commit()
                 source = f.db.get_task(f.source.id)
+                if case == 'fanout_not_joined':
+                    state = observation(f.db, source.id)
+                    assert set(state['ordinary_task_ids']) == {child.id, sibling.id}, state
+                    assert state['ordinary_join_outstanding'], state
                 assert eligible(f.org.orchestrator, source), 'inbox could not admit I with ordinary work live'
                 if case == 'fanout_not_joined':
                     assert not fanout_join_ready(f.org.orchestrator, source)
@@ -5444,9 +5451,65 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     assert new_leg.id not in {member.carrier_task_id for member in f.batch_ids}
                     assert s6queue(f) == [new_leg.id], 'ordinary chain published a workflow carrier or enclosing parent'
                 else:
+                    assert s6queue(f) == [], 'unfinished ordinary sibling released fanout join'
+                    f.db.update_task(sibling.id, status='completed')
+                    _enqueue_parent_if_waiting(f.org.orchestrator, sibling.id)
+                    _enqueue_parent_if_waiting(f.org.orchestrator, child.id)
                     assert s6queue(f) == [f.source.id], 'live workflow carrier blocked actual ordinary fanout join'
                     assert f.db.get_task(f.source.id).active_fanout == native
+                    # The native wake accepts a landed report before the task's
+                    # terminal tail; dependency observation reads task status.
+                    f.db.update_task(child.id, status='completed')
+                    state = observation(f.db, source.id)
+                    assert set(state['ordinary_task_ids']) == {child.id, sibling.id}, state
+                    assert not state['ordinary_join_outstanding'], state
                 assert s4row(f, 'workflow_seq_runs', f.batch_ids[1].run_id)['state'] == 'running'
+        elif case == 'fanout_metadata_refused':
+            from runtime.orchestrator.fanout import FanoutState
+            from runtime.orchestrator.workflow_continuation import ordinary_children
+            from runtime.workflows.sequential_history import _ReadBudget, _decode
+            with s6fixture(hold=False) as f:
+                child = s6ordinary(f, parent=f.source.id, status='completed')
+                long_child = s6ordinary(f, parent=f.source.id, task_id='界' * 43, status='completed')
+                native = FanoutState(children_ids=[child.id], children_details=[], width=1,
+                    manager_agent=f.source.assigned_agent).serialize()
+                invalid = dict(json_syntax=native[:-1], nonobject='[]',
+                    missing_ids=json.dumps({key: value for key, value in json.loads(native).items() if key != 'children_ids'}),
+                    null_ids=json.dumps(dict(json.loads(native), children_ids=None)),
+                    empty_ids=json.dumps(dict(json.loads(native), children_ids=[])),
+                    string_ids=json.dumps(dict(json.loads(native), children_ids=child.id)),
+                    nonstring_id=json.dumps(dict(json.loads(native), children_ids=[1])),
+                    empty_id=json.dumps(dict(json.loads(native), children_ids=[''])),
+                    nul_id=json.dumps(dict(json.loads(native), children_ids=['bad\x00id'])),
+                    long_id=json.dumps(dict(json.loads(native), children_ids=[long_child.id])),
+                    surrogate_id=json.dumps(dict(json.loads(native), children_ids=['\ud800'])),
+                    duplicate_id=json.dumps(dict(json.loads(native), children_ids=[child.id, child.id], width=2)),
+                    too_many_ids=json.dumps(dict(json.loads(native), children_ids=['child-' + str(i) for i in range(9)], width=9)),
+                    duplicate_key=native[:-1] + ', "children_ids": []}',
+                    nonfinite=native[:-1] + ', "ignored": NaN}',
+                    depth=native[:-1] + ', "ignored":' + '[' * 25 + '0' + ']' * 25 + '}',
+                    oversize=native + ' ' * (1048577 - len(native)),
+                    utf8_oversize=native[:-1] + ', "ignored": "' + '界' * 349526 + '"}')
+                for label, payload in invalid.items():
+                    f.db.update_task_active_fanout(f.source.id, payload)
+                    before = s5snap(f)
+                    try:
+                        observation(f.db, f.source.id)
+                    except ValueError as exc:
+                        if label == 'long_id':
+                            assert str(exc) == 'workflow_seq_initiator_dependency_bounds', str(exc)
+                    else:
+                        raise AssertionError(label + ': invalid fanout became an empty join')
+                    assert ordinary_children(f.org.orchestrator, f.db.get_task(f.source.id)) is None, label
+                    _enqueue_parent_if_waiting(f.org.orchestrator, child.id)
+                    assert s6queue(f) == [] and s5snap(f) == before, label
+                    print('S6a fanout_metadata_refused:', label, flush=True)
+                try:
+                    _decode(native.encode('utf8'), _ReadBudget())
+                except ValueError as exc:
+                    assert str(exc) == 'noncanonical_bytes', str(exc)
+                else:
+                    raise AssertionError('canonical workflow decoding accepted native JSON')
         elif case == 'manager_event_race':
             with s6fixture() as f:
                 bridge = f.db._workflow_continuation

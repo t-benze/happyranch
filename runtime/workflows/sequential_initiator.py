@@ -58,7 +58,13 @@ def observe_dependencies(conn: sqlite3.Connection, db: Any, task_id: str) -> dic
         # children and structural carriers are never a lifetime veto.
         join_ids = []
         if task['active_fanout'] is not None:
-            join_ids = _decode(task['active_fanout'].encode('utf8'), budget)['children_ids']
+            from runtime.workflows.sequential_start_metadata import _json
+            # FanoutState.serialize writes native JSON, not canonical workflow
+            # bytes. Keep its strict size/depth/duplicate-key and budget gates.
+            join_ids = _json(task['active_fanout'], budget)['children_ids']
+            _require(type(join_ids) is list and 1 <= len(join_ids) <= 8
+                and all(type(key) is str and 0 < len(key.encode('utf8')) <= 128
+                    and '\x00' not in key for key in join_ids), 'initiator_dependency_bounds')
         elif task['active_chain'] is not None:
             join_ids = [row[0] for row in conn.execute(
                 'SELECT id FROM tasks WHERE parent_task_id=? AND NOT EXISTS '
