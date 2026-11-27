@@ -199,6 +199,12 @@ MAC-3 removes the legacy phase strip without reserving height or adding fallback
 copy. Settings owns local controls. MAC-4b option A adds close/Quit/updater
 gates; Mac recovery Relaunch remains deferred to a separately founder-approved
 piece, with quit-and-reopen guidance + Recheck available now.
+Recovery evidence is required in both locales at 100% and 200% text. The
+dark-theme captures retain `mac-recovery-no-relaunch-en.png` and
+`mac-recovery-no-relaunch-zh.png` for 200%, and add
+`mac-recovery-no-relaunch-en-100.png` and `mac-recovery-no-relaunch-zh-100.png`.
+These four PNGs are additional to every existing top/scroll capture below;
+the closed archive requires their matching locale/theme/scale receipts.
 
 After independent exact-head review, the existing Jenkins `SUITE=app-scheme`
 still runs the full unfiltered XCTest + Swift Testing workload and transport

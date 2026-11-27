@@ -196,6 +196,7 @@ def screenshot_archive(folder: Path, locale: str,
         raise ValueError('unsupported capture locale')
     rows = []
     scroll_counts = scroll_counts or {}
+    captures = []
     for theme in ('light', 'dark'):
         for scale in (100, 200):
             for dialog in ('settings', 'connection', 'main'):
@@ -205,19 +206,23 @@ def screenshot_archive(folder: Path, locale: str,
                 for number in range(count + 1):
                     suffix = f'-scroll-{number}' if number else ''
                     name = f'{locale}-{theme}-{scale}-{dialog}{suffix}.png'
-                    descriptor = os.open(folder / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                    with os.fdopen(descriptor, 'rb') as source:
-                        info = os.fstat(source.fileno())
-                        if not stat.S_ISREG(info.st_mode) or not 33 <= info.st_size <= PNG_CAP:
-                            raise ValueError('screenshot size/type')
-                        raw = source.read(PNG_CAP + 1)
-                    if (len(raw) != info.st_size or len(raw) > PNG_CAP
-                            or raw[:16] != b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
-                            or struct.unpack('>II', raw[16:24]) != (760, 560)):
-                        raise ValueError('screenshot PNG dimensions/header')
-                    rows.append(dict(name=name, locale=locale, theme=theme, text_percent=scale, dialog=dialog,
-                        scroll_capture=number, width=760, height=560, encoding='base64', bytes=len(raw),
-                        sha256=hashlib.sha256(raw).hexdigest(), data=base64.b64encode(raw).decode('ascii')))
+                    captures.append((theme, scale, dialog, number, name))
+    for scale, suffix in ((100, '-100'), (200, '')):
+        captures.append(('dark', scale, 'main', 0, f'mac-recovery-no-relaunch-{locale}{suffix}.png'))
+    for theme, scale, dialog, number, name in captures:
+        descriptor = os.open(folder / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, 'rb') as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or not 33 <= info.st_size <= PNG_CAP:
+                raise ValueError('screenshot size/type')
+            raw = source.read(PNG_CAP + 1)
+        if (len(raw) != info.st_size or len(raw) > PNG_CAP
+                or raw[:16] != b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
+                or struct.unpack('>II', raw[16:24]) != (760, 560)):
+            raise ValueError('screenshot PNG dimensions/header')
+        rows.append(dict(name=name, locale=locale, theme=theme, text_percent=scale, dialog=dialog,
+            scroll_capture=number, width=760, height=560, encoding='base64', bytes=len(raw),
+            sha256=hashlib.sha256(raw).hexdigest(), data=base64.b64encode(raw).decode('ascii')))
     if sum(row['bytes'] for row in rows) > 8 * 1024 * 1024:
         raise ValueError('screenshot archive size')
     return rows
@@ -273,7 +278,13 @@ def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadlin
             if (row['exit_code'] == 0 and len(receipts) == len(expected)
                     and {event.get('name') for event in receipts} == set(expected)
                     and all(event.get('webTheme') == event.get('theme') == expected[event['name']]['theme']
-                        for event in receipts)):
+                        for event in receipts)
+                    and all(event.get('locale') == locale
+                        and type(event.get('textPercent')) is int
+                        and event['textPercent'] == expected[event['name']]['text_percent']
+                        and event.get('dialog') == 'main'
+                        and event.get('width') == 760 and event.get('height') == 560
+                        for event in receipts if event['name'].startswith('mac-recovery-no-relaunch-'))):
                 row['status'] = 'PASS'
         except (OSError, ValueError, RuntimeError) as error:
             row['capture_error'] = type(error).__name__

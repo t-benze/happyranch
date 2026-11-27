@@ -71,6 +71,11 @@ def screenshot_files(folder: Path, locale: str, with_scroll: bool = False) -> li
                         records.append(dict(event='screenshot', name=name, theme=theme, webTheme=theme))
                     records.append(dict(event='capture_complete', locale=locale, theme=theme, textPercent=scale,
                         dialog=dialog, scrollCaptures=2, scrollers=[dict(index=0, pages=2, step=300, maximum=600)]))
+    for scale, suffix in ((100, '-100'), (200, '')):
+        name = f'mac-recovery-no-relaunch-{locale}{suffix}.png'
+        (folder / name).write_bytes(screenshot_png())
+        records.append(dict(event='screenshot', name=name, locale=locale, theme='dark', webTheme='dark',
+                            textPercent=scale, dialog='main', width=760, height=560))
     return records
 
 
@@ -113,7 +118,10 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
             expected = screenshot_files(root, 'en')
             rows = screenshot_archive(root, 'en')
             self.assertEqual({row['name'] for row in rows}, {row['name'] for row in expected})
-            self.assertEqual(len(rows), 12)
+            self.assertEqual(len(rows), 14)
+            recovery = [row for row in rows if row['name'].startswith('mac-recovery-no-relaunch-')]
+            self.assertEqual([(row['name'], row['text_percent']) for row in recovery],
+                             [('mac-recovery-no-relaunch-en-100.png', 100), ('mac-recovery-no-relaunch-en.png', 200)])
             for row in rows:
                 self.assertEqual(base64.b64decode(row['data']), screenshot_png())
                 self.assertEqual(row['sha256'], hashlib.sha256(screenshot_png()).hexdigest())
@@ -121,9 +129,10 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
             for number in (1, 2):
                 (root / f'en-dark-200-connection-scroll-{number}.png').write_bytes(screenshot_png())
             scrolled = screenshot_archive(root, 'en', {('dark', 'connection'): 2})
-            self.assertEqual(len(scrolled), 14)
+            self.assertEqual(len(scrolled), 16)
             self.assertEqual([row['scroll_capture'] for row in scrolled if row['name'].startswith('en-dark-200-connection')], [0, 1, 2])
-            self.assertEqual(base64.b64decode(scrolled[-2]['data']), screenshot_png())
+            last_scroll = next(row for row in scrolled if row['name'] == 'en-dark-200-connection-scroll-2.png')
+            self.assertEqual(base64.b64decode(last_scroll['data']), screenshot_png())
             (root / 'en-dark-200-connection-scroll-1.png').unlink()
             with self.assertRaises(OSError):
                 screenshot_archive(root, 'en', {('dark', 'connection'): 2})
@@ -149,13 +158,31 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
     def test_process_collection_requires_both_locales_complete_receipts_and_zero_exit(self) -> None:
         for failure in ('none', 'missing-file', 'missing-receipt', 'nonzero', 'missing-completion',
                         'duplicate-completion', 'missing-scroll', 'scroll-gap', 'duplicate-receipt', 'wrong-theme',
-                        'partial-progress', 'navigation-timeout'):
+                        'partial-progress', 'navigation-timeout', 'recovery-missing-file-100',
+                        'recovery-missing-file-200', 'recovery-missing-receipt-100', 'recovery-missing-receipt-200',
+                        'recovery-duplicate', 'recovery-wrong-scale', 'recovery-wrong-locale', 'recovery-wrong-theme'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder); downloads = root / 'downloads'; downloads.mkdir()
                 calls = []
                 def command(argv: list[str], *args: object, **kwargs: object) -> tuple[int, bytes]:
                     locale = argv[-1].removeprefix('dialogs-'); calls.append(locale)
                     rows = screenshot_files(downloads, locale, with_scroll=True)
+                    if locale == 'zh' and failure.startswith('recovery-'):
+                        scale = 100 if failure.endswith('-100') else 200
+                        name = f'mac-recovery-no-relaunch-{locale}{"-100" if scale == 100 else ""}.png'
+                        receipt = next(row for row in rows if row.get('name') == name)
+                        if failure.startswith('recovery-missing-file-'):
+                            (downloads / name).unlink()
+                        elif failure.startswith('recovery-missing-receipt-'):
+                            rows.remove(receipt)
+                        elif failure == 'recovery-duplicate':
+                            rows.append(receipt.copy())
+                        elif failure == 'recovery-wrong-scale':
+                            receipt['textPercent'] = 100
+                        elif failure == 'recovery-wrong-locale':
+                            receipt['locale'] = 'en'
+                        elif failure == 'recovery-wrong-theme':
+                            receipt['webTheme'] = 'light'
                     if locale == 'zh' and failure == 'missing-file':
                         (downloads / f'{locale}-dark-100-main.png').unlink()
                     if locale == 'zh' and failure == 'missing-receipt':
@@ -192,8 +219,17 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                                     root, time.monotonic() + 10, section, downloads)
                 self.assertEqual(calls, ['en', 'zh'])
                 self.assertEqual(section['dialogs']['status'], 'PASS' if failure == 'none' else 'FAIL')
-                incomplete = failure in ('missing-file', 'missing-scroll', 'missing-completion', 'duplicate-completion', 'partial-progress', 'navigation-timeout')
-                self.assertEqual(len(section['dialogs']['screenshots']), 24 if incomplete else 48)
+                incomplete = failure in ('missing-file', 'missing-scroll', 'missing-completion', 'duplicate-completion',
+                                         'partial-progress', 'navigation-timeout', 'recovery-missing-file-100',
+                                         'recovery-missing-file-200')
+                self.assertEqual(len(section['dialogs']['screenshots']), 26 if incomplete else 52)
+                self.assertEqual([row['status'] for row in section['dialogs']['processes']],
+                                 ['PASS', 'PASS' if failure == 'none' else 'FAIL'])
+                for locale in ('en',) if incomplete else ('en', 'zh'):
+                    self.assertEqual({row['name'] for row in section['dialogs']['screenshots']
+                                      if row['locale'] == locale and row['name'].startswith('mac-recovery-')},
+                                     {f'mac-recovery-no-relaunch-{locale}-100.png',
+                                      f'mac-recovery-no-relaunch-{locale}.png'})
                 if failure == 'partial-progress':
                     failed = section['dialogs']['processes'][1]
                     self.assertEqual(failed['exit_code'], 124)

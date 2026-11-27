@@ -583,8 +583,18 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKScriptMe
             }
             throw AppAPIError.unavailable
         }
-        try await captureDialogPage(view, frame: frame, name: "mac-recovery-no-relaunch-\(locale).png",
-            locale: locale, theme: "dark", scale: 200, dialog: "main", scroll: [:])
+        for scale in [100, 200] {
+            _ = try await dialogStep("mac-recovery-text-scale", fields: ["locale": locale, "textPercent": scale]) {
+                try await view.callAsyncJavaScript(Self.dialogTheme,
+                    arguments: ["size": "\(scale)%", "theme": "dark"], in: nil, contentWorld: .page)
+            }
+            try await dialogStep("mac-recovery-settle", fields: ["locale": locale, "textPercent": scale]) {
+                try await Task.sleep(for: .milliseconds(200))
+            }
+            let suffix = scale == 100 ? "-100" : ""
+            try await captureDialogPage(view, frame: frame, name: "mac-recovery-no-relaunch-\(locale)\(suffix).png",
+                locale: locale, theme: "dark", scale: scale, dialog: "main", scroll: [:])
+        }
     }
 
     /// One real rendered Language choice, then later-opened dialogs in the same

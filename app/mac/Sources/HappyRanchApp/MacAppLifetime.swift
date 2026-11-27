@@ -197,7 +197,15 @@ final class MacMainWindowOwner: NSObject, NSWindowDelegate {
         super.responds(to: selector) || MainActor.assumeIsolated { previous?.responds(to: selector) == true }
     }
     nonisolated override func forwardingTarget(for selector: Selector!) -> Any? {
-        MainActor.assumeIsolated { previous }
+        // NSObject's forwarding entry is nonisolated, but NSWindow delegate
+        // dispatch is synchronous on the main actor. Verify that executor before
+        // reading previous. Only this stack-local result crosses Swift's static
+        // isolation boundary: the closure cannot escape or suspend, and the
+        // reference returns to the same AppKit call without a task/thread hop.
+        // NSWindowDelegate itself is not Sendable; do not declare it so.
+        nonisolated(unsafe) var target: (any NSWindowDelegate)? = nil
+        MainActor.assumeIsolated { target = previous }
+        return target
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         app?.appLifetime.request(.close)
