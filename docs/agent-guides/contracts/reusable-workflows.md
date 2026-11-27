@@ -425,6 +425,14 @@ lock set/order and rollback-only snapshot, existing bounded readers/ledgers and
 one original five-second deadline. No cap is raised. Every write/admission,
 continuation, settings, initiator, bootstrap/schema load, historical @1 GET and
 v2 run list/detail keeps the complete read_sequential_history contract unchanged.
+Group 1 of the THR-404 write work adds an unmounted explicit-root primitive
+in `sequential_task_history`; no writer uses it yet. Its full selected @1/@2
+replay shares the task reader's graph and original validators but additionally
+checks all settings generations/receipts for selected definition identities,
+including settings/definition-only scopes with no runs. The task GET continues
+to validate only pinned settings. Selected certificates are snapshot-local,
+carry the charged C ledger, and supply no retained-family/global certificate or
+current authority. See the [D2 staged write contract](../../specs/2026-11-09-sequential-history-reader-d2.md#shared-write-scope-primitives--thr-404-group-1-staged).
 Positive absent storage returns `storage=absent` and
 an empty collection; valid installed storage returns `storage=readable`.
 Incoherent/budget/authority evidence returns non-success HTTP with closed
@@ -776,6 +784,16 @@ the unchanged 64MiB allowance, plus 32 row acquisitions, 4096 traversal steps
 and 65536 SQL steps inside the original finite ledgers. This covers worst-case fence, finish, bounded
 original proofs and a maximum 1MiB document callback (including its base64 carrier),
 independently of prior document sizes and committed visit/recovery counts.
+THR-404 group 1 adds the shared narrow H selector, without wiring writers yet.
+It reads scalar identities for every unfinished @2 run, including Held and
+cancelling, and validates the active visit's run/selected relation. It acquires
+no unrelated history payloads and reserves nothing itself: later callers must
+combine prospective additions and apply the unchanged reservation once on the
+original charged C ledger. The per-value, byte, row, work, SQL and absolute
+deadline caps stay unchanged. Excluding disconnected payloads from a future
+scoped write's ledger changes whole-org capacity coupling; it grants neither a
+fourth unfinished run nor a guaranteed fit for three with long identities or
+prior ledger consumption. Current writer calls still validate combined history.
 A candidate that cannot preserve that headroom refuses with
 `read_bytes_exhausted`, rolling back all allocations, rows, counters and CAS;
 cancellation stays available. Fence/finish consume the reservation without

@@ -60,3 +60,45 @@ budgets and five-second absolute deadline remain. All write/admission,
 continuation/settings/initiator/bootstrap/schema-load and run list/detail
 callers retain the complete reader byte-for-byte. This exception grants no
 capacity or write-validation change. See the current S7a/U7a/U6a contract.
+
+
+## Shared write-scope primitives — THR-404 group 1 (staged)
+
+`sequential_task_history.read_write_history` now accepts explicit run/source
+roots and optional definition/settings roots in the caller's existing snapshot.
+It retains complete layout/native ABI recognition and full original @1/@2
+replay of the selected source/wait-set closure, including earlier batches,
+reverse visit/event/ownership edges, native results and immutable receipts.
+Every settings generation for the selected definition identities is loaded,
+including definitions pinned by those generations, and `_settings` authenticates
+contiguity from generation 1 and the complete operation/receipt chain. A
+settings/definition-only scope can contain no runs. Missing explicit pins/runs
+refuse; disconnected run payload corruption is outside this certificate.
+
+This is a shared primitive only: group 1 wires no writer. The task projection
+still uses pinned settings only, and its S7a contract above is unchanged. A
+selected sequential certificate supplies no retained-family inventory or current
+authority; mixed-family consumers still need their original family validators.
+No snapshot, transaction, lock or cross-mutation cache is added.
+
+For S4a H, `read_cancellation_headroom` selects only scalar identities of **all**
+unfinished @2 runs (`running` or `held`), including `progress=cancelling`, and
+validates their selected active-visit relation. It does not replay unrelated
+payloads or reserve capacity. The caller combines any hypothetical additions
+and applies the unchanged `_reserve_generic_cancellation` once on its original,
+already-charged C ledger. Each unfinished run still reserves 16MiB + 128 copies
+of known identity bytes, 32 rows, 4096 work and 65536 SQL steps. Three is a
+nominal fit, not a promised capacity: earlier ledger use and long identities can
+refuse earlier. Caller-supplied retained budgets are preserved and only this
+read's deltas are charged into C. No allowance or deadline is reset or enlarged.
+
+After later writer wiring, excluded unrelated payloads will no longer consume
+that write's C ledger; large selected closures and all-run scalar H remain
+bounded. Whole-org certification remains complete-history validation outside
+the runtime-write ~100ms target: `inspect_sequential_install` (both reads),
+`workflow_schema_load._complete_sequential`, bootstrap `_default_target`, and
+Founder cutover request enable/disable with `_advance`/`_read` and
+`recover_authorized` (EM STOP-1 ruling). `returned_run_ids` retains all-sequential
+run replay and mixed cancellation retains its ten-core-table equality inventory.
+`WorkflowContinuation.tla` Active/Admit/CapacitySafe semantics are unchanged;
+no model update or capacity increase follows from this staged primitive.

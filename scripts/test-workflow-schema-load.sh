@@ -100,7 +100,8 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--s8a='):
     assert s8a_case in ('all', *S8A_CASES)
     sys.argv[1:] = ['--s8a']
 S7A_CASES = ('plural_links', 'held_cause', 'history_label', 'unavailable',
-    'task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent')
+    'task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent',
+    'write_settings_chain', 'write_headroom')
 s7a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s7a='):
     s7a_case = sys.argv[1].split('=', 1)[1]
@@ -8164,9 +8165,25 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             continue
         import asyncio
         path = '/workflows/sequential/views/v2/runs'
-        if case in ('task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent'):
+        if case in ('task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent',
+                    'write_settings_chain', 'write_headroom'):
             from runtime.workflows import sequential_history, sequential_views
             from runtime.workflows.sequential_control import validate_control_write
+            from runtime.workflows.sequential_task_history import read_write_history, read_cancellation_headroom
+
+            def scoped(f, **roots):
+                with s5reopen(f) as conn:
+                    return read_write_history(conn, expected_org_slug='scratch', deadline=time.monotonic()+5, **roots)
+
+            def scoped_refuses(f, token, **roots):
+                before = s4snap(f)
+                try:
+                    scoped(f, **roots)
+                except (ValueError, RuntimeError) as exc:
+                    assert token in str(exc), ('wrong scoped refusal', token, str(exc))
+                else:
+                    raise AssertionError('selected write history accepted ' + token)
+                assert s4snap(f) == before, 'scoped refusal changed persisted rows'
 
             def damage(f, table, sql, args):
                 # Synthetic scratch corruption with exact canonical triggers
@@ -8193,6 +8210,22 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         body = asyncio.run(s7read(f, task_path))
                     assert [row['id'] for row in body['runs']] == [f.ids.run_id]
                     assert body['runs'][0]['tasks'][2]['task_id'] == f.ids.visit_task_id
+                    old = s7legacy(f)
+                    for ids in (f.ids, old):
+                        selected = scoped(f, run_ids=frozenset((ids.run_id,)))
+                        assert selected.history.run_ids == (ids.run_id,), 'selected @1/@2 IDs changed'
+                        assert selected.data['workflow_seq_visits'][0]['id'] == ids.visit_id
+                        expected_definition = 's3-definition' if ids == f.ids else 's7-definition'
+                        assert expected_definition in selected.history.definition_ids, 'selected definition was not replayed'
+                        assert selected.budget.consumed > 0 and selected.history.retained is None
+                    by_source = scoped(f, source_ids=frozenset((f.source.id,)))
+                    assert by_source.history.run_ids == (f.ids.run_id,)
+                    # Missing explicit roots are never an empty success.
+                    scoped_refuses(f, 'orphan_history', run_ids=frozenset(('missing-run',)))
+                    from runtime.workflows.coding_authority_history import _Budget
+                    retained = _Budget(consumed=1024)
+                    scoped(f, run_ids=frozenset((f.ids.run_id,)), retained_budget=retained)
+                    assert retained.consumed > 1024, 'caller retained ledger was replaced'
                 elif case == 'task_empty':
                     f.db.insert_task(TaskRecord(id='ordinary-task', assigned_agent='s3_manager',
                         team='engineering', brief='No workflows'))
@@ -8221,6 +8254,9 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         "UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?", ('0'*64, old.run_id))
                     body = asyncio.run(s7read(f, task_path))
                     assert [row['id'] for row in body['runs']] == [f.ids.run_id], 'unrelated corruption hid real data'
+                    selected = scoped(f, run_ids=frozenset((f.ids.run_id,)))
+                    assert selected.history.run_ids == (f.ids.run_id,), 'disconnected corrupt run entered write scope'
+                    scoped_refuses(f, 'digest', run_ids=frozenset((old.run_id,)))
                     # Same corruption STILL refuses full v2 list/detail and the
                     # actual cancel and new-start admission paths.
                     for url in (path, path + '/' + f.ids.run_id):
@@ -8241,7 +8277,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     # another and observes a route error, never empty success.
                     pass
             if case == 'task_corruption':
-                for defect in ('hash', 'orphan_visit', 'pin', 'ownership', 'native_metadata', 'pending_callback'):
+                for defect in ('hash', 'orphan_visit', 'pin', 'ownership', 'reverse_ownership', 'native_metadata', 'pending_callback'):
                     with s4fixture() as f:
                         if defect == 'hash':
                             damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
@@ -8252,6 +8288,12 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         elif defect == 'pin':
                             damage(f, 'workflow_seq_runs', 'UPDATE workflow_seq_runs SET settings_id=? WHERE id=?',
                                 ('missing-settings', f.ids.run_id))
+                        elif defect == 'reverse_ownership':
+                            f.db.insert_task(TaskRecord(id='reverse-extra', assigned_agent='s3_manager',
+                                team='engineering', brief='Extra reverse ownership'))
+                            damage(f, 'workflow_task_ownership',
+                                "UPDATE workflow_task_ownership SET version=2,kind='seq_visit',owner_id=? WHERE task_id=?",
+                                (f.ids.visit_id, 'reverse-extra'))
                         elif defect == 'native_metadata':
                             damage(f, 'task_results', 'UPDATE task_results SET decision_json=? WHERE id=?',
                                 ('{"action":"workflow_start","workflow":{"identity":"release/happyranch/coding"}}', f.actor.result_row_id))
@@ -8271,13 +8313,140 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                                 ('missing-owner', f.ids.visit_task_id))
                         body = asyncio.run(s7read(f, '/tasks/' + f.ids.visit_task_id + '/sequential-workflows', expected=409))
                         assert body['detail']['code'] == 'history_unverified' and 'runs' not in body['detail'], defect
+                        scoped_refuses(f, dict(hash='digest', orphan_visit='foreign_key', pin='foreign_key',
+                            ownership='ownership', reverse_ownership='ownership', native_metadata='coding',
+                            pending_callback='coding')[defect], run_ids=frozenset((f.ids.run_id,)))
                         print('PASS S7a task_corruption', defect, flush=True)
+                for missing in ('all', 'sibling'):
+                    with s5fixture() as f:
+                        damage(f, 'workflow_seq_source_memberships',
+                            ('DELETE FROM workflow_seq_source_memberships WHERE source_task_id=?' if missing == 'all' else
+                             'DELETE FROM workflow_seq_source_memberships WHERE run_id=?'),
+                            (f.source.id if missing == 'all' else f.batch_ids[1].run_id,))
+                        body = asyncio.run(s7read(f, '/tasks/' + f.source.id + '/sequential-workflows', expected=409))
+                        assert body['detail']['code'] == 'history_unverified' and 'runs' not in body['detail']
+                        scoped_refuses(f, 'generic_source_conflict', run_ids=frozenset((f.batch_ids[0].run_id,)))
+                        print('PASS S7a task_corruption wait_membership', missing, flush=True)
+            if case == 'write_settings_chain':
+                for defect in ('valid', 'gap', 'receipt'):
+                    with s4fixture() as f:
+                        original = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                        setting = s4row(f, 'workflow_seq_settings', original['settings_id'])
+                        # An unpinned earlier/newer generation is deliberately
+                        # outside the task GET but inside a write's B chain.
+                        generation = 3 if defect == 'gap' else 2
+                        sid, oid = 'write-chain-settings', 'write-chain-operation'
+                        if defect == 'valid':
+                            # A later definition version shares the identity's
+                            # generation chain; the admitted run keeps old pins.
+                            previous_id = setting['definition_id']
+                            definition = json.loads(s4row(f, 'workflow_seq_definitions', previous_id)['definition_bytes'])
+                            definition['version'] += 1
+                            raw = s4bytes(definition)
+                            compiled = compile_generic_definition(raw, source_digest=hashlib.sha256(raw).hexdigest())
+                            pin = compiled.pin
+                            f.conn.execute('INSERT INTO workflow_seq_definitions VALUES (?,?,?,?,?,?,?,?,?,?)',
+                                ('write-chain-definition',pin.identity,pin.version,raw,pin.definition_digest,pin.source_digest,
+                                 pin.compiler,pin.validator,pin.interpreter,pin.capabilities))
+                            snapshot = json.loads(setting['snapshot_bytes'])
+                            snapshot['definition'] = pin.model_dump(mode='json')
+                            saved = s4bytes(snapshot)
+                            setting = dict(setting, definition_id='write-chain-definition', snapshot_bytes=saved,
+                                snapshot_digest=hashlib.sha256(saved).hexdigest())
+                        request = s4bytes(dict(format='workflow-sequential-settings-operation-storage@1',
+                            operation_key=oid, principal='founder', settings_id=sid,
+                            expected_generation=generation-1, snapshot_digest=setting['snapshot_digest']))
+                        receipt = s4bytes(dict(format='workflow-sequential-settings-receipt-storage@1',
+                            operation_id=oid, settings_id=sid, generation=generation,
+                            snapshot_digest='0'*64 if defect == 'receipt' else setting['snapshot_digest']))
+                        f.conn.execute('INSERT INTO workflow_seq_settings VALUES (?,?,?,?,?,?,?)',
+                            (sid,'scratch',setting['definition_id'],setting['definition_identity'],generation,
+                             setting['snapshot_bytes'],setting['snapshot_digest']))
+                        f.conn.execute('INSERT INTO workflow_seq_settings_operations VALUES (?,?,?,?,?,?,?,?,?)',
+                            (oid,'scratch','founder',oid,request,hashlib.sha256(request).hexdigest(),sid,
+                             receipt,hashlib.sha256(receipt).hexdigest()))
+                        f.conn.commit()
+                        task = asyncio.run(s7read(f, '/tasks/' + f.source.id + '/sequential-workflows'))
+                        assert [row['id'] for row in task['runs']] == [f.ids.run_id], 'task settings contract expanded'
+                        for roots in (dict(run_ids=frozenset((f.ids.run_id,))),
+                                      dict(definition_ids=frozenset((setting['definition_id'],))),
+                                      dict(settings_ids=frozenset((sid,)))):
+                            if defect == 'valid':
+                                result = scoped(f, **roots)
+                                assert len(result.data['workflow_seq_settings']) == 2
+                                assert set(result.history.definition_ids) == {previous_id, setting['definition_id']}
+                                assert all(row['settings_id'] == original['settings_id'] for row in result.data['workflow_seq_runs'])
+                            else:
+                                scoped_refuses(f, 'settings_generation_gap' if defect == 'gap' else 'settings_receipt_conflict', **roots)
+                        print('PASS S7a write_settings_chain', defect, flush=True)
+                with s4fixture() as f:
+                    setting = s4row(f, 'workflow_seq_runs', f.ids.run_id)['settings_id']
+                    result = scoped(f, settings_ids=frozenset((setting,)))
+                    assert result.history.run_ids == () and [row['id'] for row in result.data['workflow_seq_settings']] == [setting]
+                    scoped_refuses(f, 'selected_pin_missing', settings_ids=frozenset(('missing-settings',)))
+            if case == 'write_headroom':
+                from runtime.workflows.sequential_history import _ReadBudget, _read_layout, _reserve_generic_cancellation
                 with s5fixture() as f:
-                    damage(f, 'workflow_seq_source_memberships',
-                        'DELETE FROM workflow_seq_source_memberships WHERE source_task_id=?', (f.source.id,))
-                    body = asyncio.run(s7read(f, '/tasks/' + f.source.id + '/sequential-workflows', expected=409))
-                    assert body['detail']['code'] == 'history_unverified' and 'runs' not in body['detail']
-                    print('PASS S7a task_corruption wait_membership', flush=True)
+                    s5release(f)
+                    s6badditional(f)
+                    s5hold(f, 0)
+                    with s5reopen(f) as conn:
+                        selected = read_write_history(conn, expected_org_slug='scratch',
+                            deadline=time.monotonic()+5, run_ids=frozenset((f.ids.run_id,)))
+                        scalar = read_cancellation_headroom(conn, expected_org_slug='scratch',
+                            metadata=selected.metadata, budget=selected.budget)
+                        assert {row['id'] for row in scalar['workflow_seq_runs']} == {ids.run_id for ids in f.batch_ids}
+                        assert any(row['state'] == 'held' for row in scalar['workflow_seq_runs']), 'Held H omitted'
+                        assert all('start_bytes' not in row and 'assignment_snapshot_bytes' not in row
+                            for row in scalar['workflow_seq_runs']), 'H acquired unrelated payloads'
+                        consumed_before = selected.budget.consumed
+                        _reserve_generic_cancellation(scalar, selected.budget)
+                        assert selected.budget.consumed > consumed_before + 48*1048576, 'H replaced charged C ledger'
+                        # Hypothetical additions use the original reservation
+                        # seam, exactly as continuation preflight does today.
+                        for count, consumed, long_identity, refuses in (
+                                (3,0,False,False), (4,0,False,True),
+                                (3,16*1048576,False,True), (3,0,True,True)):
+                            rows = deepcopy(scalar)
+                            rows['workflow_seq_runs'] = [dict(rows['workflow_seq_runs'][0], id='future-'+str(i)) for i in range(count)]
+                            if long_identity:
+                                for row in rows['workflow_seq_runs']:
+                                    row['source_session_id'] = 's'*65536
+                            ledger = _ReadBudget(deadline=time.monotonic()+5, consumed=consumed)
+                            try:
+                                _reserve_generic_cancellation(rows, ledger)
+                            except ValueError as exc:
+                                assert refuses and str(exc) == 'workflow_seq_read_bytes_exhausted', (count, consumed, long_identity, str(exc))
+                            else:
+                                assert not refuses, ('H accepted exhausted headroom', count, consumed, long_identity)
+                                assert ledger.accepted_rows == 32*count and ledger.sql_steps == 65536*count
+                            print('PASS S7a write_headroom boundary', count, consumed, long_identity, flush=True)
+                # Real cancellation fence remains in the scalar domain. Its
+                # original result actor stays live in the single-run fixture.
+                with s4fixture() as f:
+                    s4closed(f, f.ids.visit_id, positive=False)
+                    s4apply(f, s4command(f, 'cancel'))
+                    with s5reopen(f) as conn:
+                        ledger = _ReadBudget(deadline=time.monotonic()+5)
+                        _, metadata = _read_layout(conn, _ReadBudget(deadline=ledger.deadline),
+                            _ReadBudget(deadline=ledger.deadline), ledger)
+                        scalar = read_cancellation_headroom(conn, expected_org_slug='scratch',
+                            metadata=metadata, budget=ledger)
+                        assert [row['id'] for row in scalar['workflow_seq_runs']] == [f.ids.run_id], 'cancelling member lost its reservation'
+                        before = ledger.consumed
+                        _reserve_generic_cancellation(scalar, ledger)
+                        assert ledger.consumed > before + 16*1048576
+                    damage(f, 'workflow_seq_visits', 'UPDATE workflow_seq_visits SET selected=0 WHERE id=?', (f.ids.visit_id,))
+                    with s5reopen(f) as conn:
+                        ledger = _ReadBudget(deadline=time.monotonic()+5)
+                        _, metadata = _read_layout(conn, _ReadBudget(deadline=ledger.deadline),
+                            _ReadBudget(deadline=ledger.deadline), ledger)
+                        try:
+                            read_cancellation_headroom(conn, expected_org_slug='scratch', metadata=metadata, budget=ledger)
+                        except ValueError as exc:
+                            assert str(exc) == 'workflow_seq_headroom_visit_conflict', str(exc)
+                        else:
+                            raise AssertionError('H accepted an unselected active visit')
             print('PASS S7a', case, flush=True)
             continue
         if case == 'plural_links':

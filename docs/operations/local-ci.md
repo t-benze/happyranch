@@ -4778,3 +4778,15 @@ task_unrelated and task_absent cover real route data, no org-wide reader on
 empty tasks, selected hash/orphan/pin/ownership refusal, unrelated corruption
 isolation with unchanged start/cancel/full-view refusal, and 404 precedence.
 These are private SQLite/authority fixtures, not E2E or a new required CI gate.
+
+
+THR-404 group 1 extends those same task cases with the explicit-root write
+primitive (no writer wiring). Focused `--s7a=write_settings_chain` covers full
+selected definition-identity generations/receipts and definition/settings-only
+roots; `--s7a=write_headroom` covers all-unfinished scalar H, three/four nominal
+reservations, earlier ledger consumption, long identities, a cancelling member
+and active-visit ownership. `task_scoped_data`, `task_corruption` and
+`task_unrelated` also exercise the write primitive on the existing real @1/@2
+fixtures, selected/reverse ownership and missing sibling corruption, and
+unrelated corrupt history. Use the same documented shell command with the
+focused selector substituted; no new CI lane, required check or Product E2E.
