@@ -99,7 +99,8 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--s8a='):
     s8a_case = sys.argv[1].split('=', 1)[1]
     assert s8a_case in ('all', *S8A_CASES)
     sys.argv[1:] = ['--s8a']
-S7A_CASES = ('plural_links', 'held_cause', 'history_label', 'unavailable')
+S7A_CASES = ('plural_links', 'held_cause', 'history_label', 'unavailable',
+    'task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent')
 s7a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s7a='):
     s7a_case = sys.argv[1].split('=', 1)[1]
@@ -8086,6 +8087,122 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             continue
         import asyncio
         path = '/workflows/sequential/views/v2/runs'
+        if case in ('task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent'):
+            from runtime.workflows import sequential_history, sequential_views
+            from runtime.workflows.sequential_control import validate_control_write
+
+            def damage(f, table, sql, args):
+                # Synthetic scratch corruption with exact canonical triggers
+                # restored BEFORE observing the production reader.
+                triggers = [tuple(row) for row in f.conn.execute(
+                    "SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND tbl_name=?", (table,))]
+                f.conn.commit()
+                f.conn.execute('PRAGMA foreign_keys=OFF')
+                for name, _ in triggers:
+                    f.conn.execute('DROP TRIGGER "' + name + '"')
+                f.conn.execute(sql, args)
+                for _, ddl in triggers:
+                    f.conn.execute(ddl)
+                f.conn.commit()
+                f.conn.execute('PRAGMA foreign_keys=ON')
+
+            with s4fixture() as f:
+                task_path = '/tasks/' + f.source.id + '/sequential-workflows'
+                if case == 'task_scoped_data':
+                    # Real route + schema + replay + current authority. Only
+                    # the forbidden org-wide data reader is intercepted.
+                    with patch.object(sequential_views, 'read_sequential_history',
+                            side_effect=AssertionError('task called whole-history reader')):
+                        body = asyncio.run(s7read(f, task_path))
+                    assert [row['id'] for row in body['runs']] == [f.ids.run_id]
+                    assert body['runs'][0]['tasks'][2]['task_id'] == f.ids.visit_task_id
+                elif case == 'task_empty':
+                    f.db.insert_task(TaskRecord(id='ordinary-task', assigned_agent='s3_manager',
+                        team='engineering', brief='No workflows'))
+                    from runtime.workflows import sequential_task_history
+                    selected_read = sequential_task_history._read_selected
+                    def empty_read(conn, metadata, table, budget, where, args, **kwargs):
+                        assert table in ('workflow_seq_runs', 'workflow_seq_visits',
+                            'workflow_seq_source_wait_sets', 'workflow_seq_source_memberships',
+                            'workflow_seq_schema_versions'), ('empty scanned data', table)
+                        assert where != '1' or table == 'workflow_seq_schema_versions'
+                        return selected_read(conn, metadata, table, budget, where, args, **kwargs)
+                    with patch.object(sequential_views, 'read_sequential_history',
+                            side_effect=AssertionError('empty task called whole-history reader')), patch.object(
+                            sequential_history, '_legacy_history', side_effect=AssertionError('empty scanned legacy')), patch.object(
+                            sequential_task_history, '_read_selected', side_effect=empty_read):
+                        body = asyncio.run(s7read(f, '/tasks/ordinary-task/sequential-workflows'))
+                    assert body['runs'] == [] and body['storage'] == 'readable'
+                elif case == 'task_absent':
+                    with patch.object(f.org.workflow_authority, 'capture_admission',
+                            side_effect=AssertionError('absent task reached authority/history')):
+                        body = asyncio.run(s7read(f, '/tasks/missing/sequential-workflows', expected=404))
+                    assert body['detail']['code'] == 'task_not_found'
+                elif case == 'task_unrelated':
+                    old = s7legacy(f)
+                    damage(f, 'workflow_seq_events',
+                        "UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?", ('0'*64, old.run_id))
+                    body = asyncio.run(s7read(f, task_path))
+                    assert [row['id'] for row in body['runs']] == [f.ids.run_id], 'unrelated corruption hid real data'
+                    # Same corruption STILL refuses full v2 list/detail and the
+                    # actual cancel and new-start admission paths.
+                    for url in (path, path + '/' + f.ids.run_id):
+                        refused = asyncio.run(s7read(f, url, expected=409))
+                        assert refused['detail']['code'] == 'history_unverified'
+                    for operation in (
+                            lambda: f.admit(dict(f.command, operation_key='task-unrelated-start'), task_suffix='unrelated'),
+                            lambda: s4apply(f, s4command(f, 'cancel')),
+                            lambda: validate_control_write(f.conn, org_slug='scratch', deadline=time.monotonic()+5)):
+                        try:
+                            operation()
+                        except (ValueError, RuntimeError) as exc:
+                            assert 'digest' in str(exc), ('wrong full-reader refusal', str(exc))
+                        else:
+                            raise AssertionError('write/admission accepted unrelated corrupt history')
+                else:
+                    # Each independent fixture below avoids one defect masking
+                    # another and observes a route error, never empty success.
+                    pass
+            if case == 'task_corruption':
+                for defect in ('hash', 'orphan_visit', 'pin', 'ownership', 'native_metadata', 'pending_callback'):
+                    with s4fixture() as f:
+                        if defect == 'hash':
+                            damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                                ('0'*64, f.ids.run_id))
+                        elif defect == 'orphan_visit':
+                            damage(f, 'workflow_seq_visits', 'UPDATE workflow_seq_visits SET run_id=? WHERE id=?',
+                                ('missing-run', f.ids.visit_id))
+                        elif defect == 'pin':
+                            damage(f, 'workflow_seq_runs', 'UPDATE workflow_seq_runs SET settings_id=? WHERE id=?',
+                                ('missing-settings', f.ids.run_id))
+                        elif defect == 'native_metadata':
+                            damage(f, 'task_results', 'UPDATE task_results SET decision_json=? WHERE id=?',
+                                ('{"action":"workflow_start","workflow":{"identity":"release/happyranch/coding"}}', f.actor.result_row_id))
+                        elif defect == 'pending_callback':
+                            s4closed(f, f.ids.visit_id, summary=s4bsummary(), terminal='success', positive=False)
+                            baseline = asyncio.run(s7read(f, '/tasks/' + f.ids.visit_task_id + '/sequential-workflows'))
+                            assert [run['id'] for run in baseline['runs']] == [f.ids.run_id]
+                            assert baseline['runs'][0]['progress'] == 'result_pending_settlement'
+                            evidence = f.conn.execute("SELECT result_id,evidence_bytes FROM workflow_seq_evidence "
+                                "WHERE visit_id=? AND kind='terminal'", (f.ids.visit_id,)).fetchone()
+                            assert evidence[0] is None and s4row(f, 'workflow_seq_visits', f.ids.visit_id)['result_id'] is None
+                            callback = json.loads(evidence[1])['callback']['result_id']
+                            damage(f, 'task_results', 'UPDATE task_results SET decision_json=? WHERE id=?',
+                                ('{"action":"workflow_start","workflow":{"identity":"release/happyranch/coding"}}', callback))
+                        else:
+                            damage(f, 'workflow_task_ownership', 'UPDATE workflow_task_ownership SET owner_id=? WHERE task_id=?',
+                                ('missing-owner', f.ids.visit_task_id))
+                        body = asyncio.run(s7read(f, '/tasks/' + f.ids.visit_task_id + '/sequential-workflows', expected=409))
+                        assert body['detail']['code'] == 'history_unverified' and 'runs' not in body['detail'], defect
+                        print('PASS S7a task_corruption', defect, flush=True)
+                with s5fixture() as f:
+                    damage(f, 'workflow_seq_source_memberships',
+                        'DELETE FROM workflow_seq_source_memberships WHERE source_task_id=?', (f.source.id,))
+                    body = asyncio.run(s7read(f, '/tasks/' + f.source.id + '/sequential-workflows', expected=409))
+                    assert body['detail']['code'] == 'history_unverified' and 'runs' not in body['detail']
+                    print('PASS S7a task_corruption wait_membership', flush=True)
+            print('PASS S7a', case, flush=True)
+            continue
         if case == 'plural_links':
             with s5fixture() as f:
                 body = asyncio.run(s7read(f, '/tasks/' + f.source.id + '/sequential-workflows'))

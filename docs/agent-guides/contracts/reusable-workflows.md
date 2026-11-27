@@ -393,16 +393,39 @@ and source state without inventing a callback actor/result.
 
 Every generic output/outcome/finding is `agent_reported`. `engine_authenticated`
 labels only native task/principal/SID/result identity and original terminal/outer
-evidence digests authenticated by complete history. A rejected native callback
+evidence digests authenticated by the applicable history scope. A rejected native callback
 keeps its native result ID separately from nullable `accepted_result_id`. It never verifies a reported
 repository head, review, QA or merge. Finished/completed means accepted generic
 terminal output and settlement. @1 entries are wrapped with `abi=@1` and
 `history_label=historical_v1`; detail uses `workflow-sequential-history-view@2`
 containing the unchanged `workflow-sequential-run-view@1`, including redaction.
 
-Reads authenticate complete S4a..S6b/retained history and current authority in a
-rollback-only snapshot on existing bounded readers, ledgers and one five-second
-deadline. No cap is raised. Positive absent storage returns `storage=absent` and
+Run list/detail reads authenticate complete S4a..S6b/retained history. The
+plural task GET alone uses task-scoped data validation (Founder THR-404 msg15,
+Option B; #1905): complete combined layout/native ABI recognition, then full
+existing per-run replay on all runs linked by source/carrier/visit, their pinned
+definitions/settings/operation receipts, visits/events/outputs/evidence/outbox,
+assignments/controls/counters and native task/result ownership links. Source
+relations close over every run sharing a source or generic wait set, including
+all batches, memberships, inbox deliveries/consumption receipts and notifications.
+@1 sequential and Coding evidence uses its existing validators. Retained
+document/old-Coding instance namespaces remain distinct; selected ownership
+rejects conflicting cross-family bindings. There is no sequential run FK into
+those retained families. The original Coding discriminator still checks selected
+native task/result metadata on its retained 16 MiB allowance. Unpinned settings
+generations and disconnected retained or sequential data are excluded: their
+corruption no longer vetoes this task
+GET. This is the accepted trade-off, not an integrity certificate for the org.
+A task with no workflow uses indexed link/existence lookups and returns empty
+without traversing org-wide data. Selected graph damage still refuses
+history_unverified; budget exhaustion never becomes an empty success.
+
+Both paths retain fresh authority capture and closing validation, the exact
+lock set/order and rollback-only snapshot, existing bounded readers/ledgers and
+one original five-second deadline. No cap is raised. Every write/admission,
+continuation, settings, initiator, bootstrap/schema load, historical @1 GET and
+v2 run list/detail keeps the complete read_sequential_history contract unchanged.
+Positive absent storage returns `storage=absent` and
 an empty collection; valid installed storage returns `storage=readable`.
 Incoherent/budget/authority evidence returns non-success HTTP with closed
 `detail.format=workflow-sequential-unavailable@2`, `state=unavailable`, and
@@ -2664,6 +2687,12 @@ work/deadline after retained L. At most512 distinct tasks; exhaustion refuses
 without partial output or new allowance. Result identity lookup does not parse
 callback text or prove successful host/outer settlement or effective access.
 
+The plural task projection's separate task-scoped reader (S7a, THR-404 Option B)
+does not call or change this mixed oracle. It authenticates displayed native
+links and source/wait-set relations, without expanding the entire ordinary
+parent/child task tree. U6a cancellation/admission callers still require the
+complete oracle.
+
 U6a adds no producer. U6b still owes mixed Founder cancellation/cascade and native
 root-tail composition; existing mixed refusal/direct selected cancellation stay.
 U5b2b2 callback validation/mount and U7 transport remain required; Final success
@@ -2790,7 +2819,9 @@ repo-free settings, runs/detail and source/carrier/visit task links, under
 `/workflows/sequential` and `/tasks/{task_id}/sequential-workflow`. Exact paths,
 closed records, audience/privacy and remaining U7b–U7d work are in the current
 [U7 specification](../../specs/2026-11-11-sequential-coding-u7.md).
-SELECT-only snapshots authenticate complete history and fresh current authority;
+These original @1 SELECT-only snapshots authenticate complete history and fresh
+current authority; the additive plural @2 task GET uses the S7a task-scoped data
+contract (THR-404 Option B), while @2 run list/detail keeps complete history;
 GET allocates/writes nothing. Absent-task404 precedes ownership409. Denied/foreign
 reads return no workflow content or link. Existing Founder task-result visibility
 supplies authored-content access; agent sessions retain their addressed readers.

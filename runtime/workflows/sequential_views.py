@@ -837,7 +837,7 @@ def _project_v2(conn: sqlite3.Connection, org: Any, kind: str, selected: str | N
 
 
 async def read_projection_v2(org: Any, *, kind: str, selected: str | None = None) -> Closed:
-    """Complete bounded history + current authority, rollback-only. No inbox reads with effects."""
+    """Bounded history + current authority, rollback-only; task reads scope data."""
     budget = _ReadBudget()
     authority = org.workflow_authority
     capture = authority.capture_admission()
@@ -859,9 +859,17 @@ async def read_projection_v2(org: Any, *, kind: str, selected: str | None = None
                     if kind == 'task' and conn.execute('SELECT 1 FROM tasks WHERE id=?', (selected,)).fetchone() is None:
                         raise ProjectionRefusal('task_not_found', 404)
                     _projection_authority(conn, authority, capture, budget)
-                history = read_sequential_history(conn, expected_org_slug=org.slug, deadline=budget.deadline)
+                if kind == 'task':
+                    from runtime.workflows.sequential_task_history import read_task_history
+                    history = read_task_history(conn, expected_org_slug=org.slug,
+                        task_id=selected, deadline=budget.deadline)
+                else:
+                    history = read_sequential_history(conn, expected_org_slug=org.slug, deadline=budget.deadline)
                 with _sql_budget(conn, budget):
-                    value = _project_v2(conn, org, kind, selected, capture, budget, history)
+                    if kind == 'task' and history.layout.sequential and not history.run_ids:
+                        value = TaskRunsView(org_slug=org.slug, task_id=selected, storage='readable', runs=())
+                    else:
+                        value = _project_v2(conn, org, kind, selected, capture, budget, history)
                     budget.reserve(96 * len(_bytes(value.model_dump(mode='json'))) + 4096)
                     _projection_authority(conn, authority, capture, budget)
                     return value
