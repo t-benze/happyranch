@@ -38,3 +38,25 @@ Evidence is disposable structural observation only, never behavioral or V3 PASS.
 No live DB, installation, configuration, migration, deployment, restart, admission
 or U3e/U4–U9 capability is authorized. Independent full review, scoped QA,
 lint/static checks, normal hooks and guarded manager merge remain required.
+
+## Task projection exception — THR-404 Option B (#1905)
+
+Only read_projection_v2(kind='task') composes sequential_task_history instead
+of the complete oracle. Complete combined layout/schema/native ABI recognition
+is unchanged. Existing validators replay selected runs, pinned settings and
+operations, all owned sequential rows, native links/results and ownership; source
+and generic wait-set closure includes every member/batch and its inbox,
+deliveries, consumption receipts and notifications. Retained @1 sequential
+Coding evidence is validated by its original replay. Separate retained
+document/old-Coding instances cannot share selected native ownership. The
+original Coding discriminator checks selected native metadata on its unchanged
+retained 16 MiB allowance.
+
+Unpinned settings generations and disconnected retained/sequential data do not
+veto a task projection. Selected corruption refuses without partial output.
+The indexed negative task-link path never enters org-wide data validation.
+Fresh authority bookends, rollback-only snapshot, lock set/order, original D2
+budgets and five-second absolute deadline remain. All write/admission,
+continuation/settings/initiator/bootstrap/schema-load and run list/detail
+callers retain the complete reader byte-for-byte. This exception grants no
+capacity or write-validation change. See the current S7a/U7a/U6a contract.

@@ -4645,3 +4645,13 @@ Run full schema suites and ordinary-authority omission on both Pythons, plus
 [TLC](../specs/formal/task-lifecycle/README.md#run-tlc) current/restart and negative
 controls. This adds no CI trigger/check, U3 module, ad hoc Product E2E or live
 recovery. General integration stays SKIPPED under THR-243.
+
+## Task-scoped sequential projection (#1905)
+
+The existing private schema venue supports
+`WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --s7a=all`
+(and Python3.12). Focused selectors task_scoped_data, task_empty, task_corruption,
+task_unrelated and task_absent cover real route data, no org-wide reader on
+empty tasks, selected hash/orphan/pin/ownership refusal, unrelated corruption
+isolation with unchanged start/cancel/full-view refusal, and 404 precedence.
+These are private SQLite/authority fixtures, not E2E or a new required CI gate.
