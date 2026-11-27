@@ -2,16 +2,44 @@
 
 | Field | Value |
 | --- | --- |
-| Status | build-spec; implementation and acceptance remain open |
+| Status | build-spec; implementation merged; scoped acceptance recorded with the limits below |
 | Owner | Product Lead; Engineering Manager owns delivery; QA and Product own acceptance |
-| Date | 2026-11-26 |
-| Source Links | Founder THR-402 seq5; THR-296 seq316, 402–409; THR-387 seq46/61; [current source baseline](https://github.com/t-benze/happyranch/tree/bda86a149220e0b569826289a55511055e58b9ac); [historical May 30 design](https://github.com/t-benze/happyranch/blob/65107878735d082265f039456f0c9e062430dd84/docs/superpowers/specs/2026-05-30-add-org-and-agent-from-web-ui-design.md) |
+| Date | 2026-11-27 (delivery evidence reconciled; behavior contract unchanged) |
+| Source Links | Founder THR-402 seq5/16; Engineering seq14–15; THR-296 seq316, 402–409; THR-387 seq46/61; [original source baseline](https://github.com/t-benze/happyranch/tree/bda86a149220e0b569826289a55511055e58b9ac); [2026-11-27 source check](https://github.com/t-benze/happyranch/tree/025cc2ee199060edd20d092b7f9ed4f67d609727); [historical May 30 design](https://github.com/t-benze/happyranch/blob/65107878735d082265f039456f0c9e062430dd84/docs/superpowers/specs/2026-05-30-add-org-and-agent-from-web-ui-design.md) |
 | Commitment Boundary | build-ready within the authorized feature-completion request; no roadmap, date, deployment or live-roster commitment |
 | Founder Decisions | Required: none for this cutline. Ruled: retain Founder-managed Default; no agent movement across teams (THR-296 seq316); remote Client configuration remains read-only (THR-387 seq61). Arbitrary additional Founder-managed teams are outside scope. |
 
+## Delivery evidence and subsequent UX work (2026-11-27)
+
+Engineering reported delivery in THR-402 seq14–15: [spec PR1897](https://github.com/t-benze/happyranch/pull/1897)
+merged as `0ba4b9ff`, [backend PR1901](https://github.com/t-benze/happyranch/pull/1901)
+as `3c8e6bc1`, and [web PR1902](https://github.com/t-benze/happyranch/pull/1902)
+as `368fe7fa`. Independent QA TASK-19445 passed the scoped real-daemon
+UI → request → persisted team/agent campaign at reviewed head
+`b61d084d769b64f4de23d39a64aac7826f939c77`, in EN/ZH and phone/desktop
+viewports, with attributable A1–A6 and A8–A10 results. Its
+`output/TASK-19445/qa-report.md` lists unexecuted subcases, including separate
+stale-choice/reopen checks, naming-authority cases and a valid agent-session
+credential. Row-level results do not prove every subcase was executed.
+
+TASK-19453 subsequently passed A7 at the exact packaged Linux client boundary
+from merged `368fe7fa`, with a counting HTTP peer, native-routed attempts and
+zero forwarded configuration requests/bytes. A genuinely connected managed
+remote Host remains unverified, dependent on THR-327; three additional native UI
+captures were not obtained. See `output/TASK-19453/a7-report.md` through task
+recall. These are identified test venues, not proof of the Founder's current
+installed build or of good usability. No deployment claim follows.
+
+Founder THR-402 seq16 reports the current creation UX is awkward and requests
+consolidation plus a Claude Design handoff. Product TASK-19575 supplies that
+bounded design proposal; it does not replace this canonical behavior contract
+or authorize implementation, deployment or a date. Any subsequent accepted
+behavior change must be reconciled here through normal review. The original
+source/gap inventory below is historical pre-implementation evidence.
+
 ## Problem, goal and cutline
 
-A Founder cannot readily discover how to create a team: the current entry is
+The original discoverability problem was a hidden creation path:
 Agents → New agent → Manager → New team name. Provide two explicit actions on
 the existing Agents page using one shared creation form. Complete the existing
 manager-plus-team and worker-in-existing-team journeys, including truthful
@@ -75,7 +103,7 @@ routing. A task in a human-managed team still needs an explicit executable owner
 Keep current backend defaults for omitted model/reasoning effort; creation adds no
 model, repository or allow-rule editor. Backend validation remains authoritative
 at submit, including naming availability and executor validity. New team-input
-validation is an implementation gap, not a claim about current API validation.
+validation was implemented by PR1901; see the delivery evidence above.
 
 ## Authorization, connection and state handling
 
@@ -106,10 +134,12 @@ Ship affected app copy in English and Simplified Chinese. Labels, keyboard focus
 errors and actions must work at 390×844 and 1440×900; locale changes preserve draft,
 selection, focus and the original action without sending requests.
 
-## Source inventory and implementation gaps
+## Original source inventory and implementation gaps (historical baseline)
 
-Evidence below is source at `bda86a149`, not shipment. Engineering Manager owns
-each row and assigns implementation and QA against its acceptance ID.
+Evidence below is source at `bda86a149`, before PR1901/PR1902, not an inventory of
+current defects or shipment proof. It preserves the original Engineering gap
+assignments against each acceptance ID; use the delivery evidence above for the
+later disposition and remaining verification limits.
 
 | IDs | Evidence / classification | Next step |
 | --- | --- | --- |

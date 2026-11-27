@@ -1,10 +1,12 @@
 # Teams and org administration contracts
 
 The canonical [Create team and Create agent Product build specification](../../product/prds/2026-11-26-team-and-agent-creation.md)
-consolidates creation UX and acceptance under THR-402 seq5. Its proposed entry
-points and recovery changes remain delivery work; it preserves the Default,
-membership, naming and remote-configuration contracts below. The historical
-May 30 web creation design is provenance, not deployed verification.
+consolidates creation UX and acceptance under THR-402 seq5. PR1901/PR1902 merged
+the entry points and recovery changes; the PRD records scoped acceptance and
+remaining evidence limits. Founder THR-402 seq16 requests a subsequent UX design
+handoff, without changing the Default, membership, naming or remote-configuration
+contracts below. The historical May 30 web creation design is provenance, not
+deployed verification.
 
 ## Founder creation API (THR-402)
 
