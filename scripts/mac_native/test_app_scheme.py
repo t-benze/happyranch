@@ -297,7 +297,7 @@ class LiveSwitchEvidenceTests(unittest.TestCase):
                     querySelector: () => ({ textContent: values.title }), textContent: values.copy };
                 const main = values.missingMain ? null : { textContent: values.heading };
                 const document = { documentElement: { lang: values.lang },
-                    body: { innerText: values.visible, textContent: values.visible + 'hidden-secret' },
+                    body: { innerText: values.visible, textContent: 'hidden-secret' + values.visible },
                     querySelector: selector => selector === '[data-desktop-dialog]' ? pane :
                         selector === '[data-desktop-header]' ? (values.missingHeader ? null : header) :
                         selector === 'main' || selector === 'main h1' ? main : null };
