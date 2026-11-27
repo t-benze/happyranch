@@ -365,8 +365,8 @@ def validate_control_write(conn: sqlite3.Connection, *, org_slug: str, deadline:
                            settings_ids: frozenset[str] = frozenset()) -> None:
     """Validate resulting history on the original deadline before commit.
 
-    Admission supplies explicit roots. Other control/hold/dispatch callers keep
-    complete-history validation until their own bounded wiring groups.
+    Admission, initiator delivery/consumption and non-cancel generic hold/dispatch
+    supply explicit roots. Other callers keep complete-history validation.
     """
     from runtime.workflows.sequential_history import read_sequential_history, _reserve_generic_cancellation
     if run_ids is None:

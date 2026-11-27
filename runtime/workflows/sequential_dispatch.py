@@ -1423,10 +1423,12 @@ class SequentialDispatcher:
                 authority=self.org.workflow_authority, capture=capture, budget=budget)
             _check(run['engine_version'] == 2 and run['progress'] != 'cancelling' and not _cancelled(conn, run, visit))
             if visit['state'] in ('held', 'completed') and visit['selected'] == 0:
-                validate_control_write(conn, org_slug=self.org.slug, deadline=budget.deadline, reserve_cancellation=True)
+                validate_control_write(conn, org_slug=self.org.slug, deadline=budget.deadline, reserve_cancellation=True,
+                    run_ids=frozenset((run_id,)), source_ids=frozenset((run['source_task_id'],)))
                 return None
             if visit['result_id'] is not None:
-                validate_control_write(conn, org_slug=self.org.slug, deadline=budget.deadline, reserve_cancellation=True)
+                validate_control_write(conn, org_slug=self.org.slug, deadline=budget.deadline, reserve_cancellation=True,
+                    run_ids=frozenset((run_id,)), source_ids=frozenset((run['source_task_id'],)))
                 return None  # Authenticated result replay, no allocation or notification.
             _check(run['state'] == 'running' and run['active_visit_id'] == visit_id and visit['selected'] == 1)
             proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget)
@@ -1521,7 +1523,8 @@ class SequentialDispatcher:
                 wake_uncommitted(conn, run, event, compiled, {visit_id: visit}, budget)
                 if resulting == 'finished':
                     close_member_carrier_uncommitted(conn, run, decision.edge.action, budget)
-        validate_control_write(conn, org_slug=self.org.slug, deadline=budget.deadline, reserve_cancellation=True)
+        validate_control_write(conn, org_slug=self.org.slug, deadline=budget.deadline, reserve_cancellation=True,
+            run_ids=frozenset((run_id,)), source_ids=frozenset((run['source_task_id'],)))
         return new_task
 
     def _generic_node_instruction(self, conn: sqlite3.Connection, run: dict, visit: dict, compiled: Any,

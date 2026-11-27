@@ -824,12 +824,17 @@ Continuation preflight and batch preallocation use all-unfinished scalar H plus
 their hypothetical members, once on each original charged ledger. Original
 key/body/INTEGER result/task/principal/SID replay, one-run-per-source @1 and
 batch uniqueness, assignment/authority, rollback, budgets and deadlines remain.
-Hold/control/cancellation-finish keep the complete reader; cancellation omits
-only the future headroom reservation. Shared control plumbing defaults remain
-complete unless admission explicitly supplies roots. The full native start
-callback's initiator delivery/consumption still uses complete history until
-group 3; scoped preflight/admission measurements do not certify that whole
-callback. No lock/order or TLA+ transition changes follow.
+THR-404 group 3 scopes initiator dependency observation and delivery/consumption
+to the actual source and all owned runs/batches/wait members/notifications/receipts.
+Generic non-cancel dispatch (including replay) and business hold select the actual
+run/source; full affected sibling replay and all-unfinished scalar H remain.
+Consumption still requires actual SID delivery; held/returned wakes and original
+receipt/result replay remain unchanged. The native start callback now stays on
+scoped validation through its initiator tail. Earlier phase timings do not
+certify full callback latency. Control/cancellation-finish and source outer
+settlement keep the complete reader; cancellation omits only future headroom.
+Shared plumbing defaults remain complete unless a caller explicitly supplies
+roots. No lock/order, transaction, budget/deadline or TLA+ transition changes follow.
 No-result holds create
 no synthetic result, output or successor. Running cancel fences progression;
 positive original closure or the explicit human-only never-launched proof permits

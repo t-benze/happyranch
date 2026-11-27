@@ -4805,7 +4805,21 @@ existing `task_unrelated` case now expects scoped admission success while
 cancel/control/full views still refuse the same damage. Original S5
 `batch_all_or_none`, assignment `independence`, Start2 `admission`/`capacity`,
 and setup `pins` remain adjacent keepers for invalid assignments, authority,
-partial allocation/replay, capacity and retained settings pins. The native
-callback's initiator tail remains group 3; these focused cases grant no claim
-of full callback isolation. Use persistent jobs for these suites and local_ci
+partial allocation/replay, capacity and retained settings pins. Group 2 alone
+does not certify the full native callback; group 3 below covers its initiator
+tail. Use persistent jobs for these suites and local_ci
 all; no required check, trigger, Product E2E or retired test venue is added.
+
+
+THR-404 group 3 adds `--s7a=initiator_scope`, `--s7a=dispatch_scope`,
+`--s7a=hold_scope` and `--s7a=start_callback_scope` on Python3.12/3.14.
+They observe real dependency state, committed delivery/consumption and exact
+receipt replay, non-cancel generic transition/hold and durable held/returned
+wakes, affected sibling-event/receipt refusal with rollback, unrelated corrupt
+run isolation, and genuine native start callback allocation/result/consumption
+without complete validation. Existing S5 crash-before/after-ack, hold/return
+sibling and S6a workflow_wait/control_result_binding/join cases retain ownership,
+SID delivery, replay, authority and ordinary-join guards. Prior G1/G2 selectors
+remain regression keepers. All suites/local_ci all run as persistent jobs on
+the clean committed head; attributable temporary RED variants restore exact
+production bytes before GREEN. No new required CI check or Product E2E.

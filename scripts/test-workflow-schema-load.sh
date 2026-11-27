@@ -101,7 +101,8 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--s8a='):
     sys.argv[1:] = ['--s8a']
 S7A_CASES = ('plural_links', 'held_cause', 'history_label', 'unavailable',
     'task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent',
-    'write_settings_chain', 'write_headroom', 'start_admission', 'start_preflight', 'start_legacy')
+    'write_settings_chain', 'write_headroom', 'start_admission', 'start_preflight', 'start_legacy',
+    'initiator_scope', 'dispatch_scope', 'hold_scope', 'start_callback_scope')
 s7a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s7a='):
     s7a_case = sys.argv[1].split('=', 1)[1]
@@ -8166,7 +8167,8 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         import asyncio
         path = '/workflows/sequential/views/v2/runs'
         if case in ('task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent',
-                    'write_settings_chain', 'write_headroom', 'start_admission', 'start_preflight', 'start_legacy'):
+                    'write_settings_chain', 'write_headroom', 'start_admission', 'start_preflight', 'start_legacy',
+                    'initiator_scope', 'dispatch_scope', 'hold_scope', 'start_callback_scope'):
             from runtime.workflows import sequential_history, sequential_views
             from runtime.workflows.sequential_control import validate_control_write
             from runtime.workflows.sequential_task_history import read_write_history, read_cancellation_headroom
@@ -8277,6 +8279,127 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     # Each independent fixture below avoids one defect masking
                     # another and observes a route error, never empty success.
                     pass
+            if case == 'start_callback_scope':
+                with s5fixture(admitted=False) as f:
+                    old = s7legacy(f)
+                    damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                        ('0'*64, old.run_id))
+                    sid = 'g3-first-start-callback'
+                    s6sid(f, sid)
+                    s6bind_v2(f, sid)
+                    value = dict(action='workflow_start', workflows=[dict(f.command, operation_key='g3-native-start')])
+                    # The shipping native callback includes preflight, allocation,
+                    # first empty delivery, dependencies, effects and consumption.
+                    with patch.object(sequential_history, 'read_sequential_history',
+                            side_effect=AssertionError('native start callback reached complete validation')):
+                        row = s6callback(f, sid, value)
+                    runs = list(f.conn.execute('SELECT id FROM workflow_seq_runs WHERE source_task_id=?', (f.source.id,)))
+                    assert len(runs) == 1
+                    receipt = f.conn.execute('SELECT result_id,receipt_bytes FROM workflow_seq_consumption_receipts').fetchone()
+                    assert receipt['result_id'] == row['id']
+                    body = json.loads(receipt['receipt_bytes'])
+                    assert body['effects']['run_ids'] == [runs[0]['id']] and body['consume_notifications'] == []
+                    before = s5snap(f)
+                    assert f.db.admit_task_completion_callback(**f.s6_last_kwargs) and s5snap(f) == before
+                    assert not f.db.admit_task_completion_callback(**dict(f.s6_last_kwargs, agent='foreign'))
+                    assert s5snap(f) == before
+                print('PASS S7a start_callback_scope native start COMMIT/replay, no complete validation', flush=True)
+            if case == 'initiator_scope':
+                from runtime.workflows.sequential_initiator import observe_dependencies
+                for stage in ('dependencies', 'delivery', 'consumption'):
+                    for defect in ('valid', 'unrelated', 'sibling_event', 'receipt'):
+                        with s5fixture() as f:
+                            s5release(f)
+                            s5hold(f)
+                            # Seed an original receipt, then use another genuine
+                            # SID to ensure selected replay includes older receipts.
+                            sid = 'g3-original-receipt'
+                            s5newsession(f, sid)
+                            s5page(f, sid, write=True)
+                            s5consume(f, sid, dict(action='workflow_wait', consume_notifications=[]), lambda: dict(wait=True))
+                            sid = 'g3-selected-'+stage
+                            s5newsession(f, sid)
+                            page = s5page(f, sid, write=True) if stage == 'consumption' else None
+                            if defect == 'unrelated':
+                                old = s7legacy(f)
+                                damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                                    ('0'*64, old.run_id))
+                            elif defect == 'sibling_event':
+                                damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                                    ('0'*64, f.batch_ids[1].run_id))
+                            elif defect == 'receipt':
+                                damage(f, 'workflow_seq_consumption_receipts',
+                                    'UPDATE workflow_seq_consumption_receipts SET receipt_digest=?', ('0'*64,))
+                            before = s5snap(f)
+                            try:
+                                if stage == 'dependencies':
+                                    with s5reopen(f) as conn:
+                                        state = observe_dependencies(conn, f.db, f.source.id)
+                                    assert set(state['run_ids']) == {ids.run_id for ids in f.batch_ids}
+                                    assert state['pending'] and len(state['unfinished_runs']) == 2
+                                elif stage == 'delivery':
+                                    page = s5page(f, sid, write=True)
+                                    assert len(page['notifications']) == 1
+                                else:
+                                    result, raw = s5consume(f, sid, dict(action='workflow_wait'), lambda: dict(wait=True))
+                                    receipt = json.loads(raw)
+                                    assert receipt['result_id'] == result
+                                    assert receipt['consume_notifications'] == [page['notifications'][0]['notification_id']]
+                                    # Exact immutable result receipt returns without effects.
+                                    saved = s5snap(f)
+                                    with f.org.workflow_authority.admission_writer(f.org.workflow_authority.capture_admission()) as conn:
+                                        replay = consume_decision_uncommitted(conn, initiator_task_id=f.source.id,
+                                            principal=f.source.assigned_agent, session_id=sid, result_id=result,
+                                            decision=s4bytes(dict(action='workflow_wait')),
+                                            apply=lambda: (_ for _ in ()).throw(AssertionError('receipt replay reapplied')))
+                                    assert replay == raw and s5snap(f) == saved
+                            except (ValueError, RuntimeError) as exc:
+                                assert defect in ('sibling_event', 'receipt') and 'digest' in str(exc), (stage, defect, str(exc))
+                                assert s5snap(f) == before, (stage, defect, 'refusal leaked rows')
+                            else:
+                                assert defect in ('valid', 'unrelated'), (stage, defect, 'affected corruption accepted')
+                            print('PASS S7a initiator_scope', stage, defect, flush=True)
+            if case in ('dispatch_scope', 'hold_scope'):
+                for defect in ('valid', 'unrelated', 'sibling_event'):
+                    with s5fixture() as f:
+                        s5release(f)
+                        s4closed(f, f.ids.visit_id, summary=s4bsummary('finish') if case == 'dispatch_scope' else 'malformed', terminal='success')
+                        if defect == 'unrelated':
+                            old = s7legacy(f)
+                            damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                                ('0'*64, old.run_id))
+                        elif defect == 'sibling_event':
+                            damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                                ('0'*64, f.batch_ids[1].run_id))
+                        before = s5snap(f)
+                        source, parent = f.db.get_task(f.source.id), f.db.get_task('s5-parent')
+                        sibling = s4row(f, 'workflow_seq_runs', f.batch_ids[1].run_id)
+                        def act():
+                            if case == 'dispatch_scope':
+                                return s4baccept(f)
+                            capture = f.org.workflow_authority.capture_admission()
+                            run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                            with f.org.workflow_authority.admission_writer(capture) as conn:
+                                return hold_and_wake_uncommitted(conn, f.db, org_slug='scratch', run_id=f.ids.run_id,
+                                    visit_id=f.ids.visit_id, expected_cas=run['cas'], compiled=f.compiled,
+                                    authority=f.org.workflow_authority, capture=capture)
+                        try:
+                            act()
+                        except (ValueError, RuntimeError) as exc:
+                            assert defect == 'sibling_event' and 'digest' in str(exc), (case, defect, str(exc))
+                            assert s5snap(f) == before, (case, 'refusal leaked transition/wake')
+                        else:
+                            assert defect != 'sibling_event', (case, 'ignored affected sibling corruption')
+                            run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                            assert run['state'] == ('finished' if case == 'dispatch_scope' else 'held')
+                            wake = json.loads(f.conn.execute('SELECT notification_bytes FROM workflow_seq_inbox').fetchone()[0])
+                            assert wake['run_id'] == f.ids.run_id and wake['kind'] == ('returned' if case == 'dispatch_scope' else 'held')
+                            assert f.db.get_task(f.source.id) == source and f.db.get_task('s5-parent') == parent
+                            assert s4row(f, 'workflow_seq_runs', f.batch_ids[1].run_id) == sibling
+                            if case == 'dispatch_scope':
+                                saved = s5snap(f)
+                                assert act() is None and s5snap(f) == saved, 'scoped dispatch replay wrote'
+                        print('PASS S7a', case, defect, flush=True)
             if case == 'start_admission':
                 with s3_fixture() as f:
                     old = s7legacy(f)
