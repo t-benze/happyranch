@@ -37,6 +37,7 @@ function store(qc: QueryClient, m: Model, d: AttributeDefinition): AttributeDefi
       ? { can_create: true, can_edit_metadata: false, can_edit_structure: false, can_archive: false, refusal_reason: { code: 'definition_archived' } }
       : { can_create: true, can_edit_metadata: true, can_edit_structure: d.first_used_at === null, can_archive: true, refusal_reason: null },
   };
+  m.historicalKeys = [...new Set([...(m.historicalKeys ?? []), ...m.list.definitions.map((x) => x.key), d.key])];
   m.definitions[d.definition_id] = read;
   m.list.definitions = [...m.list.definitions.filter((x) => x.definition_id !== d.definition_id), d];
   void qc.invalidateQueries({ queryKey: ['mock-task-attributes'] });
@@ -100,9 +101,28 @@ export const mockTaskAttributesApi: TaskAttributesApi = {
       create: async (body) => {
         const m = model(qc);
         if (m.writes?.create) return answer(m.writes.create);
+        const occupied = new Set([...(m.historicalKeys ?? []), ...m.list.definitions.map((d) => d.key),
+          ...Object.values(m.versions ?? {}).flatMap((versions) => versions.map((r) => r.definition.key))]);
+        let key = body.key;
+        if (key === undefined) {
+          const folded = body.name.normalize('NFKD').replace(/[^\x00-\x7F]/g, '').toLowerCase();
+          let stem = folded.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'attr';
+          if (/^[0-9]/.test(stem)) stem = `attr_${stem}`;
+          for (let n = 1; n <= 1000; n++) {
+            const suffix = n === 1 ? '' : `_${n}`;
+            const candidate = stem.slice(0, 64 - suffix.length).replace(/_+$/g, '') + suffix;
+            if (!occupied.has(candidate)) { key = candidate; break; }
+          }
+          if (key === undefined) throw new ApiError(422, 'attribute_validation_failed', {
+            code: 'attribute_validation_failed', errors: { name: ['key_generation_exhausted'] },
+          });
+        } else if (occupied.has(key)) {
+          const current = Object.values(m.definitions).find((r) => r.definition.key === key);
+          throw new ApiError(409, 'key_reserved', { code: 'key_reserved', current });
+        }
         const now = new Date().toISOString();
         return store(qc, m, {
-          definition_id: `def_mock_${m.list.definitions.length + 1}`, version: 1, key: body.key, type: body.type,
+          definition_id: `def_mock_${m.list.definitions.length + 1}`, version: 1, key, type: body.type,
           name: body.name.trim(), description: body.description ?? null, constraints: body.constraints ?? {},
           created_at: now, recorded_at: now, first_used_at: null, archived_at: null, archived: false,
         });

@@ -25,6 +25,8 @@ export interface TaskAttributeFixtureResponse {
 export interface TaskAttributeFixture {
   /** Why this state needs a mock (shown in evidence, never in the UI). */
   reason: string;
+  /** Reservation-only keys retained after a pre-use API key change. */
+  historicalKeys?: string[];
   list: AttributeDefinitionsRead;
   /** Per-definition reads by definition_id. */
   definitions: Record<string, AttributeDefinitionRead>;
@@ -76,6 +78,7 @@ function reads(defs: AttributeDefinition[], override: Record<string, AttributeDe
 
 const ready: TaskAttributeFixture = {
   reason: 'Default prototype state: the F1 seed with Founder authority.',
+  historicalKeys: ['renamed_away'],
   list: { definitions: BASE, editability: ALLOWED },
   definitions: reads(BASE),
   versions: { def_legacy: [{ definition: { ...LEGACY, version: 1, archived: false, archived_at: null, recorded_at: T0 }, editability: deny('definition_archived') }] },
@@ -87,6 +90,10 @@ const listDenied = (code: string, reason: string, defs = BASE): TaskAttributeFix
 
 export const TASK_ATTRIBUTE_FIXTURES = {
   'ta.list.ready': ready,
+  'ta.create.historical': { ...ready, historicalKeys: ['attr', 'attr_2', 'renamed_away', 'legacy_risk'],
+    reason: 'Synthetic keyless fallback checks archived and renamed-away reservations.' },
+  'ta.create.exhausted': { ...ready, historicalKeys: Array.from({ length: 1000 }, (_, i) => i === 0 ? 'attr' : `attr_${i + 1}`),
+    reason: 'Synthetic keyless fallback exhausts all 1000 historical candidates.' },
   'ta.list.empty.readonly': listDenied('human_only', 'Browser reads are always human on PR2; read-only needs a mock.', []),
   'ta.list.readonly': listDenied('human_only', 'Browser reads are always human on PR2; read-only needs a mock.'),
   'ta.list.authUnknown': listDenied('authority_unknown', 'PR2 never reports unknown authority to a browser read.'),

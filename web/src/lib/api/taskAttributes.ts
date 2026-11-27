@@ -1,7 +1,7 @@
 /** Eight org-local attribute operations; no automatic conflict replay or UI. */
 import { request } from './client';
 import type {
-  AttributeChange, AttributeDefinitionFields, AttributeDefinitionRead, AttributeDefinitionsRead,
+  AttributeChange, AttributeDefinitionCreateFields, AttributeDefinitionFields, AttributeDefinitionRead, AttributeDefinitionsRead,
   TaskAttributeHistoryRead, TaskAttributesRead,
 } from './taskAttributeTypes';
 
@@ -14,7 +14,7 @@ Promise<AttributeDefinitionsRead> => request(definitions(slug), { params });
 export const getDefinition = (slug: string, definitionId: string, params?: { version?: number; session_id?: string }):
 Promise<AttributeDefinitionRead> => request(`${definitions(slug)}/${encodeURIComponent(definitionId)}`, { params });
 
-export const createDefinition = (slug: string, body: AttributeDefinitionFields & { expected_version: 0 }):
+export const createDefinition = (slug: string, body: AttributeDefinitionCreateFields & { expected_version: 0 }):
 Promise<AttributeDefinitionRead> => request(definitions(slug), { method: 'POST', body });
 
 export const updateDefinition = (slug: string, definitionId: string,

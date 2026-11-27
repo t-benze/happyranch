@@ -260,8 +260,9 @@ in their refusal projection. A subsequent reload reauthorizes and reads again;
 no automatic replay or silent constraints discard occurs. Missing/foreign IDs
 share sanitized 404 `not_found`; no foreign data or org inventory is returned.
 Storage/projection errors are 503 `attribute_storage_unavailable`, never empty
-success. A lost response after COMMIT requires readback and deliberate CAS
-handling, since transport loss does not undo a durable write.
+success. Transport loss does not undo a durable write. Stable-ID edits require
+readback and deliberate CAS handling; keyless create stays unknown as specified
+in PR10 below.
 
 One owned writer transaction contains all field changes, freeze markers,
 events and audit. PR1 public APIs retain their signatures and self-contained
@@ -378,3 +379,66 @@ later independent disposable CLI/API transcript. Lint is not behavioral proof.
 No new route, status or parameter is introduced; the completion decision remains
 raw HTTP data, so no OpenAPI snapshot change is expected. List/export, web and
 org scoring/configuration belong to later slices.
+
+
+## PR10 — server-generated stable keys (THR-390 seq55)
+
+POST definition creation requires `expected_version:0`, `type` and `name`.
+Only omission of `key` asks the server to generate it. An explicit key remains
+an optional advanced API compatibility override: strict existing grammar,
+no coercion, no suffixing, and existing 409 `key_reserved` for any historical
+owner. Null, empty and non-string explicit keys are invalid. The successful
+201 response still requires and returns the actual `definition.key`, stable
+ID and version 1. No existing definition or schema is migrated.
+
+After all fields validate, outside-trimmed name is NFKD-normalized, ASCII
+encoded with `ignore`, lowercased, runs outside `[a-z0-9]` replaced by `_`,
+and outside `_` trimmed. Empty becomes `attr`; a leading digit gets `attr_`.
+The store probes the base, then `_2` through `_1000`, truncating the stem to
+`64-len(suffix)` and trimming trailing underscores before adding each suffix.
+Every candidate satisfies the existing key grammar. Examples: `Café Déjà Vu`
+→ `cafe_deja_vu`; `ＥＦＦＯＲＴ` → `effort`; `Risk—Cost` → `riskcost`
+(the dash disappears during ASCII-ignore); `123 Effort` → `attr_123_effort`;
+`工作量`, emoji-only and punctuation-only names → `attr`. Names still require
+1–80 code points after outside trimming. An 80-letter stem produces 64 letters,
+then 62 letters + `_2`, through 59 letters + `_1000`.
+
+Selection probes **all** `task_attribute_key_owners` rows, including archived
+and pre-use renamed-away keys. Lowest free ordinal wins. This is bounded to
+1,000 indexed equality probes, inside the same existing `BEGIN IMMEDIATE`
+writer as definition insertion, key reservation, version, response projection
+and HTTP audit. The instance RLock serializes one connection; SQLite's writer
+lock serializes independent connections. Rollback frees an uncommitted choice.
+All candidates owned gives definite 422 `attribute_validation_failed` with
+`errors:{"name":["key_generation_exhausted"]}` and no partial rows/audit;
+choose another display name. Ordinary storage contention retains its existing
+unavailable response; there is no automatic retry.
+
+Renaming the display name never changes the key. Web Settings creates without
+a key control and never sends `key`; edit always shows it read-only and never
+sends `key` either. Unused type/constraint controls retain server editability.
+The advanced API exception remains: an explicit pre-first-use key change is
+supported; its old key stays reserved. Freeze/archive/CAS behavior is unchanged.
+CLI has no definition-create verb. Discover returned/current keys with
+`attributes list/show`; value addressing and optional `history --key` keep
+their existing meanings.
+
+A keyless create has no list-based write identity. Lost/unreadable own response
+means **unknown**, regardless of zero/one/many matching rows, metadata edits,
+other-tab creates, or a delayed original POST. Save, Enter and Retry send
+nothing. **Check list** fetches and displays current definitions for inspection;
+it never claims Saved or Not saved. After a successful check in this unknown
+episode, **Acknowledge and close** explicitly forgets only this opted-in owner,
+without saved/failed attribution, and closes the editor. Failed/cancelled checks
+keep the hold. The same actions appear in the shared navigation hold panel,
+also reached by desktop close/Quit. Remaining owners and native prerequisites
+still block their transitions. No native wire status is added.
+
+Only this request's own success can settle Saved before acknowledgement.
+After acknowledgement its late ticket/check cannot resurrect the owner or
+produce a saved claim; the list refreshes. Creating again requires a new,
+deliberate dialog/action and can duplicate an earlier unknown commit. This is
+explicit uncertainty, not idempotency. Edit retains stable-ID/version/full-field
+reconciliation. Formal safety model and finite TLC result:
+[attribute-keyless-create](formal/attribute-keyless-create/README.md); review
+evidence only, never a required CI gate.

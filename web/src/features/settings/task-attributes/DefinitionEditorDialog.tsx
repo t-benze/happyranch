@@ -9,9 +9,9 @@
  * - Refusals render `detail.current` exactly; nothing is reconstructed.
  *   `definition_structure_frozen` (correction 4) and an archive race
  *   (correction 5) keep the draft and never report success.
- * - A lost response is "Save outcome unknown": no Retry until "Refresh to
- *   check" proves (all five fields, §5.1/§6.1) whether this draft committed.
- *   Retry re-sends the exact body that was sent.
+ * - A keyless create lost response remains unknown after Check list. Explicit
+ *   acknowledgement closes only this owner without claiming Saved/Not saved.
+ *   Edit retains stable-ID/full-field reconciliation and definite-failure Retry.
  * - "Reload latest" always re-reads by `definition_id`.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react';
@@ -24,7 +24,7 @@ import { Textarea } from '@/design-system/primitives/Textarea';
 import { useTranslation } from '@/hooks/i18n';
 import { useIdentityPresentation } from '@/hooks/identities';
 import { useDefinition, useTaskAttributeActions } from '@/hooks/task-attributes';
-import type { AttributeDefinition, AttributeDefinitionEditability, AttributeDefinitionFields, AttributeDefinitionRead } from '@/lib/api/types';
+import type { AttributeDefinition, AttributeDefinitionEditability, AttributeDefinitionCreateFields, AttributeDefinitionFields, AttributeDefinitionRead } from '@/lib/api/types';
 import type { MessageKey } from '@/lib/i18n';
 import { useOwnerGate, useConfigOwner } from '@/shared/owners';
 import {
@@ -35,7 +35,6 @@ import {
   draftClipboardText,
   echoReflects,
   fieldsOf,
-  reconcileCreate,
   reconcileEdit,
   type DefinitionFields,
 } from './model';
@@ -146,6 +145,7 @@ interface Sent {
 
 const ERROR_KEY: Record<string, MessageKey> = {
   invalid_key: 'settings.taskAttributes.editor.err.invalidKey',
+  key_generation_exhausted: 'settings.taskAttributes.editor.err.keyExhausted',
   length_1_80_trimmed: 'settings.taskAttributes.editor.err.nameLength',
   length_0_4000: 'settings.taskAttributes.editor.err.descLength',
   invalid_type: 'settings.taskAttributes.editor.err.invalidType',
@@ -163,7 +163,7 @@ const ERROR_KEY: Record<string, MessageKey> = {
 function fieldIdFor(path: string, type: string): string {
   switch (path) {
     case 'name': return 'ta-name';
-    case 'key': return 'ta-key';
+    case 'key': return 'ta-name';
     case 'type': return 'ta-type-numeric';
     case 'description': return 'ta-desc';
     case 'constraints.min': return 'ta-min';
@@ -195,6 +195,8 @@ export function DefinitionEditorDialog(props: {
   const [staleDraft, setStaleDraft] = useState<DefinitionFields | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [observedDefinitions, setObservedDefinitions] = useState<AttributeDefinition[] | null>(null);
+  const observedDefinitionsRef = useRef<AttributeDefinition[] | null>(null);
   const sent = useRef<Sent | null>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
 
@@ -226,6 +228,11 @@ export function DefinitionEditorDialog(props: {
     dirty,
     draft,
     onDiscard: onClose,
+    onAcknowledgeUnknown: mode === 'create' ? () => { void actions.refreshList(); onClose(); } : undefined,
+    // The registry publishes observation readiness synchronously. Its panel
+    // must read these rows before React commits this editor's state update.
+    unknownObservation: mode === 'create' ? () => observedDefinitionsRef.current
+      ? <DefinitionListObservation definitions={observedDefinitionsRef.current} /> : null : undefined,
     checkResult: () => reconcileRef.current(),
   });
   const { requestOwnerTransition } = useOwnerGate();
@@ -257,7 +264,7 @@ export function DefinitionEditorDialog(props: {
   const buildBody = (): Record<string, unknown> => {
     const fields = fieldsFromDraft(draft, baseDef);
     if (mode === 'create') {
-      const body: Record<string, unknown> = { key: draft.key, type: draft.type, name: draft.name };
+      const body: Record<string, unknown> = { type: draft.type, name: draft.name };
       if (fields.description !== null) body.description = fields.description;
       if (Object.keys(fields.constraints).length > 0) body.constraints = fields.constraints;
       return body;
@@ -267,7 +274,6 @@ export function DefinitionEditorDialog(props: {
     if (canMeta && draft.name !== b.name) body.name = draft.name;
     if (canMeta && fields.description !== b.description) body.description = fields.description;
     if (canStruct) {
-      if (draft.key !== b.key) body.key = draft.key;
       if (draft.type !== b.type) body.type = draft.type;
       if (!sameJson(sortKeys(fields.constraints), sortKeys(b.constraints))) body.constraints = fields.constraints;
     }
@@ -286,11 +292,19 @@ export function DefinitionEditorDialog(props: {
     // F1: the write is ticketed and admitted through the owner registry, so a
     // pending/unknown save holds close, navigation and native lifecycle.
     const result = await owner.track<unknown>(
-      () => {
+      async () => {
         sent.current = submitted;
-        return mode === 'create'
-          ? actions.create(body as unknown as AttributeDefinitionFields)
-          : actions.update(definitionId as string, body as Partial<AttributeDefinitionFields> & { expected_version: number });
+        if (mode === 'create') {
+          const created = await actions.create(body as AttributeDefinitionCreateFields);
+          // An unreadable success body cannot settle this ticket as Saved.
+          const definition = created?.definition;
+          if (!definition || typeof definition.key !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(definition.key)
+              || typeof definition.definition_id !== 'string' || !definition.definition_id || definition.version !== 1) {
+            throw new Error('unreadable definition create response');
+          }
+          return created;
+        }
+        return actions.update(definitionId as string, body as Partial<AttributeDefinitionFields> & { expected_version: number });
       },
       (error) => (classifyWriteError(error).kind === 'unknown' ? 'unknown' : 'failed'),
     );
@@ -302,6 +316,7 @@ export function DefinitionEditorDialog(props: {
     }
     if (mode === 'create') {
       void actions.refreshList();
+      if (!result.known) return; // acknowledged/forgotten: no late saved claim
       onSaved({ kind: 'created', v: (result.value as AttributeDefinitionRead).definition.version });
       return;
     }
@@ -319,6 +334,8 @@ export function DefinitionEditorDialog(props: {
   const handleFailure = (error: unknown): void => {
     const failure = classifyWriteError(error);
     if (failure.kind === 'unknown') {
+      observedDefinitionsRef.current = null;
+      setObservedDefinitions(null);
       setStatus({ s: 'unknown', checking: false, refreshFailed: false });
       return;
     }
@@ -354,23 +371,21 @@ export function DefinitionEditorDialog(props: {
     void send(body);
   };
 
-  // Same-context full-field reconciliation of the submitted snapshot. It is
-  // the owner's Check result too (dialog notice and the shared hold gate).
-  const reconcileUnknown = async (): Promise<'saved' | 'not_saved' | 'unknown'> => {
+  // Same-context Check result: stable-ID edits reconcile the full snapshot;
+  // keyless creates only observe the list (dialog and shared hold gate).
+  const reconcileUnknown = async (): Promise<'saved' | 'not_saved' | 'unknown' | 'observed'> => {
     const submitted = sent.current;
     if (!submitted) return 'unknown';
     setStatus({ s: 'unknown', checking: true, refreshFailed: false });
     try {
       if (mode === 'create') {
         const list = await actions.readList();
-        const outcome = reconcileCreate(list.definitions, submitted.body as unknown as AttributeDefinitionFields);
-        if (outcome.outcome === 'committed') {
-          onSaved({ kind: 'created', v: outcome.definition.version });
-          return 'saved';
-        }
-        if (outcome.outcome === 'notSaved') setStatus({ s: 'notSaved' });
-        else setStatus({ s: 'keyReserved', owner: outcome.owner, reconciled: true });
-        return 'not_saved';
+        // The list is for the user's inspection, never attribution. Even
+        // identical rows or an empty list leave this request unknown.
+        observedDefinitionsRef.current = list.definitions;
+        setObservedDefinitions(list.definitions);
+        setStatus({ s: 'unknown', checking: false, refreshFailed: false });
+        return 'observed';
       }
       const latest = await actions.readDefinition(definitionId as string);
       const pre = submitted.pre as AttributeDefinition;
@@ -416,7 +431,8 @@ export function DefinitionEditorDialog(props: {
   };
 
   const copyDraft = (): void => {
-    void navigator.clipboard?.writeText(draftClipboardText(fieldsFromDraft(draft, baseDef))).then(() => setCopied(true), () => setCopied(false));
+    const { key: _key, ...createDraft } = fieldsFromDraft(draft, baseDef);
+    void navigator.clipboard?.writeText(draftClipboardText(mode === 'create' ? createDraft : fieldsFromDraft(draft, baseDef))).then(() => setCopied(true), () => setCopied(false));
   };
 
   // Every dismissal asks the shared owner gate first: a sent save that is
@@ -498,6 +514,10 @@ export function DefinitionEditorDialog(props: {
                 draftType={draft.type}
                 summaryRef={summaryRef}
                 onRefresh={() => void refreshToCheck()}
+                keylessCreate={mode === 'create'}
+                definitions={observedDefinitions}
+                canAcknowledge={owner.record?.canAcknowledgeUnknown === true}
+                onAcknowledge={() => owner.acknowledgeUnknown()}
               />
               {staleDraft && shownRead && (needsReload || status.s === 'archived' || status.s === 'idle' || status.s === 'notSaved') && (
                 <Compare draft={staleDraft} latest={shownRead.definition} />
@@ -511,13 +531,8 @@ export function DefinitionEditorDialog(props: {
               </Field>
               {canStruct ? (
                 <>
-                  <Field id="ta-key" label={t('settings.taskAttributes.editor.key')} help={t('settings.taskAttributes.editor.keyHelp')} errors={errorFor('ta-key')}>
-                    {(describedBy, invalid) => (
-                      <Input id="ta-key" className="font-mono" value={draft.key} readOnly={inputsReadOnly} autoCapitalize="off" autoCorrect="off" spellCheck={false}
-                        aria-invalid={invalid || undefined} aria-describedby={describedBy}
-                        onChange={(e) => set('key', e.target.value)} />
-                    )}
-                  </Field>
+                  {mode === 'edit' && baseDef && <LockedRow id="ta-locked-key" label={t('settings.taskAttributes.editor.key')} value={(shownRead?.definition ?? baseDef).key} mono />}
+                  <p className="text-text-secondary text-xs">{t('settings.taskAttributes.editor.keyHelp')}</p>
                   <TypePicker value={draft.type} readOnly={inputsReadOnly} errors={errorFor('ta-type-numeric')} onChange={(v) => set('type', v)} />
                   <ConstraintFields draft={draft} readOnly={inputsReadOnly} set={set} errorFor={errorFor} />
                 </>
@@ -748,6 +763,10 @@ function StatusNotices({
   draftType,
   summaryRef,
   onRefresh,
+  keylessCreate,
+  definitions,
+  canAcknowledge,
+  onAcknowledge,
 }: {
   status: Status;
   slug: string;
@@ -758,6 +777,10 @@ function StatusNotices({
   draftType: string;
   summaryRef: React.RefObject<HTMLDivElement>;
   onRefresh: () => void;
+  keylessCreate: boolean;
+  definitions: AttributeDefinition[] | null;
+  canAcknowledge: boolean;
+  onAcknowledge: () => void;
 }): JSX.Element | null {
   const { t } = useTranslation();
   switch (status.s) {
@@ -787,9 +810,13 @@ function StatusNotices({
           tone="attention"
           role="alert"
           title={t('settings.taskAttributes.editor.unknownTitle')}
-          actions={<Button variant="outline" className="bg-surface-raised" size="sm" loading={status.checking} disabled={status.checking} onClick={onRefresh}>{t('settings.taskAttributes.editor.refresh')}</Button>}
+          actions={<div className="flex flex-wrap gap-2">
+            <Button type={keylessCreate ? 'button' : undefined} variant="outline" className="bg-surface-raised" size="sm" loading={status.checking} disabled={status.checking} onClick={onRefresh}>{t(keylessCreate ? 'owners.save.checkList' : 'settings.taskAttributes.editor.refresh')}</Button>
+            {keylessCreate && <Button type="button" variant="outline" className="bg-surface-raised" size="sm" disabled={!canAcknowledge || status.checking} onClick={onAcknowledge}>{t('owners.save.acknowledgeUnknown')}</Button>}
+          </div>}
         >
-          {t('settings.taskAttributes.editor.unknownBody')}
+          {t(keylessCreate ? 'owners.save.unknownCreate' : 'settings.taskAttributes.editor.unknownBody')}
+          {keylessCreate && definitions && <DefinitionListObservation definitions={definitions} />}
           {status.refreshFailed && <> {t('settings.taskAttributes.editor.refreshFailed')}</>}
         </Callout>
       );
@@ -833,6 +860,16 @@ function StatusNotices({
     default:
       return null;
   }
+}
+
+function DefinitionListObservation({ definitions }: { definitions: AttributeDefinition[] }): JSX.Element {
+  const { t } = useTranslation();
+  return (
+    <span role="list" className="mt-2 block max-h-40 min-w-0 max-w-full overflow-y-auto pl-4" tabIndex={0} aria-label={t('settings.taskAttributes.list.title')} data-testid="ta-checked-list">
+      {definitions.length === 0 && <span role="listitem" className="block">{t('settings.taskAttributes.list.emptyTitle')}</span>}
+      {definitions.map((d) => <span role="listitem" key={d.definition_id} className="block break-words">{d.name} · <span className="font-mono break-all">{d.key}</span></span>)}
+    </span>
+  );
 }
 
 function fieldLabel(t: ReturnType<typeof useTranslation>['t'], id: string): string {

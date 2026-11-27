@@ -246,3 +246,56 @@ test('R1-6/R1-8: shared router guard composes self-guarded editors', () => {
   const leave = navigationTransition({ pathname: '/orgs/studio/agents/mgr/team-escalation-policy', search: '' }, { pathname: '/orgs/studio/dashboard', search: '' });
   assert.deepEqual(selectOwnerBlocking(r.getSnapshot(), leave.affects).owners.map((o) => o.id), [policy.id], 'the shared blocker includes the policy draft');
 });
+
+test('W04/W07 keyless acknowledgement is opt-in, observed in this episode and releases only self', () => {
+  const r = createOwnerRegistry();
+  for (const id of ['a', 'b']) {
+    r.register(id, ORG);
+    r.setDraft(id, { dirty: true, revision: 1 });
+  }
+  const a = r.beginSave('a');
+  const b = r.beginSave('b');
+  r.settleSave(a, 'unknown');
+  r.settleSave(b, 'unknown');
+  assert.equal(r.acknowledgeUnknown('a'), false, 'other owners do not opt in');
+  r.setUnknownAcknowledgement('a', true);
+  assert.equal(r.beginSave('a'), null, 'unknown cannot resend');
+  assert.equal(r.acknowledgeUnknown('a'), false, 'no successful list observation');
+  const failed = r.beginUnknownCheck('a');
+  assert.ok(failed);
+  assert.equal(r.acknowledgeUnknown('a'), false, 'failed/cancelled read did not complete');
+  assert.equal(status(r, 'a'), 'unknown');
+  assert.equal(r.getSnapshot().find((o) => o.id === 'a').savedRevision, null);
+  const checked = r.beginUnknownCheck('a');
+  assert.equal(r.completeUnknownCheck(checked), true);
+  assert.equal(status(r, 'a'), 'unknown', 'list never attributes a save');
+  assert.equal(r.acknowledgeUnknown('a'), true);
+  assert.equal(r.has('a'), false, 'no saved/failed/dirty owner remains');
+  assert.equal(status(r, 'b'), 'unknown');
+  assert.equal(selectOwnerBlocking(r.getSnapshot()).level, 'hold');
+  assert.deepEqual(r.settleSave(a, 'saved'), { current: false, known: false });
+  assert.equal(r.completeUnknownCheck(checked), false);
+  assert.equal(r.has('a'), false, 'late result cannot resurrect acknowledged owner');
+});
+
+test('W04 own late success settles before acknowledgement and invalidates old observations', () => {
+  const r = createOwnerRegistry();
+  r.register('a', ORG);
+  r.setDraft('a', { dirty: true, revision: 1 });
+  r.setUnknownAcknowledgement('a', true);
+  const first = r.beginSave('a');
+  r.settleSave(first, 'unknown');
+  const check = r.beginUnknownCheck('a');
+  assert.deepEqual(r.settleSave(first, 'saved'), { current: true, known: true });
+  assert.equal(status(r, 'a'), 'confirmed');
+  assert.equal(r.completeUnknownCheck(check), false, 'overtaken list cannot restore unknown');
+  assert.equal(r.acknowledgeUnknown('a'), false);
+  r.setDraft('a', { dirty: true, revision: 2 });
+  const second = r.beginSave('a');
+  r.settleSave(second, 'unknown');
+  assert.equal(r.completeUnknownCheck(check), false, 'prior episode cannot authorize acknowledgement');
+  assert.equal(r.acknowledgeUnknown('a'), false);
+  const currentCheck = r.beginUnknownCheck('a');
+  assert.equal(r.completeUnknownCheck(currentCheck), true);
+  assert.equal(r.acknowledgeUnknown('a'), true);
+});

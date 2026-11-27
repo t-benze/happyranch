@@ -74,6 +74,77 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         return await self.client.put(self.values, json={"changes": changes},
             params={} if agent is None else {"session_id": "synthetic-" + agent})
 
+    async def test_k01_k03_k05_keyless_post(self):
+        cases = [("  RISK... / Cost + ETA?!  ", "risk_cost_eta"), ("Café Déjà Vu", "cafe_deja_vu"),
+                 ("Cafe\u0301 De\u0301ja\u0300 Vu", "cafe_deja_vu_2"), ("ＥＦＦＯＲＴ", "effort"),
+                 ("Risk—Cost", "riskcost"), ("123 Effort", "attr_123_effort"),
+                 ("工作量", "attr"), ("🧭🚀", "attr_2"), ("!!!", "attr_3"), ("Effort", "effort_2")]
+        for name, key in cases:
+            with self.subTest(name=name):
+                response = await self.client.post(self.defs, json={"expected_version": 0, "type": "boolean", "name": name})
+                self.assertEqual(response.status_code, 201, response.text)
+                d = response.json()["definition"]
+                self.assertEqual((d["key"], d["name"], d["version"]), (key, name.strip(), 1))
+                self.assertEqual(self.org.db.get_task_attribute_definition(d["definition_id"])["key"], key)
+
+    async def test_k04_k08_k15_keyless_errors_and_exhaustion(self):
+        for fields in ({"name": " "}, {"name": "a" * 81}, {"key": None}, {"key": 1}, {"key": ""},
+                       {"key": "UPPER"}, {"key": "1a"}, {"key": "a" * 65}, {"extra": True}, {"type": "no"}):
+            before = self.domain()
+            response = await self.client.post(self.defs, json={"expected_version": 0, "type": "boolean", "name": "Valid", **fields})
+            self.assertEqual(response.status_code, 422, response.text)
+            self.assertEqual(self.domain(), before)
+        with self.org.db._attribute_writer():
+            for n in range(1, 1000):
+                key = "full" if n == 1 else f"full_{n}"
+                self.org.db._create_task_attribute_definition_uncommitted(key=key, type="boolean", name="Full")
+        response = await self.client.post(self.defs, json={"expected_version": 0, "type": "boolean", "name": "Full"})
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["definition"]["key"], "full_1000")
+        before = self.domain()
+        response = await self.client.post(self.defs, json={"expected_version": 0, "type": "boolean", "name": "Full"})
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(response.json(), {"detail": {"code": "attribute_validation_failed", "errors": {"name": ["key_generation_exhausted"]}}})
+        self.assertEqual(self.domain(), before)
+        self.assertEqual((await self.client.post(self.defs, json={"expected_version": 0, "type": "boolean", "name": "Other"})).status_code, 201)
+
+    async def test_k13_k14_k16_k18_keyless_atomicity_schema_and_compatibility(self):
+        from runtime.daemon.routes.task_attribute_models import CreateDefinition, Definition
+        schema = self.client._transport.app.openapi()
+        create = schema["paths"]["/api/v1/orgs/{slug}/task-attributes/definitions"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+        self.assertNotIn("key", create["required"])
+        self.assertEqual(create["properties"]["key"]["type"], "string")
+        self.assertIn("key", Definition.model_json_schema()["required"])
+        self.assertNotIn("key", CreateDefinition.model_validate({"expected_version": 0, "type": "boolean", "name": "A"}).model_dump(exclude_unset=True))
+        command = {"expected_version": 0, "type": "boolean", "name": "Fresh"}
+        before = self.domain()
+        with patch.object(self.org.db, "_audit_task_attribute_definition_uncommitted", side_effect=sqlite3.OperationalError("synthetic audit failure")):
+            response = await self.client.post(self.defs, json=command)
+        self.assertGreaterEqual(response.status_code, 500, response.text)
+        self.assertEqual(self.domain(), before)
+        response = await self.client.post(self.defs, json=command)
+        self.assertEqual(response.status_code, 201, response.text)
+        d = response.json()["definition"]
+        self.assertEqual(d["key"], "fresh")
+        for version, name in ((1, "Other"), (2, "Fresh")):
+            if version == 2:
+                current = self.org.db.get_task_attribute_definition(d["definition_id"])
+                assigned = await self.save([self.change(current, True)])
+                self.assertEqual(assigned.status_code, 200, assigned.text)
+                self.assertIsNotNone(self.org.db.get_task_attribute_definition(d["definition_id"])["first_used_at"])
+            response = await self.client.patch(self.defs + "/" + d["definition_id"], json={"expected_version": version, "name": name})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["definition"]["key"], "fresh")
+        self.assertIsNone(self.org.db._attribute_key_owner("other"))
+        self.assertEqual(self.org.db.get_task_attribute_definition(d["definition_id"], version=2)["name"], "Other")
+        response = await self.client.post(self.defs, json={**command, "key": "advanced"})
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["definition"]["key"], "advanced")
+        before = self.domain()
+        response = await self.client.post(self.defs, json={**command, "key": "fresh"})
+        self.assertEqual((response.status_code, response.json()["detail"]["code"]), (409, "key_reserved"))
+        self.assertEqual(self.domain(), before)
+
     async def test_p01_p03_definition_routes(self):
         d = await self.create(constraints={"min": 1, "max": 10})
         self.assertEqual((d["description"], d["version"], d["archived"]), ("Synthetic rubric", 1, False))
@@ -944,6 +1015,130 @@ class StorageTests(unittest.TestCase):
 
     def projection(self, d, task="TASK-1"):
         return self.db.get_task_attribute(task, d["definition_id"])
+
+    def test_k04_k06_k07_keyless_history_and_lengths(self):
+        archived = self.create("risk")
+        self.db.archive_task_attribute_definition(archived["definition_id"], expected_version=1)
+        old = self.create("old")
+        self.db.update_task_attribute_definition(old["definition_id"], expected_version=1, key="new")
+        self.create("risk_3")
+        for name, key in (("Risk", "risk_2"), ("Old", "old_2")):
+            d = self.db.create_task_attribute_definition(type="boolean", name=name)
+            self.assertEqual(d["key"], key)
+        for i, length in enumerate((64, 65, 80)):
+            stem = chr(97 + i) * length
+            d = self.db.create_task_attribute_definition(type="boolean", name=stem)
+            self.assertEqual(d["key"], stem[:64])
+            self.assertEqual(self.db.create_task_attribute_definition(type="boolean", name=stem)["key"], stem[:62] + "_2")
+            with self.db._attribute_writer():
+                for n in range(3, 10):
+                    self.db._create_task_attribute_definition_uncommitted(key=stem[:62] + "_" + str(n), type="boolean", name=stem)
+            self.assertEqual(self.db.create_task_attribute_definition(type="boolean", name=stem)["key"], stem[:61] + "_10")
+            with self.db._attribute_writer():
+                for n in range(11, 1000):
+                    key = stem[:64-len(str(n))-1] + "_" + str(n)
+                    self.db._create_task_attribute_definition_uncommitted(key=key, type="boolean", name=stem)
+            d = self.db.create_task_attribute_definition(type="boolean", name=stem)
+            self.assertEqual(d["key"], stem[:59] + "_1000")
+        punctuated = "d" * 63 + " " + "e" * 16
+        self.assertEqual(self.db.create_task_attribute_definition(type="boolean", name=punctuated)["key"], "d" * 63)
+        self.assertEqual(self.db.create_task_attribute_definition(type="boolean", name=punctuated)["key"], "d" * 62 + "_2")
+        self.reopen()
+        self.assertEqual(self.db._attribute_key_owner("old")["definition_id"], old["definition_id"])
+        self.assertTrue(self.db.get_task_attribute_definition(archived["definition_id"])["archived_at"])
+
+    def test_k09_k12_keyless_same_connection_races(self):
+        for names, expected in ((("Race", "Race"), {"race", "race_2"}), (("Café", "Cafe"), {"cafe", "cafe_2"}),
+                                (("工作量", "🧭"), {"attr", "attr_2"}), (("a" * 79, "a" * 80), {"a" * 64, "a" * 62 + "_2"})):
+            barrier = threading.Barrier(2)
+            results, errors = [], []
+            def run(name):
+                try:
+                    barrier.wait(5)
+                    results.append(self.db.create_task_attribute_definition(type="boolean", name=name))
+                except BaseException as error:
+                    errors.append(error)
+            workers = [threading.Thread(target=run, args=(name,)) for name in names]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(10)
+            self.assertFalse(any(worker.is_alive() for worker in workers))
+            self.assertEqual(errors, [])
+            self.assertEqual({d["key"] for d in results}, expected)
+            self.assertEqual(len({d["definition_id"] for d in results}), 2)
+            for d in results:
+                self.assertEqual(self.db._attribute_key_owner(d["key"])["definition_id"], d["definition_id"])
+
+    def test_k10_k11_keyless_cross_connection_commit_and_rollback(self):
+        for rollback in (False, True):
+            a, b = self.observer(), self.observer()
+            selected, release, attempted = threading.Event(), threading.Event(), threading.Event()
+            original_insert, connection = a._attribute_insert_version, b._conn
+            results, errors = {}, []
+            name = "Rollback" if rollback else "Commit"
+            class ObservedBegin:
+                def __getattr__(self, key):
+                    return getattr(connection, key)
+                def execute(self, sql, parameters=()):
+                    if sql == "BEGIN IMMEDIATE":
+                        attempted.set()
+                    return connection.execute(sql, parameters)
+            def insert(d, at):
+                original_insert(d, at)
+                selected.set()
+                if not release.wait(5):
+                    raise AssertionError("release deadline")
+                if rollback:
+                    raise RuntimeError("synthetic precommit")
+            def run(db, who):
+                try:
+                    results[who] = db.create_task_attribute_definition(type="boolean", name=name)
+                except BaseException as error:
+                    errors.append((who, error))
+            b._conn = ObservedBegin()
+            workers = [threading.Thread(target=run, args=(a, "a")), threading.Thread(target=run, args=(b, "b"))]
+            try:
+                with patch.object(a, "_attribute_insert_version", side_effect=insert):
+                    workers[0].start()
+                    self.assertTrue(selected.wait(5))
+                    workers[1].start()
+                    self.assertTrue(attempted.wait(5))
+                    self.assertNotIn("b", results)
+                    release.set()
+                    for worker in workers:
+                        worker.join(10)
+            finally:
+                release.set()
+                for worker in workers:
+                    if worker.ident is not None:
+                        worker.join(10)
+                b._conn = connection
+            self.assertFalse(any(worker.is_alive() for worker in workers))
+            self.assertEqual(len(errors), 1 if rollback else 0, errors)
+            if rollback:
+                self.assertEqual((errors[0][0], str(errors[0][1])), ("a", "synthetic precommit"))
+                self.assertEqual(results["b"]["key"], "rollback")
+            else:
+                self.assertEqual({d["key"] for d in results.values()}, {"commit", "commit_2"})
+            observer = self.observer()
+            for d in results.values():
+                self.assertEqual(observer.get_task_attribute_definition(d["definition_id"])["version"], 1)
+                self.assertEqual(observer._attribute_key_owner(d["key"])["definition_id"], d["definition_id"])
+            self.assertEqual(len([d for d in observer.list_task_attribute_definitions() if d["name"] == name]), 1 if rollback else 2)
+            self.assertFalse(a._conn.in_transaction)
+            self.assertFalse(b._conn.in_transaction)
+            if rollback:
+                self.assertEqual(observer.create_task_attribute_definition(type="boolean", name=name)["key"], "rollback_2")
+
+    def test_k13_keyless_store_faults_leave_no_reservation(self):
+        for symbol in ("_attribute_reserve_key", "_attribute_insert_version"):
+            before = self.state(self.observer())
+            with patch.object(self.db, symbol, side_effect=RuntimeError("synthetic fault")):
+                with self.assertRaisesRegex(RuntimeError, "synthetic fault"):
+                    self.db.create_task_attribute_definition(type="boolean", name="Fault")
+            self.assertEqual(self.state(self.observer()), before)
+        self.assertEqual(self.db.create_task_attribute_definition(type="boolean", name="Fault")["key"], "fault")
 
     def test_c01_org_isolation(self):
         a = self.create(description="A rubric")
@@ -1981,6 +2176,35 @@ class AttributeCliTests(unittest.IsolatedAsyncioTestCase):
                     code = exc.code
             return code, stdout.getvalue(), stderr.getvalue(), calls
         return await asyncio.to_thread(invoke)
+
+    async def test_k19_generated_key_discovery_history_and_help(self):
+        from cli.main import build_parser
+        from contextlib import redirect_stdout
+        from io import StringIO
+        output = StringIO()
+        with redirect_stdout(output), self.assertRaises(SystemExit) as stopped:
+            build_parser().parse_args(["attributes", "--help"])
+        self.assertEqual(stopped.exception.code, 0)
+        help_text = " ".join(output.getvalue().split())
+        self.assertIn("generated by the server from the display name", help_text)
+        self.assertIn("Renaming the display name never changes the key", help_text)
+        self.assertIn("before first use", help_text)
+        response = await self.client.post(self.defs, json={"expected_version": 0, "type": "boolean", "name": "Ready now"})
+        self.assertEqual(response.status_code, 201, response.text)
+        for command in (("list",), ("show", "ready_now")):
+            code, out, _, calls = await self.invoke("attributes", *command, "--json")
+            self.assertEqual(code, 0, out)
+            self.assertIn("ready_now", out)
+            self.assertTrue(all(call[0] == "GET" for call in calls))
+        created = await self.submit({"ready_now": False})
+        task_id = created.json()["task_id"]
+        for flags in ((), ("--key", "ready_now")):
+            code, out, _, calls = await self.invoke("attributes", "history", task_id, *flags, "--json")
+            self.assertEqual(code, 0, out)
+            self.assertEqual(json.loads(out)["events"][0]["new"], {"present": True, "value": False})
+            self.assertEqual(len(calls), 3 if flags else 2)
+            self.assertEqual(sum(path.endswith("/attributes/history") for _, path, _, _ in calls), 1)
+            self.assertTrue(all(method == "GET" for method, _, _, _ in calls))
 
     async def test_c01_c02_discovery_and_typed_presence_rendering(self):
         code, out, _, _ = await self.invoke("attributes", "list", "--json")

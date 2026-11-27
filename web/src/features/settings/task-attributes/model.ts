@@ -4,7 +4,7 @@
  * - Write failures are classified once: a definite server answer (with its
  *   PR2 `detail` envelope), an unknown outcome (the response never arrived),
  *   or not sent. Only a definite answer may release Retry.
- * - Reconciliation compares ALL five definition fields after PR2's documented
+ * - Edit reconciliation compares ALL five definition fields after PR2's documented
  *   defaults (`normCreate`/`normUpdate`); a version or key alone is never
  *   proof that this draft committed.
  * - Authority is never inferred here: callers render server `editability`.
@@ -12,7 +12,6 @@
 import type {
   AttributeDefinition,
   AttributeDefinitionEditability,
-  AttributeDefinitionFields,
   AttributeDefinitionRead,
   AttributeErrorDetail,
 } from '@/lib/api/types';
@@ -107,17 +106,8 @@ export function sameFields(a: DefinitionFields, b: DefinitionFields): boolean {
     && a.description === b.description && sameConstraints(a.constraints, b.constraints);
 }
 
-export type CreateReconciliation =
-  | { outcome: 'committed'; definition: AttributeDefinition }
-  | { outcome: 'notSaved' }
-  | { outcome: 'otherOwner'; owner: AttributeDefinition };
-
-/** §5.1: committed only when the drafted key exists AND all five fields equal normCreate(sent body). */
-export function reconcileCreate(definitions: AttributeDefinition[], sent: AttributeDefinitionFields): CreateReconciliation {
-  const row = definitions.find((d) => d.key === sent.key);
-  if (!row) return { outcome: 'notSaved' };
-  return sameFields(fieldsOf(row), normCreate(sent)) ? { outcome: 'committed', definition: row } : { outcome: 'otherOwner', owner: row };
-}
+// A keyless create has no request identity in the list. List observations
+// never establish saved/not_saved; only its own response can attribute it.
 
 export type EditReconciliation = { outcome: 'committed' } | { outcome: 'notSaved' } | { outcome: 'conflict' };
 

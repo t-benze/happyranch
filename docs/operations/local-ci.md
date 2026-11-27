@@ -55,6 +55,47 @@ the focused cases because the snapshot pins only params/statuses. Native Swift
 surface checks require the documented Mac venue; no access policy is changed.
 
 
+### PR10 generated keys and definition editor
+
+The same standalone attributes command also runs K01–K19: keyless HTTP/store
+creation, Unicode folding, capped historical collision search/exhaustion,
+explicit-key compatibility, native SQLite writer races/rollback, unchanged
+rename/freeze contracts, served full schemas and CLI discovery/history/help.
+Existing C03/C09/P13/P14 remain the historical-key/freeze keepers.
+
+Focused owner/native checks (Node 24, no new CI gate):
+
+```bash
+node --experimental-transform-types --test web/scripts/owner-registry.test.mjs web/scripts/native-owners.test.mjs
+```
+
+The existing W4a built-SPA/synthetic-API harness has a Settings editor slice:
+
+```bash
+cd web
+npm run build:local -- --outDir "$TMPDIR/dist-local"
+node scripts/w4a-browser-evidence.mjs --slice task-attr-definitions --dist "$TMPDIR/dist-local" --out /absolute/task-output/browser --head SOURCE_SHA --tad-case W01
+```
+
+Select W01, W02, W03, W04, W05, W06 or W07 (comma-separated); omit `--tad-case`
+for all. A focused observation can add `--tad-context en-1440-web` (or another
+locale-width-web/desktop combination) and `--tad-outcome unknownCommit` (or
+another named unknown scenario). Each selected group renders en/zh-CN, 390×844/1440×900 and both the
+web route and shared desktop Settings presentation. W01/W02 record keyless
+POST/read-only-key PATCH request ledgers; W03 records field/refusal drafts;
+W04/W07 use unreadable own replies, other-tab rows, delayed commits and failed
+list checks, then dialog/shared-gate acknowledgement without attribution or
+resend. W05 preserves nodes/focus/selection/draft across locale switches. W06
+captures create geometry; other groups capture their affected states too.
+The desktop HTTP fixture uses the existing presentation-only bridge facade;
+actual native receipt/admission and close/Quit summaries are exercised by the
+focused Node venue, not an installed app. W08 mock-provider browser behavior
+has no Settings prototype route in the ordinary bundle; record it NOT RUN
+unless an existing supported rendering venue is available. Do not add a
+production test seam to obtain it. Long checks use durable jobs. No Product
+E2E, retired units, integration, required-check or dependency change follows.
+
+
 ## Focused thread guest seats (THR-362 slices 1–2)
 
 ```bash

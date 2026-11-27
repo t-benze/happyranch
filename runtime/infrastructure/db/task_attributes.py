@@ -8,7 +8,11 @@ from typing import Any
 from uuid import uuid4
 
 from runtime.infrastructure.db._shared import _synchronized
-from runtime.task_attributes import AttributeValidationError, validate_definition, validate_values, value_errors
+from runtime.task_attributes import (AttributeValidationError, attribute_key_candidate, attribute_key_stem,
+                                     validate_definition, validate_values, value_errors)
+
+
+_KEY_OMITTED = object()
 
 
 class AttributeStoreError(ValueError):
@@ -170,11 +174,13 @@ class TaskAttributesMixin:
             self._conn.execute("INSERT INTO task_attribute_key_owners VALUES (?,?,?)", (key, definition_id, at))
 
     @_synchronized
-    def create_task_attribute_definition(self, *, key: str, type: str, name: str,
+    def create_task_attribute_definition(self, *, type: str, name: str, key: Any = _KEY_OMITTED,
                                          description: str | None = None, constraints: dict | None = None) -> dict:
         with self._attribute_writer():
-            return self._create_task_attribute_definition_uncommitted(
-                key=key, type=type, name=name, description=description, constraints=constraints)
+            fields = {"type": type, "name": name, "description": description, "constraints": constraints}
+            if key is not _KEY_OMITTED:
+                fields["key"] = key
+            return self._create_task_attribute_definition_uncommitted(**fields)
 
     def _attribute_owned_writer(self) -> None:
         if not self._conn.in_transaction:
@@ -266,6 +272,18 @@ class TaskAttributesMixin:
 
     def _create_task_attribute_definition_uncommitted(self, **fields) -> dict:
         self._attribute_owned_writer()
+        if "key" not in fields:
+            # Validate every field before allocation; a fallback cannot rescue
+            # an invalid name. BEGIN IMMEDIATE serializes all connections here.
+            fields = validate_definition(key="attr", **fields)
+            stem = attribute_key_stem(fields["name"])
+            for ordinal in range(1, 1001):
+                candidate = attribute_key_candidate(stem, ordinal)
+                if self._conn.execute("SELECT 1 FROM task_attribute_key_owners WHERE key=?", (candidate,)).fetchone() is None:
+                    fields["key"] = candidate
+                    break
+            else:
+                raise AttributeValidationError({"name": ["key_generation_exhausted"]})
         fields = validate_definition(**fields)
         definition_id, at = uuid4().hex, _now()
         self._conn.execute(

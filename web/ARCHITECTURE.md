@@ -548,21 +548,36 @@ still loaded) and run once Retry clears it.
   Edit/Archive. Dialogs re-read the definition on open and gate Save/Archive on
   that read being a settled success (MEM-300). `archived` and `first_used_at`
   drive badges, tabs and counts only, never a control.
-- **Write outcomes.** A definite answer renders its PR2 envelope
-  (`detail.current` for 409s, the `errors` map for 422, `human_only` for 403;
-  a 5xx is a definite failure with Retry). A lost response is "Save outcome
-  unknown": no Retry until "Refresh to check" compares all five fields
-  (key, type, name, description, constraints) after PR2's defaults. Retry
-  re-sends the exact body. "Reload latest" re-reads by `definition_id`.
-- **Owner custody.** The editor and the archive confirmation are
-  `settings.taskAttributes` config owners (`useConfigOwner`): every create,
-  edit and archive write goes through `owner.track` (ticket, native admission,
-  settlement), and "Refresh to check" is the owner's Check result, so the
-  shared gate's Check result runs the same full-field reconciliation of the
-  submitted snapshot. Cancel, Discard, Escape, the close button, navigation
-  and native lifecycle all ask the owner gate, which holds while a sent write
-  is pending or unknown; the archive dialog cannot be closed and reopened to
-  send a second POST until its result is reconciled.
+- **Stable keys (PR10).** Create sends name/type/optional description and
+  constraints, never `key`. The create API type permits an explicit key for
+  backward compatibility; the stored Definition still requires it. Edit renders
+  one read-only key row in both structural-editability states and never sends
+  `key`. Renaming the display name never changes the key. The advanced
+  pre-first-use explicit API key-change exception remains server-owned.
+- **Write outcomes.** Definite responses render the PR2 envelope; name-key
+  generation exhaustion points to the visible name input. Stable-ID edit and
+  archive keep full-field/version reconciliation. A keyless create lost or
+  unreadable response stays unknown: the list can never attribute Saved or
+  Not saved, even with identical rows, metadata changes or a delayed POST.
+  Save/Enter/Retry are blocked. Check list displays the current definitions
+  without changing that outcome. After successful observation in this unknown
+  episode, explicit Acknowledge and close forgets only this owner without a
+  saved/failed claim and closes the editor. Failed/cancelled checks keep the hold.
+  A new deliberate create after acknowledgement may duplicate an unknown commit;
+  no idempotency is promised.
+- **Owner custody.** Every create/edit/archive uses `owner.track` and native
+  admission. Only the keyless-create owner opts into typed acknowledgement.
+  The registry binds successful Check list to its unknown ticket/episode;
+  acknowledgement deletes that owner rather than reconciling it as saved or
+  not_saved. Shared hold-panel handlers expose the same Check list and
+  Acknowledge actions. `NativeOwnersBridge` already routes close/Quit through
+  this gate and re-reads remaining owners before answering; schema-2 counts
+  and all other owners' semantics stay unchanged. Own late success before
+  acknowledgement settles its retained unknown ticket; after acknowledgement
+  ticket/check settlement cannot resurrect it, and the editor suppresses a
+  late success notice while refreshing the list. No list-based create
+  reconciliation helper remains. See the finite
+  [safety model](../docs/specs/formal/attribute-keyless-create/README.md).
 - **Exact numeric bounds.** A whole-number bound outside the JS safe-integer
   range is refused in the editor before sending (it would round), whether
   newly typed or an unchanged existing bound that a structural edit would

@@ -6401,6 +6401,30 @@ initial/provenance/history and authority details are in the
 Plain creation and CLI ship in PR3 below; roots filters/export ship in PR5
 below. Other creation producers, UI and score seeds are separate slices.
 
+**Settings definition keys (THR-390 PR10).** Settings › Task attributes asks
+for display name, type and optional rubric/constraints; the server generates
+and returns the stable key. Create has no key input. Edit shows the key
+read-only and both web writes omit `key`. Renaming the display name never
+changes the key. Advanced HTTP clients can still supply an explicit create
+key or explicitly change an unused key before first use; historical keys are
+never reused. POST omission alone requests generation; explicit invalid keys
+refuse and occupied explicit keys still return 409, with no auto-suffix.
+Generation checks base, `_2`…`_1000` against all historical owners in the
+create transaction; exhaustion returns 422 on `name` and asks for another name.
+CLI has no definition-create verb; `attributes list/show` discovers keys and
+`history --key` remains a filter.
+
+A lost/unreadable keyless-create response stays unknown: Save, Enter and Retry
+are disabled. Check list shows current definitions without attributing any row
+to that request. Only a successful check in this unknown episode enables
+Acknowledge and close, which closes/forgets this owner without claiming Saved
+or Not saved. Both actions also appear in its shared hold panel and desktop
+close/Quit gate. Other owners still hold. A failed/cancelled check keeps the
+hold. A late own success before acknowledgement settles normally; after it,
+late results are ignored and the list refreshes without a saved claim. Creating
+again requires a deliberate new editor and may duplicate the unknown commit.
+Edit/archive retain their existing stable-ID reconciliation.
+
 **Browser task-attribute editing (THR-390 PR7, flag `task_attributes_ui`).**
 Task detail shows an Attributes card in the rail listing every item of
 `GET /tasks/{id}/attributes` (all active definitions, plus archived ones with

@@ -14,7 +14,8 @@
  * awaits anything before sending (identity resolution) calls `begin()` first
  * and passes that ticket to `track`. While a prior result is unknown no
  * ticket is issued (`begin()` returns null, `track` resolves `refused`
- * without running): Check result must reconcile it first. Unmounting the
+ * without running): Check result must reconcile it first, or the opted-in
+ * keyless create must explicitly acknowledge a successful list observation. Unmounting the
  * editor releases the owner, but a pending/unknown save keeps holding
  * (detached) until it resolves.
  *
@@ -86,13 +87,17 @@ export interface ConfigOwnerOptions {
    * Same-context reconciliation for an unknown result: re-read the saved
    * value and answer whether the last sent save applied.
    */
-  checkResult?: () => Promise<'saved' | 'not_saved' | 'unknown'>;
+  checkResult?: () => Promise<'saved' | 'not_saved' | 'unknown' | 'observed'>;
+  /** Opt in only where a successful list read cannot attribute a write. */
+  onAcknowledgeUnknown?: () => void;
+  /** Current readback displayed by the shared hold panel for this opted-in owner. */
+  unknownObservation?: () => ReactNode;
   /** The editor keeps its own router leave guard (see `OwnerIdentity`). */
   ownNavigationGuard?: boolean;
 }
 
 export type TrackResult<T> =
-  | { ok: true; value: T; current: boolean }
+  | { ok: true; value: T; current: boolean; known: boolean }
   | {
       ok: false;
       error: unknown;
@@ -117,7 +122,7 @@ export interface ConfigOwner {
    * Settle a ticket. Pass the failure `error` so native's `403
    * remote_read_only` is shown as the remote read-only refusal (S8-2b).
    */
-  settle: (ticket: SaveTicket, outcome: SaveOutcome, error?: unknown) => { current: boolean };
+  settle: (ticket: SaveTicket, outcome: SaveOutcome, error?: unknown) => { current: boolean; known: boolean };
   /**
    * Desktop save admission after `begin()`: resolves true once native
    * acknowledged the summary showing the save pending (browser: at once).
@@ -153,6 +158,7 @@ export interface ConfigOwner {
   reconcile: (outcome: 'saved' | 'not_saved') => void;
   checking: boolean;
   checkFailed: boolean;
+  acknowledgeUnknown: () => boolean;
   /**
    * S8-2b: the latest request was refused by native's pre-forward `403
    * remote_read_only` (nothing reached the Host; a draft stays). Holds the
@@ -179,7 +185,7 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
   const { registry, handlers } = useOwnerGateContext();
   const scope = useContext(OwnerScopeContext);
   const id = useId();
-  const { page, subject = null, org, dirty, draft, onDiscard, checkResult, ownNavigationGuard = false } = options;
+  const { page, subject = null, org, dirty, draft, onDiscard, checkResult, onAcknowledgeUnknown, unknownObservation, ownNavigationGuard = false } = options;
 
   // Draft revision: bumps whenever the draft snapshot changes.
   const key = draftKey(draft);
@@ -207,8 +213,8 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
     registry.setDraft(id, { dirty, revision: draftRevision });
   }, [registry, id, dirty, draftRevision, identityKey]);
 
-  const latest = useRef({ onDiscard, checkResult, dirty });
-  latest.current = { onDiscard, checkResult, dirty };
+  const latest = useRef({ onDiscard, checkResult, onAcknowledgeUnknown, unknownObservation, dirty });
+  latest.current = { onDiscard, checkResult, onAcknowledgeUnknown, unknownObservation, dirty };
   const [checking, setChecking] = useState(false);
   const [checkFailed, setCheckFailed] = useState(false);
 
@@ -217,9 +223,12 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
     if (!run) return;
     setChecking(true);
     setCheckFailed(false);
+    const observation = registry.beginUnknownCheck(id);
     try {
       const outcome = await run();
-      registry.reconcile(id, outcome);
+      if (outcome === 'observed') {
+        if (observation) registry.completeUnknownCheck(observation);
+      } else registry.reconcile(id, outcome);
       if (outcome === 'unknown') {
         setCheckFailed(true);
         throw new Error('still unknown');
@@ -232,17 +241,29 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
     }
   }, [registry, id]);
 
+  const acknowledgeUnknown = useCallback(() => {
+    if (!latest.current.onAcknowledgeUnknown || !registry.acknowledgeUnknown(id)) return false;
+    latest.current.onAcknowledgeUnknown();
+    return true;
+  }, [registry, id]);
+  const acknowledgementEnabled = onAcknowledgeUnknown !== undefined;
+  useEffect(() => {
+    registry.setUnknownAcknowledgement(id, acknowledgementEnabled);
+  }, [registry, id, acknowledgementEnabled]);
+
   useEffect(() => {
     handlers.set(id, {
       discard: () => latest.current.onDiscard?.(),
       check: () => check(),
+      acknowledgeUnknown,
+      observation: () => latest.current.unknownObservation?.(),
     });
     return () => {
       // A detached owner keeps its Check result (the provider prunes the
       // handlers of owners that are gone).
       if (!registry.has(id)) handlers.delete(id);
     };
-  }, [handlers, id, check, registry]);
+  }, [handlers, id, check, acknowledgeUnknown, registry]);
   const canCheck = checkResult !== undefined;
   useEffect(() => {
     registry.setCanCheck(id, canCheck);
@@ -279,7 +300,7 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
     (ticket: SaveTicket, outcome: SaveOutcome, error?: unknown) => {
       setRemoteRefusal(null);
       if (outcome === 'failed') noteRefusal(error);
-      return { current: registry.settleSave(ticket, outcome).current };
+      return registry.settleSave(ticket, outcome);
     },
     [registry, noteRefusal],
   );
@@ -307,8 +328,8 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
         }
         try {
           const value = await run();
-          const { current } = settle(ticket, 'saved');
-          return { ok: true as const, value, current };
+          const { current, known } = settle(ticket, 'saved');
+          return { ok: true as const, value, current, known };
         } catch (error) {
           const outcome = classify(error);
           const { current } = settle(ticket, outcome, error);
@@ -334,7 +355,7 @@ export function useConfigOwner(options: ConfigOwnerOptions): ConfigOwner {
   const shownRefusal = shownRemoteRefusal(record?.status, remoteRefusal);
 
   return {
-    id, record, begin, draftRevision, settle, sendable, track, saveRefused, busy, isBusy, check, reconcile, checking, checkFailed,
+    id, record, begin, draftRevision, settle, sendable, track, saveRefused, busy, isBusy, check, reconcile, checking, checkFailed, acknowledgeUnknown,
     remoteRefusal: shownRefusal?.host ?? null,
     remoteRefusalDraftless: shownRefusal?.draftless ?? false,
   };

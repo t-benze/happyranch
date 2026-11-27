@@ -75,6 +75,8 @@ export type AttributeChange = {
 } & ({ op: 'set'; value: AttributeScalar } | { op: 'clear' });
 export type AttributeDefinitionFields = Pick<AttributeDefinition, 'key' | 'type' | 'name'> &
   Partial<Pick<AttributeDefinition, 'description' | 'constraints'>>;
+/** Only create may omit key; stored definitions always carry the server key. */
+export type AttributeDefinitionCreateFields = Omit<AttributeDefinitionFields, 'key'> & { key?: string };
 /** ApiError.detail retains this envelope; mutations require deliberate conflict handling. */
 export interface AttributeErrorDetail {
   code: string;

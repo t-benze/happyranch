@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 import math
 import re
+import unicodedata
 from typing import Any
 
 
@@ -59,6 +60,19 @@ def validate_definition(*, key: Any, type: Any, name: Any,
         raise AttributeValidationError(errors)
     return {"key": key, "type": type, "name": name.strip(),
             "description": description, "constraints": dict(rules)}
+
+
+def attribute_key_stem(name: str) -> str:
+    """ASCII stem only; the store allocates ownership inside its writer."""
+    folded = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii").lower()
+    stem = re.sub(r"[^a-z0-9]+", "_", folded).strip("_") or "attr"
+    return "attr_" + stem if stem[0].isdigit() else stem
+
+
+def attribute_key_candidate(stem: str, ordinal: int) -> str:
+    """Fit each bounded allocation candidate in the existing 64-byte grammar."""
+    suffix = "" if ordinal == 1 else f"_{ordinal}"
+    return stem[:64 - len(suffix)].rstrip("_") + suffix
 
 
 def value_errors(definition: Mapping, value: Any) -> list[str]:
