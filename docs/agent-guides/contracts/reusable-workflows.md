@@ -423,9 +423,11 @@ history_unverified; budget exhaustion never becomes an empty success.
 Both paths retain fresh authority capture and closing validation, the exact
 lock set/order and rollback-only snapshot, existing bounded readers/ledgers and
 one original five-second deadline. No cap is raised. THR-404 group 2 separately
-scopes start/admission and continuation preflight as described below. Other
-writers, settings, initiator, bootstrap/schema load, historical @1 GET and
-v2 run list/detail keep complete `read_sequential_history` validation.
+scopes start/admission and continuation preflight; group 3 scopes initiator
+dependencies/delivery/consumption and non-cancel generic dispatch/hold below.
+Other writers, settings, source outer settlement, bootstrap/schema load,
+historical @1 GET and v2 run list/detail keep complete
+`read_sequential_history` validation.
 Group 1 of the THR-404 write work adds the explicit-root primitive
 in `sequential_task_history`. Its full selected @1/@2
 replay shares the task reader's graph and original validators but additionally
@@ -669,8 +671,9 @@ positive terminal and outer closure, current assignment authority and exact
 task/principal/SID/result identities. It composes generic output references,
 validates content and declared outcomes, and persists one result transition
 atomically with output, counters and any successor. It invokes no Coding or
-document capability witness. Complete resulting-history validation can refuse
-and roll back tentative rows under the existing read ledger and deadline.
+document capability witness. Full affected source/wait-set resulting-history
+validation can refuse and roll back tentative rows under the existing read
+ledger and deadline; unrelated payloads are excluded by THR-404 group 3.
 Result replay allocates and notifies nothing. Start replay remains admission-only.
 
 Native terminal failure takes precedence over callback payload parsing. Real
@@ -777,25 +780,27 @@ Cancellation-only closure instead authenticates a bounded UTF8-validated byte
 stream against the same native callback digest, charging raw bytes and validation
 copies without reserving business-content parsing copies it never creates. A
 callback refused by Held is not accepted or parsed as business content by
-cancellation. Non-cancel admission, hold and replacement writers additionally
-reserve cancellation space after validating the **entire combined history**,
-including retained families and other runs. Each unfinished @2 run reserves
-16MiB plus 128 copies of its known source/current-visit identity bytes inside
+cancellation. Non-cancel writers additionally reserve cancellation space after
+validation. Admission and group-3 initiator/generic dispatch/hold use full
+affected history as below; control/replacement writers retain complete combined
+history, including retained families and other runs. Each unfinished @2 run
+reserves 16MiB plus 128 copies of its known source/current-visit identity bytes inside
 the unchanged 64MiB allowance, plus 32 row acquisitions, 4096 traversal steps
 and 65536 SQL steps inside the original finite ledgers. This covers worst-case fence, finish, bounded
 original proofs and a maximum 1MiB document callback (including its base64 carrier),
 independently of prior document sizes and committed visit/recovery counts.
 THR-404 group 1 adds the shared narrow H selector; group 2 wires admission and
-continuation preflight to it.
+continuation preflight, and group 3 wires initiator writes and non-cancel
+generic dispatch/hold to it.
 It reads scalar identities for every unfinished @2 run, including Held and
 cancelling, and validates the active visit's run/selected relation. It acquires
 no unrelated history payloads and reserves nothing itself: callers
 combine prospective additions and apply the unchanged reservation once on the
 original charged C ledger. The per-value, byte, row, work, SQL and absolute
 deadline caps stay unchanged. Excluding disconnected payloads from a group-2
-scoped write's ledger changes whole-org capacity coupling; it grants neither a
-fourth unfinished run nor a guaranteed fit for three with long identities or
-prior ledger consumption. Other writer groups still validate combined history.
+or group-3 scoped write's ledger changes whole-org capacity coupling; it grants
+neither a fourth unfinished run nor a guaranteed fit for three with long identities or
+prior ledger consumption. Later writer groups still validate combined history.
 A candidate that cannot preserve that headroom refuses with
 `read_bytes_exhausted`, rolling back all allocations, rows, counters and CAS;
 cancellation stays available. Fence/finish consume the reservation without
