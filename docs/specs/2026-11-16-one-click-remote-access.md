@@ -1483,12 +1483,26 @@ StatusV2 optionally carries `firewall.ports`; native/CLI Status projects it as
 `skipped_ufw_absent`, `skipped_ufw_inactive`, `skipped_ufw_lock_unavailable`,
 `skipped_subnet_rejected`, plus
 `pending`, `add_intent`, `remove_intent`, `removed`, `unverified` during recovery.
-These are recorded activation effects read from the protected journal in the
-existing setup-status child. They survive a skipped or timed-out F2 advice
-probe without an additional UFW child. They do not assert current live-rule presence,
-packet reachability or setup readiness. Enable and cleanup verify live rules.
-F2 advice and the original Status deadline remain independent; observation
-failure never erases other facts. Frames without this extension remain valid.
+The joined transaction journal owns this record; the READY receipt deliberately
+has no firewall member. The existing setup-status child reads recorded effects
+without a UFW subprocess. The bounded F2 firewall child additionally compares
+settled port states with live UFW under its existing lock: a missing rule,
+inactive UFW or unavailable read reports `unverified`; an identical manual allow
+reports `preexisting_not_owned`. It never changes the ownership journal, resolves
+an intent or repairs a rule. Pending/cleanup and skip states retain their meaning.
+A skipped or timed-out optional firewall child leaves the recorded facts in a
+delivered V2 frame. Neither view proves packet reachability or setup readiness.
+The original Status deadline/watchdog and v1 compatibility remain unchanged.
+Missing public ports remain an acceptance failure: capture the raw StatusV2
+reply/error and timing rather than infer loss from the READY receipt. Frames
+without this extension remain valid for older peers.
+
+F2 recognizes UFW's canonical `dial_ip port/protocol` formatter only for the
+protected receipt's exact address. Numeric interface-scoped allows for unrelated
+ports do not supply home-port evidence; an interface-scoped rule affecting a
+home port, another destination address, an unknown profile or custom supplemental
+rules remains unverified. Stock-file, output-bound and closed-value checks stay
+in place. Identical untagged allows need neither a duplicate nor a false warning.
 
 Replace failed remains installer-only and refuses home activation before
 admission; that path cannot acquire F3 rules. Use Turn off for retained F3

@@ -2093,6 +2093,11 @@ def ufw_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path
     ('tcp-only', '8443/tcp  ALLOW IN  Anywhere\n', 'unverified'),
     ('udp-only', '3478/udp  ALLOW IN  Anywhere\n', 'unverified'),
     ('lan', '8443/tcp  ALLOW IN  192.168.1.0/24\n3478/udp  ALLOW IN  192.168.1.0/24\n', 'clear'),
+    ('dial-ip-lan', '192.168.1.40 8443/tcp  ALLOW IN  192.168.1.0/24 # happyranch-home-headscale\n192.168.1.40 3478/udp  ALLOW IN  192.168.1.0/24 # happyranch-home-headscale\n', 'clear'),
+    ('dial-ip-manual', '192.168.1.40 8443/tcp  ALLOW IN  192.168.1.0/24\n192.168.1.40 3478/udp  ALLOW IN  192.168.1.0/24\n', 'clear'),
+    ('dial-ip-management', '22/tcp on enp0s2  ALLOW IN  Anywhere # management\n192.168.1.40 65000/tcp  ALLOW IN  192.168.1.0/24 # unrelated\n192.168.1.40 8443/tcp  ALLOW IN  192.168.1.0/24 # happyranch-home-headscale\n192.168.1.40 3478/udp  ALLOW IN  192.168.1.0/24 # happyranch-home-headscale\n22/tcp (v6) on enp0s2  ALLOW IN  Anywhere (v6)\n', 'clear'),
+    ('home-interface', '8443/tcp on enp0s2  ALLOW IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n', 'unverified'),
+    ('other-ip-lan', '192.168.1.41 8443/tcp  ALLOW IN  192.168.1.0/24\n192.168.1.41 3478/udp  ALLOW IN  192.168.1.0/24\n', 'unverified'),
     ('inactive', 'Status: inactive\n', 'clear'),
     ('unparsable', 'unrecognized synthetic output\n', 'unverified'),
     ('profile', 'OpenSSH  ALLOW IN  Anywhere\n', 'unverified'),
@@ -2104,12 +2109,23 @@ def ufw_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path
 ])
 def test_thr327_firewall_read_only_child(composition: Any, ufw_rules: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
                                        case: str, output: str, state: str) -> None:
+    # dial-ip-{lan,manual,management}, other-ip-lan and home-interface observe
+    # the real fixed child's advice/ports and unchanged inventory/services.
+    # Regression: reject UFW's exact destination formatter or accept a different
+    # IP/interface as evidence for this home. Prior LAN rows had no destination
+    # IP or unrelated management interface. No test-only production seam.
     # All rows observe the fixed child argv/env and advice with zero effects.
     # Dropping PATH breaks distro UFW's sysctl lookup (MEM-993 D1). Parser-only
     # tests do not observe this process boundary; F3 uses a different worker.
     # This existing test needs no test-only production seam.
     import subprocess
     v = composition
+    if case.startswith('dial-ip-') or case == 'other-ip-lan':
+        # A real protected READY receipt supplies the destination; unrelated
+        # addresses and unknown destination syntax must remain unverified.
+        expected = v.lifecycle.capture('Enable', os.getuid())
+        assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                    deadline=time.monotonic() + 480)['outcome'] == 'ready'
     prefix = 'Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), deny (routed)\nNew profiles: skip\n'
     if case in ('inactive', 'unparsable'):
         raw = output
@@ -2126,7 +2142,9 @@ def test_thr327_firewall_read_only_child(composition: Any, ufw_rules: dict[str, 
     monkeypatch.setattr(subprocess, 'run', run)
     before, services = staged_inventory(v.fixture), list(v.calls)
     result = v.lifecycle.dispatch('Enable', os.getuid(), 'firewall', None, deadline=time.monotonic() + 10)
-    assert result == {'firewall': state}
+    assert result == ({'firewall': state, 'ports': {'8443/tcp': 'skipped_ufw_absent',
+                                                 '3478/udp': 'skipped_ufw_absent'}}
+                      if case.startswith('dial-ip-') or case == 'other-ip-lan' else {'firewall': state})
     assert calls == [('/usr/sbin/ufw', 'status', 'verbose')]
     assert staged_inventory(v.fixture) == before and v.calls == services
     assert '192.168' not in json.dumps(result)

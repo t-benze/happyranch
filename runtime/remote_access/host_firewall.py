@@ -7,6 +7,7 @@ import re
 import stat
 import subprocess
 from dataclasses import dataclass
+from ipaddress import IPv4Address
 
 _PORTS = ((8443, 'tcp'), (3478, 'udp'))
 # Stock UFW IPv4 templates (scripts/fixtures/ufw), normalized only for comments
@@ -36,9 +37,24 @@ def _stock_rule_files() -> bool:
     return True
 
 
-def _covers(destination: str, port: int, protocol: str) -> bool | None:
+def _covers(destination: str, port: int, protocol: str, *, dial_ip: str | None = None) -> bool | None:
     if destination == 'Anywhere':
         return True
+    port_expression, interface_marker, _interface = destination.partition(' on ')
+    if interface_marker:
+        # A numeric rule for an unrelated port cannot admit either home port.
+        # Interface-scoped rules that could cover a home port stay unknown.
+        return False if _covers(port_expression, port, protocol, dial_ip=dial_ip) is False else None
+    if ' ' in destination:
+        # UFW prints a destination-scoped rule as "IP PORT/protocol". Only
+        # the protected home receipt's exact canonical address is relevant.
+        address, separator, scoped_port = destination.partition(' ')
+        try:
+            if not separator or str(IPv4Address(address)) != address or address != dial_ip:
+                return None
+        except ValueError:
+            return None
+        destination = scoped_port
     match = re.fullmatch(r'([0-9,:]+)(?:/(tcp|udp))?', destination)
     if match is None:
         return None
@@ -56,12 +72,12 @@ def _covers(destination: str, port: int, protocol: str) -> bool | None:
     return covers
 
 
-def parse_ufw(raw: bytes) -> str:
+def parse_ufw(raw: bytes, *, dial_ip: str | None = None) -> str:
     """Parse UFW observations; inspect_ufw also checks supplemental files.
 
     Any IPv4 allow for a port (including a source-scoped LAN rule) prevents a
-    likely-blocked observation for that port. Unknown profiles/interfaces are
-    not resolved here: they may allow traffic, so return unverified instead.
+    likely-blocked observation for that port. Unknown profiles and interfaces
+    affecting a home port remain unresolved and return unverified instead.
     """
     if type(raw) is not bytes or len(raw) > 65536:
         return 'unverified'
@@ -91,14 +107,15 @@ def parse_ufw(raw: bytes) -> str:
         if rule is None:
             return 'unverified'
         destination, action, direction, _source = rule.groups()
-        if direction == 'OUT' or destination.endswith(' (v6)'):
+        if (direction == 'OUT' or destination.endswith(' (v6)')
+                or re.fullmatch(r'.+ \(v6\) on [A-Za-z0-9_.:-]{1,15}', destination)):
             continue
         if action == 'LIMIT':
             return 'unverified'  # Rate limits still admit some new connections.
         if action != 'ALLOW':
             continue  # A deny/reject is not a user allow for either port.
         for port, protocol in _PORTS:
-            covers = _covers(destination, port, protocol)
+            covers = _covers(destination, port, protocol, dial_ip=dial_ip)
             if covers is None:
                 return 'unverified'
             if covers:
@@ -119,7 +136,7 @@ class UFWObservation:
     availability: str
 
 
-def observe_ufw(*, timeout: float = 2.0) -> UFWObservation:
+def observe_ufw(*, timeout: float = 2.0, dial_ip: str | None = None) -> UFWObservation:
     """Fixed root-child command; no shell, caller inputs, rules or stderr output."""
     try:
         result = subprocess.run(('/usr/sbin/ufw', 'status', 'verbose'),
@@ -130,7 +147,7 @@ def observe_ufw(*, timeout: float = 2.0) -> UFWObservation:
         return UFWObservation('unknown', 'absent')
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return UFWObservation('unverified', 'unverified')
-    state = parse_ufw(result.stdout) if result.returncode == 0 else 'unverified'
+    state = parse_ufw(result.stdout, dial_ip=dial_ip) if result.returncode == 0 else 'unverified'
     availability = ('inactive' if result.returncode == 0 and result.stdout.strip() == b'Status: inactive'
                     else 'active' if result.returncode == 0 and result.stdout.startswith(b'Status: active\n')
                     else 'unverified')
@@ -142,6 +159,6 @@ def observe_ufw(*, timeout: float = 2.0) -> UFWObservation:
     return UFWObservation(state, availability)
 
 
-def inspect_ufw(*, timeout: float = 2.0) -> str:
+def inspect_ufw(*, timeout: float = 2.0, dial_ip: str | None = None) -> str:
     """Original F2 advisory interface; F3 shares the same bounded observation."""
-    return observe_ufw(timeout=timeout).advisory
+    return observe_ufw(timeout=timeout, dial_ip=dial_ip).advisory

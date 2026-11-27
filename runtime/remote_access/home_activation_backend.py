@@ -495,13 +495,17 @@ class HelperLifecycleBackend:
         self.io.publish_invite_config(_activation_directory=directory)
         check()
 
-    def _recorded_firewall(self, uid: int, result: dict) -> dict:
+    def _recorded_firewall(self, uid: int, result: dict, *, live_timeout: float | None = None) -> dict:
         try:
             if self.store.current() is not None and self.store.current().release_uid == uid:
                 ports = HomeLANFirewall(HomeActivationTransactionStore(
-                    root=self.io.root, root_owner=self.io.root_owner)).status(timeout=.001)
+                    root=self.io.root, root_owner=self.io.root_owner)).status(
+                        timeout=.001 if live_timeout is None else live_timeout, live=live_timeout is not None)
                 if ports is not None:
                     result['ports'] = ports
+                    if live_timeout is not None and any(state in ('unverified', 'blocked_by_existing')
+                                                        for state in ports.values()):
+                        result['firewall'] = 'unverified'
         except Exception:
             pass  # Missing F3 evidence never erases setup or the F2 advice.
         return result
@@ -521,8 +525,15 @@ class HelperLifecycleBackend:
             return self.policy_status(uid)
         if method == 'Enable' and step == 'firewall' and expected is None:
             remaining = 2.0 if deadline is None else deadline - time.monotonic()
-            result = {'firewall': inspect_ufw(timeout=min(1.0, remaining / 2))}
-            return self._recorded_firewall(uid, result)
+            try:
+                receipt = self.store.current()
+            except Exception:
+                receipt = None  # Unknown custody supplies no address-scoped evidence.
+            dial_ip = receipt.dial_ip if receipt is not None and receipt.release_uid == uid else None
+            result = {'firewall': inspect_ufw(timeout=min(1.0, remaining / 2), dial_ip=dial_ip)}
+            remaining = 1.0 if deadline is None else deadline - time.monotonic()
+            return self._recorded_firewall(uid, result,
+                live_timeout=min(1.0, remaining / 2) if remaining > .1 else None)
         if method == 'Enable' and step == 'status' and expected is None:
             # Reuse this already-required child: late optional advice can run
             # out of time without losing the protected journal's effects.

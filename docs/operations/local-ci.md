@@ -4272,6 +4272,19 @@ The `native_add` row of `test_failed_enable_rolls_back` likewise refuses READY
 when add exits zero without a persisted rule; the existing `journal_commit`
 row retains the later lost-commit rollback check.
 
+TASK-19580 extends this venue with a legacy READY refresh (the receipt has no
+firewall member), identical untagged TCP/UDP/both plus the retained foreign-rule
+case, crashes after either add and before READY followed by Enable/Turn off,
+and fresh-backend live Status after rule deletion/replacement, inactivity or
+unavailable UFW. The fixture compares all preserved rule fields and unchanged
+journal/audit bytes; real host rules-file and packet acceptance remain the
+founder's manual check (THR-327 seq749), not a VM or local-fixture pass. The F2
+table covers exact destination-IP formatting including unrelated management
+rules, a different address and an unresolved home-port interface. Missing
+public ports in JOB-9838 remain unresolved until raw transport evidence exists;
+the local READY refresh rejects the proposed txn-to-READY field-loss cause.
+Authoring fail/pass and byte-exact mutation restoration use this same venue.
+
 The existing F2 subprocess table and F3 native fixture assert the fixed
 `PATH=/usr/sbin:/usr/bin:/sbin:/bin` used by UFW and its sysctl child.
 `/usr/bin/python3 -B packaging/linux/test_build_deb.py -v` also checks the

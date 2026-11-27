@@ -67,8 +67,9 @@ Four answers (no test-only production seams in any case):
 * NativeUFW users above construct rules with the distro CLI parser, retaining
   its persisted hex comments. Literal-comment specs must fail adoption/removal;
   the old direct UFWRule fixture masked that shipping representation boundary.
-* test_unowned_rules_survive_turn_off: simultaneous identical untagged TCP and
-  foreign-comment UDP rules survive the public Turn off transition byte-for-byte.
+* test_unowned_rules_survive_turn_off [tcp/udp/both/foreign-udp]: identical
+  untagged rules on either/both ports and the retained foreign-comment UDP case
+  survive public Turn off with every rule field unchanged and no duplicate add.
   Regression = port-only/comment-only cleanup or refusing cleanup merely
   because an unowned rule exists. The lifecycle collision table
   covers one TCP collision at a time, not both pre-existing unowned ports.
@@ -78,6 +79,24 @@ Four answers (no test-only production seams in any case):
   Regression = trust CLI success or only collision-prioritized readback.
   Existing lifecycle tests assume deletion succeeds; lock failure is earlier.
   Both new cases use test-side native effects only, with no production seam.
+* test_ready_refresh_keeps_firewall_journal: legacy READY refresh adds both
+  rules without reminting or changing the READY receipt; a fresh backend reads
+  both port facts from the joined journal. Regression = drop the READY-path
+  firewall reconciliation. The normal fresh-activation cases do not start with
+  a legacy READY/journal pair. This rejects receipt-field-loss as an explanation
+  of JOB-9838; it does not reproduce that job's public Status transport failure.
+* test_live_status_after_restart [none/deleted/manual/deny/inactive/unavailable]:
+  a fresh backend compares persisted settled effects with live native UFW,
+  reports absent/unknown rules as unverified and manual rules as unowned, and
+  changes no journal/audit/rules/commands. Regression = report the old journal
+  as current live evidence. The journal-budget and pure projection cases never
+  change live UFW after activation. No production seam.
+* test_interrupted_helper_enable now covers both add replies and the boundary
+  after both adds but before READY, each followed by Enable or Turn off. The
+  public result and rule projection prove recovery without duplicates/orphans,
+  preserving the unrelated rule and existing Ruling 7/B7 sequence. Regression =
+  omit exception/Turn off firewall cleanup. Earlier first-add-only coverage
+  did not reach either later boundary. Faults remain in the existing fixture.
 """
 from __future__ import annotations
 
@@ -123,6 +142,7 @@ class NativeUFW:
         self.CommandRule, self.hex_encode = UFWCommandRule, hex_encode
         self.v, self.rules, self.commands = v, [], []
         self.active, self.locked, self.crash_after_add = True, False, False
+        self.crash_port = None
         self.lock_error = None
         self.distro_messages = False
         self.keep_deleted_rule = False
@@ -175,8 +195,9 @@ class NativeUFW:
             assert all(self.Rule.match(old, rule) == 1 for old in self.rules), 'CLI would rewrite an existing rule'
             if not self.discard_added_rule:
                 self.rules.append(rule)
-            if self.crash_after_add:
+            if self.crash_after_add or self.crash_port == port:
                 self.crash_after_add = False
+                self.crash_port = None
                 raise Crash()
         if self.distro_messages:
             self.worker_util.msg('Rule deleted' if remove else 'Rule added')
@@ -352,10 +373,10 @@ def test_lifecycle_rules(composition: Any, monkeypatch: pytest.MonkeyPatch, coll
         start(v)
         assert v.transactions.read_optional().to_bytes() == journal
         assert v.path(str(AUDIT_PATH)).read_bytes() == audit and native.commands == commands
-        # Status reports the recorded acquisition; inactivity does not erase
-        # ownership or prevent the exact persisted-rule cleanup below.
+        # Live advice no longer claims active rules. Durable acquisition still
+        # owns the exact persisted-rule cleanup below.
         assert v.lifecycle.dispatch('Enable', os.getuid(), 'firewall', None)['ports'] == {
-            '8443/tcp': 'added', '3478/udp': 'added'}
+            '8443/tcp': 'unverified', '3478/udp': 'unverified'}
     v.observers.close()
     captured = v.lifecycle.capture('Disable', os.getuid())
     assert v.lifecycle.dispatch('Disable', os.getuid(), 'stop', captured)['outcome'] == 'in_progress'
@@ -365,21 +386,26 @@ def test_lifecycle_rules(composition: Any, monkeypatch: pytest.MonkeyPatch, coll
     assert all(args[1] in ('allow', 'delete') for args in native.commands)
 
 
-def test_unowned_rules_survive_turn_off(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('manual_ports,udp_comment', [((0,), ''), ((1,), ''), ((0, 1), ''),
+    ((0, 1), 'founder LAN rule')], ids=['tcp', 'udp', 'both', 'foreign-udp'])
+def test_unowned_rules_survive_turn_off(composition: Any, monkeypatch: pytest.MonkeyPatch,
+                                      manual_ports: tuple[int, ...], udp_comment: str) -> None:
     v = composition
     native = NativeUFW(v, monkeypatch)
-    native.rules.extend((native.rule(8443, 'tcp', comment=''),
-                         native.rule(3478, 'udp', comment='founder LAN rule')))
+    native.rules.extend(native.rule(*PORTS[index], comment=udp_comment if index == 1 else '') for index in manual_ports)
     before = [dict(rule.__dict__) for rule in native.rules]
     start(v)
-    assert v.transactions.read_optional().firewall.states == ('preexisting_not_owned',) * 2
+    states = tuple('preexisting_not_owned' if index in manual_ports else 'added' for index in range(2))
+    assert v.transactions.read_optional().firewall.states == states
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'firewall', None) == {
+        'firewall': 'clear', 'ports': dict(zip(('8443/tcp', '3478/udp'), states))}
     v.observers.close()
     expected = v.lifecycle.capture('Disable', os.getuid())
     v.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)
     assert v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected,
         revoke_succeeded=True)['outcome'] == 'off'
     assert [rule.__dict__ for rule in native.rules] == before
-    assert native.commands == []
+    assert len(native.commands) == 2 * (2 - len(manual_ports))
 
 
 @pytest.mark.parametrize('collision', ['none', 'foreign', 'deny', 'log'])
@@ -443,23 +469,97 @@ def test_failed_enable_rolls_back(composition: Any, monkeypatch: pytest.MonkeyPa
     assert v.transactions.read_optional().firewall.states == ('removed',) * 2
 
 
-def test_interrupted_helper_enable(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize('boundary', ['first-add', 'second-add', 'before-ready'])
+@pytest.mark.parametrize('disposition', ['enable', 'disable'])
+def test_interrupted_helper_enable(composition: Any, monkeypatch: pytest.MonkeyPatch,
+                                  boundary: str, disposition: str) -> None:
     v = composition
     native = NativeUFW(v, monkeypatch)
-    native.crash_after_add = True
+    unrelated = native.rule(22, 'tcp', comment='founder unrelated', subnet='10.10.0.0/24')
+    native.rules.append(unrelated)
+    before = dict(unrelated.__dict__)
+    if boundary == 'first-add':
+        native.crash_after_add = True
+    elif boundary == 'second-add':
+        native.crash_port = 3478
+    else:
+        from runtime.remote_access.home_activation_coordinator import HomeActivationCoordinator
+        publish = HomeActivationCoordinator.publish_ready
+        def crash_ready(self: Any, **kwargs: Any) -> Any:
+            monkeypatch.setattr(HomeActivationCoordinator, 'publish_ready', publish)
+            raise Crash()
+        monkeypatch.setattr(HomeActivationCoordinator, 'publish_ready', crash_ready)
     with pytest.raises(Crash):
         start(v)
-    assert v.transactions.read_optional().firewall.states == ('add_intent', 'pending')
-    with pytest.raises(ActivationRefused):
-        start(v)  # Existing Ruling 7 records terminal uncertainty, never replays activation.
-    assert v.receipts.current().phase == 'failed_uncertain' and native.rules == []
-    start(v)  # Explicit B7 observation recovers joined state, then acquires F3 rules.
-    assert len(v.mints) == 1 and len(native.rules) == 2
+    assert v.transactions.read_optional().firewall.states == {
+        'first-add': ('add_intent', 'pending'), 'second-add': ('added', 'add_intent'),
+        'before-ready': ('added', 'added')}[boundary]
+    if disposition == 'enable':
+        with pytest.raises(ActivationRefused):
+            start(v)  # Existing Ruling 7 records uncertainty, never replays activation.
+        assert v.receipts.current().phase == 'failed_uncertain'
+        assert [rule.__dict__ for rule in native.rules] == [before]
+        start(v)  # Explicit B7 observation recovers joined state, then acquires F3 rules.
+        assert len(v.mints) == 1 and len(native.rules) == 3
+        journal = v.transactions.read_optional().to_bytes()
+        commands = list(native.commands)
+        start(v)
+        assert v.transactions.read_optional().to_bytes() == journal and native.commands == commands
     v.observers.close()
     expected = v.lifecycle.capture('Disable', os.getuid())
     assert v.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)['outcome'] == 'in_progress'
     assert v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected, revoke_succeeded=True)['outcome'] == 'off'
-    assert native.rules == []
+    assert [rule.__dict__ for rule in native.rules] == [before]
+
+
+def test_ready_refresh_keeps_firewall_journal(composition: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An old READY receipt deliberately has no firewall member."""
+    from runtime.remote_access.home_activation_backend import HelperLifecycleBackend
+    from runtime.remote_access.home_activation_txn import TRANSACTION_PATH
+    v = composition
+    start(v)  # Official pre-F3 READY prestate, before any native firewall effect.
+    v.path(TRANSACTION_PATH).write_bytes(replace(v.transactions.read_optional(), firewall=None).to_bytes())
+    ready = v.receipts.current().to_bytes()
+    assert 'firewall' not in json.loads(ready)
+    native = NativeUFW(v, monkeypatch)
+    start(v)  # The ordinary READY refresh acquires the two effects.
+    assert v.receipts.current().to_bytes() == ready and len(v.mints) == 1
+    firewall = v.transactions.read_optional().firewall
+    assert firewall is not None
+    assert firewall.states == ('added', 'added')
+    fresh = HelperLifecycleBackend(v.io)
+    for step in ('status', 'firewall'):
+        assert fresh.dispatch('Enable', os.getuid(), step, None)['ports'] == {
+            '8443/tcp': 'added', '3478/udp': 'added'}
+    assert len(native.rules) == 2
+
+
+@pytest.mark.parametrize('change', ['none', 'deleted', 'manual', 'deny', 'inactive', 'unavailable'])
+def test_live_status_after_restart(composition: Any, monkeypatch: pytest.MonkeyPatch, change: str) -> None:
+    from runtime.remote_access.home_activation_backend import HelperLifecycleBackend
+    v = composition
+    native = NativeUFW(v, monkeypatch)
+    start(v)
+    if change in ('deleted', 'manual', 'deny'):
+        native.rules.pop(0)
+    if change in ('manual', 'deny'):
+        native.rules.insert(0, native.rule(8443, 'tcp', comment='', action='deny' if change == 'deny' else 'allow'))
+    if change == 'inactive':
+        native.active = False
+    if change == 'unavailable':
+        native.lock_error = errno.EROFS
+    expected = {'none': 'added', 'deleted': 'unverified', 'manual': 'preexisting_not_owned',
+                'deny': 'blocked_by_existing', 'inactive': 'unverified', 'unavailable': 'unverified'}[change]
+    before = (v.transactions.read_optional().to_bytes(), v.path(str(AUDIT_PATH)).read_bytes(),
+              [dict(rule.__dict__) for rule in native.rules], list(native.commands))
+    result = HelperLifecycleBackend(v.io).dispatch('Enable', os.getuid(), 'firewall', None,
+                                                  deadline=time.monotonic() + 2)
+    assert result['ports'] == {'8443/tcp': expected,
+        '3478/udp': 'unverified' if change in ('inactive', 'unavailable') else 'added'}
+    if change in ('deleted', 'inactive', 'unavailable', 'deny'):
+        assert result['firewall'] == 'unverified'
+    assert (v.transactions.read_optional().to_bytes(), v.path(str(AUDIT_PATH)).read_bytes(),
+            [rule.__dict__ for rule in native.rules], native.commands) == before
 
 
 @pytest.mark.parametrize('availability', ['absent', 'inactive'])

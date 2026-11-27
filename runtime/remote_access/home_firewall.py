@@ -293,10 +293,22 @@ class HomeLANFirewall:
                 audit.uncertain(intent)
                 raise
 
-    def status(self, *, timeout: float) -> dict[str, str] | None:
-        """Report recorded effects without spending Status's budget on UFW."""
+    def status(self, *, timeout: float, live: bool = False) -> dict[str, str] | None:
+        """Keep durable effects; optionally compare settled ports with live UFW."""
         txn = self.transactions.read_optional()
         if txn is None or txn.firewall is None:
             return None
         states = txn.firewall.states
+        settled = {'added', 'preexisting_not_owned', 'blocked_by_existing'}
+        if live and txn.firewall.subnet is not None and any(state in settled for state in states):
+            try:
+                observed = _ufw('inspect', txn.firewall.subnet, txn.dial_ip, 0, timeout=timeout)
+                current = (tuple('added' if state == 'owned' else
+                                 'unverified' if state == 'missing' else state
+                                 for state in observed['states']) if observed['active']
+                           else ('unverified',) * 2)
+            except Exception:
+                current = ('unverified',) * 2
+            # Status never changes ownership, resolves an intent, or repairs.
+            states = tuple(current[index] if state in settled else state for index, state in enumerate(states))
         return {f'{port}/{proto}': state for (port, proto), state in zip(PORTS, states)}

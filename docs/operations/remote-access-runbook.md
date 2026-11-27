@@ -116,12 +116,35 @@ for an activation with a retained firewall plan.
 `preexisting_not_owned`, `blocked_by_existing`, `skipped_ufw_absent`,
 `skipped_ufw_inactive`, `skipped_ufw_lock_unavailable`, `skipped_subnet_rejected`,
 `removed`; pending intents or
-`unverified` require recovery/inspection. The per-port fields report recorded
-activation effects read in the existing setup-status child from the protected
-journal. A skipped or timed-out F2 advice probe does not erase these fields;
-no extra UFW child is needed for the recorded effects.
-They do not prove current live-rule presence or packet reachability; Enable
-and cleanup verify live rules.
+`unverified` require recovery/inspection. The joined transaction journal owns
+these facts; the READY receipt deliberately has no firewall field. Setup-status
+reads recorded effects without a UFW process. The bounded firewall advice child
+also compares settled effects with live UFW. Deleted rules, inactive UFW and
+unavailable reads report `unverified`; a matching manual allow reports
+`preexisting_not_owned`. Status changes no rule, journal or pending intent.
+If optional advice runs out of time, a delivered V2 frame retains recorded
+facts; no port field proves reachability. A missing public field remains an
+acceptance failure: retain raw StatusV2/error/timing evidence, rather than infer
+that the READY commit discarded the journal. Existing deadlines remain fixed.
+UFW's address-qualified formatter is understood only for the protected home
+address; unknown home-port interface scope and custom supplemental rules remain
+unverified.
+
+Founder THR-327 seq749 assigns F3 acceptance to a manual run on the real host.
+The disposable-VM budget is closed. This documentation authorizes no host action
+by an agent. Before/after Turn on and Turn off, the founder should compare all
+unrelated rule bytes/order and both identical untagged manual allows, then check
+Status after the ordinary host restart. No duplicate or manual-rule deletion is
+permitted. For LAN STUN from the Mac, the pinned server requires a Binding
+Request with SOFTWARE `tailnode` and a final valid FINGERPRINT; a bare 20-byte
+request is silently discarded. Require Binding Success 0x0101, exact cookie and
+transaction ID, source `dial_ip:3478`, and XOR-MAPPED-ADDRESS equal to the Mac's
+bound LAN IP and UDP port. On timeout retain the host's generated
+`derp.server.enabled`/`stun_listen_addr`, actual UDP listener address/PID and
+packet counters before/after that one request. The packaged configuration enables
+embedded DERP/STUN and binds STUN to `dial_ip:3478`; source review cannot prove
+runtime binding or delivery. Do not upgrade Headscale or change firewall rules
+as a diagnostic shortcut.
 
 For manual inspection, run `sudo ufw status numbered` and `sudo ufw show added`.
 If manual recovery is needed, read the exact subnet and dial IP from the
