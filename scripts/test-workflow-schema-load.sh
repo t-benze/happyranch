@@ -75,7 +75,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--draft-review='):
     assert draft_review_case in ('all', *DRAFT_REVIEW_CASES)
     sys.argv[1:] = ['--assignments']
 START2_CASES = ('staged_unavailable', 'discovery', 'audience', 'pins_settings', 'compose',
-    'batch', 'member8', 'overrides', 'advisory', 'bounds', 'read_only', 'catalog', 'legacy_bytes', 'prompt', 'no_ui', 'admission', 'rollback', 'replay', 'recovery_retry', 'recovery_rebrief', 'recovery_reassign', 'recovery_cancel_held', 'recovery_cancel_pristine', 'recovery_cancel_launched', 'recovery_retry_chain', 'recovery_reassign_fanout', 'recovery_input_retired', 'capacity', 'settings_race', 'accounting', 'native_bounds', 'crash_reopen', 'pause_cancel', 'related_sources', 'populated_long_batch')
+    'batch', 'member8', 'overrides', 'advisory', 'bounds', 'read_only', 'catalog', 'legacy_bytes', 'prompt', 'no_ui', 'admission', 'rollback', 'replay', 'recovery_retry', 'recovery_rebrief', 'recovery_reassign', 'recovery_cancel_held', 'recovery_cancel_pristine', 'recovery_cancel_launched', 'recovery_retry_chain', 'recovery_reassign_fanout', 'recovery_input_retired', 'capacity', 'settings_race', 'accounting', 'native_bounds', 'crash_reopen', 'pause_cancel', 'related_sources', 'populated_long_batch', 'ordinary_pause_history')
 start2_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--start2='):
     start2_case = sys.argv[1].split('=', 1)[1]
@@ -7097,6 +7097,83 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         state.metrics_store.close();state.direct_connect_authority_store.close()
 
     async def start2_cases(case):
+        if case == 'ordinary_pause_history':
+            from runtime.infrastructure.task_pause_controls import decode_journal
+            from runtime.workflows.coding_authority_history import CodingAuthorityHistoryError
+            from runtime.workflows.coding_saved_records import CodingSavedRecordError
+            async with dr_fixture() as f:
+                runs = await dr_start(f, (DR_IDENTITY, 'release/happyranch/coding'))
+                coding = next(run for run in runs if json.loads(run['start_bytes'])['definition']['identity'] == 'release/happyranch/coding')
+                dr_select(f, coding['id'])
+                f.ids = dr_ids(f, coding)
+                s5hold(f, f.batch_ids.index(f.ids))
+                held = s4row(f, 'workflow_seq_runs', coding['id'])
+                sibling = next(run for run in runs if run['id'] != coding['id'])
+                await f.sid('ordinary-history-retry')
+                # Valid ordinary history exceeds the Coding aggregate byte cap,
+                # while each native journal stays below its unchanged 1 MiB cap.
+                for i in range(512):
+                    root = 'ordinary-pause-' + str(i)
+                    f.db.insert_task(TaskRecord(id=root, assigned_agent='s3_author', team='engineering',
+                        task_type='task', status='completed', brief='Retained ordinary history'))
+                    f.db._task_pause_store.ensure_uncommitted(root)
+                    entry = dict(id='ordinary-entry-' + str(i), org='scratch', root_task_id=root,
+                        task_id=root, agent='s3_author', session_id='ordinary-history-sid', owner='ordinary',
+                        owner_identity={}, fingerprint=dict(status='completed', block_kind=None, count=1,
+                            session_id='ordinary-history-sid', agent='s3_author', fanout=None, jobs=None,
+                            parent=None, brief_digest='a' * 64), generation=0, phase='unknown', retry={},
+                        context=dict(execution_unknown=True, cleanup=dict(suffix_lines=['x' * 32768])),
+                        started_at=None, captured_generation=None)
+                    journal = s4bytes(dict(version=1, entries=[entry])).decode()
+                    decode_journal(journal)
+                    f.conn.execute('UPDATE task_pause_controls SET admission_journal_json=? WHERE root_task_id=?',
+                        (journal, root))
+                f.conn.commit()
+                assert f.conn.execute("SELECT sum(length(CAST(admission_journal_json AS BLOB))) "
+                    "FROM task_pause_controls WHERE root_task_id GLOB 'ordinary-pause-*'").fetchone()[0] > 16777216
+                command = s4command(f, 'retry')
+                row, _ = await dr_post(f, dict(action='workflow_control', workflow=command))
+                after = s4row(f, 'workflow_seq_runs', coding['id'])
+                assert after['state'] == 'running' and after['cas'] == held['cas'] + 1
+                assert after['recovery_count'] == held['recovery_count'] + 1
+                assert s4row(f, 'workflow_seq_runs', sibling['id']) == sibling
+                control = f.conn.execute('SELECT actor_result_id,new_visit_id FROM workflow_seq_controls '
+                    'WHERE run_id=? AND operation_key=?', (coding['id'], command['operation_key'])).fetchone()
+                assert control['actor_result_id'] == row['id'] and control['new_visit_id'] == after['active_visit_id']
+                assert f.conn.execute('SELECT count(*) FROM workflow_seq_consumption_receipts WHERE result_id=?',
+                    (row['id'],)).fetchone()[0] == 1
+                assert f.db.get_task(f.source.id).status == 'in_progress'
+                read_sequential_history(f.conn, expected_org_slug='scratch')
+                # Ordinary rows remain fully bounded and validated; owner labels
+                # cannot hide an orphan Coding invocation or malformed journal.
+                root = 'ordinary-pause-0'
+                original = f.conn.execute('SELECT admission_journal_json FROM task_pause_controls '
+                    'WHERE root_task_id=?', (root,)).fetchone()[0]
+                orphan = json.loads(original); orphan['entries'][0]['owner'] = 'coding'
+                for label, raw, error in (
+                    ('native type', sqlite3.Binary(original.encode()), AttributeError),
+                    ('per-value bytes', ' ' * 1048577, CodingAuthorityHistoryError),
+                    ('malformed journal', '{"version":1,"entries":[],"entries":[]}', PauseControlError),
+                    ('orphan Coding owner', s4bytes(orphan).decode(), CodingSavedRecordError),
+                ):
+                    f.conn.execute('SAVEPOINT ordinary_pause_corruption')
+                    try:
+                        f.conn.execute('UPDATE task_pause_controls SET admission_journal_json=? WHERE root_task_id=?',
+                            (raw, root))
+                        try:
+                            read_sequential_history(f.conn, expected_org_slug='scratch')
+                        except error:
+                            pass
+                        else:
+                            raise AssertionError('ordinary_pause_history accepted ' + label)
+                    finally:
+                        f.conn.execute('ROLLBACK TO ordinary_pause_corruption')
+                        f.conn.execute('RELEASE ordinary_pause_corruption')
+                assert f.conn.execute('SELECT admission_journal_json FROM task_pause_controls '
+                    'WHERE root_task_id=?', (root,)).fetchone()[0] == original
+                print('PASS Start2 ordinary_pause_history 512 native journals >16MiB; HTTP200 retry, '
+                    'exact result/control/receipt, unchanged sibling, all corruptions refused', flush=True)
+            return
         if case == 'populated_long_batch':
             async with dr_fixture() as f:
                 stamp = f.source.created_at.isoformat()
