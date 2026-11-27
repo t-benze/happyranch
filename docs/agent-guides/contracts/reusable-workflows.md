@@ -426,6 +426,8 @@ one original five-second deadline. No cap is raised. THR-404 group 2 separately
 scopes start/admission and continuation preflight; group 3 scopes initiator
 dependencies/delivery/consumption and non-cancel generic dispatch/hold below.
 Group 4 scopes direct control/cancel/never-launched close below.
+Group 5 scopes selected return authorization/notification; all-run returned
+rediscovery retains complete validation below.
 Other writers, settings, source outer settlement, bootstrap/schema load,
 historical @1 GET and v2 run list/detail keep complete
 `read_sequential_history` validation.
@@ -852,6 +854,9 @@ its original receipt; actor/result/key/body and CAS/Held-event checks remain.
 Replacement controls retain all-unfinished H; cancellation and inert receipt
 replay omit future headroom. Source outer settlement and the enclosing mixed
 cancellation/legacy tail retain complete validation until their owning group.
+Group 5 scopes selected return/source authorization and notification to full
+addressed source closure. All-run return rediscovery retains complete validation,
+including noncompleted runs, and bounded refusal never returns partial IDs.
 Shared plumbing defaults remain complete unless a caller explicitly supplies
 roots. No lock/order, transaction, budget/deadline or TLA+ transition changes follow.
 No-result holds create
@@ -1009,7 +1014,7 @@ supply no task-session authority. Actual task/manager ownership, current genuine
 SID/INTEGER result, cancellation, bounded cycle-free ancestry, Pause, positive
 host settlement and the existing no-concurrent-child guards still govern.
 
-After complete-reader admission of a committed return, `sequential_return`
+After full addressed run/source replay of a committed return, `sequential_return`
 rebuilds source/carrier histories and requests the ordinary parent wake. It also
 runs the ordinary terminal facade under the DB lock, checking persisted terminal
 status, bounded original revisit-thread ancestry and all bounded SYSTEM marker
@@ -2189,6 +2194,23 @@ never resumes a sequential visit or mutates/acknowledges the outbox. The guarant
 is one immutable workflow return; queue insertion is not a durable caller
 execution acknowledgement. At the historical U3e-2 checkpoint no terminal
 thread tail ran; R1a now supplies the guarded ordinary tail described above.
+THR-404 group 5 scopes `returned_source` and `notify_returned` to full replay of
+the actual run and its complete source/wait-set closure, including siblings,
+original native/ownership proofs and settings chains. The unchanged `_returned`
+then requires a completed run, its exact last `returned` event and one matching
+`run_return` outbox for the original source with no visit. Source-task equality
+still independently gates parent wake. Verified absent/non-return selectors
+return false; affected corruption raises before any consumer effects. History
+rebuild, parent wake, terminal-thread tail and supplied queue adaptation remain
+after the read snapshot closes. No return consumer completes the @2 source;
+WorkflowContinuation `ReturnCompletesSource` remains false.
+
+`returned_run_ids` deliberately retains complete validation in group 5. It
+authenticates ALL sequential run graphs before selecting obligations, including
+noncompleted runs and terminal sources; it never trusts a completed-state
+filter or returns a partial tuple on budget exhaustion. It still validates
+unrelated retained/native history and has no <=100ms guarantee. No locks/order,
+transaction, audit shape, replay acknowledgement, read cap or deadline changes.
 No fresh-start producer, public command or bundled skill change ships in U3e-2. U3f supplies the document-only successful-output exception below;
 repository U5 remainder, native recovery, venue/settings and Pause
 backout holds remain. Source/static delivery supplies no V3 or restart proof.

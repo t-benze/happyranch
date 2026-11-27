@@ -60,7 +60,8 @@ budgets and five-second absolute deadline remain. This task-projection exception
 grants no write-validation change; THR-404 group 2 below separately scopes
 start/admission and continuation preflight, and group 3 below scopes initiator
 and non-cancel generic dispatch/hold. Group 4 scopes direct control/cancel/close
-below. Settings, source outer settlement, bootstrap/schema-load and run list/detail
+and group 5 scopes selected returns below, keeping complete all-run rediscovery.
+Settings, source outer settlement, bootstrap/schema-load and run list/detail
 retain their complete reader.
 See the current S7a/U7a/U6a contract.
 
@@ -158,7 +159,8 @@ scoped phases. No allowance or deadline is raised.
 The native start callback now uses scoped validation through first delivery,
 dependency observation and consumption. Source outer settlement is a distinct
 lifecycle phase and retains its complete-reader default, including its mixed
-cancellation fence. Group 4 below scopes direct cancel/control/close. Return/rediscovery, settings/builtin,
+cancellation fence. Group 4 below scopes direct cancel/control/close; group 5
+scopes selected returns and retains complete rediscovery. Settings/builtin,
 retained adapters, mixed and historical Final consumers remain for later groups;
 STOP-1 whole-org certifications remain complete. Lock set/order and transactions
 are unchanged; WorkflowContinuation/SequentialSettlement need no model edit.
@@ -190,3 +192,30 @@ through its unchanged wrapper. Source outer settlement and STOP-1 global
 certification remain complete. No lock set/order, transaction, audit shape,
 budget, deadline or represented NeverLaunchedCancelClose/SequentialSettlement
 transition changes; no TLA+ edit or TLC execution follows from this wiring.
+
+## Selected return and complete rediscovery — THR-404 group 5
+
+`returned_source` and `notify_returned` replay the actual run via
+`read_write_history`, including full source/wait-set/sibling closure and settings
+chains. Positively absent sequential storage returns false. An initial bounded
+PK probe permits an empty certificate only for a
+verified absent selector. The probe and original `_returned` selection share
+one ledger and original five-second deadline; scoped replay uses that same
+absolute deadline. No allowance increases. `_returned` remains unchanged:
+completed run, exact last returned event, one matching original-source outbox,
+null visit. Source equality still gates parent wake. Verified non-return returns
+false; addressed event/outbox/ownership corruption raises before effects.
+
+The snapshot closes before source/carrier history rebuild, ordinary parent wake,
+terminal-thread tail and queue adaptation. Replay never acknowledges/deletes the
+outbox. @2 source completion, authority, transaction/rollback, errors, audit rows,
+locks/order and WorkflowContinuation `ReturnCompletesSource=false` are unchanged.
+
+`returned_run_ids` retains the complete reader: the current explicit-root API
+does not compose all-run enumeration onto its charged ledger. Keeping this
+allowed fallback avoids an extra enumeration allowance or a shared-API change.
+All sequential runs, regardless of stored state, and unrelated native/retained
+history still authenticate before returning exact obligations for terminal or
+nonterminal sources. Exhaustion refuses the entire discovery. No <=100ms
+rediscovery claim is made; measure complete discovery separately. STOP-1,
+source outer settlement, run list/detail and groups 6–8 are unchanged.

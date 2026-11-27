@@ -1,8 +1,9 @@
 """Committed sequential caller returns and guarded ordinary terminal thread tails.
 
-The unchanged complete reader admits history before bounded indexed selection
-in the same snapshot. Replaying an immutable outbox never acknowledges/deletes
-it, and queue publication is not a durable caller execution acknowledgement.
+Selected returns replay their full run/source closure before bounded indexed
+selection in the same snapshot. All-run rediscovery keeps complete validation.
+Replaying an immutable outbox never acknowledges/deletes it, and queue
+publication is not a durable caller execution acknowledgement.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from runtime.workflows.coding_authority_history import _decoded
 from runtime.workflows.sequential_definition import _no_constant, _unique_object
 from runtime.workflows.sequential_engine import _engine_rows
 from runtime.workflows.sequential_history import _ReadBudget, _sql_budget, read_sequential_history
+from runtime.workflows.sequential_task_history import read_write_history
 
 
 def _returned(conn: sqlite3.Connection, run_id: str, budget: _ReadBudget) -> dict | None:
@@ -34,16 +36,26 @@ def _returned(conn: sqlite3.Connection, run_id: str, budget: _ReadBudget) -> dic
     return run
 
 
+def _validated_return(conn: sqlite3.Connection, org_slug: str, run_id: str) -> dict | None:
+    """Replay the addressed run and source before interpreting its obligation."""
+    budget = _ReadBudget()
+    if not sequential_storage_present(conn, budget=budget):
+        return None
+    with _sql_budget(conn, budget):
+        runs = _engine_rows(conn, 'workflow_seq_runs', budget, 'id=?', (run_id,))
+    # An empty root certifies verified absence without treating a corrupt
+    # existing graph's orphan/missing relation as an ordinary non-return.
+    read_write_history(conn, expected_org_slug=org_slug, deadline=budget.deadline,
+                       run_ids=frozenset(row['id'] for row in runs))
+    with _sql_budget(conn, budget):
+        return _returned(conn, run_id, budget)
+
+
 def returned_source(db: Any, org_slug: str, run_id: str, task_id: str) -> bool:
     """Independently authorize the original source at the shared parent seam."""
     with db.coherent_read_view() as conn:
-        history = read_sequential_history(conn, expected_org_slug=org_slug)
-        if run_id not in history.run_ids:
-            return False
-        budget = _ReadBudget()
-        with _sql_budget(conn, budget):
-            run = _returned(conn, run_id, budget)
-            return run is not None and run['source_task_id'] == task_id
+        run = _validated_return(conn, org_slug, run_id)
+        return run is not None and run['source_task_id'] == task_id
 
 
 def returned_run_ids(dispatcher: Any) -> tuple[str, ...]:
@@ -147,15 +159,10 @@ def notify_returned(dispatcher: Any, run_id: str, *, queue: Any = None) -> bool:
 
     org = dispatcher.org
     with org.db.coherent_read_view() as conn:
-        history = read_sequential_history(conn, expected_org_slug=org.slug)
-        if run_id not in history.run_ids:
+        run = _validated_return(conn, org.slug, run_id)
+        if run is None:
             return False
-        budget = _ReadBudget()
-        with _sql_budget(conn, budget):
-            run = _returned(conn, run_id, budget)
-            if run is None:
-                return False
-            source_id, carrier_id = run['source_task_id'], run['carrier_task_id']
+        source_id, carrier_id = run['source_task_id'], run['carrier_task_id']
     orch = org.orchestrator
     if queue is not None:
         orch = _ReturnedCallerQueue(orch, queue)

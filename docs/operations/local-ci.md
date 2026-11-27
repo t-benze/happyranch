@@ -1439,10 +1439,26 @@ storage checks. Its finite cases are `thread_source`, `thread_ancestor`,
 `duplicate_return`, `concurrent_return`, `restart_before_tail`,
 `restart_marker_only`, `restart_pending_or_settled_tail`,
 `composed_archive_recheck` and `marker_read_unavailable`. It drives actual
-complete-reader-authorized sequential return/recovery and ordinary SYSTEM,
+selected-run-authorized sequential return, complete-history rediscovery and ordinary SYSTEM,
 cap/mint and archive admission writers on private valid history/thread rows.
 It inspects source/status/original attribution, invocation IDs, cap and supplied
 queue publication. No executor starts and no successful tail is mocked.
+
+THR-404 group 5 extends the same selector table with `selected_scope`,
+`selected_unrelated` (native/retained), `selected_corruption` (event/outbox digest,
+wrong outbox source/event/visit, missing outbox, wrong run source, duplicate return,
+wrong/reverse ownership), `selected_nonreturn`, `discovery_corruption` and
+`discovery_budget`. Run each on Python 3.14 and 3.12, or include them through
+`--returned-storage=all`. They observe exact terminal-source obligation IDs,
+independent source equality, history rebuild/parent wake after snapshot closure,
+unchanged source/parent and inert outbox replay. Selected corruption refuses
+before tail effects. Disconnected ordinary native/retained damage no longer
+blocks selected returns; complete rediscovery still refuses that damage and
+noncompleted sequential corruption. Real data acquisition exhausts the original
+byte ledger with a causal `ReadExhaustion` and returns no partial IDs; no budget
+or successful validator is mocked. Rediscovery retains complete validation and
+has no <=100ms guarantee. Existing duplicate/concurrent/restart/marker cases
+remain keepers; this adds no required CI check, build or Product E2E trigger.
 
 These cases establish the scoped in-process R1a contracts, not serving restart
 latency or eventual thread delivery after a partial tail. Start@1 remains one

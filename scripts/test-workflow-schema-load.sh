@@ -949,13 +949,204 @@ def returned_tail_cases(selected):
     from runtime.orchestrator.teams import TeamsRegistry
     from runtime.daemon.sessions import SessionTracker
 
+    scoped_cases = ('selected_scope', 'selected_unrelated', 'selected_corruption',
+                    'selected_nonreturn', 'discovery_corruption', 'discovery_budget')
     cases = ('thread_source', 'thread_ancestor', 'thread_root_return', 'thread_ancestor_nonroot_return',
         'parked_no_tail', 'duplicate_return', 'concurrent_return', 'restart_before_tail', 'restart_marker_only',
-        'restart_pending_or_settled_tail', 'composed_archive_recheck', 'marker_read_unavailable')
+        'restart_pending_or_settled_tail', 'composed_archive_recheck', 'marker_read_unavailable', *scoped_cases)
     assert selected in (None, 'all', 'absence', *cases), selected
     if selected in (None, 'all', 'absence'):
         returned_storage_absence()
+    for case in scoped_cases:
+        if selected not in (None, 'all', case):
+            continue
+        variants = ('native', 'retained') if case == 'selected_unrelated' else (
+            ('event_digest', 'outbox_digest', 'outbox_source', 'outbox_event', 'outbox_visit',
+             'missing_outbox', 'wrong_source', 'duplicate_return', 'ownership', 'reverse_ownership')
+            if case == 'selected_corruption' else ('base',))
+        for variant in variants:
+            with sequential_fixture(trace=False) as (db, root, sql):
+                populate_returned(db)
+                conn = db._conn
+                db.insert_task(TaskRecord(id='parent', assigned_agent='synthetic-manager',
+                    brief='Private parked parent', status='in_progress', block_kind='delegated'))
+                conn.execute("UPDATE tasks SET parent_task_id='parent' WHERE id='source'")
+                conn.commit()
+                histories, wakes = [], []
+                class Queue:
+                    thread_queue = SimpleNamespace()
+                    def enqueue_if_absent(self, slug, task, publisher=None):
+                        assert not conn.in_transaction, 'parent wake inside read snapshot'
+                        if task not in wakes:
+                            wakes.append(task)
+                def history(task):
+                    assert not conn.in_transaction, 'history rebuild inside read snapshot'
+                    histories.append(task)
+                queue = Queue()
+                orch = SimpleNamespace(_db=db, _slug='scratch', _audit=AuditLogger(db),
+                    _main_loop=None, _update_task_history=history)
+                dispatcher = SequentialDispatcher(SimpleNamespace(db=db, slug='scratch', orchestrator=orch))
+                db._workflow_sequential_dispatch = dispatcher
+                source = lambda: sequential_return.returned_source(db, 'scratch', 'run', 'source')
+                notify = lambda: sequential_return.notify_returned(dispatcher, 'run', queue=queue)
+                discover = lambda: sequential_return.returned_run_ids(dispatcher)
+                def damage(table, statement, args=()):
+                    # Restore exact canonical triggers/check enforcement before
+                    # any production read; successful validation is never mocked.
+                    triggers = [tuple(row) for row in conn.execute(
+                        "SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND tbl_name=?", (table,))]
+                    conn.commit()
+                    conn.execute('PRAGMA foreign_keys=OFF')
+                    conn.execute('PRAGMA ignore_check_constraints=ON')
+                    for name, _ in triggers:
+                        conn.execute('DROP TRIGGER "' + name + '"')
+                    conn.execute(statement, args)
+                    for _, ddl in triggers:
+                        conn.execute(ddl)
+                    conn.commit()
+                    conn.execute('PRAGMA ignore_check_constraints=OFF')
+                    conn.execute('PRAGMA foreign_keys=ON')
+                def refused(operation, token):
+                    before = conn.total_changes
+                    failure = None
+                    try:
+                        operation()
+                    except (ValueError, sqlite3.Error) as exc:
+                        assert token in str(exc), (case, variant, 'wrong refusal', str(exc))
+                        failure = exc
+                        print('REFUSED G5', case, variant, str(exc), flush=True)
+                    else:
+                        raise AssertionError(case + '/' + variant + ' returned partial/accepted damaged history')
+                    assert conn.total_changes == before and not histories and not wakes
+                    assert not conn.in_transaction
+                    return failure
+                if case == 'selected_unrelated':
+                    if variant == 'native':
+                        db.insert_task(TaskRecord(id='unrelated', assigned_agent='historical', brief='Unrelated native row'))
+                        db.insert_task_result('unrelated', 'historical', 'historical-sid', 'Private result', 80,
+                            decision_json='{"action":"workflow_start","workflow":{"identity":"release/happyranch/coding"}}')
+                        token = 'coding'
+                    else:
+                        conn.execute('INSERT INTO workflow_template_drafts VALUES (?,?,?,?,?,?,?,?,?,?)',
+                            ('unrelated-draft', 'org/scratch', 'private', b'{}', '0'*64,
+                             'workflow-compiler@1', 'workflow-validator@1', 'private-source',
+                             'historical', '2026-11-14T00:00:00+00:00'))
+                        conn.commit()
+                        token = 'workflow_source_data_corrupt'
+                    # All-run rediscovery intentionally keeps complete validation.
+                    refused(discover, token)
+                elif case == 'selected_corruption':
+                    if variant in ('event_digest', 'outbox_digest'):
+                        table, column = ('workflow_seq_events', 'event_digest') if variant == 'event_digest' else (
+                            'workflow_seq_outbox', 'notification_digest')
+                        damage(table, 'UPDATE ' + table + ' SET ' + column + "=? WHERE " + (
+                            "kind='returned'" if variant == 'event_digest' else "kind='run_return'"), ('0'*64,))
+                        token = 'digest'
+                    elif variant.startswith('outbox_'):
+                        row = dict(conn.execute("SELECT * FROM workflow_seq_outbox WHERE kind='run_return'").fetchone())
+                        column, value = dict(outbox_source=('task_id', 'parent'), outbox_event=('event_id',
+                            conn.execute("SELECT id FROM workflow_seq_events WHERE kind='admitted'").fetchone()[0]),
+                            outbox_visit=('visit_id', 'visit'))[variant]
+                        payload = json.loads(row['notification_bytes'])
+                        payload[column] = value
+                        raw = seq_history._bytes(payload)
+                        damage('workflow_seq_outbox', 'UPDATE workflow_seq_outbox SET ' + column +
+                            "=?,notification_bytes=?,notification_digest=? WHERE kind='run_return'",
+                            (value, raw, hashlib.sha256(raw).hexdigest()))
+                        token = 'outbox_return_conflict'
+                    elif variant == 'missing_outbox':
+                        damage('workflow_seq_outbox', "DELETE FROM workflow_seq_outbox WHERE kind='run_return'")
+                        token = 'outbox_return_missing'
+                    elif variant == 'wrong_source':
+                        damage('workflow_seq_runs', "UPDATE workflow_seq_runs SET source_task_id='parent'")
+                        # Keep marks coherent with the changed selector so the
+                        # original INTEGER-result/source check owns this case.
+                        # Wrong/reverse marks have separate cases below.
+                        damage('workflow_task_ownership', "UPDATE workflow_task_ownership SET version=1,kind='legacy',owner_id=NULL WHERE task_id='source'")
+                        damage('workflow_task_ownership', "UPDATE workflow_task_ownership SET version=2,kind='seq_source_waiting',owner_id='run' WHERE task_id='parent'")
+                        token = 'native_result_conflict'
+                    elif variant == 'duplicate_return':
+                        from runtime.workflows import sequential_engine as engine
+                        run = dict(conn.execute("SELECT * FROM workflow_seq_runs WHERE id='run'").fetchone())
+                        prior = conn.execute('SELECT event_digest FROM workflow_seq_events WHERE id=?',
+                            (run['last_event_id'],)).fetchone()[0]
+                        event = engine._event(conn, run, 'duplicate-return', 'returned', prior)
+                        engine._move_run(conn, run, event, state='completed', active_visit_id=None,
+                            epoch=1, content_returns=0, visits=1)
+                        engine._outbox(conn, run, event, 'run_return', None, 'source')
+                        conn.commit()
+                        token = 'return_conflict'
+                    elif variant == 'ownership':
+                        damage('workflow_task_ownership', "UPDATE workflow_task_ownership SET owner_id='wrong' WHERE task_id='source'")
+                        token = 'ownership'
+                    else:
+                        db.insert_task(TaskRecord(id='reverse-extra', brief='Duplicate reverse owner'))
+                        damage('workflow_task_ownership', "UPDATE workflow_task_ownership SET version=2,kind='seq_visit',owner_id='visit' WHERE task_id='reverse-extra'")
+                        token = 'ownership'
+                    for operation in (source, notify, discover):
+                        refused(operation, token)
+                    print('PASS G5', case, variant, 'zero tail effects', flush=True)
+                    continue
+                elif case == 'discovery_corruption':
+                    # A state-only completed filter would hide this obligation.
+                    damage('workflow_seq_runs', "UPDATE workflow_seq_runs SET state='active'")
+                    refused(discover, 'run_history_conflict')
+                    print('PASS G5', case, 'noncompleted run still authenticated', flush=True)
+                    continue
+                elif case == 'discovery_budget':
+                    assert discover() == ('run',)
+                    # Real bounded acquisition exceeds the unchanged 64MiB
+                    # ledger before decoding; no budget/reader is mocked.
+                    for index in range(144):
+                        raw = seq_history._bytes(dict(index=index, padding='x'*524288))
+                        conn.execute('INSERT INTO workflow_seq_evidence '
+                            '(id,run_id,kind,evidence_bytes,evidence_digest) VALUES (?,?,?,?,?)',
+                            ('budget-'+str(index), 'run', 'preflight', raw, hashlib.sha256(raw).hexdigest()))
+                    conn.commit()
+                    from runtime.workflows._read_exhaustion import ReadExhaustion
+                    failure = refused(discover, 'coding_authority_history_invalid')
+                    assert isinstance(failure.__cause__, ReadExhaustion)
+                    assert failure.__cause__.dimension == 'bytes', 'not a byte-budget refusal'
+                    print('PASS G5', case, 'no partial tuple', flush=True)
+                    continue
+                elif case == 'selected_nonreturn':
+                    damage('workflow_seq_outbox', "DELETE FROM workflow_seq_outbox WHERE kind='run_return'")
+                    damage('workflow_seq_events', "DELETE FROM workflow_seq_events WHERE kind='returned'")
+                    event = conn.execute("SELECT id FROM workflow_seq_events WHERE kind='transition'").fetchone()[0]
+                    damage('workflow_seq_runs', 'UPDATE workflow_seq_runs SET last_event_id=?,event_count=event_count-1,cas=cas-1', (event,))
+                    assert not source() and not notify() and discover() == ()
+                    assert not sequential_return.returned_source(db, 'scratch', 'absent', 'source')
+                    assert not sequential_return.notify_returned(dispatcher, 'absent', queue=queue)
+                    assert not histories and not wakes
+                    with tempfile.TemporaryDirectory(prefix='returned-absent-') as scratch:
+                        empty = Database(Path(scratch)/'org.db')
+                        try:
+                            absent = SequentialDispatcher(SimpleNamespace(db=empty, slug='scratch'))
+                            for installed in (False, True):
+                                if installed:
+                                    install_or_recover(empty, expected_org_slug='scratch')
+                                assert not sequential_return.returned_source(empty, 'scratch', 'absent', 'source')
+                                assert not sequential_return.notify_returned(absent, 'absent', queue=queue)
+                        finally:
+                            empty.close()
+                    print('PASS G5', case, 'verified nonreturn/absence', flush=True)
+                    continue
+                before = conn.total_changes
+                outbox = tuple(tuple(row) for row in conn.execute('SELECT * FROM workflow_seq_outbox ORDER BY id'))
+                assert source()
+                assert not sequential_return.returned_source(db, 'scratch', 'run', 'parent')
+                if case == 'selected_scope':
+                    assert discover() == ('run',), 'terminal source omitted or wrong IDs'
+                assert notify() and notify()
+                assert histories == ['carrier', 'source']*2 and wakes == ['parent']
+                assert db.get_task('source').status == TaskStatus.COMPLETED
+                assert db.get_task('parent').status == TaskStatus.IN_PROGRESS
+                assert tuple(tuple(row) for row in conn.execute('SELECT * FROM workflow_seq_outbox ORDER BY id')) == outbox
+                assert conn.total_changes == before, 'return replay wrote/acknowledged outbox'
+                print('PASS G5', case, variant, 'source/history/parent wake; inert outbox replay', flush=True)
     for case in cases:
+        if case in scoped_cases:
+            continue  # Executed above with the same real returned-history fixture.
         if selected not in (None, 'all', case):
             continue
         variants = ('pending', 'consumed', 'failed') if case == 'restart_pending_or_settled_tail' else ('base',)
