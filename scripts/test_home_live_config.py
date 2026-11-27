@@ -62,7 +62,7 @@ def venue(owner_venue: Venue) -> Venue:
 def expected_live(v: Venue, prepared: dict[str, bytes]) -> dict[str, bytes]:
     r = v.prepared
     # Independent literal wire expectation, not a production renderer/helper.
-    addition = (',"ControlURL":"https://control.happyranch.invalid:8443",'
+    addition = (',"ControlURL":"https://control.happyranch.invalid:28443",'
         '"control_tls":{"dial_ip":"' + r.dial_ip + '","ca_sha256":"' + r.ca_der_sha256 + '"},'
         '"home_binding":{"home_id":"home","control_plane_id":"control",'
         '"connector_id":"connector","activation_generation":7}').encode()

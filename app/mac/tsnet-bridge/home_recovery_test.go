@@ -108,7 +108,7 @@ func TestHomeAddressRecoveryCommitAndReopen(t *testing.T) {
 	}
 }
 func TestHomeAddressRecoveryRefusals(t *testing.T) {
-	for _, scenario := range []string{"different-node", "missing-grant", "denied-grant", "redirect", "missing-marker", "replayed-marker", "wrong-old-ip", "different-home", "different-control", "different-ca", "stale-pending", "protected-url-slash"} {
+	for _, scenario := range []string{"different-node", "missing-grant", "denied-grant", "redirect", "missing-marker", "replayed-marker", "wrong-old-ip", "different-home", "different-control", "different-ca", "stale-pending", "protected-url-slash", "legacy-control-port"} {
 		t.Run(scenario, func(t *testing.T) {
 			status := 200
 			if scenario == "denied-grant" {
@@ -139,8 +139,12 @@ func TestHomeAddressRecoveryRefusals(t *testing.T) {
 				cfg.Fingerprint = homeFingerprint(cfg.CA)
 			case "stale-pending":
 				os.WriteFile(filepath.Join(p.path, "profile.json.pending"), []byte("unknown-writer"), 0600)
-			case "protected-url-slash":
-				p.record.ControlURL += "/"
+			case "legacy-control-port", "protected-url-slash":
+				if scenario == "legacy-control-port" {
+					p.record.ControlURL = "https://control.happyranch.invalid:8443"
+				} else {
+					p.record.ControlURL += "/"
+				}
 				if p.phase("joined") != nil {
 					t.Fatal("fixture failed")
 				}

@@ -27,7 +27,7 @@ from runtime.remote_access.home_activation_coordinator import ActivationRefused
 from runtime.remote_access.home_activation_txn import EFFECTS, TRANSACTION_PATH, Effect, HomeActivationTransactionStore
 from runtime.remote_access.home_admin import HeadscaleNode, HeadscaleUser
 from runtime.remote_access.home_unit_gate import HomeUnitGate, HomeUnitGateError
-from runtime.remote_access.installer import managed_units
+from runtime.remote_access.installer import InstallerError, managed_units
 from runtime.remote_access.service_manager import SystemdServiceManager
 from runtime.remote_access.systemd_unit import render_headscale_unit
 from scripts.test_home_activation_owner import consumed, venue as owner_venue
@@ -171,7 +171,7 @@ def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
                     v.admin.key = replace(v.admin.key, used=True)
                     v.admin.nodes = (HeadscaleNode(1, HeadscaleUser(1, 'happyranch-node'), 'c' * 64, ('100.64.0.10',)),)
                     role = 'home-sidecar-' + v.receipts.current().home_id
-                    marker = hashlib.sha256((role + '\x00https://control.happyranch.invalid:8443').encode()).hexdigest()
+                    marker = hashlib.sha256((role + '\x00https://control.happyranch.invalid:28443').encode()).hexdigest()
                     put(v.path('/var/lib/happyranch-tsnet-sidecar/credential.consumed'), (marker + '\n').encode())
                     v.observers.enter_context(observations(v))
         finally:
@@ -2084,17 +2084,17 @@ def ufw_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path
 
 @pytest.mark.parametrize('case,output,state', [
     ('deny-no-rule', '', 'likely_blocked'),
-    ('both', '8443/tcp  ALLOW IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n', 'clear'),
-    ('tcp-only', '8443/tcp  ALLOW IN  Anywhere\n', 'unverified'),
-    ('udp-only', '3478/udp  ALLOW IN  Anywhere\n', 'unverified'),
-    ('lan', '8443/tcp  ALLOW IN  192.168.1.0/24\n3478/udp  ALLOW IN  192.168.1.0/24\n', 'clear'),
+    ('both', '28443/tcp  ALLOW IN  Anywhere\n23478/udp  ALLOW IN  Anywhere\n', 'clear'),
+    ('tcp-only', '28443/tcp  ALLOW IN  Anywhere\n', 'unverified'),
+    ('udp-only', '23478/udp  ALLOW IN  Anywhere\n', 'unverified'),
+    ('lan', '28443/tcp  ALLOW IN  192.168.1.0/24\n23478/udp  ALLOW IN  192.168.1.0/24\n', 'clear'),
     ('inactive', 'Status: inactive\n', 'clear'),
     ('unparsable', 'unrecognized synthetic output\n', 'unverified'),
     ('profile', 'OpenSSH  ALLOW IN  Anywhere\n', 'unverified'),
-    ('v6-only', '8443/tcp (v6)  ALLOW IN  Anywhere (v6)\n3478/udp (v6)  ALLOW IN  Anywhere (v6)\n', 'likely_blocked'),
+    ('v6-only', '28443/tcp (v6)  ALLOW IN  Anywhere (v6)\n23478/udp (v6)  ALLOW IN  Anywhere (v6)\n', 'likely_blocked'),
     ('allow-default', 'Default: allow (incoming), allow (outgoing), deny (routed)\n', 'unverified'),
-    ('range', '3400:8500  ALLOW IN  192.168.1.0/24\n', 'clear'),
-    ('limit', '8443/tcp  LIMIT IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n', 'unverified'),
+    ('range', '23000:29000  ALLOW IN  192.168.1.0/24\n', 'clear'),
+    ('limit', '28443/tcp  LIMIT IN  Anywhere\n23478/udp  ALLOW IN  Anywhere\n', 'unverified'),
     ('reject', 'Default: reject (incoming), allow (outgoing), deny (routed)\n', 'unverified'),
 ])
 def test_thr327_firewall_read_only_child(composition: Any, ufw_rules: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
@@ -2132,3 +2132,124 @@ def test_thr327_firewall_enable_reaches_ready(composition: Any, ufw_rules: dict[
     result = v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480)
     assert result == {'outcome': 'ready', 'residue': []}
     assert v.receipts.current().phase == 'ready' and len(v.mints) == 1
+
+
+def legacy_port_publication(v: Any) -> None:
+    """Synthetic previous release: independent old ports, real receipt custody."""
+    publication = v.path('/var/lib/happyranch-remote-access/headscale-publication.json')
+    record = json.loads(publication.read_bytes())
+    activation_path = v.path(ACTIVATION_PATH)
+    activation = json.loads(activation_path.read_bytes())
+    for name in ('config.yaml', 'derp.yaml'):
+        path = '/etc/happyranch/headscale/' + name
+        data = v.path(path).read_bytes()
+        for current, old in ((b'28443', b'8443'), (b'23478', b'3478'),
+                             (b'29090', b'19090'), (b'29443', b'50443')):
+            data = data.replace(current, old)
+        v.path(path).write_bytes(data)
+        record['files'][path] = hashlib.sha256(data).hexdigest()
+        activation['member_digests'][path] = record['files'][path]
+    publication.write_bytes(json.dumps(record).encode())
+    activation_path.write_bytes(json.dumps(activation).encode())
+    sidecar = v.path('/etc/happyranch/sidecar.json')
+    sidecar.write_bytes(sidecar.read_bytes().replace(b'control.happyranch.invalid:28443',
+                                                   b'control.happyranch.invalid:8443'))
+    # Old home_config and Headscale effects receipt the old bytes as well.
+    transaction = v.path(TRANSACTION_PATH)
+    txn = json.loads(transaction.read_bytes())
+    for effect in txn['effects']:
+        for path in effect['member_digests']:
+            effect['member_digests'][path] = hashlib.sha256(v.path(path).read_bytes()).hexdigest()
+    transaction.write_bytes(json.dumps(txn).encode())
+    parsed = v.transactions.read_optional()
+    assert parsed.matches(v.receipts.current())
+    for effect in parsed.effects:
+        assert dict(effect.member_digests) == {
+            path: hashlib.sha256(v.path(path).read_bytes()).hexdigest() for path in effect.member_digests}
+    role = json.loads(sidecar.read_bytes())['RoleIdentity']
+    marker = hashlib.sha256((role + '\x00https://control.happyranch.invalid:8443').encode()).hexdigest()
+    v.path('/var/lib/happyranch-tsnet-sidecar/credential.consumed').write_text(marker + '\n')
+
+
+@pytest.mark.parametrize('method,step', [('Enable', 'enable'), ('Disable', 'stop')])
+def test_thr327_old_ready_refuses_before_effects(composition: Any, method: str, step: str) -> None:
+    v = composition
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    captured = v.lifecycle.capture(method, os.getuid())
+    legacy_port_publication(v)
+    before, calls = staged_inventory(v.fixture), list(v.calls)
+    with pytest.raises(adapters.headscale_service.HeadscaleServiceError, match='publication-uncertain'):
+        v.io._headscale_publication()
+    for action in (lambda: v.lifecycle.capture(method, os.getuid()),
+                   lambda: v.lifecycle.dispatch(method, os.getuid(), step, captured)):
+        with pytest.raises(h.GenerationUnavailable) as refusal:
+            action()
+        assert refusal.value.category == 'turn_off_then_on'
+        assert staged_inventory(v.fixture) == before and v.calls == calls
+
+
+@pytest.mark.parametrize('tamper', ['', 'non-exact-url', 'tail', 'provision'])
+def test_thr327_retained_legacy_sidecar_replaced_only(composition: Any, tamper: str) -> None:
+    v = composition
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    old_ca = v.receipts.current().ca_der_sha256
+    v.observers.close()
+    v.observers = ExitStack()
+    expected = v.lifecycle.capture('Disable', os.getuid())
+    assert v.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)['outcome'] == 'in_progress'
+    assert v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected,
+                                revoke_succeeded=True)['outcome'] == 'off'
+    # B6's old/new cleanup is byte-identical and does not rewrite the retained
+    # sidecar. Its old URL is the only port-dependent residue (see source audit).
+    sidecar = v.path('/etc/happyranch/sidecar.json')
+    data = sidecar.read_bytes().replace(b'control.happyranch.invalid:28443', b'control.happyranch.invalid:8443')
+    if tamper == 'non-exact-url':
+        data = data.replace(b':8443"', b':8443/"')
+    if tamper == 'tail':
+        data = data.replace(b',"ControlURL"', b', "ControlURL"')
+    sidecar.write_bytes(data)
+    if tamper == 'provision':
+        path = v.path('/etc/happyranch/provision.json')
+        record = json.loads(path.read_bytes())
+        record['digests']['sidecar.json'] = 'f' * 64
+        path.write_bytes(json.dumps(record).encode())
+    assert v.receipts.current() is None and v.transactions.read_optional() is None
+    from runtime.remote_access.home_admission import HomeProfileAdmission, parse_live_pair
+    before, calls = staged_inventory(v.fixture), list(v.calls)
+    with pytest.raises(InstallerError, match='home control binding not provisioned'):
+        parse_live_pair(v.io, {name: v.path('/etc/happyranch/' + name).read_bytes()
+                              for name in ('connector.json', 'sidecar.json')})
+    with pytest.raises(InstallerError):
+        HomeProfileAdmission(v.io).require()  # retained data is never a trust binding
+    assert staged_inventory(v.fixture) == before and v.calls == calls
+    if tamper:
+        with pytest.raises((InstallerError, ActivationRefused)):
+            v.lifecycle.capture('Enable', os.getuid())
+        assert staged_inventory(v.fixture) == before and v.calls == calls
+        return
+    v.admin.users, v.admin.nodes = (), ()
+    v.head.ca_pem = ssl.DER_cert_to_PEM_cert(b'synthetic port-upgrade fresh CA').encode()
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert json.loads(expected)['prestate'] == 'post-disable'
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    assert json.loads(sidecar.read_bytes())['ControlURL'] == 'https://control.happyranch.invalid:28443'
+    assert len(v.mints) == 2 and v.receipts.current().ca_der_sha256 != old_ca
+
+
+@pytest.mark.parametrize('method', ['Enable', 'Disable'])
+def test_thr327_old_ready_capture_refusal_frame(composition: Any, monkeypatch: pytest.MonkeyPatch,
+                                                capsys: Any, method: str) -> None:
+    v = composition
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', v.lifecycle.capture('Enable', os.getuid()),
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    legacy_port_publication(v)
+    monkeypatch.setattr(h, 'ManagedInstaller', lambda **kwargs: v.io)
+    monkeypatch.setattr(sys, 'argv', ['home_activation_backend.py'])
+    request = dict(method=method, uid=os.getuid(), step='capture', expected=None,
+                   deadline=time.monotonic() + 30)
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(json.dumps(request).encode())))
+    assert h.helper_main() == 1
+    assert json.loads(capsys.readouterr().out) == {'refusal': 'turn_off_then_on'}

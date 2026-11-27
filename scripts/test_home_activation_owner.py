@@ -223,7 +223,7 @@ def intent(v, effect):
 
 def consumed(v):
     v.admin.key = replace(v.admin.key, used=True)
-    digest = hashlib.sha256(b"home-sidecar-home\x00https://control.happyranch.invalid:8443").hexdigest()
+    digest = hashlib.sha256(b"home-sidecar-home\x00https://control.happyranch.invalid:28443").hexdigest()
     put(v.path("/var/lib/happyranch-tsnet-sidecar/credential.consumed"), (digest + "\n").encode())
 
 
@@ -710,7 +710,7 @@ def test_installer_stays_inert_for_live_profile(venue):
     v = venue
     path = v.path("/etc/happyranch/sidecar.json")
     raw = json.loads(path.read_bytes())
-    raw.update(ControlURL="https://control.happyranch.invalid:8443",
+    raw.update(ControlURL="https://control.happyranch.invalid:28443",
                control_tls=dict(dial_ip=v.prepared.dial_ip, ca_sha256=v.prepared.ca_der_sha256),
                home_binding={key: getattr(v.prepared, key) for key in
                    ("home_id", "control_plane_id", "connector_id", "activation_generation")})
@@ -721,3 +721,15 @@ def test_installer_stays_inert_for_live_profile(venue):
         v.receipts._io._validate_configs({name: v.path("/etc/happyranch/" + name).read_bytes()
             for name in ("connector.json", "sidecar.json", "policy.json")}, staged=True)
     assert not v.native.calls
+
+
+def test_thr327_old_consumed_marker_refused(venue):
+    v = venue
+    consumed(v)
+    marker = v.path("/var/lib/happyranch-tsnet-sidecar/credential.consumed")
+    old = hashlib.sha256(b"home-sidecar-home\x00https://control.happyranch.invalid:8443").hexdigest()
+    marker.write_bytes((old + "\n").encode())
+    with pytest.raises(ActivationRefused):
+        v.production._consumed(v.prepared)
+    consumed(v)
+    v.production._consumed(v.prepared)

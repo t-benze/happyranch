@@ -18,7 +18,7 @@ final class RemoteInviteTests: XCTestCase {
         ["kind": "local_ca", "dial_ip": "192.168.1.40", "ca_der": wire(ca), "sha256": SHA256.hash(data: ca).map { String(format: "%02x", $0) }.joined()]
     }
     private func fixture() -> [String: Any] {
-        ["v": 2, "mode": "home", "control_url": "https://control.happyranch.invalid:8443/",
+        ["v": 2, "mode": "home", "control_url": "https://control.happyranch.invalid:28443/",
          "control_plane_id": "test-control", "control_tls": tls(Data(base64Encoded: Self.certificate)!),
          "home_endpoint": "100.64.0.10:443", "home_id": "test-home", "connector_id": "test-connector",
          "invite_id": wire(Data("INVITE-CANARY-12".utf8)), "join_key": joinCanary,
@@ -61,7 +61,7 @@ final class RemoteInviteTests: XCTestCase {
         let invite = try RemoteInvite.parse(encoded, now: Self.now)
         XCTAssertEqual(invite.trust.homeID, "test-home")
         XCTAssertEqual(invite.trust.version, 2)
-        XCTAssertEqual(invite.trust.controlURL, "https://control.happyranch.invalid:8443")
+        XCTAssertEqual(invite.trust.controlURL, "https://control.happyranch.invalid:28443")
         XCTAssertEqual(invite.trust.dialIP, "192.168.1.40")
         XCTAssertEqual(invite.trust.homeEndpoint, "100.64.0.10:443")
         XCTAssertEqual(invite.expiresAt.timeIntervalSince(invite.issuedAt), 300)
@@ -111,12 +111,12 @@ final class RemoteInviteTests: XCTestCase {
     }
 
     func testURLAndTrustRefusals() throws {
-        for url in ["http://control.happyranch.invalid:8443", "https://user@control.happyranch.invalid:8443",
-            "https://user:pass@control.happyranch.invalid:8443", "https://control.happyranch.invalid:8443?query",
-            "https://control.happyranch.invalid:8443#fragment", "https://control.happyranch.invalid:8443/path",
-            "https://control.happyranch.invalid:443", "https://127.0.0.1:8443", "https://example.test:8443",
-            "https://192.168.1.40:8443", "https://192.168.001.40:8443", "https://control.happyranch.invalid:8443/%2f",
-            "https://CONTROL.happyranch.invalid:8443", "https://control.happyranch.invalid:8443//"] {
+        for url in ["https://control.happyranch.invalid:8443", "http://control.happyranch.invalid:28443", "https://user@control.happyranch.invalid:28443",
+            "https://user:pass@control.happyranch.invalid:28443", "https://control.happyranch.invalid:28443?query",
+            "https://control.happyranch.invalid:28443#fragment", "https://control.happyranch.invalid:28443/path",
+            "https://control.happyranch.invalid:443", "https://127.0.0.1:28443", "https://example.test:28443",
+            "https://192.168.1.40:28443", "https://192.168.001.40:28443", "https://control.happyranch.invalid:28443/%2f",
+            "https://CONTROL.happyranch.invalid:28443", "https://control.happyranch.invalid:28443//"] {
             var fields = fixture(); fields["control_url"] = url
             refusal(try encode(fields), .url, name: "control URL")
         }
@@ -207,7 +207,7 @@ final class RemoteInviteTests: XCTestCase {
 
     func testDialIPIsCanonicalRFC1918AndCannotSelectControlURL() throws {
         for ip in ["127.0.0.1", "100.64.0.1", "169.254.1.1", "172.15.0.1", "172.32.0.1", "8.8.8.8",
-                   "::1", "::ffff:192.168.1.40", "192.168.001.40", "192.168.1.40.", "192.168.1.40..", "192.168.1.40:8443", "192.168.1.40\n"] {
+                   "::1", "::ffff:192.168.1.40", "192.168.001.40", "192.168.1.40.", "192.168.1.40..", "192.168.1.40:28443", "192.168.1.40\n"] {
             var fields = fixture(); var trust = tls(Data(base64Encoded: Self.certificate)!)
             trust["dial_ip"] = ip; fields["control_tls"] = trust
             refusal(try encode(fields), .url, name: "non-RFC1918/canonical dial IP")
@@ -217,7 +217,7 @@ final class RemoteInviteTests: XCTestCase {
             trust["dial_ip"] = ip; fields["control_tls"] = trust
             let invite = try RemoteInvite.parse(encode(fields), now: Self.now)
             XCTAssertEqual(invite.trust.dialIP, ip)
-            XCTAssertEqual(invite.trust.controlURL, "https://control.happyranch.invalid:8443")
+            XCTAssertEqual(invite.trust.controlURL, "https://control.happyranch.invalid:28443")
             XCTAssertEqual(invite.trust.homeEndpoint, "100.64.0.10:443")
         }
     }
@@ -225,7 +225,7 @@ final class RemoteInviteTests: XCTestCase {
     static func trust() throws -> SavedHomeTrust {
         let ca = Data(base64Encoded: certificate)!
         return SavedHomeTrust(homeID: "test-home", controlPlaneID: "test-control", connectorID: "test-connector",
-            controlURL: "https://control.happyranch.invalid:8443/", dialIP: "192.168.1.40", homeEndpoint: "100.64.0.10:443", caDER: ca,
+            controlURL: "https://control.happyranch.invalid:28443/", dialIP: "192.168.1.40", homeEndpoint: "100.64.0.10:443", caDER: ca,
             caSHA256: SHA256.hash(data: ca).map { String(format: "%02x", $0) }.joined())
     }
 }

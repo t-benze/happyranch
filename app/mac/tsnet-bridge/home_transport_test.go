@@ -107,8 +107,8 @@ func TestHomeTransportAdmission(t *testing.T) {
 	for _, ip := range []string{"10.0.0.1", "172.16.0.1", "172.31.255.254", "192.168.1.40"} {
 		t.Run("valid-"+ip, func(t *testing.T) {
 			roots, endpoint, err := admitHomeTransport(ca.der, transportFingerprint(ca.der), ip, now)
-			if err != nil || endpoint != ip+":8443" || len(roots.Subjects()) != 1 {
-				t.Fatal("valid home admission or fixed 8443 mapping failed")
+			if err != nil || endpoint != ip+":28443" || len(roots.Subjects()) != 1 {
+				t.Fatal("valid home admission or fixed 28443 mapping failed")
 			}
 		})
 	}
@@ -127,7 +127,7 @@ func TestHomeTransportAdmission(t *testing.T) {
 		{"trailing-der", append(append([]byte{}, ca.der...), 0), "", "192.168.1.40"},
 		{"pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.der}), "", "192.168.1.40"},
 	}
-	for _, ip := range []string{"127.0.0.1", "0.0.0.0", "8.8.8.8", "100.64.0.1", "169.254.1.1", "172.32.0.1", "::1", "fc00::1", "::ffff:192.168.1.40", "control.happyranch.invalid", "192.168.1.40:8443", "192.168.001.40"} {
+	for _, ip := range []string{"127.0.0.1", "0.0.0.0", "8.8.8.8", "100.64.0.1", "169.254.1.1", "172.32.0.1", "::1", "fc00::1", "::ffff:192.168.1.40", "control.happyranch.invalid", "192.168.1.40:28443", "192.168.001.40"} {
 		cases = append(cases, struct {
 			name   string
 			der    []byte
@@ -151,7 +151,7 @@ func TestHomeTransportAdmission(t *testing.T) {
 	}
 }
 
-// The production constructor always admits RFC1918:8443. Tests replace only an
+// The production constructor always admits RFC1918:28443. Tests replace only an
 // instance's private endpoint, before accepting requests, with an owned loopback
 // fake. There is no production dialer hook, test flag or alternative API.
 func transportForTest(t *testing.T, ca transportTestCA, endpoint string) *homeTransport {
@@ -161,7 +161,7 @@ func transportForTest(t *testing.T, ca transportTestCA, endpoint string) *homeTr
 		t.Fatal("transport creation failed")
 	}
 	t.Cleanup(func() { h.Close() })
-	if h.upstream != "192.168.1.40:8443" {
+	if h.upstream != "192.168.1.40:28443" {
 		t.Fatal("constructor lost admitted literal endpoint")
 	}
 	if addr := h.Addr().(*net.TCPAddr); !addr.IP.Equal(net.IPv4(127, 0, 0, 1)) || addr.Port == 0 {
@@ -290,7 +290,7 @@ func localTransportTLS(t *testing.T, h *homeTransport, raw net.Conn, reader *buf
 }
 
 func TestHomeTransportEndToEnd(t *testing.T) {
-	for _, port := range []string{"443", "8443"} {
+	for _, port := range []string{"443", "28443"} {
 		t.Run(port, func(t *testing.T) {
 			ca := makeTransportCA(t, true)
 			leaf := transportLeaf(t, ca, "valid")
@@ -371,7 +371,7 @@ func TestHomeTransportLeafRefusals(t *testing.T) {
 			}
 			p := startTransportPeer(t, leaf, echoTransport)
 			h := transportForTest(t, home, p.listener.Addr().String())
-			_, _, status := connectTransport(t, h, homeControlName+":8443")
+			_, _, status := connectTransport(t, h, homeControlName+":28443")
 			h.Close()
 			p.close()
 			if !strings.Contains(status, " 502 ") {
@@ -387,21 +387,21 @@ func TestHomeTransportLeafRefusals(t *testing.T) {
 func TestHomeTransportRequestRefusals(t *testing.T) {
 	cases := map[string]string{
 		"absolute-http80":   "GET http://control.happyranch.invalid:80/ts2021 HTTP/1.1\r\nHost: control.happyranch.invalid\r\n\r\n",
-		"absolute-https":    "GET https://control.happyranch.invalid:8443/key HTTP/1.1\r\nHost: control.happyranch.invalid\r\n\r\n",
-		"wrong-method":      "POST control.happyranch.invalid:8443 HTTP/1.1\r\n\r\n",
-		"wrong-authority":   "CONNECT attacker.invalid:8443 HTTP/1.1\r\n\r\n",
+		"absolute-https":    "GET https://control.happyranch.invalid:28443/key HTTP/1.1\r\nHost: control.happyranch.invalid\r\n\r\n",
+		"wrong-method":      "POST control.happyranch.invalid:28443 HTTP/1.1\r\n\r\n",
+		"wrong-authority":   "CONNECT attacker.invalid:28443 HTTP/1.1\r\n\r\n",
 		"wrong-port":        "CONNECT control.happyranch.invalid:80 HTTP/1.1\r\n\r\n",
-		"literal-ip":        "CONNECT 192.168.1.40:8443 HTTP/1.1\r\n\r\n",
-		"userinfo":          "CONNECT user@control.happyranch.invalid:8443 HTTP/1.1\r\n\r\n",
-		"different-host":    "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nHost: attacker.invalid\r\n\r\n",
-		"duplicate-host":    "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nHost: control.happyranch.invalid:8443\r\nHost: control.happyranch.invalid:8443\r\n\r\n",
-		"bad-header":        "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nInvalid Header\r\n\r\n",
-		"folded-header":     "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nX-A: x\r\n continued\r\n\r\n",
-		"bare-lf":           "CONNECT control.happyranch.invalid:8443 HTTP/1.1\n\n",
-		"control-header":    "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nX-A: \x00\r\n\r\n",
-		"oversize":          "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nX-A: " + strings.Repeat("a", homeHeaderLimit) + "\r\n\r\n",
-		"body":              "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nContent-Length: 1\r\n\r\nx",
-		"transfer-encoding": "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+		"literal-ip":        "CONNECT 192.168.1.40:28443 HTTP/1.1\r\n\r\n",
+		"userinfo":          "CONNECT user@control.happyranch.invalid:28443 HTTP/1.1\r\n\r\n",
+		"different-host":    "CONNECT control.happyranch.invalid:28443 HTTP/1.1\r\nHost: attacker.invalid\r\n\r\n",
+		"duplicate-host":    "CONNECT control.happyranch.invalid:28443 HTTP/1.1\r\nHost: control.happyranch.invalid:28443\r\nHost: control.happyranch.invalid:28443\r\n\r\n",
+		"bad-header":        "CONNECT control.happyranch.invalid:28443 HTTP/1.1\r\nInvalid Header\r\n\r\n",
+		"folded-header":     "CONNECT control.happyranch.invalid:28443 HTTP/1.1\r\nX-A: x\r\n continued\r\n\r\n",
+		"bare-lf":           "CONNECT control.happyranch.invalid:28443 HTTP/1.1\n\n",
+		"control-header":    "CONNECT control.happyranch.invalid:28443 HTTP/1.1\r\nX-A: \x00\r\n\r\n",
+		"oversize":          "CONNECT control.happyranch.invalid:28443 HTTP/1.1\r\nX-A: " + strings.Repeat("a", homeHeaderLimit) + "\r\n\r\n",
+		"body":              "CONNECT control.happyranch.invalid:28443 HTTP/1.1\r\nContent-Length: 1\r\n\r\nx",
+		"transfer-encoding": "CONNECT control.happyranch.invalid:28443 HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
 	}
 	for name, request := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -461,7 +461,7 @@ func TestHomeTransportHandshakeBefore200(t *testing.T) {
 	}
 	defer raw.Close()
 	_ = raw.SetDeadline(time.Now().Add(3 * time.Second))
-	_, _ = io.WriteString(raw, "CONNECT "+homeControlName+":8443 HTTP/1.1\r\n\r\n")
+	_, _ = io.WriteString(raw, "CONNECT "+homeControlName+":28443 HTTP/1.1\r\n\r\n")
 	result := make(chan string, 1)
 	go func() { line, _ := bufio.NewReader(raw).ReadString('\n'); result <- line }()
 	select {
@@ -508,7 +508,7 @@ func TestHomeTransportHalfCloseResponse(t *testing.T) {
 		}
 	})
 	h := transportForTest(t, ca, p.listener.Addr().String())
-	raw, reader, status := connectTransport(t, h, homeControlName+":8443")
+	raw, reader, status := connectTransport(t, h, homeControlName+":28443")
 	if !strings.Contains(status, " 200 ") {
 		close(release)
 		t.Fatal("CONNECT failed")
@@ -564,7 +564,7 @@ func TestHomeTransportClose(t *testing.T) {
 				}
 				_, _ = io.WriteString(c, "CONNECT ")
 			} else {
-				raw, reader, status := connectTransport(t, h, homeControlName+":8443")
+				raw, reader, status := connectTransport(t, h, homeControlName+":28443")
 				if !strings.Contains(status, " 200 ") {
 					t.Fatal("CONNECT failed")
 				}

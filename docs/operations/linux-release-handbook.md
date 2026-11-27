@@ -2017,3 +2017,30 @@ PY_STATUS
 
 Focused documentation-command verification (no installed CLI/systemd):
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_home_status_projection.py -q --tb=short`.
+
+## Home-network port upgrade (THR-327 seq758)
+
+Home mode fixes coordination/embedded DERP at LAN TCP 28443, STUN at LAN UDP
+23478, metrics at 127.0.0.1:29090 and TLS gRPC at 127.0.0.1:29443. No security
+property depends on these numbers. Keep the existing 443 CONNECT alternative.
+
+1. On the current **old build**, **Turn off** and confirm it is off.
+2. Install the new .deb / Mac build.
+3. **Turn on** with the new build.
+4. Replace the manual LAN-only UFW rules from the same subnet: delete TCP 8443
+   and UDP 3478, then add TCP 28443 and UDP 23478.
+5. Re-invite **each previously approved device**; devices/trust are not migrated.
+
+If installed too early, the new build refuses both Turn on and Turn off before
+any stop, disable or file mutation. Reinstall the previous version, Turn off
+there, reinstall the new version and Turn on. The
+[upgrade runbook](remote-access-runbook.md#home-network-port-upgrade-thr-327-seq758)
+contains the exact `apt install --allow-downgrades` recovery and four UFW commands.
+
+Every admission/trust path is new-only. Read-only exact legacy URL recognition
+can only choose the bilingual refusal. Only a retained sidecar/provision whose
+ControlURL is exactly `https://control.happyranch.invalid:8443` after old-build
+Turn off is a prior own provision to regenerate; it is never a trust binding.
+B6 has no legacy-publication acceptance. Receipt, custody, ownership and
+authorization checks remain unchanged. Clients consume the explicit DERP/STUN
+ports from the server map.

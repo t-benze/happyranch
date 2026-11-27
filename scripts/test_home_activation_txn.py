@@ -137,7 +137,7 @@ class Venue:
         config = dict(format="home-invite-config@2", release_uid=os.getuid(), home_id="home",
                       control_plane_id="control", connector_id="connector",
                       ca_der_sha256="c" * 64, dial_ip="192.168.1.40",
-                      control_url="https://control.happyranch.invalid:8443")
+                      control_url="https://control.happyranch.invalid:28443")
         config_bytes = json.dumps(config).encode()
         HomeInviteConfigRecord.parse(config_bytes)
         put(self.root / "etc/happyranch/invite-issuer.json", config_bytes)
@@ -531,7 +531,7 @@ def test_stale_and_ports(venue: Venue, monkeypatch: pytest.MonkeyPatch, case: st
         monkeypatch.setattr(headscale_service, "_dial_ip_valid", lambda ip: True)
         monkeypatch.setattr(headscale_service, "preflight_ports", lambda ip: PORT_PREFLIGHT("127.0.0.2"))
         with socket.socket() as occupied:
-            occupied.bind(("127.0.0.2", 8443))
+            occupied.bind(("127.0.0.2", 28443))
             with pytest.raises(ActivationRefused): venue.coordinator().run(prepared)
     else:
         with pytest.raises(ActivationRefused): venue.coordinator().run(prepared)

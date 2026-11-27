@@ -532,7 +532,8 @@
                 "invite_rate_limited",
                 "unknown",
                 "unverified",
-                "not_applicable"
+                "not_applicable",
+                "turn_off_then_on"
               ]
             },
             "code": {

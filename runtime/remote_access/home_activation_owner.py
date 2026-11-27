@@ -335,7 +335,7 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
             marker = self._io._read_file(parent, "credential.consumed",
                                          owner=self._io._service_owner, mode=0o600)
             role = "home-sidecar-" + receipt.home_id
-            expected = hashlib.sha256((role + "\x00" + "https://control.happyranch.invalid:8443").encode()).hexdigest()
+            expected = hashlib.sha256((role + "\x00" + "https://control.happyranch.invalid:28443").encode()).hexdigest()
             if marker != (expected + "\n").encode("ascii"):
                 raise ActivationRefused()
             check()

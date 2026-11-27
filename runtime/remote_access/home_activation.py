@@ -40,7 +40,7 @@ LIVE_MEMBERS = (
 )
 OWNED_LINK = "/etc/systemd/system/happyranch-managed.target.wants/happyranch-headscale.service"
 OWNED_LINK_TARGET = MEMBER_PATHS[0]
-CONTROL_URL = "https://control.happyranch.invalid:8443"
+CONTROL_URL = "https://control.happyranch.invalid:28443"
 BINDING_KEYS = (
     "release_uid", "home_id", "control_plane_id", "connector_id",
     "activation_generation", "ca_der_sha256", "dial_ip",

@@ -115,7 +115,7 @@ final class SavedDeviceAccessTests: XCTestCase, @unchecked Sendable {
             SavedHomeTrust(homeID: part == "home" ? "other" : t.homeID,
                 controlPlaneID: part == "control" ? "other" : t.controlPlaneID,
                 connectorID: part == "connector" ? "other" : t.connectorID,
-                controlURL: part == "http" ? "http://control.happyranch.invalid:8443" : t.controlURL,
+                controlURL: part == "http" ? "http://control.happyranch.invalid:28443" : t.controlURL,
                 dialIP: "192.168.1.41",
                 homeEndpoint: part == "endpoint" ? "100.64.0.2:443" : t.homeEndpoint,
                 caDER: part == "ca" ? Data("different-synthetic-ca".utf8) : t.caDER,
@@ -134,6 +134,19 @@ final class SavedDeviceAccessTests: XCTestCase, @unchecked Sendable {
         XCTAssertThrowsError(try original.updatingAddress(to: changed("url")), "Missing protected profile cannot recover a node")
         let display = String(describing: updated) + String(reflecting: updated)
         XCTAssertFalse(display.contains("SYNTHETIC-BEARER-CANARY"))
+    }
+
+    func testOldHomePortSavedProfileRefuses() throws {
+        let record = try credential()
+        let bytes = try JSONEncoder().encode(record)
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        var trust = try XCTUnwrap(fields["trust"] as? [String: Any])
+        trust["controlURL"] = "https://control.happyranch.invalid:8443"
+        fields["trust"] = trust
+        XCTAssertThrowsError(try JSONDecoder().decode(SavedDeviceCredential.self,
+            from: JSONSerialization.data(withJSONObject: fields))) { error in
+                XCTAssertEqual(error as? RemoteInviteError, .url)
+        }
     }
 
     func testV1SavedProfilesRefuseWithoutReinterpretingBindings() throws {

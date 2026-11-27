@@ -353,6 +353,19 @@ class HelperLifecycleBackend:
         if receipt is not None:
             if receipt.release_uid != uid:
                 raise ActivationRefused()
+            if method in ('Enable', 'Disable') and receipt.phase == 'ready':
+                # Read-only refusal classification. This never admits old state
+                # into inventory, stop, cleanup, reconnect or trust paths.
+                from runtime.remote_access.home_headscale import LEGACY_HOME_CONTROL_URL
+                service = self.io._account(create=False)
+                if service is None:
+                    raise ActivationRefused()
+                with self.io._publication_parent() as (parent, check):
+                    sidecar = self.io._json(self.io._read_file(parent, 'sidecar.json',
+                        owner=(self.io.root_owner[0], service[1]), mode=0o640))
+                    check()
+                if sidecar.get('ControlURL') == LEGACY_HOME_CONTROL_URL:
+                    raise GenerationUnavailable('turn_off_then_on')
             if method == 'Enable' and receipt.phase == 'ready':
                 # B6 can retain this receipt after partial cleanup. Reuse the
                 # existing strict publication verifier before prompting again.

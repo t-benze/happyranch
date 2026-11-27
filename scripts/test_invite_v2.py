@@ -17,7 +17,7 @@ from runtime.remote_access.invite_v2 import InviteError, decode, encode
 SWIFT_CA = base64.b64decode("MIIBtTCCAVqgAwIBAgIUJFYL6Zgls9xJBeFOg2sV9o2332EwCgYIKoZIzj0EAwIwJzElMCMGA1UEAwwcSGFwcHlSYW5jaC1TeW50aGV0aWMtVGVzdC1DQTAeFw0yNjExMTYxNDQxMDdaFw0zNjExMTMxNDQxMDdaMCcxJTAjBgNVBAMMHEhhcHB5UmFuY2gtU3ludGhldGljLVRlc3QtQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQ2NwX3SKY44WS3nPHycbi2Zrl8wernrIOA0phhfdgW4s7lwEx/Spkox8B0KgSG+PXv0EnabvCsy9tw76VaKmiRo2QwYjAdBgNVHQ4EFgQUnfsAuLVx5ONiVlxf+ouILt9tLzcwHwYDVR0jBBgwFoAUnfsAuLVx5ONiVlxf+ouILt9tLzcwDwYDVR0TAQH/BAUwAwEB/zAPBgNVHREECDAGhwTAqAEoMAoGCCqGSM49BAMCA0kAMEYCIQDpwzqLwmBOUP/7Q92jFQy2U2qJPLVZi4/KD0TwlrQFAgIhAPqwm3bQLNxd4VVa1Ok/45qyDj+E4DkSMcyledYZWnmI")
 SWIFT_SANLESS_CA = base64.b64decode("MIIBcDCCARegAwIBAgIBAzAKBggqhkjOPQQDAjAgMR4wHAYDVQQDExVTeW50aGV0aWMgU0FOLWxlc3MgQ0EwHhcNMjMxMTE0MjIxMzIwWhcNMzMwNTE4MDMzMzIwWjAgMR4wHAYDVQQDExVTeW50aGV0aWMgU0FOLWxlc3MgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQn+y+9zcuDcMqqUHzKu60sYl6vJtfgX8DR1VfNh6XtkNUwTmInfcpYhOhYzq94Nc4xe87GBk1JAN43UK9cLaDAo0IwQDAOBgNVHQ8BAf8EBAMCAgQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUyJSU09xAckvJECBK6NS3R58e9wswCgYIKoZIzj0EAwIDRwAwRAIgSGTa05eLWaPEQa9fYBwp979EMWXfu6F1aLr+IlLxlqMCIAv6++jkLKpTs+XT4vP9ETW/CdjHrUHv1hqkirv2ErYF")
 NOW = 1_800_000_010
-CONTROL = "https://control.happyranch.invalid:8443"
+CONTROL = "https://control.happyranch.invalid:28443"
 KEYS = {"v", "mode", "control_url", "control_plane_id", "control_tls", "home_endpoint",
         "home_id", "connector_id", "invite_id", "join_key", "pair_secret", "issued_at", "expires_at"}
 
@@ -182,11 +182,11 @@ def test_swift_json_refusals(case: str) -> None:
     refuses(raw_wire(data), "schema")
 
 
-@pytest.mark.parametrize("url", ["http://control.happyranch.invalid:8443", "https://user@control.happyranch.invalid:8443",
-    "https://user:pass@control.happyranch.invalid:8443", CONTROL + "?query", CONTROL + "#fragment", CONTROL + "/path",
-    "https://control.happyranch.invalid:443", "https://127.0.0.1:8443", "https://example.test:8443",
-    "https://192.168.1.40:8443", "https://192.168.001.40:8443", CONTROL + "/%2f",
-    "https://CONTROL.happyranch.invalid:8443", CONTROL + "//"])
+@pytest.mark.parametrize("url", ["https://control.happyranch.invalid:8443", "http://control.happyranch.invalid:28443", "https://user@control.happyranch.invalid:28443",
+    "https://user:pass@control.happyranch.invalid:28443", CONTROL + "?query", CONTROL + "#fragment", CONTROL + "/path",
+    "https://control.happyranch.invalid:443", "https://127.0.0.1:28443", "https://example.test:28443",
+    "https://192.168.1.40:28443", "https://192.168.001.40:28443", CONTROL + "/%2f",
+    "https://CONTROL.happyranch.invalid:28443", CONTROL + "//"])
 def test_swift_control_url_refusals(url: str) -> None:
     # Swift testURLAndTrustRefusals :114-121.
     f = fixture(); f["control_url"] = url
@@ -249,7 +249,7 @@ def test_swift_version_and_mode_refusals(case: str) -> None:
 
 
 @pytest.mark.parametrize("ip", ["127.0.0.1", "100.64.0.1", "169.254.1.1", "172.15.0.1", "172.32.0.1", "8.8.8.8",
-    "::1", "::ffff:192.168.1.40", "192.168.001.40", "192.168.1.40.", "192.168.1.40..", "192.168.1.40:8443", "192.168.1.40\n"])
+    "::1", "::ffff:192.168.1.40", "192.168.001.40", "192.168.1.40.", "192.168.1.40..", "192.168.1.40:28443", "192.168.1.40\n"])
 def test_swift_dial_ip_refusals(ip: str) -> None:
     # Swift testDialIPIsCanonicalRFC1918AndCannotSelectControlURL :209-213.
     f = fixture(); f["control_tls"]["dial_ip"] = ip

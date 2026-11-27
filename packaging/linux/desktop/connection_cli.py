@@ -13,7 +13,7 @@ import time
 _spec = importlib.util.spec_from_file_location("connection_contract", Path(__file__).with_name("connection_contract.py"))
 contract = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(contract)
-FIREWALL_MESSAGES = {'likely_blocked': 'The home computer’s firewall probably blocks the home ports (8443/tcp and 3478/udp). Allow these ports from your home LAN only, then check status.', 'unverified': 'Could not verify the home computer’s firewall. If connections fail, check home LAN access to 8443/tcp and 3478/udp.'}
+FIREWALL_MESSAGES = {'likely_blocked': 'The home computer’s firewall probably blocks the home ports (28443/tcp and 23478/udp). Allow these ports from your home LAN only, then check status.', 'unverified': 'Could not verify the home computer’s firewall. If connections fail, check home LAN access to 28443/tcp and 23478/udp.'}
 METHODS = {"status": "Status", "devices": "Status", "next-device": "NextDevice",
            "approve-device": "ApprovePending", "reject-device": "RejectPending", "revoke-device": "RevokeSelected",
            "enable": "Enable", "turn-off": "Disable", "create-invite": "IssueInvite",
@@ -195,6 +195,9 @@ def main() -> int:
         elif error.value.get("category") == "not_applicable" and error.value["effect"] == "none":
             print("This action does not apply to the current remote access setup. No change was made. "
                   "Category: not_applicable.", file=sys.stderr)
+        elif error.value.get("category") == "turn_off_then_on":
+            print("This home network was set up by an older version. Reinstall the previous version, Turn off there, then install this version and Turn on.", file=sys.stderr)
+            print("此家庭网络由旧版本设置。请重新安装之前的版本，在旧版本中关闭家庭网络，然后安装此版本并开启。", file=sys.stderr)
         elif error.value["code"] == "hostStateUnrecognized":
             print("Remote access files or the release runtime owner could not be verified. "
                   "Check the local installation. Category: " + error.value['category'] + ".", file=sys.stderr)

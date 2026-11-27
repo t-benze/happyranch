@@ -344,7 +344,7 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 		case "/key":
 			keyHits.Add(1)
 			if profile == "redirect" {
-				http.Redirect(w, r, "https://unrelated.invalid:8443/key", http.StatusFound)
+				http.Redirect(w, r, "https://unrelated.invalid:28443/key", http.StatusFound)
 				return
 			}
 			_ = json.NewEncoder(w).Encode(tailcfg.OverTLSPublicKeyResponse{PublicKey: advertised})
@@ -358,7 +358,7 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 			h2.ServeConn(conn, &http2.ServeConnOpts{BaseConfig: &http.Server{Handler: register}})
 		case "/derp":
 			if profile == "redirect" {
-				http.Redirect(w, r, "https://unrelated.invalid:8443/derp", http.StatusFound)
+				http.Redirect(w, r, "https://unrelated.invalid:28443/derp", http.StatusFound)
 				return
 			}
 			derpHandler.ServeHTTP(w, r)
@@ -387,7 +387,7 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 	// production constructor contains exactly the ephemeral issuer.
 	f.localRoots.AddCert(public.cert)
 	trapIP := netip.AddrFrom4([4]byte{127, byte(os.Getpid() >> 16), byte(os.Getpid() >> 8), byte(os.Getpid())})
-	trapListener, err := net.Listen("tcp4", net.JoinHostPort(trapIP.String(), "8443"))
+	trapListener, err := net.Listen("tcp4", net.JoinHostPort(trapIP.String(), "28443"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +446,7 @@ func runHomeTransportProfile(t *testing.T, profile, path string) {
 		return
 	}
 
-	region := &tailcfg.DERPRegion{RegionID: 1, Nodes: []*tailcfg.DERPNode{{Name: "home", RegionID: 1, HostName: homeName, IPv4: trapIP.String(), IPv6: "none", DERPPort: 8443, STUNPort: -1}}}
+	region := &tailcfg.DERPRegion{RegionID: 1, Nodes: []*tailcfg.DERPNode{{Name: "home", RegionID: 1, HostName: homeName, IPv4: trapIP.String(), IPv6: "none", DERPPort: 28443, STUNPort: -1}}}
 	dc := derphttp.NewRegionClient(key.NewNode(), func(string, ...any) {}, netmon.NewStatic(), func() *tailcfg.DERPRegion { return region })
 	defer dc.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -505,7 +505,7 @@ func TestHomeVerifierFailureClosesStreams(t *testing.T) {
 			t.Fatal(err)
 		}
 		c.SetDeadline(time.Now().Add(2 * time.Second))
-		fmt.Fprintf(c, "CONNECT %s:8443 HTTP/1.1\r\nHost: %s:8443\r\n\r\n", homeName, homeName)
+		fmt.Fprintf(c, "CONNECT %s:28443 HTTP/1.1\r\nHost: %s:28443\r\n\r\n", homeName, homeName)
 		return c
 	}
 	first := connect()
@@ -545,7 +545,7 @@ func TestHomeVerifierFailureClosesStreams(t *testing.T) {
 }
 
 func TestHomeConfigAdmission(t *testing.T) {
-	for _, scenario := range []string{"valid", "missing-trust", "public-ip", "ipv6", "loopback", "bad-fingerprint", "wrong-url", "legacy-profile"} {
+	for _, scenario := range []string{"valid", "missing-trust", "public-ip", "ipv6", "loopback", "bad-fingerprint", "wrong-url", "old-home-port", "legacy-profile"} {
 		t.Run(scenario, func(t *testing.T) {
 			c := validConfig(t)
 			c.Profile = LinuxIdentityProfile
@@ -565,7 +565,9 @@ func TestHomeConfigAdmission(t *testing.T) {
 			case "bad-fingerprint":
 				c.ControlTLS.CAFingerprint = "unexpected"
 			case "wrong-url":
-				c.ControlURL = "https://attacker.invalid:8443"
+				c.ControlURL = "https://attacker.invalid:28443"
+			case "old-home-port":
+				c.ControlURL = "https://control.happyranch.invalid:8443"
 			case "legacy-profile":
 				c.Profile = ""
 			}
@@ -594,7 +596,7 @@ func TestHomeConnectAdmissionAndClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	for _, request := range []string{"GET http://" + homeName + "/ts2021 HTTP/1.1\r\nHost: " + homeName + "\r\n\r\n", "CONNECT attacker.invalid:443 HTTP/1.1\r\nHost: attacker.invalid:443\r\n\r\n", "CONNECT " + homeName + ":8443 HTTP/1.1\r\nBad Header: x\r\n\r\n", strings.Repeat("X", 8192)} {
+	for _, request := range []string{"GET http://" + homeName + "/ts2021 HTTP/1.1\r\nHost: " + homeName + "\r\n\r\n", "CONNECT attacker.invalid:443 HTTP/1.1\r\nHost: attacker.invalid:443\r\n\r\n", "CONNECT " + homeName + ":28443 HTTP/1.1\r\nBad Header: x\r\n\r\n", strings.Repeat("X", 8192)} {
 		c, err := net.Dial("tcp", f.listener.Addr().String())
 		if err != nil {
 			t.Fatal(err)

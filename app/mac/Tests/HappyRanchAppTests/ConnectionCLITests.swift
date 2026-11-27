@@ -397,7 +397,7 @@ struct ConnectionCLITests {
     private func credential(id: UUID? = UUID()) throws -> SavedDeviceCredential {
         // Synthetic protected DTO; parser/CA verification is owned by invite tests.
         let trust = SavedHomeTrust(homeID: "HOME-CANARY", controlPlaneID: "CONTROL-CANARY", connectorID: "CONNECTOR-CANARY",
-            controlURL: "https://control.happyranch.invalid:8443", dialIP: "192.168.1.40", homeEndpoint: "100.64.0.10:443",
+            controlURL: "https://control.happyranch.invalid:28443", dialIP: "192.168.1.40", homeEndpoint: "100.64.0.10:443",
             caDER: Data("CA-CANARY".utf8), caSHA256: "FINGERPRINT-CANARY")
         return try SavedDeviceCredential(binding: SavedDeviceBinding(homeID: trust.homeID,
             controlPlaneID: trust.controlPlaneID, stableNodeID: "NODE-CANARY"), trust: trust,

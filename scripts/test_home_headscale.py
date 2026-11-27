@@ -25,10 +25,10 @@ def config() -> dict:
 def test_headscale_pinned_contract() -> None:
     value = config()
     for key, expected in {
-        "server_url": "https://control.happyranch.invalid:8443",
-        "listen_addr": "192.168.1.40:8443",
-        "metrics_listen_addr": "127.0.0.1:19090",
-        "grpc_listen_addr": "127.0.0.1:50443",
+        "server_url": "https://control.happyranch.invalid:28443",
+        "listen_addr": "192.168.1.40:28443",
+        "metrics_listen_addr": "127.0.0.1:29090",
+        "grpc_listen_addr": "127.0.0.1:29443",
         "grpc_allow_insecure": False,
         "tls_letsencrypt_hostname": "",
         "tls_letsencrypt_listen": "",
@@ -43,7 +43,7 @@ def test_headscale_pinned_contract() -> None:
     assert value["derp"] == {
         "server": {
             "enabled": True, "region_id": 999, "region_code": "happyranch-home",
-            "region_name": "HappyRanch Home", "stun_listen_addr": "192.168.1.40:3478",
+            "region_name": "HappyRanch Home", "stun_listen_addr": "192.168.1.40:23478",
             "private_key_path": "/var/lib/happyranch-headscale/derp.key",
             "automatically_add_embedded_derp_region": False, "ipv4": IP, "ipv6": "none",
         },
@@ -93,7 +93,7 @@ def test_private_map_exact_tuple() -> None:
             "regionid": 999, "regioncode": "happyranch-home", "regionname": "HappyRanch Home",
             "nodes": [{"name": "999a", "regionid": 999,
                        "hostname": "control.happyranch.invalid", "ipv4": IP, "ipv6": "none",
-                       "derpport": 8443, "stunport": 3478, "stunonly": False, "canport80": False}],
+                       "derpport": 28443, "stunport": 23478, "stunonly": False, "canport80": False}],
         }},
     }
 
@@ -135,12 +135,12 @@ def test_selector_accepts_shared_rfc1918_boundaries(ip: str, table: int, reverse
     f = fixture(); f["control_tls"]["dial_ip"] = ip
     assert invite_v2.decode(wire(f), now=NOW).dial_ip == ip
     assert invite_v2.decode(invite_v2.encode(**(inputs() | {"dial_ip": ip})).invite_text, now=NOW).dial_ip == ip
-    assert yaml.safe_load(home.render_headscale_config(dial_ip=ip, policy_path=POLICY))["listen_addr"] == ip + ":8443"
+    assert yaml.safe_load(home.render_headscale_config(dial_ip=ip, policy_path=POLICY))["listen_addr"] == ip + ":28443"
     assert yaml.safe_load(home.render_private_derp_map(dial_ip=ip))["regions"][999]["nodes"][0]["ipv4"] == ip
 
 
 @pytest.mark.parametrize("ip", ["", "192.168.001.40", "192.168.1.40 ", " 10.1.2.3", "10.1.2.3/24",
-                                  "10.1.2.3:8443", "10.1.2.999", "127.0.0.1", "169.254.1.2",
+                                  "10.1.2.3:28443", "10.1.2.999", "127.0.0.1", "169.254.1.2",
                                   "8.8.8.8", "100.64.0.1", "172.15.255.255", "172.32.0.0",
                                   "192.169.0.1", "0.0.0.0", "::", "::1", "fd00::1",
                                   "::ffff:192.168.1.40", "SYNTHETIC-INPUT-CANARY"])

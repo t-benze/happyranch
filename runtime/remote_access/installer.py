@@ -4754,7 +4754,9 @@ class ManagedInstaller:
 
         Live sidecar publication appends fixed fields without changing prepared
         bytes. Reuse may verify those original bytes against provenance; it never
-        republishes or admits the retained live configuration.
+        republishes or admits the retained live configuration. The exact legacy
+        URL is recognized only here for replacement after Disable; its appended
+        binding is stripped before the original receipted generation is checked.
         """
         files = {}
         for name, (owner, mode) in {
@@ -4778,7 +4780,8 @@ class ManagedInstaller:
                     or binding["connector_id"] != connector["connector_id"]
                     or binding["control_plane_id"] != connector["managed"]["control_plane_id"]
                     or type(binding["activation_generation"]) is not int or binding["activation_generation"] < 0
-                    or sidecar.get("ControlURL") != CONTROL_URL or type(tls) is not dict
+                    or sidecar.get("ControlURL") not in (CONTROL_URL, home_headscale.LEGACY_HOME_CONTROL_URL)
+                    or type(tls) is not dict
                     or set(tls) != {"dial_ip", "ca_sha256"}
                     or type(tls["dial_ip"]) is not str or not _canonical_dial_ip(tls["dial_ip"])
                     or type(tls["ca_sha256"]) is not str or re.fullmatch("[0-9a-f]{64}", tls["ca_sha256"]) is None):

@@ -25,7 +25,7 @@ import (
 
 const homeTrustRefused = -20
 const homeReapprovalRequired = -21
-const homeControlURL = "https://" + homeControlName + ":8443"
+const homeControlURL = "https://" + homeControlName + ":28443"
 
 type homeLaunch struct {
 	Recovery       *homeAddressRecovery `json:"recovery,omitempty"`

@@ -48,7 +48,7 @@ def encoded(record: dict) -> bytes:
 def config_record() -> dict:
     return dict(format="home-invite-config@2", release_uid=1000, home_id="home", control_plane_id="control",
                 connector_id="connector", ca_der_sha256="a" * 64,
-                dial_ip="192.168.1.40", control_url="https://control.happyranch.invalid:8443")
+                dial_ip="192.168.1.40", control_url="https://control.happyranch.invalid:28443")
 
 
 def receipt_record(phase: str = "prepared") -> dict:
@@ -469,7 +469,7 @@ def test_config_read_is_frozen_effect_free_and_redacted(store: HomeActivationSto
         monkeypatch.setattr(activation.os, name, no_effect)
     monkeypatch.setattr(activation.ManagedInstaller, "_rename_provision_entry", no_effect)
     result = load_config(tmp_path)
-    assert result.control_url == "https://control.happyranch.invalid:8443"
+    assert result.control_url == "https://control.happyranch.invalid:28443"
     assert not hasattr(result, "activation_generation") and not hasattr(result, "home_endpoint")
     with pytest.raises(FrozenInstanceError): result.home_id = "other"
     after = sorted((str(path.relative_to(tmp_path)), path.read_bytes()) for path in tmp_path.rglob("*") if path.is_file())

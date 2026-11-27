@@ -4842,7 +4842,7 @@ def test_invite_config_clean_publication_and_reuse(fixture: Fixture, monkeypatch
     assert raw == dict(format='home-invite-config@2', release_uid=os.getuid(),
         home_id=connector['home_id'], control_plane_id=connector['managed']['control_plane_id'],
         connector_id=connector['connector_id'], ca_der_sha256=hashlib.sha256(b'synthetic public CA').hexdigest(),
-        dial_ip='192.168.1.40', control_url='https://control.happyranch.invalid:8443')
+        dial_ip='192.168.1.40', control_url='https://control.happyranch.invalid:28443')
     assert HomeInviteConfigRecord.parse(path.read_bytes()).home_id == connector['home_id']
     assert (path.stat().st_uid, path.stat().st_gid) == io.root_owner
     assert path.stat().st_mode & 0o777 == 0o600
