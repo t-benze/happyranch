@@ -96,154 +96,6 @@ def _reserved_rows(conn, table, column, budget, *, where, args=()):
             yield from rows(conn, table, budget, where='rowid=?', args=(rowid,), maximum=1)
 
 
-def _in(column: str, values: set | frozenset) -> tuple[str, tuple]:
-    keys = tuple(sorted(values))
-    return (column + ' IN (' + ','.join('?' for _ in keys) + ')', keys) if keys else ('0', ())
-
-
-def _references(column: str, values: set | frozenset) -> tuple[str, tuple]:
-    """Reverse candidates only; original row decoding/replay remains mandatory."""
-    predicate, args = _in('reference.atom', values)
-    return ("EXISTS (SELECT 1 FROM json_tree(CASE WHEN json_valid(" + column + ") THEN "
-            + column + " ELSE '{}' END) AS reference WHERE reference.type='text' AND "
-            + predicate + ')', args)
-
-
-@dataclass
-class _QueuedSelection:
-    """Call-local acquisition closure, never a validated history certificate."""
-
-    task_ids: set = field(default_factory=set)
-    instance_ids: set = field(default_factory=set)
-    source_ids: set = field(default_factory=set)
-    ordinary_ids: set = field(default_factory=set)
-    events: dict = field(default_factory=dict)
-
-    def expand(self, value: Any, budget: _Budget) -> None:
-        from runtime.workflows.coding_revision import _copy_allowance
-        pending = [value]
-        while pending:
-            value = pending.pop()
-            budget.step()
-            if type(value) is dict:
-                for key, item in value.items():
-                    budget.step()
-                    target = (self.task_ids if key in ('task_id', 'target_task_id', 'root_task_id',
-                        'root_ancestor_id', 'parent_task_id', 'revisit_of_task_id') else
-                        self.instance_ids if key == 'instance_id' else
-                        self.source_ids if key == 'owner_invocation_id' else None)
-                    if target is not None and type(item) is str and item not in target:
-                        _copy_allowance(item, budget)
-                        target.add(item)
-                    if key == 'tasks' and type(item) is list:
-                        for task in item:
-                            budget.step()
-                            if type(task) is dict and type(task.get('id')) is str:
-                                _copy_allowance(task['id'], budget)
-                                self.task_ids.add(task['id'])
-                    pending.append(item)
-            elif type(value) is list:
-                pending.extend(value)
-
-
-def _queued_selection(conn: sqlite3.Connection, budget: _Budget, *, task_ids: frozenset[str],
-                      instance_ids: frozenset[str]) -> _QueuedSelection:
-    """Close original/native/reverse dependencies before any per-run replay.
-
-    A native root owns one complete journal namespace. Its other Coding runs,
-    every referenced batch member and retained anchor are pulled in, including
-    a dependency carried only by an older event. SQL JSON predicates only find
-    reverse candidates; malformed addressed rows still reach original decoders.
-    All fetched values/copies use the caller's original allowance/deadline.
-    """
-    from runtime.workflows.coding_revision import _copy_allowance
-    from runtime.infrastructure.task_pause_controls import decode_journal
-    _copy_allowance([sorted(task_ids), sorted(instance_ids)], budget)
-    scope = _QueuedSelection(set(task_ids), set(instance_ids))
-    visited_tasks, visited_instances, journals = set(), set(), set()
-    while True:
-        before = (len(scope.task_ids), len(scope.instance_ids), len(scope.source_ids),
-                  len(scope.ordinary_ids), len(scope.events), len(journals))
-        frontier = scope.task_ids - visited_tasks
-        visited_tasks.update(frontier)
-        own, own_args = _in('id', frontier)
-        children, child_args = _in('parent_task_id', frontier)
-        reverse, reverse_args = _in('revisit_of_task_id', frontier)
-        for row in _bounded_rows(conn, 'tasks', ('id', 'parent_task_id', 'revisit_of_task_id'),
-                (('text',), ('text', 'null'), ('text', 'null')), budget,
-                where=f'({own}) OR ({children}) OR ({reverse})', args=own_args + child_args + reverse_args):
-            _copy_allowance(list(row[:3]), budget)
-            scope.task_ids.add(row[0])
-            scope.task_ids.update(key for key in row[1:3] if key is not None)
-        task_where, task_args = _in('task_id', frontier)
-        if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_task_ownership'").fetchone():
-            for row in _bounded_rows(conn, 'workflow_task_ownership', ('kind', 'owner_id'),
-                    (('text',), ('text',)), budget,
-                    where=f'({task_where}) AND kind IN (\'coding_source_waiting\',\'coding_carrier\')', args=task_args):
-                _copy_allowance(row[1], budget)
-                scope.instance_ids.add(row[1])
-        instances = scope.instance_ids - visited_instances
-        visited_instances.update(instances)
-        selected, selected_args = _in('id', instances)
-        roots, root_args = _in('root_task_id', frontier)
-        for row in _bounded_rows(conn, 'workflow_instances', ('id', 'root_task_id'),
-                (('text',), ('text', 'null')), budget,
-                where=f'({selected}) OR ({roots})', args=selected_args + root_args):
-            # Document instances share this table; only Coding runs/ownership
-            # below create a Coding instance selection.
-            if conn.execute('SELECT 1 FROM workflow_coding_runs WHERE instance_id=?', (row[0],)).fetchone():
-                _copy_allowance(list(row[:2]), budget)
-                scope.instance_ids.add(row[0])
-                if row[1] is not None:
-                    scope.task_ids.add(row[1])
-        selected, selected_args = _in('instance_id', instances)
-        for row in _bounded_rows(conn, 'workflow_coding_attempts', ('instance_id', 'task_id'),
-                (('text',), ('text',)), budget,
-                where=f'({selected}) OR ({task_where})', args=selected_args + task_args):
-            _copy_allowance(list(row[:2]), budget)
-            scope.instance_ids.add(row[0])
-            scope.task_ids.add(row[1])
-        # Exclude already acquired rows, retaining the original bounded row
-        # gates on every new candidate and charging no replacement ledger.
-        for table, column, seen, primary, primary_args in (
-            ('workflow_coding_events', 'event_bytes', scope.events, *_in('instance_id', scope.instance_ids)),
-            ('audit_log', 'payload', scope.ordinary_ids, *_in('task_id', scope.task_ids)),
-            ('task_pause_controls', 'admission_journal_json', journals, *_in('root_task_id', scope.task_ids)),
-        ):
-            if table == 'task_pause_controls' and conn.execute(
-                    "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='task_pause_controls'").fetchone() is None:
-                continue
-            reverse, reverse_args = _references(column, scope.task_ids | scope.instance_ids | scope.source_ids)
-            key = 'root_task_id' if table == 'task_pause_controls' else 'id'
-            excluded, excluded_args = _in(key, set(seen))
-            where = f'(({primary}) OR ({reverse})) AND NOT ({excluded})'
-            if table == 'audit_log':
-                where += " AND action='coding_ordinary_cancellation'"
-            for row in rows(conn, table, budget, where=where,
-                            args=primary_args + reverse_args + excluded_args):
-                if table == 'task_pause_controls':
-                    journals.add(row[key])
-                    value = decode_journal(row[column])
-                    for native in value['entries']:
-                        scope.expand(dict(task_id=native['task_id'], root_task_id=native['root_task_id']), budget)
-                    continue
-                else:
-                    raw = row[column]
-                    _check(type(raw) is (bytes if table == 'workflow_coding_events' else str))
-                    value = _read_json(raw if type(raw) is bytes else raw.encode('utf8'), budget,
-                                       16777216 if table == 'workflow_coding_events' else 1048576)
-                    if table == 'workflow_coding_events':
-                        scope.events[row[key]] = row
-                        scope.instance_ids.add(row['instance_id'])
-                    else:
-                        scope.ordinary_ids.add(row[key])
-                scope.expand(value, budget)
-        after = (len(scope.task_ids), len(scope.instance_ids), len(scope.source_ids),
-                 len(scope.ordinary_ids), len(scope.events), len(journals))
-        if after == before:
-            return scope
-
-
 def _sequential_completion_audit(audit: dict, sources: dict[int, dict], budget: _Budget) -> bool:
     """Match only the original native report of one already recognized source.
 
@@ -292,30 +144,16 @@ def _sequential_completion_audit(audit: dict, sources: dict[int, dict], budget: 
 
 
 def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: Any, imported: Any,
-                *, sequential: dict | None = None, task_ids: frozenset[str] | None = None,
-                instance_ids: frozenset[str] | None = None) -> QueuedStorage:
-    """Replay complete history by default, or the fixed point of explicit roots.
-
-    Caller owns the original snapshot, schema admission, ledger and deadline.
-    Returned dependency/comparison facts retain their original meanings; no
-    selected result is an org certificate or evidence of current authority.
-    """
+                *, sequential: dict | None = None) -> QueuedStorage:
     from runtime.infrastructure.workflow_schema import _coding_document_exclusions
     optional = _coding_document_exclusions(conn)
     storage = QueuedStorage()
     sequential_sources = {}
-    selection_scope = (None if task_ids is None and instance_ids is None else _queued_selection(
-        conn, budget, task_ids=frozenset() if task_ids is None else task_ids,
-        instance_ids=frozenset() if instance_ids is None else instance_ids))
     # Discriminate ordinary decision prose before native acquisition. The same
     # lexical/decoded inventory retains escaped, duplicate and malformed reserved
     # candidates; central closure still refuses unsupported envelopes.
-    callback_where, callback_args = ('decision_json IS NOT NULL', ())
-    if selection_scope is not None:
-        selected_callbacks, callback_args = _in('task_id', selection_scope.task_ids)
-        callback_where += ' AND (' + selected_callbacks + ')'
     for row in _reserved_rows(conn, 'task_results', 'decision_json', budget,
-                              where=callback_where, args=callback_args):
+                              where='decision_json IS NOT NULL'):
         raw = row['decision_json']
         if raw is None:
             continue
@@ -389,12 +227,9 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
                     candidates.append(callback)
             _check(len(candidates) == 1)
             storage.add('audit_log', audit)
-    selected_where, selected_args = ('1', ()) if selection_scope is None else _in('instance_id', selection_scope.instance_ids)
-    run_rows = list(rows(conn, 'workflow_coding_runs', budget, where=selected_where, args=selected_args))
-    attempts = list(rows(conn, 'workflow_coding_attempts', budget, where=selected_where, args=selected_args))
-    events = (list(rows(conn, 'workflow_coding_events', budget)) if selection_scope is None else list(selection_scope.events.values()))
-    if selection_scope is not None:
-        _check(selection_scope.instance_ids <= {r['instance_id'] for r in run_rows})
+    run_rows = list(rows(conn, 'workflow_coding_runs', budget))
+    attempts = list(rows(conn, 'workflow_coding_attempts', budget))
+    events = list(rows(conn, 'workflow_coding_events', budget))
     _check(len(run_rows) <= len(attempts) <= 10 * len(run_rows) and len(events) >= len(run_rows))
     used_attempts, used_events, used_sources = set(), set(), set()
     for run in run_rows:
@@ -728,14 +563,8 @@ def read_queued(conn: sqlite3.Connection, org: str, budget: _Budget, mappings: A
             _check(task_id not in storage.owners)
             storage.owners[task_id] = (kind, instance)
     from runtime.workflows._coding_cancellation_history import complete
-    if selection_scope is None:
-        complete(conn, org, budget, storage)
-    else:
-        complete(conn, org, budget, storage, task_ids=selection_scope.task_ids, ordinary_ids=selection_scope.ordinary_ids)
+    complete(conn, org, budget, storage)
     from runtime.workflows.coding_native_history import validate_native_journals
-    if selection_scope is None:
-        validate_native_journals(conn, org, budget, storage)
-    else:
-        validate_native_journals(conn, org, budget, storage, root_task_ids=selection_scope.task_ids)
+    validate_native_journals(conn, org, budget, storage)
     _check(used_attempts == {r['id'] for r in attempts} and used_events == {r['id'] for r in events})
     return storage

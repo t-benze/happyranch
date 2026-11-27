@@ -1,23 +1,5 @@
 # Full sequential-history reader — Decision 2
 
-THR-404 group 7a-C1 stages optional selected roots in retained Coding readers.
-Queued acquisition closes complete native task roots, revisit/reverse edges,
-instance attempts/events, authentic source callbacks, cancellation batches and
-ordinary overlays, and native journal owners to a fixed point. Original replay,
-exact native row equality, deferred cancellation comparisons and dependency facts
-remain mandatory. Malformed addressed/selected evidence refuses; a disconnected
-ordinary cancellation audit or native journal is outside a selected read.
-
-Selected source/capture acquisition retains capability/admission/operation/owner
-closure and conflicts, including every operation for a selected principal because
-the operation key is encoded in the original command. Original complete mapping
-inventory/publication and setup contracts remain shared and unchanged. No new
-ledger or allowance is supplied. With no selection all original callers remain
-complete, including STOP-1 and run list/detail. The selected schema inventory,
-mixed writer entry and snapshot-local integration result are group 7a-C2;
-document/mixed cancel/historical Final wiring is later work. These reader-only
-changes supply no write-path timing or production acceptance evidence.
-
 TASK-14734 under ROOT TASK-14640 implements Founder THR336 msg102 Decision 2,
 per accepted TASK-14643 d2-reader-design-rev4.md SHA256
 02938d04e0121909307a1a088152b70e598fa7828029652880f52364f81d5caf

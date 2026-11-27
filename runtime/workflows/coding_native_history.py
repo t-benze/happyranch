@@ -857,9 +857,7 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     return state
 
 
-def _native_journal_rows(conn: Any, budget: Any, source_ids: set[str], *,
-                         root_task_ids: set[str] | None = None,
-                         task_ids: set[str] | None = None) -> Iterator[tuple[dict, dict]]:
+def _native_journal_rows(conn: Any, budget: Any, source_ids: set[str]) -> Iterator[tuple[dict, dict]]:
     """Stream ordinary native history; retain aggregate Coding/source charges.
 
     Every row still passes the original storage/value gates and journal decoder.
@@ -871,14 +869,7 @@ def _native_journal_rows(conn: Any, budget: Any, source_ids: set[str], *,
     from runtime.workflows.coding_authority_history import _Budget
     from runtime.workflows.coding_start_history import rows, same
 
-    query, args = 'SELECT rowid FROM task_pause_controls ORDER BY rowid', ()
-    if root_task_ids is not None:
-        from runtime.workflows.coding_start_history import _in, _references
-        roots, root_args = _in('root_task_id', root_task_ids)
-        reverse, reverse_args = _references('admission_journal_json', source_ids | (task_ids or set()))
-        query = 'SELECT rowid FROM task_pause_controls WHERE ' + f'({roots}) OR ({reverse}) ORDER BY rowid'
-        args = root_args + reverse_args
-    with closing(conn.execute(query, args)) as candidates:
+    with closing(conn.execute('SELECT rowid FROM task_pause_controls ORDER BY rowid')) as candidates:
         for (rowid,) in candidates:
             observed, = rows(conn, 'task_pause_controls', _Budget(),
                              where='rowid=?', args=(rowid,), maximum=1)
@@ -893,8 +884,7 @@ def _native_journal_rows(conn: Any, budget: Any, source_ids: set[str], *,
             yield row, journal
 
 
-def validate_native_journals(conn: Any, org: str, budget: Any, storage: Any, *,
-                             root_task_ids: set[str] | None = None) -> None:
+def validate_native_journals(conn: Any, org: str, budget: Any, storage: Any) -> None:
     """Current native coding owners must close into an authenticated J leaf.
 
     Shape decoding alone must not admit a coding owner on I, an orphan, a
@@ -906,10 +896,7 @@ def validate_native_journals(conn: Any, org: str, budget: Any, storage: Any, *,
         return
     selected, uncertain = set(), set()
     source_ids = {entry['source']['result_claim']['owner_invocation_id'] for entry in storage.runs.values()}
-    journals = (_native_journal_rows(conn, budget, source_ids) if root_task_ids is None else
-                _native_journal_rows(conn, budget, source_ids, root_task_ids=root_task_ids,
-                                     task_ids=set(storage.owners)))
-    for row, journal in journals:
+    for row, journal in _native_journal_rows(conn, budget, source_ids):
         for entry in storage.runs.values():
             state = entry['native']
             source_id = entry['source']['result_claim']['owner_invocation_id']

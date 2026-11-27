@@ -168,8 +168,7 @@ def ordinary_overlay(org: str, command: dict, audits: list, saved: Any, instance
         retained=anchors)
 
 
-def _ordinary_batches(conn: Any, org: str, budget: Any, storage: Any, *,
-                      task_ids: set[str] | None = None, ordinary_ids: set[int] | None = None) -> list:
+def _ordinary_batches(conn: Any, org: str, budget: Any, storage: Any) -> list:
     """Independently authenticate all ordinary overlays, including orphan rows.
 
     Existing literal @1 retained anchors admit only cancelled graphs. Additive @2 requires at least one
@@ -180,14 +179,7 @@ def _ordinary_batches(conn: Any, org: str, budget: Any, storage: Any, *,
     from runtime.workflows.coding_source_history import _timestamp as native_timestamp
     from runtime.infrastructure.task_pause_controls import decode_journal
     batches, operations = [], set()
-    where, args = "action='coding_ordinary_cancellation'", ()
-    if task_ids is not None:
-        from runtime.workflows.coding_start_history import _in
-        addressed, addressed_args = _in('task_id', task_ids)
-        reverse, reverse_args = _in('id', set() if ordinary_ids is None else ordinary_ids)
-        where += f' AND (({addressed}) OR ({reverse}))'
-        args = addressed_args + reverse_args
-    for audit in rows(conn, 'audit_log', budget, where=where, args=args):
+    for audit in rows(conn, 'audit_log', budget, where="action='coding_ordinary_cancellation'"):
         _check(type(audit['payload']) is str)
         value = _closed(_read_json(audit['payload'].encode('utf8'), budget, 1048576),
             'format operation command audits retained')
@@ -441,12 +433,10 @@ def _returned_boundary(conn: Any, entry: dict, sample: dict, budget: Any) -> dic
     return entry['tasks']
 
 
-def complete(conn: Any, org: str, budget: Any, storage: Any, *,
-             task_ids: set[str] | None = None, ordinary_ids: set[int] | None = None) -> None:
+def complete(conn: Any, org: str, budget: Any, storage: Any) -> None:
     """Cross-graph/legacy closure, including partial and orphan batch refusal."""
     from runtime.workflows.coding_start_history import rows, same
-    ordinary = (_ordinary_batches(conn, org, budget, storage) if task_ids is None else
-                _ordinary_batches(conn, org, budget, storage, task_ids=task_ids, ordinary_ids=ordinary_ids))
+    ordinary = _ordinary_batches(conn, org, budget, storage)
     batches = [(records, next(iter(records.values()))) for records in storage.cancellations.values()]
     batches.extend(({}, record) for record in ordinary)
     for records, sample in batches:
