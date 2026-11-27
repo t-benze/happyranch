@@ -1814,7 +1814,11 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep, req
                             status_code=status.HTTP_409_CONFLICT,
                             detail={"code": "recovery_callback_not_admissible"},
                         )
-    except SequentialContractError:
+    except SequentialContractError as exc:
+        if (continuation is not None and decision_payload is not None
+                and decision_payload.get('action') == 'workflow_control'
+                and str(exc) in {'control_cas_conflict', 'exhausted'}):
+            raise HTTPException(status_code=409, detail={'code': str(exc)}) from None
         if sequential_owner is None:
             raise
         raise HTTPException(status_code=422, detail={'code': 'workflow_sequential_callback_invalid'}) from None
