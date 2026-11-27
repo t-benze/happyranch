@@ -197,6 +197,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     private var targetID: String?
     private var candidate: [String: Any]?
     var candidateSnapshot: (() -> [String: Any]?)?
+    private let localePreference: AppLocalePreference
     private let assets: ConnectionAssets
     private var transport: (any AppAPITransport)?
     private weak var view: WKWebView?
@@ -262,7 +263,8 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         return owner
     }
 
-    init(root: URL, transport: (any AppAPITransport)?, remote: Bool, policyURL: URL? = nil, promptURL: String? = nil, accessUnsaved: Bool = false) throws {
+    init(root: URL, transport: (any AppAPITransport)?, remote: Bool, policyURL: URL? = nil, promptURL: String? = nil, accessUnsaved: Bool = false, localePreference: AppLocalePreference = .shared) throws {
+        self.localePreference = localePreference
         assets = try ConnectionAssets(root: root)
         guard let policy = policyURL ?? Bundle.main.resourceURL?.appendingPathComponent("remote-client-config-policy.v1.json"),
               let object = try JSONSerialization.jsonObject(with: Data(contentsOf: policy)) as? [String: Any],
@@ -391,7 +393,10 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         candidate = value; self.accessUnsaved = accessUnsaved
         emitStatus()
     }
-    func receiveOwnerSummary(_ raw: String) throws { try documentOwners.accept(raw) }
+    func receiveOwnerSummary(_ raw: String) throws {
+        try documentOwners.accept(raw)
+        connectionApp?.resumeStartupSelection()
+    }
     func documentDidStart(url: URL? = nil) {
         subscriptions.removeAll()
         connectionCommands?.invalidate(showNotice: false); connectionCommands = nil
@@ -770,6 +775,13 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
               let context = documentContext, item["context"] as? String == context else {
             replyHandler(nil, "unavailable"); return
         }
+        if item["command"] as? String == "app.locale.set" {
+            guard Set(item.keys) == ["context", "command", "data"], let data = item["data"] as? String else {
+                replyHandler(nil, MacLocalControls.error("invalidRequest", recovery: "none")); return
+            }
+            setLocale(data, reply: replyHandler)
+            return
+        }
         if item["command"] as? String == "app.ownersChanged" {
             do {
                 // Parsing and storage are synchronous on MainActor, before ACK.
@@ -843,9 +855,24 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         }
         replyHandler(nil, "unavailable")
     }
-    private func emitStatus() {
-        view?.callAsyncJavaScript("window.__hrAppState?.(data);", arguments: ["data": statusJSON()], in: nil, in: .page, completionHandler: nil)
+    /// Called only after Main document admission; no target or daemon effect.
+    func setLocale(_ raw: String, reply: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+        let identity = document, context = documentContext
+        localePreference.call(raw, current: { [weak self] in
+            self?.document == identity && self?.documentContext == context
+        }, reply: { value, error in reply(value, error) }, publish: { [weak self] complete in
+            guard let self, document == identity, documentContext == context else { complete(); return }
+            emitStatus(completion: complete)
+        })
+    }
+
+    private func emitStatus(completion: AppLocalePreference.Completion? = nil) {
         observe?("native_state_changed", generation)
+        guard let view, let context = documentContext else { completion?(); return }
+        view.callAsyncJavaScript("if (window.__hrAppContext === context) window.__hrAppState?.(data);",
+            arguments: ["context": context, "data": statusJSON()], in: nil, in: .page) { _ in
+            completion?()
+        }
     }
 
     /// Role changes retire only the command adapter, not Main's document,
@@ -891,7 +918,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             arguments: ["context": context, "name": name, "data": raw], in: nil, in: .page, completionHandler: nil)
     }
     func statusJSON() -> String {
-        let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+        let zh = localePreference.snapshot.current == "zh-CN"
         let currentCandidate: [String: Any]?
         if let candidateSnapshot { currentCandidate = candidateSnapshot() } else { currentCandidate = candidate }
         let object: [String: Any] = ["schema": 2, "generation": generation,
@@ -903,7 +930,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
                       "running": remote ? "unknown" : (connectionApp?.localObservation.running ?? "running"),
                       "prompt_base_url": remote ? NSNull() : (promptURL as Any? ?? NSNull())],
             "candidate": currentCandidate as Any? ?? NSNull(), "access_unsaved": accessUnsaved,
-            "locale": ["current": zh ? "zh-CN" : "en", "persisted": true]]
+            "locale": localePreference.snapshot.json]
         return String(decoding: (try? JSONSerialization.data(withJSONObject: object)) ?? Data(), as: UTF8.self)
     }
 }

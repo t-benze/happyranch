@@ -58,7 +58,7 @@ enum AppSchemeScripts {
         return native.postMessage({context, command, data});
       }
       if (['local.status','local.update.status','local.start','local.stop','local.restart',
-           'local.keepRunning.set','local.repair','local.turnOff'].includes(command)) {
+           'local.keepRunning.set','local.repair','local.turnOff','app.locale.set'].includes(command)) {
         if (typeof data !== 'string') throw JSON.stringify({code:'invalidRequest', effect:'none', recovery:'none'});
         try { return await native.postMessage({context, command, data}); }
         catch (error) {

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import AppKit
 import Combine
 import CryptoKit
@@ -1425,5 +1426,196 @@ final class HomeCandidateOwnershipTests: XCTestCase {
         model.disconnectActive()
         let stopped = await model.waitForCleanup(id: id)
         XCTAssertTrue(stopped)
+    }
+}
+
+
+extension HomeInviteModelTests {
+    private func startupDirectory() throws -> URL {
+        // Match the physical-path fixtures used by the no-follow AppScheme loader.
+        let physical = try XCTUnwrap(realpath(FileManager.default.temporaryDirectory.path, nil))
+        defer { free(physical) }
+        let root = URL(fileURLWithFileSystemRepresentation: physical, isDirectory: true, relativeTo: nil)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func startupWait(_ predicate: @MainActor () -> Bool) async -> Bool {
+        let clock = ContinuousClock(), deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !predicate(), clock.now < deadline { try? await clock.sleep(for: .milliseconds(10)) }
+        return predicate()
+    }
+
+    @Test("Startup resolves exact saved profile; readiness/Disconnect do not choose; commit and Remove persist")
+    func startupExactProfileCommitDisconnectAndRemoval() async throws {
+        let root = try startupDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let startup = AppStartupSelection(directory: root)
+        startup.commit(.local)
+        let store = HomeStoreFixture(), session = HomeSessionFixture(), a = UUID(), b = UUID()
+        for (home, id) in [("A", a), ("B", b)] {
+            let trust = try RemoteInvite.parse(invite(home: home)).trust
+            let binding = try SavedDeviceBinding(homeID: trust.homeID, controlPlaneID: trust.controlPlaneID, stableNodeID: "synthetic-node")
+            try await store.save(SavedDeviceCredential(binding: binding, trust: trust, deliveredBearer: Data("SYNTHETIC".utf8), networkProfileID: id))
+        }
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.startupSelection = startup
+        model.mainDocumentAdmitted()
+        model.prepare(reconnectSingle: false, startupProfile: b)
+        #expect(await startupWait { model.phase == .readyToSwitch && !model.busy })
+        #expect(await session.emptyProfiles == [b])
+        #expect(await session.pairs == 0)
+        #expect(AppStartupSelection(directory: root).choice == .local, "candidate readiness is not selection")
+        try model.commitCandidate()
+        #expect(AppStartupSelection(directory: root).choice == .saved(b))
+        let active = try #require(model.activeID)
+        model.disconnectActive()
+        #expect(await model.waitForCleanup(id: active))
+        #expect(AppStartupSelection(directory: root).choice == .saved(b), "Disconnect preserves startup choice")
+        let target = try #require(model.savedHomes.first { $0.id == b })
+        model.removeSavedComputer(expected: target)
+        #expect(await startupWait { !model.busy })
+        #expect(model.removalFailures.isEmpty)
+        #expect(AppStartupSelection(directory: root).choice == .local)
+        #expect(try await store.savedHomes().credentials.map(\.networkProfileID) == [a])
+    }
+
+    @Test("Missing saved startup profile refuses instead of connecting the sole remaining computer")
+    func startupMissingProfileNeverSubstitutesSoleSavedComputer() async throws {
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        let trust = try RemoteInvite.parse(invite()).trust
+        let binding = try SavedDeviceBinding(homeID: trust.homeID, controlPlaneID: trust.controlPlaneID, stableNodeID: "synthetic-node")
+        try await store.save(SavedDeviceCredential(binding: binding, trust: trust, deliveredBearer: Data("SYNTHETIC".utf8), networkProfileID: UUID()))
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.prepare(reconnectSingle: false, startupProfile: UUID())
+        #expect(await startupWait { model.discoveryComplete && !model.busy })
+        #expect(model.phase == .failed(.identityUnavailable))
+        #expect(model.selectedHomeID == nil)
+        #expect(await session.joins == 0)
+        #expect(model.appTransport == nil)
+    }
+
+    @Test("Confirmed revoked saved startup selection clears even while session teardown fails")
+    func startupConfirmedRevocationClearsBeforeCleanup() async throws {
+        let root = try startupDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = HomeStoreFixture(), session = HomeSessionFixture(), id = UUID()
+        let trust = try RemoteInvite.parse(invite()).trust
+        let binding = try SavedDeviceBinding(homeID: trust.homeID, controlPlaneID: trust.controlPlaneID, stableNodeID: "synthetic-node")
+        try await store.save(SavedDeviceCredential(binding: binding, trust: trust, deliveredBearer: Data("SYNTHETIC".utf8), networkProfileID: id))
+        let startup = AppStartupSelection(directory: root)
+        startup.commit(.saved(id))
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.startupSelection = startup
+        await session.configure(join: .revoked)
+        await session.failStop()
+        model.prepare(reconnectSingle: false, startupProfile: id)
+        #expect(await startupWait { !model.busy && model.discoveryComplete })
+        #expect(await session.joins == 1)
+        #expect(AppStartupSelection(directory: root).choice == .local)
+        #expect(model.phase == .failed(.cleanupIncomplete), "revocation is confirmed independently of local teardown")
+    }
+}
+
+extension HomeInviteModelTests {
+    @Test("Remote/invalid startup starts no local child; local starts exactly once")
+    func remoteAndInvalidStartupNeverLaunchLocalAndLocalStartsOnce() throws {
+        let root = try startupDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for choice in [AppStartupSelection.Choice.saved(UUID()), .unsaved, .unavailable, .local] {
+            let store = AppStartupSelection(directory: root)
+            store.commit(choice)
+            if choice == .unavailable { try Data("invalid".utf8).write(to: root.appendingPathComponent("startup-selection")) }
+            let selection = AppStartupSelection(directory: root)
+            let model = HomeInviteModel(store: HomeStoreFixture(), makeSession: { HomeSessionFixture() })
+            let delegate = AppDelegate(startupSelection: selection, homeInvite: model)
+            let controller = FakeProcessController()
+            delegate.processController = controller
+            delegate.beginStartupSelection(home: root.path)
+            delegate.beginStartupSelection(home: root.path)
+            XCTAssertEqual(controller.launchCallCount, choice == .local ? 1 : 0)
+            if choice != .local { XCTAssertEqual(delegate.supervisor.state, .notConfigured); XCTAssertNil(delegate.webViewURL) }
+            if controller.launchCallCount > 0 { delegate.stopDaemon() }
+        }
+    }
+}
+
+
+extension HomeInviteModelTests {
+    @Test("Cold saved restore waits for Main owner clearance and commits exactly once")
+    func startupRestoreUsesMainOwnerGate() async throws {
+        let root = try startupDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let startup = AppStartupSelection(directory: root), id = UUID()
+        startup.commit(.saved(id))
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        let trust = try RemoteInvite.parse(invite()).trust
+        let binding = try SavedDeviceBinding(homeID: trust.homeID, controlPlaneID: trust.controlPlaneID, stableNodeID: "synthetic-node")
+        try await store.save(SavedDeviceCredential(binding: binding, trust: trust, deliveredBearer: Data("SYNTHETIC".utf8), networkProfileID: id))
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.mainDocumentAdmitted()
+        let delegate = AppDelegate(startupSelection: startup, homeInvite: model)
+        let controller = FakeProcessController(); delegate.processController = controller
+        let (assets, scheme, view, _) = try AppSchemeSwitchTests().fixture()
+        defer {
+            scheme.close(); view.stopLoading()
+            try? FileManager.default.removeItem(at: assets)
+            try? FileManager.default.removeItem(at: assets.appendingPathExtension("json"))
+        }
+        delegate.bindMainScheme(scheme)
+        try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"hold","counts":{"dirty":0,"failed":0,"pending":1,"unknown":0}}"#)
+        delegate.beginStartupSelection(home: root.path)
+        #expect(await startupWait { model.phase == .readyToSwitch && !model.busy })
+        delegate.resumeStartupSelection()
+        #expect(!model.hasActiveSession)
+        #expect(controller.launchCallCount == 0)
+        try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#)
+        #expect(model.hasActiveSession)
+        let generation = scheme.generation
+        delegate.resumeStartupSelection()
+        #expect(scheme.generation == generation)
+        #expect(AppStartupSelection(directory: root).choice == .saved(id))
+        let active = try #require(model.activeID)
+        model.disconnectActive()
+        #expect(await model.waitForCleanup(id: active))
+    }
+}
+
+extension HomeInviteModelTests {
+    @Test("A failed cold restore cannot auto-commit a later explicit reconnect")
+    func startupFailedRestoreDoesNotAutoCommitExplicitRetry() async throws {
+        let root = try startupDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let startup = AppStartupSelection(directory: root), id = UUID()
+        startup.commit(.saved(id))
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        let trust = try RemoteInvite.parse(invite()).trust
+        let binding = try SavedDeviceBinding(homeID: trust.homeID, controlPlaneID: trust.controlPlaneID, stableNodeID: "synthetic-node")
+        try await store.save(SavedDeviceCredential(binding: binding, trust: trust, deliveredBearer: Data("SYNTHETIC".utf8), networkProfileID: id))
+        await store.configure(read: .unavailable)
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.mainDocumentAdmitted()
+        let delegate = AppDelegate(startupSelection: startup, homeInvite: model)
+        let (assets, scheme, view, _) = try AppSchemeSwitchTests().fixture()
+        defer {
+            scheme.close(); view.stopLoading()
+            try? FileManager.default.removeItem(at: assets)
+            try? FileManager.default.removeItem(at: assets.appendingPathExtension("json"))
+        }
+        delegate.bindMainScheme(scheme)
+        try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#)
+        delegate.beginStartupSelection(home: root.path)
+        #expect(await startupWait { model.phase == .keychain(.unavailable) && !model.busy })
+        delegate.resumeStartupSelection()
+        let generation = scheme.generation
+        await store.configure()
+        model.retry()
+        #expect(await startupWait { model.phase == .readyToSwitch && !model.busy })
+        delegate.resumeStartupSelection()
+        #expect(!model.hasActiveSession, "explicit reconnect still needs its own commit action")
+        #expect(scheme.generation == generation)
+        model.cancel()
+        await model.bridgeSettle()
     }
 }

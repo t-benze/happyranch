@@ -173,7 +173,7 @@ private final class AppSchemeLivenessProbe: @unchecked Sendable {
 /// uses the shipping loader, fetch adapter, bundle and selected-local transport
 /// against a private synthetic server. It never reads real credentials.
 @MainActor
-final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKDownloadDelegate {
+final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKScriptMessageHandlerWithReply, WKNavigationDelegate, WKDownloadDelegate {
     private let log: AppSchemeEventLog
     private let scheme: AppScheme
     private let downloads: URL
@@ -196,6 +196,8 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     private var awaitingReload = false
     private var dialogApp: AppDelegate?
     private var capturingDialogs = false
+    private var liveLocaleReplies = 0
+    private var liveLocaleReplyPersisted = false
     private var dialogNavigationStep: AppSchemeCaptureStep?
     private static let reloadPath = "/onboarding"
 
@@ -209,7 +211,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         scheme = try AppScheme(root: root, transport: LocalAppAPITransport(port: port, credential: AppSchemeSyntheticCredential()),
             remote: false, policyURL: policy)
         super.init()
-        if mode.hasPrefix("dialogs-") {
+        if mode.hasPrefix("dialogs-") || mode == "live-switch" {
             let app = AppDelegate(); dialogApp = app; app.bindMainScheme(scheme)
             scheme.candidateSnapshot = nil // Synthetic capture input, no live candidate/session.
             scheme.updateCandidate(["kind": "remote", "id": "candidate", "name": "Studio Host — Long computer name / 工作室主机",
@@ -241,6 +243,10 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         scheme.configure(configuration)
+        if mode == "live-switch" {
+            configuration.userContentController.removeScriptMessageHandler(forName: "appTransport", contentWorld: .page)
+            configuration.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "appTransport")
+        }
         configuration.userContentController.add(self, name: "macQualification")
         let script = "window.__hrQualificationMode = '\(mode)';\n" + Self.page
         if dialogApp == nil {
@@ -281,6 +287,25 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         }
         scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
     }
+    /// Passive qualification observation: the shipping handler still validates,
+    /// executes and replies to every message. Never synthesize or retry a call.
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
+                               replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+        let locale = (message.body as? [String: Any])?["command"] as? String == "app.locale.set"
+        scheme.userContentController(controller, didReceive: message) { [weak self] result, error in
+            if locale, let self {
+                liveLocaleReplies += 1
+                let object = (result as? String).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+                let value = object?["locale"] as? [String: Any]
+                let persisted = value?["persisted"] as? NSNumber
+                liveLocaleReplyPersisted = error == nil && Set(object?.keys.map { $0 } ?? []) == ["schema", "locale"] &&
+                    (object?["schema"] as? NSNumber)?.intValue == 2 && Set(value?.keys.map { $0 } ?? []) == ["current", "persisted"] &&
+                    value?["current"] as? String == "zh-CN" && persisted.map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } == true
+            }
+            replyHandler(result, error)
+        }
+    }
+
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.webView === view, message.frameInfo.isMainFrame,
               message.frameInfo.securityOrigin.protocol == "happyranch-app", message.frameInfo.securityOrigin.host == "app",
@@ -376,7 +401,8 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
                 } else { try await scheme.admitDocument() }
                 if dialogApp != nil, !capturingDialogs {
                     capturingDialogs = true
-                    try await captureDialogs(webView)
+                    if mode == "live-switch" { try await captureLiveSwitch(webView) }
+                    else { try await captureDialogs(webView) }
                     scheme.close(); log.write("exit"); exit(0)
                 }
             }
@@ -539,6 +565,127 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         }
     }
 
+    /// One real rendered Language choice, then later-opened dialogs in the same
+    /// document. Saved is emitted by PreferencesSection only after the shipping
+    /// locale adapter has parsed native's persisted:true reply; no bridge call
+    /// or substitute locale state is driven by this qualifier.
+    private func captureLiveSwitch(_ view: WKWebView) async throws {
+        guard let window, let frame = window.contentView?.superview, let app = dialogApp else { throw AppAPIError.unavailable }
+        let preference = AppLocalePreference.shared
+        guard preference.snapshot.current == "en", preference.snapshot.persisted,
+              preference.launchLocale == "en", !preference.nativeChinese else { throw AppAPIError.unavailable }
+        @MainActor func requireDOM(_ script: String, arguments: [String: Any] = [:]) async throws {
+            for _ in 0..<60 {
+                if try await view.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: .page) as? Bool == true { return }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            throw AppAPIError.unavailable
+        }
+        @MainActor func openDialog(_ dialog: String) async throws {
+            var admitted = false
+            for _ in 0..<60 {
+                if app.requestMainDialog(dialog) { admitted = true; break }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            guard admitted else { throw AppAPIError.unavailable }
+            try await requireDOM("const pane = document.querySelector('[data-desktop-dialog]'); return pane?.getAttribute('data-desktop-dialog') === expected && pane.contains(document.activeElement);",
+                                 arguments: ["expected": dialog])
+        }
+        @MainActor func closeDialog() async throws {
+            _ = try await view.callAsyncJavaScript("document.querySelector('[data-desktop-dialog] > button[aria-label]')?.click();", arguments: [:], in: nil, contentWorld: .page)
+            try await requireDOM("return !document.querySelector('[data-desktop-dialog]');")
+        }
+        try await dialogStep("live-switch-start-en", fields: [:]) {
+            try await openDialog("settings")
+            try await requireDOM(#"return document.documentElement.lang === 'en' && document.querySelector('[data-desktop-dialog="settings"] h2')?.textContent.trim() === 'Settings' && document.querySelector('input[name="happyranch-ui-language"][value="en"]')?.checked;"#)
+        }
+        log.write("live-switch-step", ["step": "start-en", "locale": "en", "nativeLaunchLocale": preference.launchLocale])
+        try await dialogStep("live-switch-control", fields: [:]) {
+            let clicked = try await view.callAsyncJavaScript(#"""
+                const control = document.querySelector('[data-desktop-dialog="settings"] input[name="happyranch-ui-language"][value="zh-CN"]');
+                if (!control || control.disabled || control.checked) return false;
+                control.scrollIntoView({block:'center'}); control.focus();
+                window.__hrLiveSwitchChange = false;
+                control.addEventListener('change', event => {
+                    window.__hrLiveSwitchChange = event.target === control && control.checked;
+                }, {once:true});
+                control.click();
+                return window.__hrLiveSwitchChange === true;
+                """#, arguments: [:], in: nil, contentWorld: .page)
+            guard clicked as? Bool == true else { throw AppAPIError.unavailable }
+        }
+        log.write("live-switch-step", ["step": "control-change", "locale": "zh-CN", "changed": true])
+        try await dialogStep("live-switch-native-saved", fields: [:]) {
+            try await requireDOM(#"""
+                return document.documentElement.lang === 'zh-CN' &&
+                    document.querySelector('input[name="happyranch-ui-language"][value="zh-CN"]')?.checked &&
+                    document.querySelector('[data-testid="settings-preferences-status"]')?.textContent.trim() === '已保存在此电脑上的应用中。' &&
+                    !document.querySelector('[data-testid="settings-preferences-retry"]');
+                """#)
+            guard liveLocaleReplies == 1, liveLocaleReplyPersisted,
+                  preference.snapshot.current == "zh-CN", preference.snapshot.persisted else { throw AppAPIError.unavailable }
+        }
+        log.write("live-switch-step", ["step": "native-reply", "locale": "zh-CN", "persisted": true, "replyCount": liveLocaleReplies])
+        log.write("live-switch-step", ["step": "native-saved", "locale": "zh-CN", "persisted": true, "webSaved": true])
+        guard AppPreferenceFile(directory: AppPreferenceFile.directory, name: "locale").read() == .value("zh-CN") else { throw AppAPIError.unavailable }
+        log.write("live-switch-step", ["step": "durable-readback", "locale": "zh-CN", "scratch": true])
+        try await closeDialog()
+        for (theme, scale) in [("light", 100), ("dark", 200)] {
+            window.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
+            _ = try await dialogStep("live-switch-theme", fields: ["theme": theme, "textPercent": scale]) {
+                try await view.callAsyncJavaScript(Self.dialogTheme,
+                    arguments: ["size": "\(scale)%", "theme": theme], in: nil, contentWorld: .page)
+            }
+            for dialog in ["main", "settings", "connection"] {
+                if dialog != "main" { try await openDialog(dialog) }
+                try await dialogStep("live-switch-chinese-dom", fields: ["dialog": dialog, "theme": theme, "textPercent": scale]) {
+                    do {
+                        try await requireDOM(Self.liveSwitchChineseDOM, arguments: ["surface": dialog, "diagnose": false])
+                    } catch {
+                        if let diagnostic = try? await view.callAsyncJavaScript(Self.liveSwitchChineseDOM,
+                            arguments: ["surface": dialog, "diagnose": true], in: nil, contentWorld: .page) as? [String: Any] {
+                            log.write("live-switch-dom-failure", diagnostic)
+                        }
+                        throw error
+                    }
+                    _ = try await view.callAsyncJavaScript(Self.dialogScrollPlan, arguments: [:], in: nil, contentWorld: .page)
+                    try await Task.sleep(for: .milliseconds(200))
+                }
+                try await captureDialogPage(view, frame: frame, name: "live-switch-zh-\(theme)-\(scale)-\(dialog).png",
+                    locale: "zh", theme: theme, scale: scale, dialog: dialog, scroll: ["chineseDOM": true], receipt: "live-switch-screenshot")
+                if dialog != "main" { try await closeDialog() }
+            }
+        }
+        guard preference.launchLocale == "en", !preference.nativeChinese else { throw AppAPIError.unavailable }
+        log.write("live-switch-step", ["step": "native-chrome-unchanged", "nativeLaunchLocale": preference.launchLocale, "unchanged": true])
+    }
+
+    private static let liveSwitchChineseDOM = #"""
+        const checks = {documentLanguage: document.documentElement.lang === 'zh-CN'};
+        const pane = document.querySelector('[data-desktop-dialog]');
+        if (surface === 'main') {
+            const header = document.querySelector('[data-desktop-header]');
+            Object.assign(checks, {
+                noDialog: !pane,
+                headerLabel: header?.getAttribute('aria-label') === '窗口控件',
+                headerSettings: header?.querySelector('[data-desktop-header-open="settings"]')?.textContent.trim() === '设置',
+                headerConnection: header?.querySelector('[data-desktop-header-open="connection"]')?.textContent.trim() === '连接',
+                // The zero-org fixture is still on ConnectRuntimeStep.
+                mainHeading: document.querySelector('main h1')?.textContent.trim() === '连接你的智能体 CLI。',
+            });
+        } else {
+            const title = surface === 'settings' ? '设置' : '连接';
+            Object.assign(checks, {
+                dialogSurface: pane?.getAttribute('data-desktop-dialog') === surface,
+                dialogTitle: pane?.querySelector('h2')?.textContent.trim() === title,
+                dialogCopy: (surface === 'settings' ? pane?.textContent.includes('语言') : pane?.textContent.includes('此电脑')) === true,
+            });
+        }
+        const failed = Object.keys(checks).filter(key => !checks[key]);
+        if (diagnose) return {surface, failed, visibleText: (document.body?.innerText || '').slice(0, 2048)};
+        return failed.length === 0;
+        """#
+
     private static let dialogTheme = #"""
         document.documentElement.style.fontSize = size;
         localStorage.setItem('happyranch.theme', theme);
@@ -598,7 +745,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
         """#
 
     private func captureDialogPage(_ view: WKWebView, frame: NSView, name: String, locale: String,
-                                   theme: String, scale: Int, dialog: String, scroll: [String: Any]) async throws {
+                                   theme: String, scale: Int, dialog: String, scroll: [String: Any], receipt: String = "screenshot") async throws {
         let fields: [String: Any] = ["name": name, "width": 760, "height": 560, "textPercent": scale,
             "locale": locale, "theme": theme, "dialog": dialog]
         try await dialogStep("applied-theme", fields: fields) {
@@ -623,7 +770,7 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
             try png.write(to: downloads.appendingPathComponent(name), options: .withoutOverwriting)
         }
         var evidence = fields; evidence["webTheme"] = theme
-        log.write("screenshot", evidence.merging(scroll) { _, new in new })
+        log.write(receipt, evidence.merging(scroll) { _, new in new })
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         navigationFailed(webView, stage: "provisional")
@@ -874,20 +1021,25 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     static func run(_ arguments: [String]) -> Never {
         guard [6, 7].contains(arguments.count), let port = UInt16(arguments[3]) else { exit(2) }
         let mode = arguments.count == 7 ? arguments[6] : "all"
-        guard ["all", "stream", "abort", "download", "dialogs-en", "dialogs-zh", "cold-client"].contains(mode) else { exit(2) }
+        guard ["all", "stream", "abort", "download", "dialogs-en", "dialogs-zh", "cold-client", "live-switch"].contains(mode) else { exit(2) }
         if mode == "cold-client" {
             guard port == 0 else { exit(2) } // Portless: no transport is constructed.
             qualifyColdClient(events: arguments[4])
         }
         guard port > 0 else { exit(2) }
-        if mode.hasPrefix("dialogs-") {
+        if mode.hasPrefix("dialogs-") || mode == "live-switch" {
             UserDefaults.standard.setVolatileDomain(["AppleLanguages": [mode == "dialogs-zh" ? "zh-Hans" : "en"]], forName: UserDefaults.argumentDomain)
         }
         do {
+            if mode == "live-switch" {
+                let scratch = URL(fileURLWithPath: arguments[5]).deletingLastPathComponent().resolvingSymlinksInPath()
+                guard AppPreferenceFile.directory.path.hasPrefix(scratch.path + "/") else { throw AppAPIError.unavailable }
+                try AppPreferenceFile(directory: AppPreferenceFile.directory, name: "locale").write("en")
+            }
             let probe = try AppSchemeQualification(root: URL(fileURLWithPath: arguments[1]), policy: URL(fileURLWithPath: arguments[2]),
                 port: port, events: arguments[4], downloads: URL(fileURLWithPath: arguments[5]), mode: mode)
             let application = NSApplication.shared
-            application.setActivationPolicy(mode.hasPrefix("dialogs-") ? .regular : .prohibited)
+            application.setActivationPolicy(mode.hasPrefix("dialogs-") || mode == "live-switch" ? .regular : .prohibited)
             probe.start()
             withExtendedLifetime(probe) { application.run() }
             exit(1)

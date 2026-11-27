@@ -21,6 +21,7 @@ from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 from scripts.mac_native.suite_app_scheme import PNG_CAP, ROOT, UPLOAD_DIGEST, assess, qualify_cold_client, qualify_dialogs, qualify_steps, read_events, run, screenshot_archive, synthetic_daemon
+from scripts.mac_native.suite_app_scheme import live_switch_archive, qualify_live_switch
 from scripts.mac_native.app_scheme_diagnostics import sample_stalled_processes
 from scripts.mac_native.app_scheme_test_evidence import archive_events, assess_native, source_inventory, terminal_results
 from scripts.mac_native.suite_supervisor import CommandTimeout, _build_environment, _command, _prepare_keychain
@@ -209,6 +210,228 @@ class DialogCaptureEvidenceTests(unittest.TestCase):
                     timeout = failed['diagnostic_events'][-1]
                     self.assertEqual(timeout['waitingFor'], 'WKNavigation.didFinish')
                     self.assertEqual(timeout['elapsedMs'], 10001)
+
+
+class LiveSwitchEvidenceTests(unittest.TestCase):
+    def test_collector_retains_failed_dom_diagnostic_when_captures_are_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            diagnostic = dict(event='live-switch-dom-failure', surface='main',
+                              failed=['mainHeading'], visibleText='连接你的智能体 CLI。')
+            def command(argv: list[str], *args: object, **kwargs: object) -> tuple[int, bytes]:
+                Path(argv[-3]).write_text(json.dumps(diagnostic) + '\n')
+                return 1, b''
+            section = {}
+            with patch('scripts.mac_native.suite_app_scheme._command', side_effect=command):
+                qualify_live_switch(['product', '--qualify-app-scheme', 'assets', 'policy', '0'], {},
+                                    root, time.monotonic() + 10, section, root)
+            retained = json.loads(json.dumps(section))['live_switch']
+            self.assertEqual(retained['status'], 'FAIL')
+            self.assertEqual(retained['diagnostic_events'], [diagnostic])
+            self.assertEqual(retained['screenshots'], [])
+
+    def test_chinese_dom_matches_zero_org_main_and_requires_chinese_on_every_surface(self) -> None:
+        self.check_chinese_dom(r"""
+            assert.equal(check('main'), true, 'zero-org ConnectRuntimeStep must pass');
+            assert.equal(check('settings'), true);
+            assert.equal(check('connection'), true);
+            for (const surface of ['main', 'settings', 'connection']) {
+                assert.equal(check(surface, { english: true, lang: 'en' }), false, `${surface}: English-only DOM`);
+                assert.equal(check(surface, { english: true }), false, `${surface}: lang alone is insufficient`);
+                assert.equal(check(surface, { lang: 'en' }), false, `${surface}: wrong document language`);
+            }
+            for (const overrides of [
+                { heading: '欢迎使用 HappyRanch。' }, { heading: 'Connect your agentic CLI.' },
+                { label: 'Window controls' }, { settings: 'Settings' }, { connection: 'Connection' },
+                { dialog: 'settings' }, { missingHeader: true }, { missingMain: true },
+            ]) assert.equal(check('main', overrides), false, JSON.stringify(overrides));
+            for (const surface of ['settings', 'connection']) {
+                for (const overrides of [{ title: 'English' }, { copy: 'English' }, { dialog: 'other' }, { dialog: null }]) {
+                    assert.equal(check(surface, overrides), false, `${surface}: ${JSON.stringify(overrides)}`);
+                }
+            }
+        """)
+
+    def test_chinese_dom_failure_diagnostic_names_clauses_and_bounds_visible_text(self) -> None:
+        self.check_chinese_dom(r"""
+            const visible = '可见'.repeat(3000);
+            const diagnostic = check('main', { heading: 'English', settings: 'Settings', visible }, true);
+            assert.deepEqual(JSON.parse(JSON.stringify(diagnostic)), {
+                surface: 'main', failed: ['headerSettings', 'mainHeading'], visibleText: visible.slice(0, 2048),
+            });
+            assert.ok(!diagnostic.visibleText.includes('hidden-secret'));
+            assert.deepEqual(Array.from(check('main', {}, true).failed), []);
+            for (const surface of ['main', 'settings', 'connection']) {
+                const failure = check(surface, { english: true, lang: 'en' }, true);
+                assert.ok(failure.failed.includes('documentLanguage'));
+                assert.ok(failure.failed.includes(surface === 'main' ? 'mainHeading' : 'dialogTitle'));
+                assert.ok(failure.failed.includes(surface === 'main' ? 'headerLabel' : 'dialogCopy'));
+            }
+        """)
+
+    def check_chinese_dom(self, assertions: str) -> None:
+        # Existing Node VM venue, executing the actual qualifier JavaScript.
+        # DOM inputs are independent EN/zh-CN literals, never an oracle read
+        # from the predicate or the DOM being checked. No browser/native claim.
+        script = r"""
+            const assert = require('node:assert/strict');
+            const { readFileSync } = require('node:fs');
+            const { runInNewContext } = require('node:vm');
+            const source = readFileSync('app/mac/Sources/HappyRanchApp/AppSchemeQualification.swift', 'utf8');
+            const predicate = source.split('static let liveSwitchChineseDOM = #' + '"'.repeat(3))[1].split('"'.repeat(3) + '#')[0];
+            function check(surface, overrides = {}, diagnose = false) {
+                const english = overrides.english ?? false;
+                const values = {
+                    lang: 'zh-CN', dialog: surface === 'main' ? null : surface,
+                    label: english ? 'Window controls' : '窗口控件',
+                    settings: english ? 'Settings' : '设置', connection: english ? 'Connection' : '连接',
+                    heading: english ? 'Connect your agentic CLI.' : '连接你的智能体 CLI。',
+                    title: english ? (surface === 'settings' ? 'Settings' : 'Connection') : (surface === 'settings' ? '设置' : '连接'),
+                    copy: english ? (surface === 'settings' ? 'Language' : 'This computer') : (surface === 'settings' ? '语言' : '此电脑'),
+                    visible: english ? 'Connect your agentic CLI. Settings Connection' : '连接你的智能体 CLI。 设置 连接', ...overrides,
+                };
+                const header = { getAttribute: () => values.label, querySelector: selector => ({
+                    textContent: selector.includes('settings') ? values.settings : values.connection,
+                }) };
+                const pane = values.dialog === null ? null : { getAttribute: () => values.dialog,
+                    querySelector: () => ({ textContent: values.title }), textContent: values.copy };
+                const main = values.missingMain ? null : { textContent: values.heading };
+                const document = { documentElement: { lang: values.lang },
+                    body: { innerText: values.visible, textContent: 'hidden-secret' + values.visible },
+                    querySelector: selector => selector === '[data-desktop-dialog]' ? pane :
+                        selector === '[data-desktop-header]' ? (values.missingHeader ? null : header) :
+                        selector === 'main' || selector === 'main h1' ? main : null };
+                return runInNewContext(`(function () { ${predicate} })()`, { document, surface, diagnose });
+            }
+        """
+        result = subprocess.run(['node', '-e', script + assertions], cwd=ROOT,
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_archive_retains_separate_closed_images_and_refuses_invalid_files(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            names = [f'live-switch-zh-{theme}-{scale}-{dialog}.png'
+                     for theme, scale in (('light', 100), ('dark', 200))
+                     for dialog in ('main', 'settings', 'connection')]
+            for name in names:
+                (root / name).write_bytes(screenshot_png())
+            (root / 'unrelated.png').write_bytes(b'ignored')
+            rows = live_switch_archive(root)
+            self.assertEqual([row['name'] for row in rows], names)
+            for row in rows:
+                self.assertEqual(base64.b64decode(row['data']), screenshot_png())
+                self.assertEqual(row['bytes'], len(screenshot_png()))
+                self.assertEqual(row['sha256'], hashlib.sha256(screenshot_png()).hexdigest())
+                self.assertEqual((row['width'], row['height']), (760, 560))
+            image = root / names[0]
+            for invalid in ('missing', 'alias', 'oversize', 'dimensions', 'header', 'aggregate'):
+                with self.subTest(invalid=invalid):
+                    image.unlink()
+                    if invalid == 'alias':
+                        image.symlink_to(root / names[1])
+                    elif invalid == 'oversize':
+                        image.write_bytes(b'x' * (PNG_CAP + 1))
+                    elif invalid == 'dimensions':
+                        image.write_bytes(screenshot_png(759))
+                    elif invalid == 'header':
+                        image.write_bytes(b'x' * 100)
+                    elif invalid == 'aggregate':
+                        for name in names:
+                            (root / name).write_bytes(screenshot_png().ljust(PNG_CAP, b'\0'))
+                    with self.assertRaises((OSError, ValueError)):
+                        live_switch_archive(root)
+                    if image.exists() or image.is_symlink():
+                        image.unlink()
+                    for name in names:
+                        (root / name).write_bytes(screenshot_png())
+
+    def test_collector_requires_all_ordered_steps_captures_and_success(self) -> None:
+        # These are native protocol inputs, never simulated locale persistence.
+        steps = [
+            dict(step='start-en', locale='en', nativeLaunchLocale='en'),
+            dict(step='control-change', locale='zh-CN', changed=True),
+            dict(step='native-reply', locale='zh-CN', persisted=True, replyCount=1),
+            dict(step='native-saved', locale='zh-CN', persisted=True, webSaved=True),
+            dict(step='durable-readback', locale='zh-CN', scratch=True),
+            dict(step='native-chrome-unchanged', nativeLaunchLocale='en', unchanged=True),
+        ]
+        failures = ['none', 'nonzero', 'timeout', 'missing-file', 'missing-capture', 'duplicate-capture',
+                    'wrong-theme', 'wrong-scale', 'wrong-dialog', 'wrong-name', 'wrong-locale', 'wrong-dimensions',
+                    'no-chinese-dom', 'session-only', 'unsaved', 'wrong-readback', 'not-scratch', 'native-changed',
+                    'numeric-bool', 'reply-not-persisted', 'duplicate-setter', 'reordered-steps', 'early-capture', 'failure', 'step-error', 'partial-write']
+        failures += ['missing-' + step['step'] for step in steps]
+        failures += ['duplicate-' + step['step'] for step in steps]
+        for failure in failures:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder); downloads = root / 'downloads'; downloads.mkdir()
+                rows = [dict(event='live-switch-step', **step) for step in steps]
+                captures = []
+                for theme, scale in (('light', 100), ('dark', 200)):
+                    for dialog in ('main', 'settings', 'connection'):
+                        name = f'live-switch-zh-{theme}-{scale}-{dialog}.png'
+                        (downloads / name).write_bytes(screenshot_png())
+                        captures.append(dict(event='live-switch-screenshot', name=name, locale='zh', theme=theme,
+                            webTheme=theme, textPercent=scale, dialog=dialog, width=760, height=560, chineseDOM=True))
+                rows[5:5] = captures
+                if failure.startswith('missing-') and failure[8:] in [step['step'] for step in steps]:
+                    rows = [row for row in rows if row.get('step') != failure[8:]]
+                elif failure.startswith('duplicate-') and failure[10:] in [step['step'] for step in steps]:
+                    rows.append(next(dict(row) for row in rows if row.get('step') == failure[10:]))
+                elif failure == 'missing-file':
+                    (downloads / captures[0]['name']).unlink()
+                elif failure == 'missing-capture':
+                    rows.remove(captures[0])
+                elif failure == 'duplicate-capture':
+                    rows[5] = dict(captures[1])
+                elif failure.startswith('wrong-') and failure != 'wrong-readback':
+                    key, value = {'wrong-theme': ('webTheme', 'dark'), 'wrong-scale': ('textPercent', 200),
+                                  'wrong-dialog': ('dialog', 'settings'), 'wrong-name': ('name', '../outside.png'),
+                                  'wrong-locale': ('locale', 'en'), 'wrong-dimensions': ('width', 759)}[failure]
+                    rows[5][key] = value
+                elif failure == 'no-chinese-dom':
+                    rows[5]['chineseDOM'] = False
+                elif failure == 'session-only':
+                    rows[3]['persisted'] = False
+                elif failure == 'unsaved':
+                    rows[3]['webSaved'] = False
+                elif failure == 'wrong-readback':
+                    rows[4]['locale'] = 'en'
+                elif failure == 'not-scratch':
+                    rows[4]['scratch'] = False
+                elif failure == 'native-changed':
+                    rows[-1]['nativeLaunchLocale'] = 'zh-CN'
+                elif failure == 'numeric-bool':
+                    rows[3]['persisted'] = 1
+                elif failure == 'reply-not-persisted':
+                    rows[2]['persisted'] = False
+                elif failure == 'duplicate-setter':
+                    rows[2]['replyCount'] = 2
+                elif failure == 'reordered-steps':
+                    rows[0], rows[1] = rows[1], rows[0]
+                elif failure == 'early-capture':
+                    rows[4], rows[5] = rows[5], rows[4]
+                elif failure == 'failure':
+                    rows.append(dict(event='failure', reason='qualification'))
+                elif failure == 'step-error':
+                    rows.append(dict(event='capture_step', result='error', step='snapshot'))
+                elif failure == 'partial-write':
+                    rows.pop()
+                def command(argv: list[str], *args: object, **kwargs: object) -> tuple[int, bytes]:
+                    self.assertEqual(argv[-1], 'live-switch')
+                    Path(argv[-3]).write_text('\n'.join(json.dumps(row) for row in rows) + '\n' +
+                                             ('{"event":"live-switch-step"' if failure == 'partial-write' else ''))
+                    if failure == 'timeout':
+                        raise TimeoutError('synthetic')
+                    return (1 if failure == 'nonzero' else 0), b''
+                section = {'dialogs': {'status': 'existing-sentinel'}}
+                with patch('scripts.mac_native.suite_app_scheme._command', side_effect=command):
+                    qualify_live_switch(['product', '--qualify-app-scheme', 'assets', 'policy', '1234'], {},
+                                        root, time.monotonic() + 10, section, downloads)
+                self.assertEqual(section['dialogs'], {'status': 'existing-sentinel'})
+                self.assertEqual(section['live_switch']['status'], 'PASS' if failure == 'none' else 'FAIL')
+                self.assertEqual(len(section['live_switch']['screenshots']), 0 if failure == 'missing-file' else 6)
+                self.assertTrue(section['live_switch']['events'])
 
 
 class ColdClientCompositionEvidenceTests(unittest.TestCase):

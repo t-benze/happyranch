@@ -27,12 +27,12 @@ struct RemoteConnectionView: View {
 
     @ViewBuilder
     private var homeView: some View {
-        Text("Remote Access (Home)")
+        Text(NativeCopy.remoteAccessHome.text)
             .font(.title2)
             .fontWeight(.semibold)
 
         if let ip = appDelegate.tailnetSelfIP {
-            Label("Tailnet address: \(ip)", systemImage: "network")
+            Label(NativeCopy.tailnetAddress.format(value: ip), systemImage: "network")
                 .font(.callout)
                 .foregroundColor(.secondary)
         }
@@ -40,12 +40,12 @@ struct RemoteConnectionView: View {
         // Connector controls
         HStack(spacing: 12) {
             if appDelegate.homeConnector == nil {
-                Button("Start Connector") {
+                Button(NativeCopy.startConnector.text) {
                     appDelegate.startHomeConnector()
                 }
                 .buttonStyle(.borderedProminent)
             } else {
-                Button("Stop Connector") {
+                Button(NativeCopy.stopConnector.text) {
                     appDelegate.stopHomeConnector()
                 }
                 .buttonStyle(.bordered)
@@ -53,7 +53,7 @@ struct RemoteConnectionView: View {
             }
 
             if appDelegate.homeConnector != nil {
-                Text("Listening on port \(appDelegate.homeConnectorPort)")
+                Text(NativeCopy.listeningPort.format(value: String(appDelegate.homeConnectorPort)))
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -63,18 +63,18 @@ struct RemoteConnectionView: View {
 
         // Pairing code section
         if appDelegate.homeConnector != nil {
-            Text("Device Pairing")
+            Text(NativeCopy.devicePairing.text)
                 .font(.headline)
 
             HStack(spacing: 12) {
-                Button("Generate Pairing Code") {
+                Button(NativeCopy.generatePairingCode.text) {
                     appDelegate.generatePairingCodeAction()
                 }
                 .buttonStyle(.bordered)
 
                 if let code = appDelegate.pairingCode {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Pairing code:")
+                        Text(NativeCopy.pairingCodeLabel.text)
                             .font(.caption)
                             .foregroundColor(.secondary)
                         Text(code)
@@ -83,7 +83,7 @@ struct RemoteConnectionView: View {
                             .textSelection(.enabled)
 
                         if let ip = appDelegate.tailnetSelfIP {
-                            Text("Share: \(ip):\(appDelegate.homeConnectorPort)")
+                            Text(NativeCopy.shareAddress.format(value: "\(ip):\(appDelegate.homeConnectorPort)"))
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .textSelection(.enabled)
@@ -95,7 +95,7 @@ struct RemoteConnectionView: View {
                             .fill(Color(nsColor: .textBackgroundColor))
                     )
 
-                    Button("Copy Address") {
+                    Button(NativeCopy.copyAddress.text) {
                         if let ip = appDelegate.tailnetSelfIP {
                             let text = "\(ip):\(appDelegate.homeConnectorPort)"
                             NSPasteboard.general.clearContents()
@@ -107,7 +107,7 @@ struct RemoteConnectionView: View {
                 }
             }
 
-            Text("Code is one-time use and expires in 5 minutes")
+            Text(NativeCopy.pairingExpiry.text)
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }
@@ -116,12 +116,12 @@ struct RemoteConnectionView: View {
         if appDelegate.homeConnector != nil {
             Divider()
 
-            Text("Paired Devices")
+            Text(NativeCopy.pairedDevices.text)
                 .font(.headline)
 
             let devices = appDelegate.pairingStore.pairedDevices()
             if devices.isEmpty {
-                Text("No paired devices")
+                Text(NativeCopy.noPairedDevices.text)
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else {
@@ -136,7 +136,7 @@ struct RemoteConnectionView: View {
                                 .monospaced()
                         }
                         Spacer()
-                        Button("Revoke") {
+                        Button(NativeCopy.revoke.text) {
                             appDelegate.revokeDeviceAction(credential: device.credential)
                         }
                         .buttonStyle(.borderless)
@@ -152,9 +152,9 @@ struct RemoteConnectionView: View {
 
     private var clientView: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Picker("Connection", selection: $appDelegate.clientLane) {
-                Text("Home invite").tag(ClientBridge.Lane.managed)
-                Text("Existing DIY Tailscale").tag(ClientBridge.Lane.diy)
+            Picker(NativeCopy.connection.text, selection: $appDelegate.clientLane) {
+                Text(NativeCopy.homeInvite.text).tag(ClientBridge.Lane.managed)
+                Text(NativeCopy.existingDIY.text).tag(ClientBridge.Lane.diy)
             }
             .pickerStyle(.segmented)
             .disabled(appDelegate.homeInvite.busy || appDelegate.homeInvite.phase == .connected || appDelegate.clientBridge != nil)
@@ -180,36 +180,36 @@ private struct HomeInviteForm: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Connect to another computer").font(.title2).fontWeight(.semibold)
-                Text(model.phase.message).accessibilityIdentifier("home-invite-status")
+                Text(NativeCopy.connectComputer.text).font(.title2).fontWeight(.semibold)
+                Text(NativeCopy.phaseMessage(model.phase)).accessibilityIdentifier("home-invite-status")
                 if let target = model.target {
-                    Text("Control host: \(URL(string: target.controlURL)?.host ?? "")")
-                    Text("Home address: \(target.dialIP)")
-                    Text("Home identity: \(target.homeID) / \(target.controlPlaneID)")
-                    Text("Release runtime: \(target.homeEndpoint)")
+                    Text(NativeCopy.controlHost.format(value: URL(string: target.controlURL)?.host ?? ""))
+                    Text(NativeCopy.homeAddress.format(value: target.dialIP))
+                    Text(NativeCopy.homeIdentity.format(value: "\(target.homeID) / \(target.controlPlaneID)"))
+                    Text(NativeCopy.releaseRuntime.format(value: target.homeEndpoint))
                 }
                 if let expiry = model.expiresAt {
                     TimelineView(.periodic(from: .now, by: 1)) { timeline in
                         let remaining = max(0, Int(ceil(expiry.timeIntervalSince(timeline.date))))
-                        Text(String(format: "Invite expires in %d:%02d", remaining / 60, remaining % 60))
+                        Text(NativeCopy.inviteExpiry.format(value: String(format: "%d:%02d", remaining / 60, remaining % 60)))
                     }
                 }
                 if model.phase == .awaitingApproval {
-                    Text("Waiting for approval on \(model.target?.homeEndpoint ?? "your home computer")")
+                    Text(NativeCopy.waitingApproval.format(value: model.target?.homeEndpoint ?? NativeCopy.yourHomeComputer.text))
                     if let phrase = model.comparisonPhrase {
                         Text(phrase).monospaced().textSelection(.enabled)
                     }
-                    Text("Compare this phrase on Linux, then approve this device there.").font(.caption)
+                    Text(NativeCopy.comparePhrase.text).font(.caption)
                 }
                 if let actionRefusal { Text(actionRefusal).foregroundStyle(.red) }
                 if model.busy { ProgressView() }
                 if !model.busy, model.phase != .connected {
-                    SecureField("Paste one invite from Linux", text: $draft)
+                    SecureField(NativeCopy.pasteInvite.text, text: $draft)
                         .textFieldStyle(.roundedBorder)
                         .privacySensitive()
-                    Text("Trust an invite only from your home computer. Its sender selects the control host and home CA.")
+                    Text(NativeCopy.trustInvite.text)
                         .font(.caption).foregroundStyle(.secondary)
-                    Button("Connect") {
+                    Button(NativeCopy.connect.text) {
                         let input = draft
                         draft = ""
                         if model.needsReplacementConsent { pendingInvite = input; connectConsent = true }
@@ -217,65 +217,65 @@ private struct HomeInviteForm: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(draft.isEmpty)
-                    .confirmationDialog("Saved access could not be opened. Create new local access after fresh Linux approval? The obsolete host grant remains revocable on Linux; the old item is never silently replaced.", isPresented: $connectConsent) {
-                        Button("Continue with fresh approval") {
+                    .confirmationDialog(NativeCopy.freshAccessConsent.text, isPresented: $connectConsent) {
+                        Button(NativeCopy.continueFreshApproval.text) {
                             let input = pendingInvite; pendingInvite = ""
                             model.accept(input, replacementConsent: true)
                         }
-                        Button("Cancel", role: .cancel) { pendingInvite = "" }
+                        Button(NativeCopy.cancel.text, role: .cancel) { pendingInvite = "" }
                     }
-                    Text(model.retryGuidance).font(.caption)
-                    Button("Retry") { draft = ""; model.retry() }
+                    Text(NativeCopy.localize(model.retryGuidance)).font(.caption)
+                    Button(NativeCopy.retry.text) { draft = ""; model.retry() }
                 }
                 if model.bridgeCanCancel || model.busy {
-                    Button("Cancel") { draft = ""; model.cancel() }
+                    Button(NativeCopy.cancel.text) { draft = ""; model.cancel() }
                         .disabled(model.phase == .stopping)
                 } else if model.hasActiveSession {
-                    Button("Disconnect") {
+                    Button(NativeCopy.disconnect.text) {
                         draft = ""
                         Task { actionRefusal = await appDelegate.disconnectHomeSelection() }
                     }
                     if model.saveFailure == nil, !model.savedHomes.isEmpty {
-                        Text("Disconnect keeps saved access.").font(.caption)
+                        Text(NativeCopy.disconnectKeepsAccess.text).font(.caption)
                     }
                 }
                 if let failure = model.saveFailure {
-                    Text(failure.localizedDescription).foregroundStyle(.red)
+                    Text(NativeCopy.localize(failure.localizedDescription)).foregroundStyle(.red)
                     if failure == .identityChanged {
-                        Button("Replace saved access…") { replacementConsent = true }
-                            .confirmationDialog("Replace the old local item with this freshly approved device? The old host grant remains revocable on Linux.", isPresented: $replacementConsent) {
-                                Button("Replace saved access", role: .destructive) { model.retrySave(replacing: true) }
+                        Button(NativeCopy.replaceSavedAccessPrompt.text) { replacementConsent = true }
+                            .confirmationDialog(NativeCopy.replaceAccessConsent.text, isPresented: $replacementConsent) {
+                                Button(NativeCopy.replaceSavedAccess.text, role: .destructive) { model.retrySave(replacing: true) }
                             }
                     } else {
-                        Button("Retry saving") { model.retrySave() }
+                        Button(NativeCopy.retrySaving.text) { model.retrySave() }
                     }
                 }
                 if !model.discoveryFailures.isEmpty {
-                    Text("Some saved access is unavailable. Other approved computers can still reconnect.").font(.caption)
-                    ForEach(model.discoveryFailures, id: \.self) { Text($0.localizedDescription).font(.caption) }
+                    Text(NativeCopy.someAccessUnavailable.text).font(.caption)
+                    ForEach(model.discoveryFailures, id: \.self) { Text(NativeCopy.localize($0.localizedDescription)).font(.caption) }
                 }
                 if !model.savedHomes.isEmpty {
                     Divider()
-                    Picker("Saved computer", selection: $model.selectedHomeID) {
+                    Picker(NativeCopy.savedComputer.text, selection: $model.selectedHomeID) {
                         ForEach(model.savedHomes) { home in
                             Text(home.trust.homeEndpoint).tag(Optional(home.id))
                         }
                     }.disabled(model.busy || model.phase == .connected)
-                    Button("Reconnect") { draft = ""; model.reconnect() }
+                    Button(NativeCopy.reconnect.text) { draft = ""; model.reconnect() }
                         .disabled(model.busy || model.phase == .connected)
-                    Button("Remove saved computer…", role: .destructive) { removalConsent = true }
+                    Button(NativeCopy.removeComputerPrompt.text, role: .destructive) { removalConsent = true }
                         .disabled(model.busy)
-                        .confirmationDialog("Erase local access? This does not revoke the device on Linux.", isPresented: $removalConsent) {
-                            Button("Remove saved computer", role: .destructive) {
+                        .confirmationDialog(NativeCopy.removeConsent.text, isPresented: $removalConsent) {
+                            Button(NativeCopy.removeComputer.text, role: .destructive) {
                                 draft = ""
                                 Task { actionRefusal = await appDelegate.removeHomeSelection() }
                             }
                         }
                 }
                 if !model.removalFailures.isEmpty {
-                    Text("Removal incomplete").foregroundStyle(.red)
-                    ForEach(model.removalFailures, id: \.self) { Text($0).font(.caption) }
-                    Button("Retry removal") {
+                    Text(NativeCopy.removalIncomplete.text).foregroundStyle(.red)
+                    ForEach(model.removalFailures, id: \.self) { Text(NativeCopy.localize($0)).font(.caption) }
+                    Button(NativeCopy.retryRemoval.text) {
                         Task { actionRefusal = await appDelegate.removeHomeSelection() }
                     }.disabled(model.busy)
                 }
@@ -295,19 +295,19 @@ private struct DIYClientForm: View {
     @EnvironmentObject var appDelegate: AppDelegate
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Existing DIY Tailscale").font(.headline)
-            if appDelegate.isConnecting { ProgressView("Connecting…") }
+            Text(NativeCopy.existingDIY.text).font(.headline)
+            if appDelegate.isConnecting { ProgressView(NativeCopy.connecting.text) }
             if let error = appDelegate.clientConnectError {
-                Text(error).foregroundStyle(.red)
+                Text(NativeCopy.localize(error)).foregroundStyle(.red)
             }
             if appDelegate.clientBridge == nil {
-                TextField("Home Tailnet Address", text: $appDelegate.clientHomeHost).textFieldStyle(.roundedBorder)
-                TextField("Home Connector Port", text: $appDelegate.clientHomePort).textFieldStyle(.roundedBorder)
-                TextField("Pairing Code", text: $appDelegate.clientPairingCode).textFieldStyle(.roundedBorder)
-                Button("Connect") { appDelegate.connectToRemote() }.disabled(appDelegate.isConnecting)
+                TextField(NativeCopy.homeTailnetAddress.text, text: $appDelegate.clientHomeHost).textFieldStyle(.roundedBorder)
+                TextField(NativeCopy.homeConnectorPort.text, text: $appDelegate.clientHomePort).textFieldStyle(.roundedBorder)
+                TextField(NativeCopy.pairingCode.text, text: $appDelegate.clientPairingCode).textFieldStyle(.roundedBorder)
+                Button(NativeCopy.connect.text) { appDelegate.connectToRemote() }.disabled(appDelegate.isConnecting)
             } else {
-                Text(appDelegate.connectionState == .online ? "Connected" : "Disconnected")
-                Button("Disconnect") { appDelegate.disconnectRemote() }
+                Text(appDelegate.connectionState == .online ? NativeCopy.connected.text : NativeCopy.disconnected.text)
+                Button(NativeCopy.disconnect.text) { appDelegate.disconnectRemote() }
             }
         }
     }

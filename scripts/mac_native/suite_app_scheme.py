@@ -283,6 +283,89 @@ def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadlin
         capture['status'] = 'PASS'
 
 
+def live_switch_archive(folder: Path) -> list[dict[str, Any]]:
+    """Separate closed six-image set; never widen the original dialog archive."""
+    rows = []
+    for theme, scale in (('light', 100), ('dark', 200)):
+        for dialog in ('main', 'settings', 'connection'):
+            name = f'live-switch-zh-{theme}-{scale}-{dialog}.png'
+            descriptor = os.open(folder / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, 'rb') as source:
+                info = os.fstat(source.fileno())
+                if not stat.S_ISREG(info.st_mode) or not 33 <= info.st_size <= PNG_CAP:
+                    raise ValueError('live-switch screenshot size/type')
+                raw = source.read(PNG_CAP + 1)
+            if (len(raw) != info.st_size or len(raw) > PNG_CAP
+                    or raw[:16] != b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
+                    or struct.unpack('>II', raw[16:24]) != (760, 560)):
+                raise ValueError('live-switch PNG dimensions/header')
+            rows.append(dict(name=name, locale='zh', theme=theme, text_percent=scale, dialog=dialog,
+                width=760, height=560, encoding='base64', bytes=len(raw),
+                sha256=hashlib.sha256(raw).hexdigest(), data=base64.b64encode(raw).decode('ascii')))
+    if sum(row['bytes'] for row in rows) > 8 * 1024 * 1024:
+        raise ValueError('live-switch screenshot archive size')
+    return rows
+
+
+def qualify_live_switch(argv: list[str], env: dict[str, str], scratch: Path, deadline: float,
+                        section: dict[str, Any], downloads: Path) -> None:
+    """A missing live choice, durability/chrome step or capture fails separately."""
+    events = scratch / 'live-switch.jsonl'
+    command = [*argv, str(events), str(downloads), 'live-switch']
+    capture: dict[str, Any] = {'status': 'FAIL', 'argv': command, 'exit_code': None, 'screenshots': []}
+    section['live_switch'] = capture
+    try:
+        code, raw = _command(command, env, scratch, min(deadline, time.monotonic() + 40), output_cap=65536)
+        capture.update(exit_code=code, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(),
+                       head=raw[:1024].decode(errors='replace'), tail=raw[-1024:].decode(errors='replace'))
+    except (TimeoutError, RuntimeError, subprocess.TimeoutExpired) as error:
+        capture['command_error'] = type(error).__name__
+    # Preserve available semantic receipts even if the image archive is incomplete.
+    try:
+        evidence = read_events(events)
+        capture['events'] = [row for row in evidence if row.get('event') in ('live-switch-step', 'live-switch-screenshot')]
+        capture['diagnostic_events'] = [row for row in evidence if row.get('event') in (
+            'startup', 'capture_progress', 'capture_step', 'capture_navigation', 'admission_failure', 'failure',
+            'watchdog', 'navigation_failure', 'content_process_terminated', 'live-switch-dom-failure')]
+        images = live_switch_archive(downloads)
+        capture['screenshots'] = images
+        steps = [row for row in evidence if row.get('event') == 'live-switch-step']
+        required = [
+            dict(step='start-en', locale='en', nativeLaunchLocale='en'),
+            dict(step='control-change', locale='zh-CN', changed=True),
+            dict(step='native-reply', locale='zh-CN', persisted=True, replyCount=1),
+            dict(step='native-saved', locale='zh-CN', persisted=True, webSaved=True),
+            dict(step='durable-readback', locale='zh-CN', scratch=True),
+            dict(step='native-chrome-unchanged', nativeLaunchLocale='en', unchanged=True),
+        ]
+        steps_ok = len(steps) == len(required) and all(
+            all(type(row.get(key)) is type(value) and row[key] == value for key, value in expected.items())
+            for row, expected in zip(steps, required))
+        receipts = [row for row in evidence if row.get('event') == 'live-switch-screenshot']
+        captures_ok = len(receipts) == len(images) and all(
+            row.get('name') == image['name'] and row.get('locale') == 'zh'
+            and row.get('theme') == row.get('webTheme') == image['theme']
+            and type(row.get('textPercent')) is int and row['textPercent'] == image['text_percent']
+            and row.get('dialog') == image['dialog'] and row.get('chineseDOM') is True
+            and row.get('width') == 760 and row.get('height') == 560
+            for row, image in zip(receipts, images))
+        # Require semantic ordering: every capture follows Saved/readback and
+        # precedes the final immutable-native-chrome check.
+        ordered = capture['events']
+        order_ok = ([row.get('step') for row in ordered[:5]] == [row['step'] for row in required[:5]]
+                    and all(row.get('event') == 'live-switch-screenshot' for row in ordered[5:-1])
+                    and ordered[-1].get('step') == 'native-chrome-unchanged') if ordered else False
+        failed = any(row.get('event') in ('failure', 'admission_failure', 'watchdog', 'navigation_failure',
+                                         'content_process_terminated') or
+                     (row.get('event') == 'capture_step' and row.get('result') != 'complete') for row in evidence)
+        if capture['exit_code'] == 0 and steps_ok and captures_ok and order_ok and not failed:
+            capture['status'] = 'PASS'
+    except (OSError, ValueError, RuntimeError) as error:
+        capture['capture_error'] = type(error).__name__
+        if isinstance(error, ValueError):
+            capture['capture_error_reason'] = str(error)
+
+
 def _error_context(raw: bytes) -> dict[str, Any]:
     """Keep compiler errors outside head/tail, with two surrounding lines.
 
@@ -626,10 +709,15 @@ def run(report: dict[str, Any], artifact_dir: Path) -> None:
             qualify_dialogs([str(binary), '--qualify-app-scheme', str(assets / 'web/dist'),
                 str(assets / 'protocol/remote-client-config-policy.v1.json'), str(port)],
                 env, scratch, deadline, section, downloads)
+            qualify_live_switch([str(binary), '--qualify-app-scheme', str(assets / 'web/dist'),
+                str(assets / 'protocol/remote-client-config-policy.v1.json'), str(port)],
+                env, scratch, deadline, section, downloads)
         if section['cold_client']['status'] != 'PASS':
             raise RuntimeError('cold-client production composition failed; retain receipt')
         if section['dialogs']['status'] != 'PASS':
             raise RuntimeError('dialog screenshot qualification failed; retain capture evidence')
+        if section['live_switch']['status'] != 'PASS':
+            raise RuntimeError('live-switch qualification failed; retain separate capture evidence')
         if section['qualification']['status'] != 'PASS':
             raise RuntimeError('app-scheme qualification failed; retain partial event evidence')
         if section['native_tests']['status'] != 'PASS':

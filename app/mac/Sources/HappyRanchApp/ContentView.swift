@@ -244,7 +244,7 @@ struct ContentView: View {
     }
 
     private var windowTitle: String {
-        let state = appDelegate.supervisor.state.description
+        let state = NativeCopy.localize(appDelegate.supervisor.state.description)
         return "HappyRanch — \(state)"
     }
 
@@ -390,16 +390,16 @@ struct ContentView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundColor(.yellow)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Daemon issue")
+                Text(NativeCopy.daemonIssue.text)
                     .font(.headline)
                 Text(appDelegate.supervisor.state == .unhealthy
-                     ? "Health check is failing — daemon may recover on its own."
-                     : "Daemon has failed and needs a restart.")
+                     ? NativeCopy.unhealthyGuidance.text
+                     : NativeCopy.failedGuidance.text)
                     .font(.caption)
             }
             Spacer()
             if appDelegate.supervisor.state == .failed {
-                Button("Restart Daemon") {
+                Button(NativeCopy.restartDaemon.text) {
                     appDelegate.startDaemon()
                 }
                 .buttonStyle(.borderedProminent)
@@ -429,7 +429,7 @@ struct RemoteAccessSheet: View {
         VStack(spacing: 0) {
             HStack {
                 Spacer()
-                Button("Done") {
+                Button(NativeCopy.done.text) {
                     appDelegate.showRemoteAccess = false
                 }
                 .keyboardShortcut(.escape, modifiers: [])
