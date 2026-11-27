@@ -159,6 +159,7 @@ export CGO_ENABLED=0 GOOS=linux GOARCH="$GO_ARCH" GOFLAGS=-modcacherw
     -o "$PAYLOAD/bin/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
 # Session-only client transport runs as the desktop user, with no service or
 # privileged registration. This shared Go module's C ABI requires cgo.
+"$MANAGED_PYTHON" -I "$WORK/source/app/mac/tsnet-bridge/third_party/prepare_tailscale.py"
 (cd "$WORK/source/app/mac/tsnet-bridge" && CGO_ENABLED=1 go build -buildvcs=false -mod=readonly -trimpath \
     -o "$PAYLOAD/bin/happyranch-home-bridge" .)
 chmod 755 "$PAYLOAD/bin/happyranch-home-bridge"

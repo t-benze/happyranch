@@ -279,6 +279,7 @@ export MACOSX_DEPLOYMENT_TARGET=14.0 GOOS=darwin GOARCH=arm64 CGO_ENABLED=1
 ICONSET="$OUTPUT/scratch/AppIcon.iconset"
 STAGE=go
 cd "$PROJECT/tsnet-bridge"
+python3 -I third_party/prepare_tailscale.py
 # Fresh archive in an exported immutable tree, readonly existing module graph.
 go list -mod=readonly -deps -json . > "$OUTPUT/diagnostics/go-deps.json"
 go list -mod=readonly -m -json all > "$OUTPUT/diagnostics/go-modules.json"

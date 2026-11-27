@@ -1,0 +1,7 @@
+--- a/ipn/ipnlocal/peerapi.go
++++ b/ipn/ipnlocal/peerapi.go
+@@ -76,2 +76,2 @@
+-	// and let netstack intercept it.
+-	if runtime.GOOS == "android" {
++	// and let netstack intercept it. HappyRanch desktop clients also use netstack.
++	if runtime.GOOS == "android" || ((runtime.GOOS == "darwin" || runtime.GOOS == "linux") && s.b.sys.IsNetstack()) {

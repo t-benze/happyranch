@@ -1184,6 +1184,11 @@ GOTOOLCHAIN=go1.23.12 CGO_ENABLED=1 GOFLAGS=-mod=readonly GOWORK=off go test -co
 GOTOOLCHAIN=go1.23.12 CGO_ENABLED=1 GOFLAGS=-mod=readonly GOWORK=off go vet ./...
 ```
 
+Before full-module bridge checks, prepare its client-only Tailscale replacement
+with `python3 -I third_party/prepare_tailscale.py` from the bridge directory.
+The shipping Mac and Linux build scripts do this automatically. See the
+[pin, provenance and qualification procedure](tsnet-bridge/third_party/README.md).
+
 The module declares Go 1.23.1; the existing documented verification pin is
 Go 1.23.12. `CGO_ENABLED=0 go test ./...` cannot compile this module because
 existing `bridge.go` C exports supply symbols used by `health.go` and the
