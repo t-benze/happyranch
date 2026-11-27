@@ -266,6 +266,34 @@ records retain pane ranges/page counts, and image receipts retain actual offsets
 Bounds are eight scrolling panes and sixteen additional captures per 200% view,
 2 MiB per PNG and 8 MiB per locale, within the unchanged 40-second process cap.
 Exhaustion fails qualification rather than claiming complete content.
+
+MAC-4a additionally runs a separate `live-switch` qualification process, starting
+with an English native preference seeded only under the checked qualification
+scratch HOME. The actual rendered Language radio receives a change event through
+its click action; the qualifier never calls the locale bridge setter. It requires
+one actual `app.locale.set` persisted reply, passively observed while forwarding
+all messages/results unchanged to the shipping handler, plus Chinese native Saved
+text, checked Chinese control and no retry. It directly reads `zh-CN` from the
+scratch native preference file. In the same document it closes Settings, asserts
+Chinese Main onboarding text and header controls, and opens Settings and Connection
+AFTER the choice, asserting their Chinese titles/content. Six separate
+`live-switch-zh-{light-100|dark-200}-{main|settings|connection}.png` snapshots retain
+the frame/header and web content. Native launch locale must remain English and is
+logged explicitly; this does not claim rendered native chrome evidence.
+`probe.json.app_scheme.live_switch` archives these PNGs separately from `dialogs`,
+using closed names, 760×560 dimensions, 2 MiB/image and 8 MiB aggregate bounds.
+Its separate validator requires every ordered choice/Saved/readback/chrome step,
+every Chinese DOM capture receipt, matching applied web theme, and zero process
+exit; missing, duplicate, partial, error or session-only evidence fails the suite.
+Original bilingual dialog predicates, equality checks, fixtures, limits and failure
+paths are unchanged. Both processes retain the 35-second watchdog / 40-second
+command cap and existing total suite deadline. Jenkins configuration is unchanged.
+Linux maker: native compile, UI execution/captures and native regression proof are
+NOT RUN. QA owns MAC-4 build 3/8 after independent exact-head review round 5 APPROVE;
+2/8 builds have been used. Native GUI rendering is not verifiable on Jenkins
+(no display); copy is verified there by headless native tests, subject to QA's
+actual result. This source addition itself supplies no Mac PASS.
+
 The desktop header is capped at one quarter of the shell height and scrolls
 internally. At 760×560 outer-window / 200% text, native title-bar space leaves a
 shorter web viewport; the former 40% header cap plus fixed sidebar header/footer
