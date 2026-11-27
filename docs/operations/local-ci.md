@@ -2629,9 +2629,11 @@ gh workflow run attachment-focused-qa.yml --ref task/TASK-19433 -f selection=wor
 ```
 
 If GitHub refuses the branch-only choice, stop and record the refusal. Do not
-use another workflow or modify the default branch to evade it. U3's total
-allocation is at most six dispatches, with every ID/ref/SHA recorded in the
-task evidence. A dispatch or static pass is not qualification or lifecycle PASS.
+use another workflow or modify the default branch to evade it. U3's initial
+allocation was six dispatches. Founder THR-336 msg436 grants exactly
+two final dispatches: 7 for attributable RED on an unmerged throwaway branch,
+8 for GREEN at the fixed PR head. Record every ID/ref/SHA in task evidence;
+never exceed eight. A dispatch or static pass is not qualification or lifecycle PASS.
 
 The two selected modules explicitly initialize their newly created synthetic
 org database through the production fresh-org initializer before registration,
@@ -2693,7 +2695,7 @@ Artifacts are uploaded on failure too and retained seven days.
 | E4-O / E4-R | Manager Final under active policy, actual full launched prompt, authentic predecessor/Held/control lineage and authoritative read-only precedence over the unchanged authored merge duty. Rebrief supplement is checked on original prompt bytes; retry truthfully has no invented supplement. Each recovery/exhaustion subvariant has an independent run with unchanged Final recoveries:1. Ineligible alternate-manager reassignment must genuinely refuse without allocation; positive Final reassignment is then NOT RUN. No actual merge is attempted. |
 | E5 / E6 | Same-home real stop/start after original terminal+outer COMMIT but before business advance, versus missing original outer proof. E5 waits for the source's committed wait and original native closure before its second stop, exporting source status, terminal observation and cancellation cause; unexplained cancellation stops as a possible production defect. E6 stays unheld and logs a stall under the observer's isolated fixed clock. No test-authored closure facts. |
 | E7 / E7-render | Original-owner preparation/execution throws and failed returns, integrity and partial scratch, launch-COMMIT/possible-launch windows, close/release/receipt failure and five finite discovery/delivery cycles compared with the original pre-cycle snapshot. Preparation/invocation/prospective-SID, process/callback/custody and native obligation counts cannot grow. Three distinct render-refusal SIDs produce one Held without preparation. P2 lacks an original scratch-unwind certificate and is tested as U; positive P2 is NOT RUN. U5 may settle only from authentic original terminal/outer custody, otherwise remains unknown/alarmed. |
-| E8 | A sibling Held supplies an authentic initiating continuation while the pristine target stays behind a pre-preparation barrier. Per manager ruling r3, the stored control receipt is the notification of the initiator's own cancel: target inbox zero, sibling Held inbox exactly one. Receipt/event and actor identities, zero target preparation/journal/session start/custody, both runs drained and genuine source done are asserted. Stale delivery cannot bind a SID or spawn. |
+| E8 | A sibling Held supplies an authentic initiating continuation while the pristine target stays behind a pre-preparation barrier. Each actor cancel explicitly consumes only delivered notifications for the controlled run: target cancel consumes none, preserving the sibling Held wake for the next source turn; sibling cancel consumes that wake, then a later source turn submits done. Per manager ruling r3, the stored control receipt is the notification of the initiator's own cancel: target inbox zero, sibling Held inbox exactly one. Receipt/event and actor identities, zero target preparation/journal/session start/custody, both runs drained and genuine source done are asserted. Stale delivery cannot bind a SID or spawn. |
 | Populated history | `--start2=populated_long_batch`, native bounds and catalog/startup schema-shell keepers remain **P-only**. Populated real-daemon lifecycle is **NOT RUN**; this module does not establish capacity or pilot acceptance. |
 
 Chain qualification passed on both Pythons at the historical heads above.
@@ -2707,15 +2709,18 @@ responses and non-poll assertions stay strict. Each case exports poll/busy
 counts and busy-response seconds; a majority of busy polls or over 30 seconds
 is flagged as a possible production lock issue.
 
-The allocation is **5/6 used, 1 remains**. Dispatch 6 is reserved for final
-pushed exact-head GREEN on both Pythons after all local non-integration checks
-and both required hosted lints succeed. The module's hosted RED remains
-**PROOF NOT RUN (venue budget)**; prior failed runs are retained as failures.
-The r3 lifecycle corrections remain **NOT VERIFIED** until that run succeeds.
-Record run/head, per-case counts, busy counts and artifact digests in the
-PR/task evidence. If dispatch 6 is not fully GREEN, stop without another
-run. No production, retired Python unit suite, general integration, E2E or CI
-trigger is changed.
+Dispatch 6 (`45938962311`, head `c3ff9034`) passed chain 4/4 and lifecycle
+35/36 on both Pythons; E8 failed while draining `[finished, held]`.
+Dispatches 1–6 remain non-GREEN, and the earlier launch refusal and
+REQUEST_CHANGES history remain preserved. Hosted RED was previously
+**PROOF NOT RUN (venue budget)**. The final two-dispatch extension above
+requires the fixed actor plus a deliberate production regression on a
+throwaway branch for dispatch 7, then the production-restored PR head for
+dispatch 8. E8 must detect the regression; final GREEN requires chain 4/4
+and lifecycle 36/36 on each Python. Record run/head, per-case counts, busy
+counts and artifact digests in the PR/task evidence. If dispatch 8 is not
+fully GREEN, stop without another run. The PR fix changes no production,
+retired Python unit suite, general integration, E2E or CI trigger.
 
 The project does not install/manage hooks for linked worktrees. Worktree-guard
 setup may remove only its known stale pre-PR607 injected hook configuration.

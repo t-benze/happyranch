@@ -267,6 +267,12 @@ def _source_actor(private: Path, root: Path, case: dict, payload: dict, prompt: 
     if action == "reassign":
         command["target_agent_id"] = case["alternate"]
     payload.update(decision=dict(action="workflow_control", workflow=command), manager_self_evaluation=assessment)
+    if case.get("cancel_queued"):
+        # Preserve a sibling's Held wake for its own subsequent cancel turn.
+        delivered = _rows(root, "SELECT notification_id FROM workflow_seq_inbox_deliveries "
+            "WHERE initiator_task_id=? AND session_id=? AND notification_id IN "
+            "(SELECT notification_id FROM workflow_seq_inbox WHERE run_id=?)", (task, sid, run["id"]))
+        payload["decision"]["consume_notifications"] = [r["notification_id"] for r in delivered]
     controls = _rows(root, "SELECT * FROM workflow_seq_controls WHERE run_id=?", (run["id"],))
     exhausted = bool(controls) and action != "cancel"
     before = _closed_counts(root, private, task, sid)
