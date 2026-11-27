@@ -383,7 +383,10 @@ final class HomeInviteModel: ObservableObject {
                     // sole/first saved computer if it disappeared.
                     selectedHomeID = savedHomes.first(where: { $0.id == startupProfile })?.id
                     if selectedHomeID != nil { reconnect() }
-                    else { selectedFailure = .identityUnavailable; phase = .failed(.identityUnavailable) }
+                    else {
+                        selectedFailure = .identityUnavailable; needsNewInvite = true
+                        phase = .failed(.identityUnavailable)
+                    }
                 } else if reconnectSingle, savedHomes.count == 1 { reconnect() }
             } catch {
                 guard lifetime == token else { return }

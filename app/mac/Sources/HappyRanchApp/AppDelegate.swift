@@ -265,6 +265,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// Failure/cancellation never substitutes another target or starts local.
     func resumeStartupSelection() {
         guard let profile = startupProfile else { return }
+        switch homeInvite.phase {
+        case .failed, .keychain: startupProfile = nil; return
+        default: break
+        }
         if homeInvite.candidateOutcome != nil || homeInvite.selectedFailure != nil {
             startupProfile = nil; return
         }
