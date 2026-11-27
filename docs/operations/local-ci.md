@@ -4383,6 +4383,15 @@ uses the existing standalone script venue with a disposable private dbus-daemon,
 a fake polkit Authority, and temporary Unix sockets. System Python needs the
 already-required python3-gi/Gio; tests load its fixed distribution library path.
 No host bus, installed polkit definition, service, or live Headscale is touched.
+`test_status_v2_optional_reader_preserves_legacy_fallback` covers slow invite
+and policy children that consume their remaining observation budget. F3 keeps
+main's invite/policy budgets: shortening them can deliver a detailed V2
+`runtime_unavailable` frame where main's unchanged watchdog expires and the
+native caller retains v1 `failed`. The test uses bounded disposable children
+and the real private-bus watchdog; it does not assert that the runtime is ready
+or repair the known post-upgrade refusal.
+The existing `test_no_secret_in_logs_or_replies` also preserves the refusal
+category when the internal setup snapshot carries optional firewall ports.
 Native authentication dialogs are NOT RUN. Slice 2b-2 below covers the real
 operation binding using the retained temporary-socket venue.
 The source policy/bus definitions are not installed or wired into the package.

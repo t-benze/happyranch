@@ -321,11 +321,11 @@ class RemoteAccessHelper:
                     return settled(raw, None)
                 if setup is not None:
                     setup = _status_v2.SetupObservation(setup.state, int(time.monotonic() - observed_at))
-                invite, cleanup = self._invite_status(uid, observed, deadline - .3)
+                invite, cleanup = self._invite_status(uid, observed, deadline)
                 policy = None
                 try:
                     state = _helper_generation.HomeLifecycleClient('RetryPolicyRenewal', uid).policy_status(
-                        deadline - time.monotonic() - .3)
+                        deadline - time.monotonic())
                     policy = _status_v2.PolicyObservation(_status_v2.PolicyState(state['policy']), 0)
                 except Exception:
                     pass  # Unavailable evidence remains unknown, never current.
@@ -505,7 +505,7 @@ class RemoteAccessHelper:
                         raise
                     # Use the existing absence proof only to refuse. Its
                     # display snapshot never admits a device mutation.
-                    _, closed, _ = self._status_snapshot(uid, time.monotonic() + 2.0)
+                    _, closed, _, _ = self._status_snapshot(uid, time.monotonic() + 2.0)
                     if closed:
                         raise Refused('host-state-unrecognized-not_applicable') from None
                     raise Refused('host-state-unrecognized-unverified') from None
