@@ -4882,3 +4882,34 @@ The existing `--s7a=unavailable` genuine legacy-storage fixture also asserts
 settings PUT returns `sequential_storage_unavailable` without writes. Its absent
 path retains the original complete legacy validator; installed sequential setup
 uses the scoped chain.
+
+
+THR-404 group 7R uses the existing private schema shell and `--s7a=mixed_empty`,
+`mixed_corruption`, `mixed_unrelated`, `mixed_fallback`, `mixed_budget`,
+`mixed_default` and `mixed_native` on Python3.14 and3.12 (substitute these in the
+documented
+`WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --s7a=...`).
+They cover exact closure/empty-inventory equality and original ledger identity;
+selected event/ancestry/namespace refusal; disconnected Coding/document and
+sequential corruption plus8300 ordinary audits/results; complete-fallback outcome
+parity for scalar task/run/instance/result, mapping/document-result, escaped/nested
+JSON, base64/hex/typed native cells, implicit native callbacks, ordinary cancellation
+audits, journal/ownership/revisit and native settings-pointer references; uncertain/duplicate
+encodings; and deadline/C/retained exhaustion with no partial result. The default
+keeper compares the original wrapper/complete rows and ledger; `mixed_native`
+reuses the genuine HTTP Start2 callback fixture to authenticate native source
+results/audits and consumption receipts with an empty retained inventory. Optional
+`MIXED_DEFAULT_OUTPUT` exports canonical bytes; `MIXED_DEFAULT_DATABASE` and
+`MIXED_DEFAULT_READ_DATABASE` use the same synthetic fixture copy under task-tmp
+for an exact base/head comparison, never a live database.
+
+C1's unused selected-reader APIs/tests/docs are removed by normal revert; the
+original complete retained corruption keepers remain. This is an unwired adapter,
+not mixed-writer acceptance or latency evidence. The known complete retained
+27/30 reconstruction and ordinary-overlay serialization remain unchanged. 7b
+owns wiring; historical @1 Final/7c and STOP-1 stay complete. Four authoring answers
+and attributable fail/restored-pass evidence stay in the existing PR body. No new
+required check, venue or trigger; integration SKIPPED THR243, retired units and
+Product E2E NOT RUN. Long verification and clean-head `scripts/local_ci.sh all`
+plus OpenAPI `--check` use the durable jobs boundary and authenticated receipt
+before publication.

@@ -3,6 +3,8 @@
 The complete sequential oracle calls this only on explicit selection, after all
 retained families validate in the SAME snapshot. Returned native values are
 immutable observations, never current authority, settlement or effect clearance.
+The separate unwired writer entry composes this same closure with scoped v2
+replay only after proving retained absence; otherwise it uses that full oracle.
 """
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ from typing import TypeAlias
 from runtime.infrastructure.workflow_schema import _structure_cells
 from runtime.infrastructure.workflow_task_ownership import _binding_owner
 from runtime.models import BlockKind, TaskStatus
-from runtime.workflows.coding_authority_history import _bounded_rows
+from runtime.workflows.coding_authority_history import _Budget, _bounded_rows
 from runtime.workflows.coding_source_history import _TASK_COLUMNS, _TASK_TYPES
 from runtime.workflows.sequential_history import (
     SequentialHistory, _ReadBudget, _require, read_sequential_history,
@@ -80,8 +82,9 @@ def close_mixed_history_uncommitted(conn: sqlite3.Connection, *, org_slug: str,
                                     task_id: str, budget: _ReadBudget) -> MixedTaskHistory:
     """Close parent/child and workflow-member edges, INCLUDING terminal paths.
 
-    Internal composition only: the caller has just validated the complete
-    combined layout/data. Use its original C allowance and SQL progress hook;
+    Internal composition only: the caller has matched the complete layout and
+    must authenticate complete data or scoped replay/retained absence before
+    exposing this closure. Use its original C allowance and SQL progress hook;
     do not create a budget, transaction, cache or independently trusted subset.
     This is a history inventory, never a proposed live cancellation write set.
     """
@@ -201,3 +204,101 @@ def read_selected_mixed_history_uncommitted(conn: sqlite3.Connection, *, org_slu
     _require(isinstance(history, MixedSequentialHistory) and history.task_history is not None,
              'mixed_history_unavailable')
     return history.task_history
+
+
+def read_mixed_write_history_uncommitted(conn: sqlite3.Connection, *, org_slug: str,
+                                         task_id: str, budget: _ReadBudget,
+                                         retained_budget: _Budget) -> MixedSequentialHistory:
+    """Separate, unwired ABSENCE-OR-COMPLETE writer certificate.
+
+    Caller owns the original locks, snapshot and C/retained ledgers. The mixed
+    closure is unchanged. Only v2 closures with exhaustive retained absence use
+    scoped replay; every other case uses the original complete reader. Neither
+    branch creates fresh credit, extends the deadline or returns partial facts.
+    """
+    from runtime.workflows._read_exhaustion import check, exhausted
+    from runtime.workflows.coding_authority_history import _CALL_ROW_LIMIT
+    from runtime.workflows.sequential_history import _native_contract, _read_layout, _sql_budget
+    from runtime.workflows.sequential_retained_absence import read_absent_retained_inventory
+    from runtime.workflows.sequential_task_history import _graph, _replay, _settings_chain
+
+    _require(conn.in_transaction, 'mixed_history_requires_snapshot')
+    _require(type(org_slug) is str and bool(org_slug), 'org_required')
+    _identity(task_id)
+    _require(type(budget) is _ReadBudget and type(retained_budget) is _Budget
+             and budget.sql_limit == 2000000, 'read_budget_invalid')
+    observed = _ReadBudget(deadline=budget.deadline)
+    reference = _ReadBudget(deadline=budget.deadline)
+    legacy = _ReadBudget(deadline=budget.deadline, sql_limit=32000000)
+
+    class UseComplete(Exception):
+        pass
+
+    # Structural mismatch is already the original complete comparator's error.
+    # Never retry it with fresh credit or repeat its A/B acquisition.
+    layout, metadata = _read_layout(conn, observed, reference, budget)
+
+    def complete() -> MixedSequentialHistory:
+        history = read_sequential_history(conn, expected_org_slug=org_slug,
+            retained_budget=retained_budget, deadline=budget.deadline, task_id=task_id,
+            _budgets=(observed, reference, budget, legacy), _recognized_layout=(layout, metadata))
+        _require(isinstance(history, MixedSequentialHistory) and history.task_history is not None,
+                 'mixed_history_unavailable')
+        return history
+
+    try:
+        if not (layout.sequential and layout.schema_version == 2 and layout.ownership == 2
+                and layout.document == 'J' and layout.coding):
+            raise UseComplete()
+        with _sql_budget(conn, budget):
+            _native_contract(conn, budget)
+            # Preserve the retained reader's native structural prerequisites;
+            # an empty retained family is not permission to accept new shapes.
+            from runtime.infrastructure.workflow_coding_schema import _validate_coding_dependencies
+            _validate_coding_dependencies(conn)
+            closure = close_mixed_history_uncommitted(conn, org_slug=org_slug, task_id=task_id, budget=budget)
+            if any(kind not in (*_SEQUENTIAL, 'legacy') for _, kind, _, _ in closure.owners):
+                raise UseComplete()
+            task_ids = {row[0] for row in closure.tasks}
+            runs = frozenset(instance for _, kind, _, instance in closure.owners
+                             if kind in _SEQUENTIAL and instance is not None)
+            data = _graph(conn, metadata, None, budget, run_roots=runs, source_roots=frozenset(task_ids))
+            _require([tuple(row.values()) for row in data['workflow_seq_schema_versions']] == [(2,)],
+                     'schema_marker_invalid')
+            if any(row['engine_version'] != 2 for row in data['workflow_seq_runs']):
+                raise UseComplete()
+            _require(data['workflow_seq_runs'] or not data.get('workflow_seq_source_wait_sets'),
+                     'initiator_membership_missing')
+            _settings_chain(conn, metadata, data, org_slug=org_slug, definition_ids=frozenset(),
+                            settings_ids=frozenset(), budget=budget)
+            definitions = _replay(conn, metadata, data, expected_org_slug=org_slug, budget=budget,
+                                  full_settings=True, retained_budget=retained_budget)
+        opening = retained_budget.consumed, retained_budget.accepted_rows, retained_budget.traversed
+        try:
+            with _sql_budget(conn, legacy):
+                retained = read_absent_retained_inventory(conn, metadata=metadata, data=data,
+                    task_ids=task_ids, run_ids={row['id'] for row in data['workflow_seq_runs']},
+                    instance_ids={instance for _, kind, _, instance in closure.owners
+                                  if kind not in _SEQUENTIAL and instance is not None},
+                    result_ids={row[0] for row in closure.results}, budget=retained_budget, clock=budget)
+        finally:
+            # Same cumulative C charge as _legacy_history, also on refusal.
+            budget.consumed += retained_budget.consumed - opening[0]
+            budget.accepted_rows += retained_budget.accepted_rows - opening[1]
+            budget.traversed += retained_budget.traversed - opening[2]
+        check(budget.accepted_rows <= _CALL_ROW_LIMIT, lambda ok: _require(ok, 'read_rows_exhausted'),
+              budget, 'rows', budget.accepted_rows, _CALL_ROW_LIMIT)
+        budget.reserve(0)
+        if retained is None:
+            raise UseComplete()
+        budget.check()
+        return MixedSequentialHistory(layout, 'storage readable', tuple(sorted(definitions)),
+            tuple(sorted(row['id'] for row in data['workflow_seq_runs'])), (layout.document, retained), closure)
+    except UseComplete:
+        pass
+    except (ValueError, sqlite3.Error) as exc:
+        if exhausted(exc):
+            raise
+        # A suspect closure/encoding retains the complete reader's causal
+        # refusal, instead of replacing it with a subset's earlier diagnostic.
+    return complete()

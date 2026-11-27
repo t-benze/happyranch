@@ -250,3 +250,37 @@ full FK and physical installation checks remain. O_EXCL and inode identity are
 required; existing DBs cannot enter this path. Global install/load/bootstrap and
 Founder cutover keep COMPLETE certification under STOP-1. No budget, deadline,
 transaction, lock set/order or transition changes; no TLA+ change follows.
+
+
+## Retained ABSENCE-OR-COMPLETE mixed certificate — THR-404 group 7R
+
+The separate, unwired mixed-write entry preserves original closure I and reuses
+`_graph`, `_settings_chain` and `_replay` for selected v2 runs. Its retained adapter
+examines all columns of the exact matched retained workflow schema and the native
+Coding/document metadata, cancellation-audit, ownership and journal surfaces.
+Every native task/run/instance/result reference in those supported encodings is
+included: scalar IDs, nested/escaped JSON, named base64/hex and typed native cells.
+Native revisits conservatively select complete fallback; native chain/fanout JSON
+is included without changing I. Ordinary native metadata negatives remain bounded
+SQL probes on L; unrelated
+native result summaries are not acquired. Unknown/duplicate/opaque structured
+encodings, a positive reference, selected retained ownership, @1 data or an
+unsupported layout all use the original complete reader. No positive retained
+inventory is reconstructed by this adapter.
+
+Only exhaustive absence constructs an EMPTY retained `_CodingInventory` with a
+real empty `QueuedStorage` and empty reverse cancellation dependencies. All
+returned mixed native rows remain exactly closure I. No retained=None or partial
+inventory is accepted. Every probe/replay/fallback charges the same original
+A/B/C/L and retained objects/deadline. Private composition inputs pass those
+objects and the just-authenticated layout into complete fallback in the unchanged
+snapshot; there is no second A/B allowance or comparison. Complete validation
+predicates/default callers are unchanged. Exhaustion yields no partial result.
+
+Unused C1 selected retained readers and their documentation are normally reverted.
+The known 27/30-column retained reconstruction and ordinary-overlay serialization
+are unchanged; follow-up notes belong in the PR. No writer call site is wired in
+7R. 7b remains next; retired historical @1 Final consumers (7c), STOP-1 global
+certification, ten-core equality, all-run returned IDs and full run views remain
+complete. Locks/order, schema, deadlines/caps, transactions, audit/replay and
+permissions remain unchanged, so no TLA+ transition/model change is introduced.

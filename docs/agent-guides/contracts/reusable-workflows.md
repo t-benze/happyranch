@@ -2794,6 +2794,45 @@ stays Held. No graph/task/result/effect/budget/Pause history is rewritten. See
 [U6 specification and remainder](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
+### Separate mixed writer certificate — THR-404 group 7R
+
+`read_mixed_write_history_uncommitted` is a separate, currently unwired entry.
+The original selected wrapper and every existing mixed writer/legacy/tail caller
+still use the complete oracle. The new entry keeps closure I unchanged: terminal
+parents/children and complete workflow families, max512 tasks, original namespace,
+owner, cycle, orphan and INTEGER-result checks. Selected v2 runs use the group-1
+scoped replay and complete selected settings chains in the same snapshot.
+
+Before returning a retained inventory it proves absence over every column of the
+matched retained Coding/document tables, including shared catalog/authority,
+mapping, instance/task, submission/result, admission, event and publication links.
+Native metadata, `coding_ordinary_cancellation` audits, ownership and Coding/draft
+Pause journal entries are included. Incoming/outgoing native revisits use complete
+fallback; native chain/fanout JSON is probed without changing closure I. Bounded
+SQL negative probes do not acquire
+ordinary native result bodies. Structured references include escaped JSON,
+nested JSON, named base64/hex blobs and NativeSourceRecord typed cells. Duplicate,
+malformed, opaque or unsupported encodings cannot establish absence. Any retained
+reference or uncertain case selects the original complete reader and its existing
+refusals; a retained family in the closure or any selected @1 run also selects it.
+Only exhaustive absence returns a real EMPTY `_CodingInventory`/`QueuedStorage`,
+including empty reverse point-dependency facts. It never returns retained=None
+or a partial positive reconstruction.
+
+A/B/C/L and the retained ledger, original caps and absolute deadline remain
+cumulative through probes, selected replay and fallback. The private complete
+reader composition inputs reuse the just-matched layout in the same unchanged
+snapshot, avoiding a second A/B acquisition; they change no default caller or
+complete data-validation algorithm. Exhaustion refuses the entire result.
+C1's unused selected-root retained readers were removed by normal revert.
+The complete retained Coding reconstruction and ordinary-overlay serialization
+remain unchanged. Global STOP-1 certification, ten-core-table equality, all-run
+returned rediscovery and run list/detail remain complete. Historical @1 Final
+consumers (7c) remain complete and excluded; 7b owns later mixed/legacy/tail wiring.
+No lock/order, transaction, schema, authority, permission, audit or replay change
+is made, and this unwired entry establishes no writer latency claim.
+
+
 ## U6b1 unmounted mixed stop producer (TASK-15301)
 
 `sequential_mixed_cancel.cancel_mixed` consumes the U6a full mixed oracle before
