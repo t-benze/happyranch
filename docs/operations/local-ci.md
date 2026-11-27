@@ -544,6 +544,18 @@ SKIPPED under THR-243 seq42.
 
 ## Focused root Pause/Resume coverage
 
+Task-list census regression checks use the same no-launch synthetic ASGI venue:
+
+```sh
+python -B -m unittest scripts.test_task_list_census -v
+```
+
+They cover a large sibling page under the unchanged census budget, full public
+brief/note retention and pre-fix response bytes, request-scoped Pause observation
+reuse (including unknown facts), refresh on a later request, and cyclic ancestry.
+The response fixture freezes rendering clocks only. These checks do not run the
+daemon lifespan, executors or the retired Python unit suite.
+
 ```sh
 python -B -m unittest scripts.test_task_pause_resume scripts.test_task_pause_jobs -v
 ```

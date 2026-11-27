@@ -46,7 +46,7 @@ from runtime.infrastructure.db.task_reconciliation import (
     RetryVerificationResponse, TaskReconciliation, canonical, digest, exact_scope,
     identifier, request_body, require,
 )
-from runtime.infrastructure.task_pause_controls import PauseControlError
+from runtime.infrastructure.task_pause_controls import PauseControlError, TaskPauseListReader
 from runtime.infrastructure.db.task_attributes import AttributeStoreError
 from runtime.task_attributes import AttributeValidationError
 from runtime.task_attribute_admission import validate_initial_attributes, write_initial_attributes_uncommitted
@@ -899,7 +899,9 @@ def list_tasks(
             budget = ChildWaitBudget()
             origins = org.db.get_task_thread_origins([t.id for t in tasks])
             next_cursor = tasks[-1].id if len(tasks) == limit else None
-            result_tasks = [{**_task_to_dict(t, org, budget, origins), "pause": _pause_projection(org, t.id)} for t in tasks]
+            pause_reader = TaskPauseListReader(org.db._task_pause_store, tasks)
+            result_tasks = [{**_task_to_dict(t, org, budget, origins),
+                             "pause": _pause_projection(org, t.id, pause_reader)} for t in tasks]
         definitions: dict[str, AgentDef | None] = {}
         for task, data in zip(tasks, result_tasks):
             data.update(_task_selection_view(task, org, definitions))
@@ -995,10 +997,10 @@ def export_roots(
         raise HTTPException(503, detail={"code": "attribute_storage_unavailable"}) from exc
 
 
-def _pause_projection(org: OrgState, task_id: str) -> dict:
+def _pause_projection(org: OrgState, task_id: str, reader: TaskPauseListReader | None = None) -> dict:
     from runtime.infrastructure.task_pause_controls import PauseControlError
     try:
-        return org.db._task_pause_store.projection(task_id)
+        return (reader if reader is not None else org.db._task_pause_store).projection(task_id)
     except PauseControlError as exc:
         raise HTTPException(status_code=404 if exc.detail["code"] == "unknown_task" else 409,
                             detail=exc.detail) from exc
