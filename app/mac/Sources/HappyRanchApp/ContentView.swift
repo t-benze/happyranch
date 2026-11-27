@@ -3,6 +3,15 @@ import WebKit
 import HappyRanchSupervisor
 import os
 
+@MainActor
+private final class MainWebView: WKWebView {
+    var bindWindow: ((NSWindow) -> Void)?
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let window { bindWindow?(window) }
+    }
+}
+
 /// Main uses the one packaged app origin. `url` identifies the selected native
 /// owner for existing release-load callbacks; it is never loaded by WebKit.
 struct WebView: NSViewRepresentable {
@@ -177,7 +186,8 @@ struct WebView: NSViewRepresentable {
             scheme.configure(config); context.coordinator.scheme = scheme
             onScheme?(scheme)
             scheme.updateCandidate(candidate, accessUnsaved: accessUnsaved)
-            let view = WKWebView(frame: .zero, configuration: config)
+            let view = MainWebView(frame: .zero, configuration: config)
+            view.bindWindow = { [weak scheme] window in scheme?.connectionApp?.bindMainWindow(window) }
             view.navigationDelegate = context.coordinator
             scheme.attach(view, load: URL(string: AppSchemeRoute.origin + "/")!)
             return view

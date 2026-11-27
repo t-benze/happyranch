@@ -1144,11 +1144,11 @@ the retired document reported pending/unknown, or native observed an unfinished
 non-GET, retain only a coarse unresolved-save latch: a new empty registry is
 not proof about an earlier save. Normal lifecycle and commit remain held for
 the rest of that app process; this minimal summary cannot prove an earlier
-document's save outcome. Only the explicit recovery exit below remains; a new
+document's save outcome. On Linux, only the explicit recovery exit below remains; Mac retains the hold without an exit-anyway escape; a new
 `none` summary or an elapsed timeout cannot clear the latch. No persistence or
 replay of draft data or automatic re-send is introduced by this contract.
 
-The user must still be able to leave. Native always offers a separate explicit
+The following escape is Linux-specific. Linux native offers a separate explicit
 recovery exit when the web gate is unavailable or a hold cannot be resolved,
 including an unresponsive web process: **Stay** is the default; an explicit
 close/Quit/relaunch-anyway confirmation warns that unsent edits may be lost
@@ -1600,8 +1600,12 @@ force. No automatic relaunch, daemon change or new effect path is introduced.
 
 The one optional appState field `app_relaunch` is a JSON boolean, **not required**.
 Linux-only today: Main emits true in app.status and every app.stateChanged,
-including locale publication. Absent or false means unsupported. Unmodified Mac
-sends no field, so the web keeps today's guidance and Recheck without Relaunch.
+including locale publication. Absent or false means unsupported. Mac sends no
+field in status/state/locale publication; app-side incompatibility shows guidance,
+Recheck and the instruction to update, quit HappyRanch and reopen it. It has no
+`app.relaunch` handler. Founder THR-387 seq178 defers Mac recovery Relaunch,
+post-exit handoff and packaged C/K declaration/reader/validator to a separately
+approved piece.
 There is no capabilities list, bridge.hello revival, effect probe, or support
 inference from platform/origin. All other unknown appState keys and non-boolean
 app_relaunch values remain invalid.
@@ -1611,7 +1615,7 @@ shows **Relaunch / 重新启动** only for incompatible + side app with explicit
 support; the existing Recheck remains. Other recovery states and Connection
 retain their actions. A refused command shows localized retry guidance without
 an automatic second call. Linux has no header Relaunch button. Exit anyway is
-confined to the native blocked exit prompt and explicitly requests recovery Quit,
+confined to the Linux native blocked exit prompt and explicitly requests recovery Quit,
 never an automatic relaunch.
 
 #### Valid: appRelaunch arguments / intent acknowledgement
@@ -1863,7 +1867,7 @@ including browser adapter list/status and operator-only bind/reject; the daemon
 allowlist and contract semantics are unchanged.
 
 This is source delivery, not executed Mac acceptance. MAC-2b owns dialogs,
-app-menu and screenshot qualification; Track B owns the web header; MAC-4 owns Quit/close/Relaunch gating
+app-menu and screenshot qualification; Track B owns the web header; MAC-4b owns Quit/close/updater gating; Mac recovery Relaunch is deferred by seq178
 and language. The PR body carries the current per-PR build ledger, including
 failed attempts. A build requires independent exact-head review APPROVE and is
 submitted by QA, never the maker.
@@ -2127,3 +2131,31 @@ Mac PRs. Build only after independent review APPROVE at the exact head; never
 merge Mac code not built at its exact final head.
 The PR body records the current ledger. No S0 diagnostic allowance, daily E2E trigger, required test/build
 check, dialog/toolbar/menu/local-control/language or launch-policy work is added.
+
+
+### Mac MAC-4b option-A lifecycle ordering (THR-387 seq178)
+
+`MacAppLifetime` reserves synchronously for Main close, ordinary Quit and
+Sparkle. Native actual-effects consent precedes `app.lifecycleRequested`; human
+Keep editing / Discard time also precedes the web call. The gate-bearing
+`app.ownersChanged` final recheck/reply is synchronous, with no prompt, await,
+polling or I/O: matching document/request/target/generation, current all-owner
+summary, native Connection/local custody and same-child identity must still
+hold. Refusal is a string with `effect:none`; success ACK precedes effects and
+is not exit/install success. Shared owners.ts and its 5000 ms deadline/lost-reply
+hold are unchanged. Unsubscribe/retirement retires unstarted response authority;
+unknown/started effects retain their original native owner without replay.
+
+Main close -> wire `close` and ordinary Quit teardown; ordinary Quit and
+Sparkle install-on-Quit -> `quit`; Sparkle install-and-restart -> `relaunch`.
+Sparkle performs its own post-install launch, distinct from the deferred Mac
+recovery Relaunch command. Unowned updates also require the web gate before
+release. Owned local children stop even when remote is selected; Host service,
+grant and saved access survive. Incomplete stop holds controlled close/Quit and
+installation. When idle always re-enters fresh observation/reservation/consent
+and the current web gate; consent is not standing stop permission.
+
+Mac has no exit-anyway escape for unresolved save/native custody and no
+keep-running/LaunchAgent. Native execution and built-SPA qualification remain
+separate exact-head review/build/QA gates; Linux maker static/model/relay
+results are not Mac acceptance.

@@ -75,3 +75,26 @@ test('protocol schema admits Mac observations and preserves the Linux closed val
   }
   assert.ok(valid({ schema: 2, service: { supported: false, mode: 'foreground', running: 'running', keepRunning: 'unknown', busy: false } }));
 });
+
+const { NativeRecoveryPanel } = await import('../src/shared/connection/NativeRecoveryPanel.tsx');
+for (const [locale, catalog, reopen, recheck, relaunch] of [
+  ['en', en, 'After updating, quit HappyRanch and open it again.', 'Recheck', 'Relaunch'],
+  ['zh-CN', zhCN, '更新后，请退出 HappyRanch 并重新打开。', '重新检查', '重新启动'],
+]) {
+  test(`unsupported Mac recovery ${locale} explains quit/reopen and keeps Recheck; Linux retains Relaunch`, () => {
+    globalThis.localPageTranslation = key => { assert.equal(typeof catalog[key], 'string', key); return catalog[key]; };
+    for (const supported of [undefined, false, true]) {
+      globalThis.localPageApp = { state: 'incompatible', incompatible: { side: 'app' }, app_relaunch: supported };
+      const html = renderToStaticMarkup(React.createElement(NativeRecoveryPanel, {
+        state: { code: 'incompatible', side: 'app' }, onRetry() {},
+      }));
+      assert.equal(html.includes(reopen), supported !== true, html);
+      assert.ok(html.includes(recheck), html);
+      assert.equal(html.includes(`>${relaunch}</button>`), supported === true, html);
+    }
+    const host = renderToStaticMarkup(React.createElement(NativeRecoveryPanel, {
+      state: { code: 'incompatible', side: 'host' }, onRetry() {},
+    }));
+    assert.ok(!host.includes(reopen), host);
+  });
+}

@@ -1424,24 +1424,22 @@ Requests stay on loopback; redirects are refused.
 
 | Condition or choice | Result |
 | --- | --- |
-| Owned daemon, idle snapshot | Ask “Restart HappyRanch to install the update?” with Restart now / Later; never stop automatically |
-| Owned daemon, busy | Update when they finish / Update now and stop them / Later |
+| Owned daemon, idle snapshot | Ask “Restart HappyRanch to install the update?” with Cancel (Return default) / Restart now; never stop automatically |
+| Owned daemon, busy | Cancel (Return default) / Update when they finish / Update now and stop them |
 | Update when they finish | Re-read every five seconds; when idle, show the restart confirmation and wait for a new click |
 | Restart now | Fresh re-read immediately before stop; busy/unknown returns to the busy prompt |
 | Update now and stop them | Fresh known status; explicit consent permits stopping busy work |
 | Unknown work status | Hold; immediate update disabled; wait/retry or Later only |
-| Either authorized stop | Existing TERM/KILL stop; confirm the same child exited, then release Sparkle's block once |
+| Either authorized stop | After native consent, request the web all-owner gate; synchronously recheck its matching receipt, ACK, then TERM/KILL and confirm same-child exit before one Sparkle release |
 | Later | Hold without polling; Install Downloaded Update in the app menu resumes the gate |
-| Stop incomplete | Never release; retain old app and existing Stop incomplete state; manual resume may retry |
-| External daemon or CLIENT | Release directly; no signal sent to the daemon |
+| Stop incomplete | Never release; retain old app and app-lifetime outcome custody. A later exit, empty summary or resume is not permission to replay installation |
+| Truly unowned/external daemon | No signals; release only after the matching web lifecycle gate and final recheck. Selection/CLIENT role does not negate ownership of a local child |
 | Plain Quit | Existing owned-daemon stop/exit path; Sparkle installs after app exit, without a relaunch-block call |
 
 The confirmation explicitly warns that work starting before the stop will be
 interrupted. The read-only observation is not an admission lock: a residual
 click-to-TERM window remains, covered by that explicit consent. No drain or
-admission-close route is added. Plain Quit still exits if its bounded stop
-fails; Sparkle may then install while the old daemon survives. On next launch
-existing discovery treats that daemon as external.
+admission-close route is added. Controlled Quit/Main close now stay open if bounded owned-child teardown is incomplete; Sparkle is not released. `applicationWillTerminate` retains the synchronous bounded retry for forced platform termination. A forced OS/process exit is outside the controlled gate guarantee.
 
 Check for Updates is user-initiated. Pending relaunches disable that action;
 Install Downloaded Update lets the user revisit Later. Updater startup/abort and
@@ -2649,3 +2647,54 @@ explicit string `unavailable`. Export never waits for a network probe. The cache
 can be older than the current connection; use its `at` timestamp. Native
 archive/app linkage remains a Mac build check. Focused macOS tests:
 `swift test --package-path app/mac --filter TsnetHealthRecordTests`.
+
+
+## MAC-4b: app-owned close, Quit and updater gate
+
+Founder THR-387 seq178 option A; TASK-19576 R1/R2. `MacAppLifetime` owns one
+reservation across actual Main-window close, AppKit Quit and Sparkle. Main close
+maps to ordinary Quit: stop the same owned local child synchronously, observe
+exit/settle the supervisor, close Main and its shared dialogs/revoke AppScheme,
+then complete AppKit termination. Remote selection does not change local child
+ownership. External daemons and remote Host services/grants/saved access are not
+stopped/revoked/removed. Connection presentation close retains its operation;
+active candidate, protected-save/cleanup custody and local mutations hold exit.
+
+Native actual-effects confirmation comes first, with Cancel as Return default,
+frozen launch-locale EN/zh-CN copy and a single token-bound response ingress.
+Missing Main/conflicting sheet, abort, timeout or Cancel ends an unstarted
+attempt. Only then does native send `app.lifecycleRequested` to the current
+admitted subscribed Main; the shared web Keep editing / Discard gate owns all
+Main/Settings/detached unsent draft generations. Pending/unknown saves cannot be
+discarded. No summary/subscriber means no queued event or automatic replay.
+
+The matching gate-bearing `app.ownersChanged` reply is synchronous: final
+current-document/target/generation/process/custody recheck, then either a string
+`effect:none` refusal (ordinary saving can resume) or success ACK followed by
+effects. No human prompt, await or I/O occupies the unchanged 5000 ms shared
+receipt deadline. Lost/unreadable receipts keep the existing save hold; ACK is
+not exit success. Consumed/incomplete effects retain native ownership across
+retirement/reload and cannot replay. When idle requires fresh observation,
+reservation, native consent and the current web gate.
+
+Wire mapping: Main close = `close`; ordinary Quit and install-on-Quit = `quit`;
+Sparkle install-and-restart = `relaunch` because Sparkle performs that launch.
+Install-on-Quit never calls the relaunch-install callback. This wire action does
+not enable Mac recovery Relaunch: `app.relaunch` has no handler and Mac status,
+state changes and locale publication omit `app_relaunch` consistently. App-side
+version mismatch keeps guidance + Recheck and says to update, quit and reopen.
+Linux's supported Relaunch behavior is unchanged.
+
+Mac recovery Relaunch, post-exit handoff, packaged C/K declaration and its
+reader/validator are **deferred by founder THR-387 seq178**, requiring separate
+later approval. No LaunchAgent/keep-running, daemon/security, dependency,
+packaging or CI/build-trigger change is included. The finite model is in
+[mac-app-lifetime](../../docs/specs/formal/mac-app-lifetime/README.md).
+
+Focused Linux transport/render keepers (after `cd web; npm ci`, then repo root):
+`node --experimental-transform-types --test web/scripts/mac-local-relay.test.mjs web/scripts/local-service-page.test.mjs web/scripts/native-owners.test.mjs web/scripts/owner-registry.test.mjs web/scripts/native-recovery.test.mjs`.
+Native `MacAppLifetimeTests` and the existing serialized `UpdateGateTests` run
+in the unchanged unfiltered app-scheme XCTest and Swift Testing venues. Native
+compile/execution, real sheets/focus/VoiceOver, built-SPA EN/ZH/200% screenshots
+and exact-head Mac build/QA are NOT RUN on the Linux maker. No Mac/Jenkins build
+is triggered before independent review APPROVE at the exact head.

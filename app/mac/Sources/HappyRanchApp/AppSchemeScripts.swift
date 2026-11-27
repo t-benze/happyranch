@@ -29,7 +29,7 @@ enum AppSchemeScripts {
     admit(); return true;
   }});
   const listeners = new Map();
-  const events = ['app.stateChanged', 'app.dialogRequested', 'client.stateChanged'];
+  const events = ['app.stateChanged', 'app.dialogRequested', 'app.lifecycleRequested', 'client.stateChanged'];
   let active = true, subscriptions = Promise.resolve();
   const subscribe = event => {
     subscriptions = subscriptions.then(async () => {
@@ -52,7 +52,11 @@ enum AppSchemeScripts {
       await admitted;
       if (!active) throw new Error('documentChanged');
       if (command === 'app.ownersChanged' && typeof data === 'string') {
-        return native.postMessage({context, command, data});
+        try { return await native.postMessage({context, command, data}); }
+        catch (error) {
+          throw typeof error === 'string' ? error : typeof error?.message === 'string'
+            ? error.message : JSON.stringify({code:'outcomeUnknown', effect:'unknown', recovery:'nativeRecovery'});
+        }
       }
       if (['client.commitSwitch','client.disconnect'].includes(command) && data === '{}') {
         return native.postMessage({context, command, data});

@@ -3976,6 +3976,7 @@ export const en = {
   "recovery.incompatible.host.body": "HappyRanch on the selected computer doesn’t match this app. Update HappyRanch on that computer, then recheck. This app doesn’t need an update.",
   "recovery.incompatible.app.title": "Update this app",
   "recovery.incompatible.app.body": "This app is too old for HappyRanch on the selected computer. Update the desktop app. The selected computer doesn’t need an update.",
+  "recovery.incompatible.app.reopen": "After updating, quit HappyRanch and open it again.",
   "recovery.incompatible.unknown.title": "Compatibility unavailable",
   "recovery.incompatible.unknown.body": "This app couldn’t confirm that it works with HappyRanch on the selected computer. Recheck, or choose another computer in Connection.",
   "recovery.incompatible.otherComputer": "You can also choose another computer in Connection.",

@@ -563,6 +563,28 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKScriptMe
                 }
             }
         }
+        try await dialogStep("mac-recovery-without-relaunch", fields: ["locale": locale]) {
+            self.scheme.updateReadiness(try AppAPIHealth(status: 200,
+                data: Data(#"{"api_contract":{"current":2,"min_client":2}}"#.utf8)))
+            guard !self.scheme.statusJSON().contains("app_relaunch") else { throw AppAPIError.unavailable }
+            let recheck = locale == "zh" ? "重新检查" : "Recheck"
+            let reopen = locale == "zh" ? "更新后，请退出 HappyRanch 并重新打开。"
+                : "After updating, quit HappyRanch and open it again."
+            for _ in 0..<60 {
+                let visible = try await view.callAsyncJavaScript("""
+                    const pane = document.querySelector('[data-native-recovery="incompatible"]');
+                    const buttons = [...(pane?.querySelectorAll('button') || [])];
+                    return !!pane && pane.textContent.includes(reopen)
+                      && buttons.some(b => b.textContent.trim() === recheck)
+                      && !buttons.some(b => ['Relaunch', '重新启动'].includes(b.textContent.trim()));
+                    """, arguments: ["recheck": recheck, "reopen": reopen], in: nil, contentWorld: .page) as? Bool
+                if visible == true { return }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            throw AppAPIError.unavailable
+        }
+        try await captureDialogPage(view, frame: frame, name: "mac-recovery-no-relaunch-\(locale).png",
+            locale: locale, theme: "dark", scale: 200, dialog: "main", scroll: [:])
     }
 
     /// One real rendered Language choice, then later-opened dialogs in the same

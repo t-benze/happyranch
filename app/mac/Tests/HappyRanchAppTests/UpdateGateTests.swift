@@ -8,186 +8,205 @@ import HappyRanchSupervisor
 @Suite("Update gate", .serialized)
 @MainActor
 struct UpdateGateTests {
-    @Test("owned idle update requires a click, then observes exit before releasing Sparkle")
-    func idleStopsBeforeRelease() throws {
-        let (delegate, factory, handle) = try ownedDaemon()
+    @Test("owned idle update observes exit before one Sparkle release after both gates")
+    func idleStopsBeforeRelease() async throws {
+        let (f, factory, handle) = try await ownedDaemon(); defer { f.dispose() }
         var releases = 0
-        delegate.postponeUpdateRelaunch {
-            #expect(!handle.isRunning)
-            #expect(factory.terminateCallCount == 1)
-            releases += 1
+        f.app.postponeUpdateRelaunch {
+            #expect(!handle.isRunning); #expect(factory.terminateCallCount == 1); releases += 1
         }
-        #expect(UpdateGate.action(ownsDaemon: true, processRunning: handle.isRunning,
-            runningSessions: 0) == .confirmRestart)
-        #expect(factory.terminateCallCount == 0)
-        #expect(releases == 0)
-        delegate.applyUpdateGate(runningSessions: 0, choice: .restart)
-        #expect(releases == 1)
-        #expect(!delegate.hasPendingUpdate)
-        delegate.applyUpdateGate(runningSessions: 0, choice: nil)
-        #expect(releases == 1)
-    }
-
-    @Test("wait rechecks busy to idle; Later requires explicit resume")
-    func waitAndLater() throws {
-        let (delegate, factory, _) = try ownedDaemon()
-        var releases = 0
-        delegate.postponeUpdateRelaunch { releases += 1 }
-        delegate.applyUpdateGate(runningSessions: 3, choice: .whenIdle)
-        #expect(releases == 0)
-        #expect(factory.terminateCallCount == 0)
-        delegate.applyUpdateGate(runningSessions: 3, choice: .later)
-        #expect(delegate.hasPendingUpdate)
-        #expect(factory.terminateCallCount == 0)
-        // Production polling/resume supplies a fresh observation to this boundary.
-        #expect(UpdateGate.action(ownsDaemon: true, processRunning: true,
-            runningSessions: 0, choice: .whenIdle) == .confirmRestart)
-        #expect(factory.terminateCallCount == 0)
-        #expect(releases == 0)
-        delegate.applyUpdateGate(runningSessions: 0, choice: .restart)
-        #expect(factory.terminateCallCount == 1)
+        #expect(f.backend.prompts.last?.kind == .updateIdle)
+        #expect(UpdateGate.action(ownsDaemon: true, processRunning: handle.isRunning, runningSessions: 0) == .confirmRestart)
+        #expect(factory.terminateCallCount == 0 && releases == 0)
+        // A caller-supplied policy choice cannot substitute for native response.
+        f.app.applyUpdateGate(runningSessions: 0, choice: .restart)
+        #expect(factory.terminateCallCount == 0 && releases == 0)
+        try f.respond()
+        #expect(factory.terminateCallCount == 0 && releases == 0)
+        _ = try await f.answer()
+        #expect(releases == 1 && !f.app.hasPendingUpdate)
+        f.app.applyUpdateGate(runningSessions: 0, choice: .restart)
         #expect(releases == 1)
     }
 
-    @Test("fresh busy or unknown after Restart now returns to a prompt without stopping")
-    func busyAfterRestartConsentReturnsToPrompt() throws {
-        let (delegate, factory, handle) = try ownedDaemon()
+    @Test("When idle re-enters fresh consent; Later retains the download until explicit resume")
+    func waitAndLater() async throws {
+        let (f, factory, _) = try await ownedDaemon(); defer { f.dispose() }
+        f.backend.count = 3
         var releases = 0
-        delegate.postponeUpdateRelaunch { releases += 1 }
+        f.app.postponeUpdateRelaunch { releases += 1 }
+        #expect(f.backend.prompts.last?.kind == .updateBusy(3))
+        let earlier = f.app.appLifetime.token
+        try f.respond() // When idle, not stop permission.
+        #expect(!f.app.appLifetime.busy && releases == 0 && factory.terminateCallCount == 0)
+        f.backend.count = 0
+        #expect(UpdateGate.action(ownsDaemon: true, processRunning: true, runningSessions: 0, choice: .whenIdle) == .confirmRestart)
+        try await f.eventually(seconds: 8) { f.backend.prompts.last?.kind == .updateIdle }
+        #expect(f.app.appLifetime.token != earlier, "Idle polling must reserve fresh response authority")
+        #expect(f.backend.prompts.last?.kind == .updateIdle)
+        try f.respond(.alertFirstButtonReturn) // Later/Cancel.
+        #expect(f.app.hasPendingUpdate && releases == 0)
+        f.app.resumePendingUpdate(); try f.respond()
+        _ = try await f.answer()
+        #expect(factory.terminateCallCount == 1 && releases == 1)
+    }
+
+    @Test("busy or unknown after Restart now returns to a fresh prompt without stopping")
+    func busyAfterRestartConsentReturnsToPrompt() async throws {
         for count in [2, nil] as [Int?] {
-            #expect(UpdateGate.action(ownsDaemon: true, processRunning: handle.isRunning,
-                runningSessions: count, choice: .restart) == .prompt(runningSessions: count))
-        }
-        delegate.applyUpdateGate(runningSessions: 2, choice: .whenIdle)
-        #expect(factory.terminateCallCount == 0)
-        #expect(releases == 0)
-        delegate.applyUpdateGate(runningSessions: nil, choice: .later)
-        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
-    }
-
-    @Test("Update now stops known busy work only after user choice")
-    func explicitNow() throws {
-        let (delegate, factory, handle) = try ownedDaemon()
-        var releases = 0
-        delegate.postponeUpdateRelaunch {
-            #expect(!handle.isRunning)
-            releases += 1
-        }
-        #expect(UpdateGate.action(ownsDaemon: true, processRunning: true, runningSessions: 4)
-            == .prompt(runningSessions: 4))
-        #expect(factory.terminateCallCount == 0)
-        delegate.applyUpdateGate(runningSessions: 4, choice: .now)
-        #expect(releases == 1)
-        #expect(factory.terminateCallCount == 1)
-    }
-
-    @Test("unreadable busy signal and missing process never authorize stop or install")
-    func uncertaintyHolds() throws {
-        let counts: [Int?] = [nil, -1]
-        for count in counts {
-            #expect(UpdateGate.action(ownsDaemon: true, processRunning: true, runningSessions: count)
-                == .prompt(runningSessions: nil))
             #expect(UpdateGate.action(ownsDaemon: true, processRunning: true,
-                runningSessions: count, choice: .now) == .prompt(runningSessions: nil))
-            let (delegate, factory, _) = try ownedDaemon()
+                runningSessions: count, choice: .restart) == .prompt(runningSessions: count))
+            let (f, factory, _) = try await ownedDaemon(); defer { f.dispose() }
             var releases = 0
-            delegate.postponeUpdateRelaunch { releases += 1 }
-            delegate.applyUpdateGate(runningSessions: count, choice: .whenIdle)
-            #expect(releases == 0)
-            #expect(factory.terminateCallCount == 0)
-            delegate.applyUpdateGate(runningSessions: nil, choice: .later)
-            delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+            f.app.postponeUpdateRelaunch { releases += 1 }
+            f.backend.count = count; try f.respond()
+            #expect(f.backend.prompts.last?.kind == .updateBusy(count))
+            #expect(factory.terminateCallCount == 0 && releases == 0)
+            try f.respond(.alertFirstButtonReturn)
+        }
+    }
+
+    @Test("Update now stops known busy work only after native response and web receipt")
+    func explicitNow() async throws {
+        let (f, factory, handle) = try await ownedDaemon(); defer { f.dispose() }
+        f.backend.count = 4
+        #expect(UpdateGate.action(ownsDaemon: true, processRunning: true, runningSessions: 4) == .prompt(runningSessions: 4))
+        var releases = 0
+        f.app.postponeUpdateRelaunch { #expect(!handle.isRunning); releases += 1 }
+        #expect(f.backend.prompts.last?.kind == .updateBusy(4))
+        #expect(factory.terminateCallCount == 0)
+        try f.respond(.alertThirdButtonReturn)
+        #expect(factory.terminateCallCount == 0 && releases == 0)
+        _ = try await f.answer()
+        #expect(releases == 1 && factory.terminateCallCount == 1)
+    }
+
+    @Test("unknown work or missing process never authorizes stop or install")
+    func uncertaintyHolds() async throws {
+        for count in [nil, -1] as [Int?] {
+            #expect(UpdateGate.action(ownsDaemon: true, processRunning: true, runningSessions: count) == .prompt(runningSessions: nil))
+            #expect(UpdateGate.action(ownsDaemon: true, processRunning: true, runningSessions: count, choice: .now) == .prompt(runningSessions: nil))
+            let (f, factory, _) = try await ownedDaemon(); defer { f.dispose() }
+            f.backend.count = count
+            var releases = 0
+            f.app.postponeUpdateRelaunch { releases += 1 }
+            #expect(f.backend.prompts.last?.kind == .updateBusy(nil))
+            try f.respond(.alertThirdButtonReturn) // Disabled/invalid response refuses.
+            #expect(releases == 0 && factory.terminateCallCount == 0)
+            #expect(f.app.hasPendingUpdate)
         }
         #expect(UpdateGate.action(ownsDaemon: true, processRunning: nil, runningSessions: 0) == .wait)
         #expect(!UpdateGate.canReleaseAfterStop(sameProcess: false, processRunning: false))
         #expect(!UpdateGate.canReleaseAfterStop(sameProcess: true, processRunning: nil))
     }
 
-    @Test("Stop incomplete retains old app and never releases even if the child exits later")
-    func incompleteStop() throws {
-        let (delegate, _, _) = try ownedDaemon()
-        let survivor = UpdateSurvivor()
-        delegate.currentHandle = survivor
+    @Test("incomplete Stop retains lifetime custody even after a later child exit")
+    func incompleteStop() async throws {
+        let (f, _, _) = try await ownedDaemon(); defer { f.dispose() }
+        let survivor = UpdateSurvivor(); f.app.currentHandle = survivor
+        f.app.managedStopGrace = .init(term: 0, kill: 0)
         var releases = 0
-        delegate.postponeUpdateRelaunch { releases += 1 }
-        delegate.applyUpdateGate(runningSessions: 0, choice: .restart)
-        #expect(releases == 0)
-        #expect(delegate.hasPendingUpdate)
-        #expect(delegate.stateText.contains("Stop incomplete"))
+        f.app.postponeUpdateRelaunch { releases += 1 }; try f.respond()
+        _ = try await f.answer()
+        #expect(releases == 0 && f.app.hasPendingUpdate && f.app.appLifetime.busy)
         #expect(survivor.terms == 1 && survivor.kills == 1)
-        #expect(!delegate.canStart)
+        #expect(f.app.stateText.contains("Stop incomplete"))
+        #expect(!f.app.canStart)
         survivor.isRunning = false
-        #expect(releases == 0)
-        // End only the test's pending task; no real process exists.
-        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        f.app.resumePendingUpdate()
+        #expect(releases == 0 && f.app.appLifetime.busy)
     }
 
-    @Test("a replaced process during stop cannot release the held install")
-    func replacementDuringStopHolds() throws {
-        let (delegate, _, handle) = try ownedDaemon()
+    @Test("replacement and nested request during Stop cannot release install or signal replacement")
+    func replacementDuringStopHolds() async throws {
+        let (f, _, handle) = try await ownedDaemon(); defer { f.dispose() }
         let original = try #require(handle as? FakeProcessHandle)
         let replacement = FakeProcessHandle(processIdentifier: 54321)
         let oldCallback = original.onTerminate
         original.onTerminate = {
-            delegate.currentHandle = replacement
-            oldCallback?()
+            #expect(!f.app.appLifetime.request(.quit))
+            f.app.currentHandle = replacement; oldCallback?()
         }
         defer { original.onTerminate = nil }
         var releases = 0
-        delegate.postponeUpdateRelaunch { releases += 1 }
-        delegate.applyUpdateGate(runningSessions: 0, choice: .restart)
-        #expect(!original.isRunning)
-        #expect(replacement.isRunning)
-        #expect(releases == 0)
-        #expect(delegate.hasPendingUpdate)
-        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        f.app.postponeUpdateRelaunch { releases += 1 }; try f.respond()
+        let token = try #require(f.app.appLifetime.token?.uuidString)
+        _ = try await f.answer()
+        #expect(!original.isRunning && replacement.isRunning)
+        #expect(releases == 0 && f.app.hasPendingUpdate && f.app.appLifetime.busy)
+        let duplicate = try await f.answer(id: token)
+        #expect(duplicate.contains("\"effect\":\"unknown\""))
+        #expect(f.backend.effects.count == 1)
     }
 
-    @Test("external daemon and client role pass through without signals", arguments: [false, true])
-    func unownedPassesThrough(client: Bool) throws {
+    @Test("Main retirement during Stop retains consumed custody and cannot release installation")
+    func retirementDuringStopHolds() async throws {
+        let (f, _, handle) = try await ownedDaemon(); defer { f.dispose() }
+        let original = try #require(handle as? FakeProcessHandle)
+        let oldCallback = original.onTerminate
+        original.onTerminate = { f.scheme.documentDidStart(); oldCallback?() }
+        defer { original.onTerminate = nil }
+        var releases = 0
+        f.app.postponeUpdateRelaunch { releases += 1 }; try f.respond()
+        _ = try await f.answer()
+        #expect(!original.isRunning && releases == 0 && f.app.appLifetime.busy)
+        #expect(f.app.hasPendingUpdate)
+    }
+
+    @Test("truly external/unowned updates still require web admission and send no signals", arguments: [false, true])
+    func unownedPassesThrough(client: Bool) async throws {
+        let f = try LifetimeFixture(); defer { f.dispose() }
+        try await f.admit()
         let saved = UserDefaults.standard.object(forKey: "connectionRolePreference")
         defer { UserDefaults.standard.set(saved, forKey: "connectionRolePreference") }
-        let delegate = AppDelegate()
-        let handle = FakeProcessHandle()
-        delegate.currentHandle = handle
-        if client {
-            delegate.supervisor.configure(homeDir: "/unused")
-            try delegate.supervisor.start()
-            delegate.connectionRolePreference = .client
-        }
-        else { delegate.supervisor.onExternalDaemonDetected(pid: 12345, port: 8765) }
+        let handle = FakeProcessHandle(); f.app.currentHandle = handle
+        f.app.supervisor.onExternalDaemonDetected(pid: 12345, port: 8765)
+        if client { f.app.connectionRolePreference = .client }
         var releases = 0
-        delegate.postponeUpdateRelaunch { releases += 1 }
-        delegate.applyUpdateGate(runningSessions: nil, choice: nil)
-        #expect(releases == 1)
-        #expect(handle.isRunning)
-        #expect(!delegate.hasPendingUpdate)
+        f.app.postponeUpdateRelaunch { releases += 1 }
+        #expect(releases == 0 && handle.isRunning)
+        #expect(f.backend.prompts.isEmpty)
+        _ = try await f.answer()
+        #expect(releases == 1 && handle.isRunning && !f.app.hasPendingUpdate)
     }
 
-    @Test("install on quit uses the existing stop path and never invokes the relaunch block")
-    func quitStopsWithoutRelaunch() throws {
-        let (delegate, factory, handle) = try ownedDaemon()
+    @Test("install on Quit uses system admission and never invokes Sparkle relaunch callback")
+    func quitStopsWithoutRelaunch() async throws {
+        let (f, factory, handle) = try await ownedDaemon(); defer { f.dispose() }
         var releases = 0
-        delegate.postponeUpdateRelaunch { releases += 1 }
-        delegate.applyUpdateGate(runningSessions: 2, choice: .later)
-        delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
-        #expect(!handle.isRunning)
-        #expect(factory.terminateCallCount == 1)
-        #expect(releases == 0)
-        #expect(!delegate.hasPendingUpdate)
+        f.app.postponeUpdateRelaunch { releases += 1 }
+        try f.respond(.alertFirstButtonReturn)
+        #expect(f.app.applicationShouldTerminate(NSApplication.shared) == .terminateCancel)
+        try f.respond(); _ = try await f.answer()
+        #expect(!handle.isRunning && factory.terminateCallCount == 1)
+        #expect(releases == 0 && f.termination.calls == 1)
+        f.app.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+        #expect(!f.app.hasPendingUpdate && releases == 0)
     }
 
-    private func ownedDaemon() throws -> (AppDelegate, FakeProcessController, any ProcessHandle) {
-        let delegate = AppDelegate()
+    @Test("CLIENT selection cannot erase ownership of the app's existing local child")
+    func clientSelectionStillStopsOwnedChild() async throws {
+        let saved = UserDefaults.standard.object(forKey: "connectionRolePreference")
+        defer { UserDefaults.standard.set(saved, forKey: "connectionRolePreference") }
+        let (f, factory, handle) = try await ownedDaemon(); defer { f.dispose() }
+        f.app.connectionRolePreference = .client
+        var releases = 0
+        f.app.postponeUpdateRelaunch { #expect(!handle.isRunning); releases += 1 }
+        #expect(factory.terminateCallCount == 0 && releases == 0)
+        try f.respond(); _ = try await f.answer()
+        #expect(!handle.isRunning && factory.terminateCallCount == 1 && releases == 1)
+    }
+
+    private func ownedDaemon() async throws -> (LifetimeFixture, FakeProcessController, any ProcessHandle) {
+        let f = try LifetimeFixture(); try await f.admit()
         let factory = FakeProcessController()
-        let handle = try factory.launch(executableURL: URL(fileURLWithPath: "/unused"),
-            arguments: [], currentDirectoryURL: nil, environment: nil, terminationHandler: nil)
-        delegate.currentHandle = handle
-        delegate.supervisor.configure(homeDir: "/unused")
-        try delegate.supervisor.start()
-        delegate.supervisor.onHealthCheckPassed(pid: handle.processIdentifier, port: 8765)
-        delegate.refreshDerivedState()
-        return (delegate, factory, handle)
+        let handle = try factory.launch(executableURL: URL(fileURLWithPath: "/unused"), arguments: [],
+            currentDirectoryURL: nil, environment: nil, terminationHandler: nil)
+        f.app.currentHandle = handle
+        f.app.supervisor.configure(homeDir: f.root.path); try f.app.supervisor.start()
+        f.app.supervisor.onHealthCheckPassed(pid: handle.processIdentifier, port: 8765)
+        f.app.refreshDerivedState()
+        return (f, factory, handle)
     }
 }
 
