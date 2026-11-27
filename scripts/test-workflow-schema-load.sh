@@ -101,7 +101,7 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--s8a='):
     sys.argv[1:] = ['--s8a']
 S7A_CASES = ('plural_links', 'held_cause', 'history_label', 'unavailable',
     'task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent',
-    'write_settings_chain', 'write_headroom')
+    'write_settings_chain', 'write_headroom', 'start_admission', 'start_preflight', 'start_legacy')
 s7a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s7a='):
     s7a_case = sys.argv[1].split('=', 1)[1]
@@ -8166,7 +8166,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         import asyncio
         path = '/workflows/sequential/views/v2/runs'
         if case in ('task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent',
-                    'write_settings_chain', 'write_headroom'):
+                    'write_settings_chain', 'write_headroom', 'start_admission', 'start_preflight', 'start_legacy'):
             from runtime.workflows import sequential_history, sequential_views
             from runtime.workflows.sequential_control import validate_control_write
             from runtime.workflows.sequential_task_history import read_write_history, read_cancellation_headroom
@@ -8257,13 +8257,14 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     selected = scoped(f, run_ids=frozenset((f.ids.run_id,)))
                     assert selected.history.run_ids == (f.ids.run_id,), 'disconnected corrupt run entered write scope'
                     scoped_refuses(f, 'digest', run_ids=frozenset((old.run_id,)))
-                    # Same corruption STILL refuses full v2 list/detail and the
-                    # actual cancel and new-start admission paths.
+                    # G2 start now excludes this different source; full views
+                    # and cancel/control retain their complete-history contract.
+                    admitted = f.admit(dict(f.command, operation_key='task-unrelated-start'), task_suffix='unrelated')
+                    assert s4row(f, 'workflow_seq_runs', admitted.run_id)['source_task_id'] == f.source.id
                     for url in (path, path + '/' + f.ids.run_id):
                         refused = asyncio.run(s7read(f, url, expected=409))
                         assert refused['detail']['code'] == 'history_unverified'
                     for operation in (
-                            lambda: f.admit(dict(f.command, operation_key='task-unrelated-start'), task_suffix='unrelated'),
                             lambda: s4apply(f, s4command(f, 'cancel')),
                             lambda: validate_control_write(f.conn, org_slug='scratch', deadline=time.monotonic()+5)):
                         try:
@@ -8276,6 +8277,158 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     # Each independent fixture below avoids one defect masking
                     # another and observes a route error, never empty success.
                     pass
+            if case == 'start_admission':
+                with s3_fixture() as f:
+                    old = s7legacy(f)
+                    damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                        ('0'*64, old.run_id))
+                    ids = f.admit(f.command)
+                    assert s4row(f, 'workflow_seq_runs', ids.run_id)['source_task_id'] == f.source.id
+                    assert s4row(f, 'workflow_seq_visits', ids.visit_id)['task_id'] == ids.visit_task_id
+                    assert f.db.get_task(ids.carrier_task_id).parent_task_id == f.source.id
+                    assert s4row(f, 'workflow_seq_outbox', ids.outbox_id)['event_id'] == ids.event_id
+                    before = s5snap(f)
+                    assert f.admit(f.command) == ids and s5snap(f) == before, 'scoped exact replay changed IDs/rows'
+                    try:
+                        f.admit(dict(f.command, request='changed original body'))
+                    except ValueError as exc:
+                        assert 'operation_conflict' in str(exc), str(exc)
+                    else:
+                        raise AssertionError('scoped admission replay accepted changed bytes')
+                    assert s5snap(f) == before
+                    # Damage an earlier run on this SAME source, then attempt a
+                    # new key: old affected history must veto and roll back SQL.
+                    damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                        ('0'*64, ids.run_id))
+                    before = s5snap(f)
+                    try:
+                        f.admit(dict(f.command, operation_key='affected-new-key'), task_suffix='affected')
+                    except ValueError as exc:
+                        assert 'digest' in str(exc), str(exc)
+                    else:
+                        raise AssertionError('fresh admission ignored corrupt affected old run')
+                    assert s5snap(f) == before, 'affected admission refusal leaked allocations'
+                print('PASS S7a start_admission unrelated/same-source history, persisted graph and original replay', flush=True)
+            if case == 'start_legacy':
+                with s4fixture() as f:
+                    from runtime.workflows.sequential_definition import compile_definition
+                    from runtime.workflows.sequential_contracts import Limits
+                    old = s7legacy(f)
+                    row = s4row(f, 'workflow_seq_runs', old.run_id)
+                    definition = s4row(f, 'workflow_seq_definitions', row['definition_id'])
+                    compiled = compile_definition(definition['definition_bytes'], source_digest=definition['source_digest'])
+                    setting = s4row(f, 'workflow_seq_settings', row['settings_id'])
+                    command = json.loads(row['start_bytes'])
+                    source = RetryClaim.from_task(f.db.get_task(row['source_task_id']), result_row_id=row['source_result_id'])
+                    capture = f.org.workflow_authority.capture_admission()
+                    def legacy(value, actor=source):
+                        with f.org.workflow_authority.admission_writer(capture) as writer:
+                            return admit_uncommitted(writer, f.db, org_slug='scratch', compiled=compiled, settings_row=setting,
+                                start=s4bytes(value), source=actor, original_limits=Limits.model_validate_json(row['original_limits_bytes']),
+                                carrier_task=TaskRecord(id='g2-legacy-carrier', parent_task_id=source.task_id,
+                                    assigned_agent=source.assigned_agent, team=source.team, task_type='subtask', brief='Prospective carrier'),
+                                visit_task=TaskRecord(id='g2-legacy-visit', parent_task_id='g2-legacy-carrier',
+                                    assigned_agent='s3_author', team=source.team, task_type='subtask', brief='Prospective visit'),
+                                authority=f.org.workflow_authority, capture=capture)
+                    damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                        ('0'*64, f.ids.run_id))
+                    before = s5snap(f)
+                    assert legacy(command) == old and s5snap(f) == before, 'original @1 replay lost IDs/rows'
+                    from dataclasses import replace
+                    for value, actor, token in ((dict(command, request='changed'), source, 'start_operation_conflict'),
+                            (dict(command, operation_key='second-source-run'), source, 'source_not_legacy'),
+                            (command, replace(source, result_row_id=source.result_row_id+1000), 'start_operation_conflict'),
+                            (command, replace(source, current_session_id='wrong-original-sid'), 'start_operation_conflict'),
+                            (command, replace(source, assigned_agent='s3_alt'), 'native_result_conflict')):
+                        try:
+                            legacy(value, actor)
+                        except ValueError as exc:
+                            assert token in str(exc), ('wrong original replay/source refusal', token, str(exc))
+                        else:
+                            raise AssertionError('@1 duplicate source/key or original result/principal/SID was accepted')
+                        assert s5snap(f) == before, '@1 refusal changed native/workflow rows'
+                print('PASS S7a start_legacy original replay and duplicate/source/result/principal/SID refusals', flush=True)
+            if case == 'start_preflight':
+                from runtime.orchestrator.workflow_continuation import _start_capture
+                from runtime.workflows import sequential_history as owner
+                for defect in ('valid', 'unrelated', 'affected_hash', 'affected_pin', 'capacity', 'other_source'):
+                    with s5fixture() as f:
+                        old = s7legacy(f) if defect == 'unrelated' else None
+                        if defect == 'other_source':
+                            # A third unfinished @2 run on a DIFFERENT source
+                            # must still count before this source's new member.
+                            other = TaskRecord(id='g2-other-source', assigned_agent='s3_manager', team='engineering',
+                                task_type='task', status='in_progress', current_session_id='g2-other-sid', brief='Other source')
+                            f.db.insert_task(other)
+                            result = f.conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,created_at) VALUES (?,?,?,?,?)',
+                                (other.id, other.assigned_agent, other.current_session_id, 'completed', '2026-11-20T00:00:00+00:00')).lastrowid
+                            f.conn.commit()
+                            actor = RetryClaim.from_task(other, result_row_id=result)
+                            raw = s4bytes(dict(f.command, operation_key='g2-other-start'))
+                            capture = prepare_generic_start(f.org, start=raw, source=actor)
+                            with f.org.workflow_authority.admission_writer(capture.authority) as writer:
+                                admit_uncommitted(writer, f.db, org_slug='scratch', compiled=f.compiled,
+                                    settings_row=s4row(f, 'workflow_seq_settings', 's3-settings'), start=raw, source=actor,
+                                    carrier_task=TaskRecord(id='g2-other-carrier', parent_task_id=other.id, assigned_agent=other.assigned_agent,
+                                        team='engineering', task_type='subtask', brief='Other carrier'),
+                                    visit_task=TaskRecord(id='g2-other-visit', parent_task_id='g2-other-carrier', assigned_agent='s3_author',
+                                        team='engineering', task_type='subtask', brief='Other visit'),
+                                    original_limits=f.compiled.definition.limits, authority=f.org.workflow_authority, capture=capture)
+                        s6sid(f, 'g2-next-source-sid')
+                        f.source = f.db.get_task(f.source.id)
+                        commands = [dict(f.command, operation_key='g2-next-'+str(i))
+                            for i in range(2 if defect == 'capacity' else 1)]
+                        f.value = dict(action='workflow_start', workflows=commands)
+                        f.decision = s4bytes(f.value)
+                        f.actor = RetryClaim.from_task(f.source)
+                        f.captures = prepare_generic_batch(f.org, decision=f.decision, source=f.actor)
+                        if defect in ('unrelated', 'affected_hash'):
+                            damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                                ('0'*64, old.run_id if old else f.batch_ids[0].run_id))
+                        elif defect == 'affected_pin':
+                            damage(f, 'workflow_seq_runs', 'UPDATE workflow_seq_runs SET settings_id=? WHERE id=?',
+                                ('missing-settings', f.batch_ids[0].run_id))
+                        calls = []
+                        reserve = owner._reserve_generic_cancellation
+                        def observed(data, ledger):
+                            calls.append((len(data['workflow_seq_runs']), ledger))
+                            return reserve(data, ledger)
+                        before = s5snap(f)
+                        token = _start_capture.set((f.captures, 0))
+                        try:
+                            with f.org.workflow_authority.admission_writer(f.captures[0].authority):
+                                with patch.object(owner, '_reserve_generic_cancellation', observed):
+                                    f.db._workflow_continuation.preflight_start_uncommitted(f.source.id)
+                        except ValueError as exc:
+                            expected = dict(affected_hash='digest', affected_pin='foreign_key', capacity='read_bytes_exhausted', other_source='read_bytes_exhausted')
+                            assert defect in expected and expected[defect] in str(exc), (defect, str(exc))
+                        else:
+                            assert defect in ('valid', 'unrelated'), 'preflight accepted ' + defect
+                        finally:
+                            _start_capture.reset(token)
+                        assert s5snap(f) == before, 'preflight changed native/workflow rows'
+                        if defect in ('valid', 'unrelated', 'capacity', 'other_source'):
+                            assert len(calls) == 1 and calls[0][0] == (4 if defect in ('capacity', 'other_source') else 3), 'preflight H lost existing/hypothetical runs'
+                        result = f.conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,decision_json,created_at) VALUES (?,?,?,?,?,?)',
+                            (f.source.id, f.source.assigned_agent, f.source.current_session_id, 'completed', f.decision.decode(),
+                             '2026-11-20T00:00:00+00:00')).lastrowid
+                        f.conn.commit()
+                        f.actor = RetryClaim.from_task(f.source, result_row_id=result)
+                        before = s5snap(f)
+                        try:
+                            ids = f.batch()
+                        except ValueError as exc:
+                            expected = dict(affected_hash='digest', affected_pin='foreign_key', capacity='read_bytes_exhausted', other_source='read_bytes_exhausted')
+                            assert defect in expected and expected[defect] in str(exc), ('batch', defect, str(exc))
+                            assert s5snap(f) == before, 'affected/capacity batch refusal leaked allocations'
+                        else:
+                            assert defect in ('valid', 'unrelated'), 'batch admitted ' + defect
+                            assert len(ids) == 1 and len(f.conn.execute('SELECT 1 FROM workflow_seq_source_memberships WHERE source_task_id=?',
+                                (f.source.id,)).fetchall()) == 3, 'three-run admission lost source memberships'
+                            assert s4row(f, 'workflow_seq_runs', ids[0].run_id)['source_result_id'] == result
+                            before = s5snap(f)
+                            assert f.batch() == ids and s5snap(f) == before, 'three-run exact batch replay mutated IDs/rows'
+                        print('PASS S7a start_preflight', defect, 'real preflight and direct batch writer; initiator tail group3', flush=True)
             if case == 'task_corruption':
                 for defect in ('hash', 'orphan_visit', 'pin', 'ownership', 'reverse_ownership', 'native_metadata', 'pending_callback'):
                     with s4fixture() as f:

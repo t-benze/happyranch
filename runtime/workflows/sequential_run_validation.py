@@ -277,12 +277,13 @@ def validate_selected_run_uncommitted(conn: sqlite3.Connection, *, org_slug: str
             _require(not evidence_ids, 'generic_lifecycle_unavailable')
             _generic_admission_history(conn, org_slug=org_slug, run=run, compiled=compiled, settings=setting,
                 snapshot=snapshot, data=generic, budget=budget)
-            # Admission is a non-cancel writer too. Validate the complete org,
-            # including retained families and every other unfinished @2 run,
-            # before committing any allocation. Start grammar/limits are unchanged.
+            # Full affected source/wait-set replay and all-unfinished scalar H.
+            # Original admission replay and native checks above remain mandatory.
             from runtime.workflows.sequential_control import validate_control_write
             validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline,
-                                   reserve_cancellation=True)
+                reserve_cancellation=True, run_ids=frozenset((run_id,)),
+                source_ids=frozenset((run['source_task_id'],)),
+                definition_ids=frozenset((run['definition_id'],)), settings_ids=frozenset((run['settings_id'],)))
             budget.check()
             return budget
         compiled, settings, snapshot = _original_pins(conn, metadata, org_slug=org_slug,
@@ -331,6 +332,10 @@ def validate_selected_run_uncommitted(conn: sqlite3.Connection, *, org_slug: str
                  'run_history_conflict')
         _auxiliary(conn, data, {run_id: run}, {visit['id']: visit}, {event['id']: event}, budget, {run['definition_id']: compiled})
         _ownership(conn, metadata, org_slug=org_slug, run=run, visit=visit, budget=budget)
+        from runtime.workflows.sequential_control import validate_control_write
+        validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline,
+            run_ids=frozenset((run_id,)), source_ids=frozenset((run['source_task_id'],)),
+            definition_ids=frozenset((run['definition_id'],)), settings_ids=frozenset((run['settings_id'],)))
         budget.check()
     return budget
 

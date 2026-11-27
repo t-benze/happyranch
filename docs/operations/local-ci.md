@@ -4776,7 +4776,8 @@ The existing private schema venue supports
 (and Python3.12). Focused selectors task_scoped_data, task_empty, task_corruption,
 task_unrelated and task_absent cover real route data, no org-wide reader on
 empty tasks, selected hash/orphan/pin/ownership refusal, unrelated corruption
-isolation with unchanged start/cancel/full-view refusal, and 404 precedence.
+isolation with scoped start success and unchanged cancel/full-view refusal,
+and 404 precedence.
 These are private SQLite/authority fixtures, not E2E or a new required CI gate.
 
 
@@ -4790,3 +4791,21 @@ and active-visit ownership. `task_scoped_data`, `task_corruption` and
 fixtures, selected/reverse ownership and missing sibling corruption, and
 unrelated corrupt history. Use the same documented shell command with the
 focused selector substituted; no new CI lane, required check or Product E2E.
+
+
+THR-404 group 2 extends the same table with `--s7a=start_admission`,
+`--s7a=start_legacy` and `--s7a=start_preflight` on Python3.12/3.14. They observe
+real direct @1/@2 admission/replay and the real continuation preflight method:
+persisted graph, different-source corruption isolation, affected earlier
+hash/pin refusal with allocation rollback, original key/body/INTEGER
+result/principal/SID and one-run-per-source refusals, and three unfinished runs
+including hypothetical batch members versus four-run capacity refusal, including
+an unfinished member on a different source. The
+existing `task_unrelated` case now expects scoped admission success while
+cancel/control/full views still refuse the same damage. Original S5
+`batch_all_or_none`, assignment `independence`, Start2 `admission`/`capacity`,
+and setup `pins` remain adjacent keepers for invalid assignments, authority,
+partial allocation/replay, capacity and retained settings pins. The native
+callback's initiator tail remains group 3; these focused cases grant no claim
+of full callback isolation. Use persistent jobs for these suites and local_ci
+all; no required check, trigger, Product E2E or retired test venue is added.

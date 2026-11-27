@@ -422,11 +422,12 @@ history_unverified; budget exhaustion never becomes an empty success.
 
 Both paths retain fresh authority capture and closing validation, the exact
 lock set/order and rollback-only snapshot, existing bounded readers/ledgers and
-one original five-second deadline. No cap is raised. Every write/admission,
-continuation, settings, initiator, bootstrap/schema load, historical @1 GET and
-v2 run list/detail keeps the complete read_sequential_history contract unchanged.
-Group 1 of the THR-404 write work adds an unmounted explicit-root primitive
-in `sequential_task_history`; no writer uses it yet. Its full selected @1/@2
+one original five-second deadline. No cap is raised. THR-404 group 2 separately
+scopes start/admission and continuation preflight as described below. Other
+writers, settings, initiator, bootstrap/schema load, historical @1 GET and
+v2 run list/detail keep complete `read_sequential_history` validation.
+Group 1 of the THR-404 write work adds the explicit-root primitive
+in `sequential_task_history`. Its full selected @1/@2
 replay shares the task reader's graph and original validators but additionally
 checks all settings generations/receipts for selected definition identities,
 including settings/definition-only scopes with no runs. The task GET continues
@@ -784,16 +785,17 @@ the unchanged 64MiB allowance, plus 32 row acquisitions, 4096 traversal steps
 and 65536 SQL steps inside the original finite ledgers. This covers worst-case fence, finish, bounded
 original proofs and a maximum 1MiB document callback (including its base64 carrier),
 independently of prior document sizes and committed visit/recovery counts.
-THR-404 group 1 adds the shared narrow H selector, without wiring writers yet.
+THR-404 group 1 adds the shared narrow H selector; group 2 wires admission and
+continuation preflight to it.
 It reads scalar identities for every unfinished @2 run, including Held and
 cancelling, and validates the active visit's run/selected relation. It acquires
-no unrelated history payloads and reserves nothing itself: later callers must
+no unrelated history payloads and reserves nothing itself: callers
 combine prospective additions and apply the unchanged reservation once on the
 original charged C ledger. The per-value, byte, row, work, SQL and absolute
-deadline caps stay unchanged. Excluding disconnected payloads from a future
+deadline caps stay unchanged. Excluding disconnected payloads from a group-2
 scoped write's ledger changes whole-org capacity coupling; it grants neither a
 fourth unfinished run nor a guaranteed fit for three with long identities or
-prior ledger consumption. Current writer calls still validate combined history.
+prior ledger consumption. Other writer groups still validate combined history.
 A candidate that cannot preserve that headroom refuses with
 `read_bytes_exhausted`, rolling back all allocations, rows, counters and CAS;
 cancellation stays available. Fence/finish consume the reservation without
@@ -816,9 +818,18 @@ retirement must resolve this in follow-up work; that resolution is outside S4a.
 The TASK-17807 Round-5 decision specifically overrides R4-F1 on this basis.
 The native digest, INTEGER result/task/principal/SID/status and original positive
 terminal/outer proofs remain mandatory. Start grammar/limits are unchanged.
-Fresh admission/hold/control/cancellation-finish writers run the complete reader
-on their resulting uncommitted state with unchanged budgets and the operation's
-original deadline; cancellation omits only the future headroom reservation.
+Admission now runs full selected source/run history and the selected definition
+identity's complete settings/receipt chain on its resulting uncommitted state.
+Continuation preflight and batch preallocation use all-unfinished scalar H plus
+their hypothetical members, once on each original charged ledger. Original
+key/body/INTEGER result/task/principal/SID replay, one-run-per-source @1 and
+batch uniqueness, assignment/authority, rollback, budgets and deadlines remain.
+Hold/control/cancellation-finish keep the complete reader; cancellation omits
+only the future headroom reservation. Shared control plumbing defaults remain
+complete unless admission explicitly supplies roots. The full native start
+callback's initiator delivery/consumption still uses complete history until
+group 3; scoped preflight/admission measurements do not certify that whole
+callback. No lock/order or TLA+ transition changes follow.
 No-result holds create
 no synthetic result, output or successor. Running cancel fences progression;
 positive original closure or the explicit human-only never-launched proof permits

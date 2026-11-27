@@ -56,10 +56,11 @@ Unpinned settings generations and disconnected retained/sequential data do not
 veto a task projection. Selected corruption refuses without partial output.
 The indexed negative task-link path never enters org-wide data validation.
 Fresh authority bookends, rollback-only snapshot, lock set/order, original D2
-budgets and five-second absolute deadline remain. All write/admission,
-continuation/settings/initiator/bootstrap/schema-load and run list/detail
-callers retain the complete reader byte-for-byte. This exception grants no
-capacity or write-validation change. See the current S7a/U7a/U6a contract.
+budgets and five-second absolute deadline remain. This task-projection exception
+grants no write-validation change; THR-404 group 2 below separately scopes
+start/admission and continuation preflight. Settings, initiator, control/cancel,
+bootstrap/schema-load and run list/detail retain their complete reader.
+See the current S7a/U7a/U6a contract.
 
 
 ## Shared write-scope primitives — THR-404 group 1 (staged)
@@ -75,8 +76,9 @@ contiguity from generation 1 and the complete operation/receipt chain. A
 settings/definition-only scope can contain no runs. Missing explicit pins/runs
 refuse; disconnected run payload corruption is outside this certificate.
 
-This is a shared primitive only: group 1 wires no writer. The task projection
-still uses pinned settings only, and its S7a contract above is unchanged. A
+Group 1 introduced the primitive without writer wiring; group 2 below mounts
+it for admission/preflight only. The task projection still uses pinned settings
+only, and its S7a contract above is unchanged. A
 selected sequential certificate supplies no retained-family inventory or current
 authority; mixed-family consumers still need their original family validators.
 No snapshot, transaction, lock or cross-mutation cache is added.
@@ -92,7 +94,7 @@ nominal fit, not a promised capacity: earlier ledger use and long identities can
 refuse earlier. Caller-supplied retained budgets are preserved and only this
 read's deltas are charged into C. No allowance or deadline is reset or enlarged.
 
-After later writer wiring, excluded unrelated payloads will no longer consume
+For the group-2 writers below, excluded unrelated payloads no longer consume
 that write's C ledger; large selected closures and all-run scalar H remain
 bounded. Whole-org certification remains complete-history validation outside
 the runtime-write ~100ms target: `inspect_sequential_install` (both reads),
@@ -102,3 +104,30 @@ Founder cutover request enable/disable with `_advance`/`_read` and
 run replay and mixed cancellation retains its ten-core-table equality inventory.
 `WorkflowContinuation.tla` Active/Admit/CapacitySafe semantics are unchanged;
 no model update or capacity increase follows from this staged primitive.
+
+
+## Start/admission and continuation preflight — THR-404 group 2
+
+Admission uses actual run/source/definition/settings roots, including full old
+history for every run on the affected source and all earlier wait-set batches.
+Original operation-key/body/INTEGER result/task/principal/SID replay and
+constraint-backed uniqueness, authority/assignment and rollback checks remain.
+The shared control validator accepts these roots only when admission supplies
+them; default control/cancel/hold/dispatch/initiator callers remain complete.
+Original @1 admission also authenticates its selected closure/settings chain.
+
+Preflight resolves the actual selected definition/settings IDs and validates
+them with its source closure. It reads all unfinished scalar H on its original
+preflight ledger, appends the hypothetical members, and calls the unchanged
+reservation once. Batch admission does the same before allocation on its
+original batch ledger. Post-allocation admission validates the affected state
+and reserves H on its original resulting-reader ledger/deadline. None of these
+reads survives a mutation or replaces the original native admission checks.
+
+The real native start callback also calls initiator delivery/consumption, whose
+complete validation remains group 3. Group-2 isolation and timings therefore
+cover the actual preflight and direct admission writer or equivalent validation,
+not full callback isolation/latency. All existing lock sets/order, transactions,
+error categories, audit shapes, deadlines and budgets remain unchanged.
+`WorkflowContinuation.tla` AtomicBatch/CapacitySafe and source-release semantics
+are unchanged; no model edit or TLC run is required for this validation wiring.

@@ -226,13 +226,14 @@ class WorkflowContinuation:
     def preflight_start_uncommitted(self, task_id: str) -> None:
         """Reject impossible reservations before the native result/attempt write.
 
-        The actual batch writer still validates the complete resulting history.
+        The actual batch writer still validates the full affected resulting history.
         Both checks run under the same native writer and current authority lease.
         """
         from runtime.workflows.sequential_history import (
-            _ReadBudget, _sql_budget, _reserve_generic_cancellation, read_sequential_history,
+            _ReadBudget, _sql_budget, _reserve_generic_cancellation,
         )
-        from runtime.workflows.sequential_engine import _engine_rows, _identity
+        from runtime.workflows.sequential_engine import _identity
+        from runtime.workflows.sequential_task_history import read_write_history, read_cancellation_headroom
         from runtime.workflows.sequential_start_discovery import read_start_source_v2
         from runtime.workflows.sequential_start import _generic_selection, _selected_layout
         from runtime.workflows.sequential_assignments import parse_assignment_start
@@ -245,14 +246,21 @@ class WorkflowContinuation:
         with _sql_budget(conn, budget):
             read_start_source_v2(conn, self.org, task_id=task_id, principal=task.assigned_agent,
                 session_id=task.current_session_id, budget=budget)
-            read_sequential_history(conn, expected_org_slug=self.org.slug, deadline=budget.deadline)
-            runs = _engine_rows(conn, 'workflow_seq_runs', budget, '1', ())
-            visits = _engine_rows(conn, 'workflow_seq_visits', budget, '1', ())
             metadata = _selected_layout(conn, budget)
+            members, definitions, settings = [], set(), set()
             for capture in captures:
                 self.org.workflow_authority._validate_admission_uncommitted(conn, capture.authority)
                 command = parse_assignment_start(capture.start_bytes)
-                compiled, _, _ = _generic_selection(conn, org_slug=self.org.slug, command=command, budget=budget, metadata=metadata)
+                compiled, setting, _ = _generic_selection(conn, org_slug=self.org.slug, command=command, budget=budget, metadata=metadata)
+                members.append((capture, command, compiled))
+                definitions.add(setting['definition_id'])
+                settings.add(setting['id'])
+            selected = read_write_history(conn, expected_org_slug=self.org.slug, deadline=budget.deadline,
+                source_ids=frozenset((task_id,)), definition_ids=frozenset(definitions), settings_ids=frozenset(settings))
+            headroom = read_cancellation_headroom(conn, expected_org_slug=self.org.slug,
+                metadata=selected.metadata, budget=budget)
+            runs, visits = headroom['workflow_seq_runs'], headroom['workflow_seq_visits']
+            for capture, command, compiled in members:
                 run_id = _identity('run', self.org.slug, task.assigned_agent, task_id, command.operation_key)
                 # Every fresh member starts with the definition's entry assignment.
                 resolved = json.loads(capture.snapshot_bytes)

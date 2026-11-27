@@ -358,15 +358,28 @@ def apply_control_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug:
 
 
 def validate_control_write(conn: sqlite3.Connection, *, org_slug: str, deadline: float,
-                           reserve_cancellation: bool = False) -> None:
-    """Refuse an unreadable resulting history before the authority writer commits.
+                           reserve_cancellation: bool = False,
+                           run_ids: frozenset[str] | None = None,
+                           source_ids: frozenset[str] = frozenset(),
+                           definition_ids: frozenset[str] = frozenset(),
+                           settings_ids: frozenset[str] = frozenset()) -> None:
+    """Validate resulting history on the original deadline before commit.
 
-    Use the complete reader's unchanged allowances on the operation's original
-    deadline. No payload cache survives from the earlier writer observation.
+    Admission supplies explicit roots. Other control/hold/dispatch callers keep
+    complete-history validation until their own bounded wiring groups.
     """
-    from runtime.workflows.sequential_history import read_sequential_history
-    read_sequential_history(conn, expected_org_slug=org_slug, deadline=deadline,
-                            reserve_cancellation=reserve_cancellation)
+    from runtime.workflows.sequential_history import read_sequential_history, _reserve_generic_cancellation
+    if run_ids is None:
+        read_sequential_history(conn, expected_org_slug=org_slug, deadline=deadline,
+                                reserve_cancellation=reserve_cancellation)
+        return
+    from runtime.workflows.sequential_task_history import read_write_history, read_cancellation_headroom
+    selected = read_write_history(conn, expected_org_slug=org_slug, deadline=deadline,
+        run_ids=run_ids, source_ids=source_ids, definition_ids=definition_ids, settings_ids=settings_ids)
+    if reserve_cancellation:
+        headroom = read_cancellation_headroom(conn, expected_org_slug=org_slug,
+            metadata=selected.metadata, budget=selected.budget)
+        _reserve_generic_cancellation(headroom, selected.budget)
 
 
 def native_cancel_fence_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug: str,
