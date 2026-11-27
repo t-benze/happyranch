@@ -6,16 +6,26 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/net/proxy"
 	"tailscale.com/envknob"
 	"tailscale.com/net/dnscache"
+	"tailscale.com/net/netmon"
+	"tailscale.com/net/netns"
+	"tailscale.com/net/tshttpproxy"
+	"tailscale.com/types/logger"
 )
+
+const homeProxyScheme = "happyranch-home"
+const homeProxyURL = homeProxyScheme + "://owned"
 
 var homeProcessMu sync.Mutex
 var homeProcessStarted bool
@@ -70,18 +80,57 @@ func prepareHomeProcess(cfg homeLaunch) (*homeTransport, error) {
 			}
 		}
 	}
-	proxy := "http://" + h.Addr().String()
-	if os.Setenv("HTTP_PROXY", proxy) != nil || os.Setenv("HTTPS_PROXY", proxy) != nil {
+	// Both supported helper platforms use netns' x/net wrapper. Register before
+	// either package reads its one-shot environment caches. No forwarding dialer
+	// is retained, even for a refused target or an invalid private-scheme URL.
+	proxy.RegisterDialerType(homeProxyScheme, func(u *url.URL, _ proxy.Dialer) (proxy.Dialer, error) {
+		if u.String() != homeProxyURL {
+			return nil, errHomeTrust
+		}
+		return h, nil
+	})
+	if os.Setenv("ALL_PROXY", homeProxyURL) != nil {
 		return nil, errHomeTrust
 	}
 	resolver := fixedHomeResolver(h.ctx, netip.MustParseAddr(cfg.DialIP))
 	net.DefaultResolver = resolver
 	dnscache.Get().Forward = resolver
 	dnscache.Get().LookupIPFallback = nil
+	if h.verifyRouting() != nil {
+		return nil, errHomeTrust
+	}
 	// This owner also closes tsnet admission and exported streams on failure.
 	context.AfterFunc(h.ctx, cancelManaged)
 	success = true
 	return h, nil
+}
+
+// verifyRouting refuses stale caches, NO_PROXY wrappers, disabled netns and
+// HTTP/system proxies (whose upstream paths can bypass netns entirely).
+func (h *homeTransport) verifyRouting() error {
+	if h.ctx.Err() != nil || os.Getenv("ALL_PROXY") != homeProxyURL {
+		return errHomeTrust
+	}
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"} {
+		if _, present := os.LookupEnv(name); present {
+			return errHomeTrust
+		}
+	}
+	if netns.NewDialer(logger.Discard, netmon.NewStatic()) != h {
+		return errHomeTrust
+	}
+	for _, authority := range []string{homeControlName + ":8443", homeControlName + ":443", h.dialIP + ":8443", h.dialIP + ":443"} {
+		for _, scheme := range []string{"http", "https"} {
+			req := &http.Request{URL: &url.URL{Scheme: scheme, Host: authority}}
+			for _, selectProxy := range []func(*http.Request) (*url.URL, error){http.ProxyFromEnvironment, tshttpproxy.ProxyFromEnvironment} {
+				selected, err := selectProxy(req)
+				if err != nil || selected != nil {
+					return errHomeTrust
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // net.Resolver's production Dial API uses TCP framing for net.Pipe. No DNS

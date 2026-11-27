@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"golang.org/x/net/http2"
+	"golang.org/x/net/proxy"
 	"tailscale.com/control/controlclient"
 	"tailscale.com/control/controlhttp/controlhttpserver"
 	"tailscale.com/derp"
@@ -37,10 +38,12 @@ import (
 	"tailscale.com/envknob"
 	"tailscale.com/net/dnscache"
 	"tailscale.com/net/netmon"
+	"tailscale.com/net/netns"
 	"tailscale.com/net/tsdial"
 	"tailscale.com/net/tshttpproxy"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
+	"tailscale.com/types/logger"
 )
 
 type homeTestCA struct {
@@ -101,6 +104,36 @@ func TestHomeProcessChild(t *testing.T) {
 		return
 	}
 	log.SetOutput(io.Discard)
+	if mode == "proxy-cache" {
+		cfg, err := readHomeLaunch(os.Stdin)
+		if err != nil {
+			t.Fatal("fixture launch refused")
+		}
+		req, _ := http.NewRequest("GET", homeControlURL+"/key", nil)
+		switch os.Getenv("HOME_PROXY_CACHE") {
+		case "http":
+			_, _ = http.ProxyFromEnvironment(req)
+		case "https":
+			_, _ = tshttpproxy.ProxyFromEnvironment(req)
+		case "all", "bypass":
+			_ = proxy.FromEnvironment()
+		case "netns":
+			netns.SetEnabled(false)
+		default:
+			t.Fatal("unknown cache case")
+		}
+		// Clearing inherited values cannot reset upstream one-shot caches. Startup
+		// must detect an effective HTTP/system proxy, forwarder or bypass wrapper.
+		h, err := prepareHomeProcess(cfg)
+		if h != nil {
+			h.Close()
+		}
+		if err == nil || h != nil {
+			t.Fatal("unsafe effective proxy selection admitted")
+		}
+		fmt.Fprintln(os.Stdout, "PROXY_REFUSED")
+		return
+	}
 	if mode == "environment" {
 		cfg, err := readHomeLaunch(os.Stdin)
 		if err != nil {
@@ -110,18 +143,35 @@ func TestHomeProcessChild(t *testing.T) {
 		if err != nil {
 			os.Exit(41)
 		}
-		expectedProxy := "http://" + h.Addr().String()
+		if os.Getenv("ALL_PROXY") != homeProxyURL || h.verifyRouting() != nil {
+			os.Exit(42)
+		}
+		forward := new(refusedForwarder)
+		u, _ := url.Parse(homeProxyURL)
+		owned, err := proxy.FromURL(u, forward)
+		if err != nil || owned != h {
+			os.Exit(42)
+		}
+		if netns.NewDialer(logger.Discard, netmon.NewStatic()) != h {
+			os.Exit(42)
+		}
+		if c, err := owned.Dial("tcp", "outside.invalid:443"); c != nil || err == nil {
+			os.Exit(42)
+		}
+		if forward.calls.Load() != 0 {
+			os.Exit(42)
+		}
 		req, _ := http.NewRequest("GET", homeControlURL+"/key", nil)
 		for _, proxyFunc := range []func(*http.Request) (*url.URL, error){http.ProxyFromEnvironment, tshttpproxy.ProxyFromEnvironment} {
 			proxy, err := proxyFunc(req)
-			if err != nil || proxy == nil || proxy.String() != expectedProxy {
+			if err != nil || proxy != nil {
 				os.Exit(42)
 			}
 		}
 		if os.Getenv("GODEBUG") != "x509usefallbackroots=1" {
 			os.Exit(43)
 		}
-		for _, name := range []string{"http_proxy", "https_proxy", "ALL_PROXY", "NO_PROXY", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "TS_DEBUG_TLS_DIAL"} {
+		for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "TS_DEBUG_TLS_DIAL"} {
 			if _, ok := os.LookupEnv(name); ok {
 				os.Exit(44)
 			}
@@ -162,8 +212,8 @@ func TestHomeProcessChild(t *testing.T) {
 		if len(h.LocalCA()) != 0 || len(h.localTLS.Certificates) != 0 {
 			os.Exit(49)
 		}
-		// Fresh processes must own fresh ports and issuers.
-		fmt.Fprintln(os.Stdout, h.Addr().String(), homeFingerprint(issuerDER))
+		// Fresh processes must own fresh issuers; no transport port exists.
+		fmt.Fprintln(os.Stdout, homeProxyURL, homeFingerprint(issuerDER))
 		os.Exit(0)
 	}
 	if mode == "startup" || mode == "once" {
@@ -223,24 +273,24 @@ func TestHomeProcessChild(t *testing.T) {
 		connTable[12345] = owned
 		connMu.Unlock()
 		defer observer.Close()
-		raw, reader, status := connectTransport(t, h, homeControlName+":8443")
+		raw, err := connectTransport(t, h, homeControlName+":8443")
 		if p.Kind == "teardown-verifier" {
-			if !strings.Contains(status, " 502 ") {
+			if err == nil {
 				os.Exit(52)
 			}
 		} else {
-			if !strings.Contains(status, " 200 ") {
+			if err != nil {
 				os.Exit(53)
 			}
-			c := localTransportTLS(t, h, raw, reader)
+			c := localTransportTLS(t, h, raw)
 			if _, err := c.Write([]byte("live")); err != nil {
 				os.Exit(54)
 			}
 			if _, err := io.ReadFull(c, make([]byte, 4)); err != nil {
 				os.Exit(55)
 			}
-			if p.Kind == "teardown-listener" {
-				h.listener.Close()
+			if p.Kind == "teardown-close" {
+				h.Close()
 			} else {
 				h.cancel()
 			}
@@ -503,10 +553,29 @@ func TestHomeProcessEnvironmentResolverAndIsolation(t *testing.T) {
 		if len(current) != 2 {
 			t.Fatal("missing process isolation receipt")
 		}
-		if previous != nil && (previous[0] == current[0] || previous[1] == current[1]) {
-			t.Fatal("restart reused local endpoint or issuer")
+		if previous != nil && (previous[0] != current[0] || previous[1] == current[1]) {
+			t.Fatal("restart lost private selection or reused issuer")
 		}
 		previous = current
+	}
+}
+
+func TestHomeProxySelectionRefusals(t *testing.T) {
+	ca := makeHomeCA(t, true)
+	for _, cache := range []string{"http", "https", "all", "bypass", "netns"} {
+		t.Run(cache, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestHomeProcessChild$", "-test.v")
+			cmd.Env = []string{"HOME_BRIDGE_TEST_MODE=proxy-cache", "HOME_PROXY_CACHE=" + cache,
+				"HTTP_PROXY=http://127.0.0.1:1", "HTTPS_PROXY=http://127.0.0.1:2", "ALL_PROXY=socks5://127.0.0.1:3"}
+			if cache == "bypass" {
+				cmd.Env = append(cmd.Env, "NO_PROXY=*")
+			}
+			cmd.Stdin = bytes.NewReader(homeFrame(t, homeLaunchFixture(ca.der)))
+			out, err := cmd.CombinedOutput()
+			if err != nil || !bytes.Contains(out, []byte("PROXY_REFUSED")) {
+				t.Fatal("unsafe effective proxy was not refused")
+			}
+		})
 	}
 }
 
@@ -548,7 +617,7 @@ func TestHomeLaunchFrameClosed(t *testing.T) {
 }
 
 func TestHomeProcessTeardown(t *testing.T) {
-	for _, cause := range []string{"listener", "cancel", "verifier"} {
+	for _, cause := range []string{"close", "cancel", "verifier"} {
 		t.Run(cause, func(t *testing.T) {
 			ca := makeTransportCA(t, true)
 			signer := ca

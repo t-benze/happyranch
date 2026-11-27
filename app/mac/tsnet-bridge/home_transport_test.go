@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -142,7 +143,7 @@ func TestHomeTransportAdmission(t *testing.T) {
 			h, err := newHomeTransport(tc.der, tc.fp, tc.ip)
 			if h != nil {
 				h.Close()
-				t.Fatal("invalid profile created a listener")
+				t.Fatal("invalid profile created a transport")
 			}
 			if err != errHomeTransport {
 				t.Fatal("invalid profile did not return fixed refusal")
@@ -152,7 +153,7 @@ func TestHomeTransportAdmission(t *testing.T) {
 }
 
 // The production constructor always admits RFC1918:8443. Tests replace only an
-// instance's private endpoint, before accepting requests, with an owned loopback
+// instance's private endpoint, before dialing, with an owned loopback
 // fake. There is no production dialer hook, test flag or alternative API.
 func transportForTest(t *testing.T, ca transportTestCA, endpoint string) *homeTransport {
 	t.Helper()
@@ -163,9 +164,6 @@ func transportForTest(t *testing.T, ca transportTestCA, endpoint string) *homeTr
 	t.Cleanup(func() { h.Close() })
 	if h.upstream != "192.168.1.40:8443" {
 		t.Fatal("constructor lost admitted literal endpoint")
-	}
-	if addr := h.Addr().(*net.TCPAddr); !addr.IP.Equal(net.IPv4(127, 0, 0, 1)) || addr.Port == 0 {
-		t.Fatal("listener is not ephemeral loopback")
 	}
 	h.mu.Lock()
 	h.upstream = endpoint
@@ -247,34 +245,17 @@ func echoTransport(c *tls.Conn, p *transportPeer) {
 		}
 	}
 }
-func connectTransport(t *testing.T, h *homeTransport, authority string) (net.Conn, *bufio.Reader, string) {
+func connectTransport(t *testing.T, h *homeTransport, authority string) (net.Conn, error) {
 	t.Helper()
-	raw, err := net.DialTimeout("tcp4", h.Addr().String(), time.Second)
-	if err != nil {
-		t.Fatal("local dial failed")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := h.DialContext(ctx, "tcp", authority)
+	if conn != nil {
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	}
-	t.Cleanup(func() { raw.Close() })
-	_ = raw.SetDeadline(time.Now().Add(5 * time.Second))
-	if _, err := io.WriteString(raw, "CONNECT "+authority+" HTTP/1.1\r\nHost: "+authority+"\r\n\r\n"); err != nil {
-		t.Fatal("CONNECT write failed")
-	}
-	reader := bufio.NewReader(raw)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		t.Fatal("CONNECT status missing")
-	}
-	for {
-		header, err := reader.ReadString('\n')
-		if err != nil {
-			t.Fatal("CONNECT headers incomplete")
-		}
-		if header == "\r\n" {
-			break
-		}
-	}
-	return raw, reader, line
+	return conn, err
 }
-func localTransportTLS(t *testing.T, h *homeTransport, raw net.Conn, reader *bufio.Reader) *tls.Conn {
+func localTransportTLS(t *testing.T, h *homeTransport, raw net.Conn) *tls.Conn {
 	t.Helper()
 	ca, err := x509.ParseCertificate(h.LocalCA())
 	if err != nil {
@@ -282,7 +263,7 @@ func localTransportTLS(t *testing.T, h *homeTransport, raw net.Conn, reader *buf
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(ca)
-	c := tls.Client(&homeBufferedConn{Conn: raw, reader: reader}, &tls.Config{RootCAs: roots, ServerName: homeControlName, MinVersion: tls.VersionTLS12})
+	c := tls.Client(raw, &tls.Config{RootCAs: roots, ServerName: homeControlName, MinVersion: tls.VersionTLS12})
 	if c.Handshake() != nil {
 		t.Fatal("local TLS failed")
 	}
@@ -290,17 +271,17 @@ func localTransportTLS(t *testing.T, h *homeTransport, raw net.Conn, reader *buf
 }
 
 func TestHomeTransportEndToEnd(t *testing.T) {
-	for _, port := range []string{"443", "8443"} {
-		t.Run(port, func(t *testing.T) {
+	for _, authority := range []string{homeControlName + ":443", homeControlName + ":8443", "192.168.1.40:443", "192.168.1.40:8443"} {
+		t.Run(authority, func(t *testing.T) {
 			ca := makeTransportCA(t, true)
 			leaf := transportLeaf(t, ca, "valid")
 			p := startTransportPeer(t, leaf, echoTransport)
 			h := transportForTest(t, ca, p.listener.Addr().String())
-			raw, reader, status := connectTransport(t, h, homeControlName+":"+port)
-			if !strings.Contains(status, " 200 ") {
+			raw, err := connectTransport(t, h, authority)
+			if err != nil {
 				t.Fatal("valid upstream refused")
 			}
-			c := localTransportTLS(t, h, raw, reader)
+			c := localTransportTLS(t, h, raw)
 			seen := c.ConnectionState().PeerCertificates
 			if len(seen) != 1 || bytes.Equal(seen[0].Raw, leaf.Certificate[0]) || len(seen[0].DNSNames) != 1 || seen[0].DNSNames[0] != homeControlName || len(seen[0].IPAddresses) != 0 {
 				t.Fatal("client did not see only the fixed-name ephemeral leaf")
@@ -371,11 +352,11 @@ func TestHomeTransportLeafRefusals(t *testing.T) {
 			}
 			p := startTransportPeer(t, leaf, echoTransport)
 			h := transportForTest(t, home, p.listener.Addr().String())
-			_, _, status := connectTransport(t, h, homeControlName+":8443")
+			_, err := connectTransport(t, h, homeControlName+":8443")
 			h.Close()
 			p.close()
-			if !strings.Contains(status, " 502 ") {
-				t.Fatal("untrusted upstream received CONNECT success")
+			if err == nil {
+				t.Fatal("untrusted upstream returned a connection")
 			}
 			if p.dials.Load() != 1 || p.applicationBytes.Load() != 0 {
 				t.Fatal("refusal did not reach upstream or leaked application bytes")
@@ -384,51 +365,37 @@ func TestHomeTransportLeafRefusals(t *testing.T) {
 	}
 }
 
-func TestHomeTransportRequestRefusals(t *testing.T) {
-	cases := map[string]string{
-		"absolute-http80":   "GET http://control.happyranch.invalid:80/ts2021 HTTP/1.1\r\nHost: control.happyranch.invalid\r\n\r\n",
-		"absolute-https":    "GET https://control.happyranch.invalid:8443/key HTTP/1.1\r\nHost: control.happyranch.invalid\r\n\r\n",
-		"wrong-method":      "POST control.happyranch.invalid:8443 HTTP/1.1\r\n\r\n",
-		"wrong-authority":   "CONNECT attacker.invalid:8443 HTTP/1.1\r\n\r\n",
-		"wrong-port":        "CONNECT control.happyranch.invalid:80 HTTP/1.1\r\n\r\n",
-		"literal-ip":        "CONNECT 192.168.1.40:8443 HTTP/1.1\r\n\r\n",
-		"userinfo":          "CONNECT user@control.happyranch.invalid:8443 HTTP/1.1\r\n\r\n",
-		"different-host":    "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nHost: attacker.invalid\r\n\r\n",
-		"duplicate-host":    "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nHost: control.happyranch.invalid:8443\r\nHost: control.happyranch.invalid:8443\r\n\r\n",
-		"bad-header":        "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nInvalid Header\r\n\r\n",
-		"folded-header":     "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nX-A: x\r\n continued\r\n\r\n",
-		"bare-lf":           "CONNECT control.happyranch.invalid:8443 HTTP/1.1\n\n",
-		"control-header":    "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nX-A: \x00\r\n\r\n",
-		"oversize":          "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nX-A: " + strings.Repeat("a", homeHeaderLimit) + "\r\n\r\n",
-		"body":              "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nContent-Length: 1\r\n\r\nx",
-		"transfer-encoding": "CONNECT control.happyranch.invalid:8443 HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
-	}
-	for name, request := range cases {
-		t.Run(name, func(t *testing.T) {
-			ca := makeTransportCA(t, true)
-			p := startTransportPeer(t, transportLeaf(t, ca, "valid"), echoTransport)
-			h := transportForTest(t, ca, p.listener.Addr().String())
-			c, err := net.Dial("tcp4", h.Addr().String())
-			if err != nil {
-				t.Fatal("local dial failed")
-			}
-			defer c.Close()
-			_ = c.SetDeadline(time.Now().Add(time.Second))
-			_, _ = io.WriteString(c, request)
-			status, err := bufio.NewReader(c).ReadString('\n')
-			h.Close()
-			p.close()
-			if err != nil || !strings.Contains(status, " 400 ") {
-				t.Fatal("invalid CONNECT not explicitly refused")
-			}
-			if p.dials.Load() != 0 || p.applicationBytes.Load() != 0 {
-				t.Fatal("invalid request dialed upstream")
+type refusedForwarder struct{ calls atomic.Int64 }
+
+func (d *refusedForwarder) Dial(string, string) (net.Conn, error) {
+	d.calls.Add(1)
+	return nil, errors.New("forwarding dialer must never run")
+}
+
+func TestHomeTransportDestinationRefusals(t *testing.T) {
+	ca := makeTransportCA(t, true)
+	p := startTransportPeer(t, transportLeaf(t, ca, "valid"), echoTransport)
+	h := transportForTest(t, ca, p.listener.Addr().String())
+	for _, tc := range [][2]string{
+		{"tcp", "attacker.invalid:8443"}, {"tcp", "192.168.1.41:8443"},
+		{"tcp", homeControlName + ":80"}, {"tcp", homeControlName + ":444"},
+		{"tcp", "127.0.0.1:443"}, {"tcp", "[::1]:443"},
+		{"tcp", "user@" + homeControlName + ":443"}, {"tcp", homeControlName},
+		{"udp", homeControlName + ":443"}, {"tcp6", homeControlName + ":443"},
+	} {
+		t.Run(tc[0]+"/"+tc[1], func(t *testing.T) {
+			conn, err := h.DialContext(context.Background(), tc[0], tc[1])
+			if conn != nil || err != errHomeTransport {
+				t.Fatal("unadmitted destination returned a connection")
 			}
 		})
 	}
+	if p.dials.Load() != 0 || h.ctx.Err() != nil {
+		t.Fatal("refused target dialed upstream or poisoned HTTPS admission")
+	}
 }
 
-func TestHomeTransportHandshakeBefore200(t *testing.T) {
+func TestHomeTransportHandshakeBeforeReturn(t *testing.T) {
 	ca := makeTransportCA(t, true)
 	leaf := transportLeaf(t, ca, "valid")
 	l, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -455,15 +422,12 @@ func TestHomeTransportHandshakeBefore200(t *testing.T) {
 		}
 	}()
 	h := transportForTest(t, ca, l.Addr().String())
-	raw, err := net.Dial("tcp4", h.Addr().String())
-	if err != nil {
-		t.Fatal("local dial failed")
+	type dialResult struct {
+		conn net.Conn
+		err  error
 	}
-	defer raw.Close()
-	_ = raw.SetDeadline(time.Now().Add(3 * time.Second))
-	_, _ = io.WriteString(raw, "CONNECT "+homeControlName+":8443 HTTP/1.1\r\n\r\n")
-	result := make(chan string, 1)
-	go func() { line, _ := bufio.NewReader(raw).ReadString('\n'); result <- line }()
+	result := make(chan dialResult, 1)
+	go func() { conn, err := connectTransport(t, h, homeControlName+":8443"); result <- dialResult{conn, err} }()
 	select {
 	case <-accepted:
 	case <-time.After(time.Second):
@@ -480,17 +444,18 @@ func TestHomeTransportHandshakeBefore200(t *testing.T) {
 	if early {
 		h.Close()
 		<-finished
-		t.Fatal("CONNECT response preceded upstream handshake")
+		t.Fatal("connection preceded upstream handshake")
 	}
-	line := <-result
-	if !strings.Contains(line, " 200 ") {
-		t.Fatal("verified upstream did not permit 200")
+	r := <-result
+	if r.err != nil || r.conn == nil {
+		t.Fatal("verified upstream did not return a connection")
 	}
+	defer r.conn.Close()
 	// Server observes its Finished before receiving the client's later close.
 	h.Close()
 	<-finished
 	if !handshake.Load() {
-		t.Fatal("200 without a completed upstream handshake")
+		t.Fatal("connection without a completed upstream handshake")
 	}
 }
 
@@ -508,12 +473,12 @@ func TestHomeTransportHalfCloseResponse(t *testing.T) {
 		}
 	})
 	h := transportForTest(t, ca, p.listener.Addr().String())
-	raw, reader, status := connectTransport(t, h, homeControlName+":8443")
-	if !strings.Contains(status, " 200 ") {
+	raw, err := connectTransport(t, h, homeControlName+":8443")
+	if err != nil {
 		close(release)
-		t.Fatal("CONNECT failed")
+		t.Fatal("owned dial failed")
 	}
-	c := localTransportTLS(t, h, raw, reader)
+	c := localTransportTLS(t, h, raw)
 	_, _ = c.Write([]byte("request"))
 	if c.CloseWrite() != nil {
 		close(release)
@@ -550,46 +515,40 @@ func TestHomeTransportHalfCloseResponse(t *testing.T) {
 }
 
 func TestHomeTransportClose(t *testing.T) {
-	for _, phase := range []string{"headers", "local-handshake", "relay"} {
+	for _, phase := range []string{"local-handshake", "relay"} {
 		t.Run(phase, func(t *testing.T) {
 			ca := makeTransportCA(t, true)
 			p := startTransportPeer(t, transportLeaf(t, ca, "valid"), echoTransport)
 			h := transportForTest(t, ca, p.listener.Addr().String())
-			var c net.Conn
-			if phase == "headers" {
-				var err error
-				c, err = net.Dial("tcp4", h.Addr().String())
-				if err != nil {
-					t.Fatal("dial failed")
-				}
-				_, _ = io.WriteString(c, "CONNECT ")
-			} else {
-				raw, reader, status := connectTransport(t, h, homeControlName+":8443")
-				if !strings.Contains(status, " 200 ") {
-					t.Fatal("CONNECT failed")
-				}
-				c = raw
-				if phase == "relay" {
-					c = localTransportTLS(t, h, raw, reader)
-					_, _ = c.Write([]byte("live"))
-					buf := make([]byte, 4)
-					if _, err := io.ReadFull(c, buf); err != nil {
-						t.Fatal("relay was not live")
-					}
+			raw, err := connectTransport(t, h, homeControlName+":8443")
+			if err != nil {
+				t.Fatal("owned dial failed")
+			}
+			var c net.Conn = raw
+			if phase == "relay" {
+				c = localTransportTLS(t, h, raw)
+				_, _ = c.Write([]byte("live"))
+				if _, err := io.ReadFull(c, make([]byte, 4)); err != nil {
+					t.Fatal("relay was not live")
 				}
 			}
 			defer c.Close()
-			h.Close()
+			closed := make(chan struct{})
+			go func() { h.Close(); close(closed) }()
+			select {
+			case <-closed:
+			case <-time.After(time.Second):
+				t.Fatal("Close did not promptly interrupt owned streams")
+			}
 			h.Close()
 			_ = c.SetReadDeadline(time.Now().Add(time.Second))
 			if _, err := c.Read(make([]byte, 1)); err == nil {
-				t.Fatal("owned client stream survived Close")
+				t.Fatal("owned stream survived Close")
 			} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
 				t.Fatal("Close left client blocked")
 			}
-			if c, err := net.DialTimeout("tcp4", h.Addr().String(), time.Second); err == nil {
-				c.Close()
-				t.Fatal("listener survived Close")
+			if conn, err := h.Dial("tcp", homeControlName+":443"); conn != nil || err == nil {
+				t.Fatal("closed transport admitted a dial")
 			}
 			h.mu.Lock()
 			active := len(h.streams)
@@ -597,14 +556,81 @@ func TestHomeTransportClose(t *testing.T) {
 			if active != 0 {
 				t.Fatal("Close returned with owned streams")
 			}
-			if phase != "headers" {
-				select {
-				case <-p.streamEnded:
-				case <-time.After(time.Second):
-					t.Fatal("Close left upstream stream alive")
-				}
+			select {
+			case <-p.streamEnded:
+			case <-time.After(time.Second):
+				t.Fatal("Close left upstream stream alive")
 			}
 			p.close()
+		})
+	}
+}
+
+func TestHomeTransportSetupCancellation(t *testing.T) {
+	for _, cause := range []string{"caller", "owner"} {
+		t.Run(cause, func(t *testing.T) {
+			ca := makeTransportCA(t, true)
+			l, err := net.Listen("tcp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer l.Close()
+			accepted := make(chan net.Conn, 1)
+			go func() {
+				raw, err := l.Accept()
+				if err == nil {
+					accepted <- raw
+				}
+			}()
+			h := transportForTest(t, ca, l.Addr().String())
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			result := make(chan error, 1)
+			go func() {
+				c, err := h.DialContext(ctx, "tcp", homeControlName+":8443")
+				if c != nil {
+					c.Close()
+				}
+				result <- err
+			}()
+			var raw net.Conn
+			select {
+			case raw = <-accepted:
+			case <-time.After(time.Second):
+				t.Fatal("outer dial not reached")
+			}
+			defer raw.Close()
+			if cause == "caller" {
+				cancel()
+			} else {
+				h.Close()
+			}
+			select {
+			case err := <-result:
+				if err == nil {
+					t.Fatal("cancelled setup returned a connection")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("setup outlived cancellation")
+			}
+			h.mu.Lock()
+			active := len(h.streams)
+			h.mu.Unlock()
+			if active != 0 {
+				t.Fatal("cancelled setup retained an owned stream")
+			}
+			if cause == "caller" {
+				if h.ctx.Err() != nil {
+					t.Fatal("speculative caller cancellation killed the home owner")
+				}
+				peer := startTransportPeer(t, transportLeaf(t, ca, "valid"), echoTransport)
+				h.upstream = peer.listener.Addr().String()
+				c, err := h.Dial("tcp", homeControlName+":443")
+				if err != nil {
+					t.Fatal("caller cancellation poisoned subsequent admitted dial")
+				}
+				c.Close()
+			}
 		})
 	}
 }

@@ -2,8 +2,6 @@ package main
 
 // The dedicated helper owns Close and installs local roots/proxy routing before tsnet.
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -17,16 +15,13 @@ import (
 	"io"
 	"math/big"
 	"net"
-	"net/http"
 	"net/netip"
-	"strings"
 	"sync"
 	"time"
 )
 
 const (
 	homeControlName  = "control.happyranch.invalid"
-	homeHeaderLimit  = 8192
 	homeStreamLimit  = 128
 	homeSetupTimeout = 10 * time.Second
 )
@@ -51,7 +46,7 @@ func admitHomeTransport(der []byte, fingerprint, dialIP string, now time.Time) (
 // homeTransport holds one immutable admitted remote profile. Keys are generated
 // in memory, never serialized. LocalCA returns only the public issuer DER.
 type homeTransport struct {
-	listener    net.Listener
+	dialIP      string
 	upstream    string
 	upstreamTLS *tls.Config
 	localTLS    *tls.Config
@@ -72,33 +67,24 @@ func newHomeTransport(der []byte, fingerprint, dialIP string) (*homeTransport, e
 	if err != nil {
 		return nil, err
 	}
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		return nil, errHomeTransport
-	}
 	ca, leaf, err := ephemeralHomeIdentity(time.Now())
 	if err != nil {
-		_ = listener.Close()
 		return nil, errHomeTransport
 	}
 	parsed, err := x509.ParseCertificate(leaf.Certificate[0])
 	if err != nil {
-		_ = listener.Close()
 		return nil, errHomeTransport
 	}
 	// A new process is required after the memory-only issuer expires.
 	ctx, cancel := context.WithDeadline(context.Background(), parsed.NotAfter)
-	h := &homeTransport{listener: listener, upstream: upstream,
+	h := &homeTransport{dialIP: dialIP, upstream: upstream,
 		upstreamTLS: &tls.Config{RootCAs: roots, ServerName: homeControlName, MinVersion: tls.VersionTLS12},
 		localTLS:    &tls.Config{Certificates: []tls.Certificate{leaf}, MinVersion: tls.VersionTLS12},
 		localCA:     ca, ctx: ctx, cancel: cancel, streams: make(map[*homeTransportStream]struct{})}
-	h.wg.Add(1)
-	go h.accept()
 	go func() { <-ctx.Done(); _ = h.Close() }()
 	return h, nil
 }
 
-func (h *homeTransport) Addr() net.Addr { return h.listener.Addr() }
 func (h *homeTransport) LocalCA() []byte {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -107,15 +93,16 @@ func (h *homeTransport) LocalCA() []byte {
 func (h *homeTransport) Done() <-chan struct{} { return h.ctx.Done() }
 
 // Close cancels pending dials/handshakes and both sides of every owned stream,
-// and waits until accept/relay handlers have relinquished ownership.
+// and waits until dial/relay handlers have relinquished ownership.
 func (h *homeTransport) Close() error {
 	h.closeOnce.Do(func() {
 		h.mu.Lock()
 		h.closed = true
 		h.cancel()
-		_ = h.listener.Close()
 		for s := range h.streams {
-			_ = s.local.Close()
+			if s.local != nil {
+				_ = s.local.Close()
+			}
 			if s.remote != nil {
 				_ = s.remote.Close()
 			}
@@ -131,136 +118,101 @@ func (h *homeTransport) Close() error {
 	return nil
 }
 
-func (h *homeTransport) accept() {
-	defer h.wg.Done()
-	for {
-		conn, err := h.listener.Accept()
-		if err != nil {
-			// An unexpected listener failure cancels all existing admission/streams too.
-			go h.Close()
-			return
-		}
-		h.mu.Lock()
-		if h.closed || len(h.streams) >= homeStreamLimit {
-			h.mu.Unlock()
-			_ = conn.Close()
-			continue
-		}
-		s := &homeTransportStream{local: conn}
-		h.streams[s] = struct{}{}
-		h.wg.Add(1)
-		h.mu.Unlock()
-		go h.serve(s)
-	}
+// Dial and DialContext are the x/net proxy and netns interfaces. The supplied
+// proxy forwarding dialer is never used: only the admitted outer endpoint can dial.
+func (h *homeTransport) Dial(network, address string) (net.Conn, error) {
+	return h.DialContext(context.Background(), network, address)
 }
 
-func (h *homeTransport) serve(s *homeTransportStream) {
-	defer h.wg.Done()
-	defer func() {
-		h.mu.Lock()
-		delete(h.streams, s)
+func (h *homeTransport) DialContext(caller context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || (network != "tcp" && network != "tcp4") ||
+		(host != homeControlName && host != h.dialIP) || (port != "443" && port != "8443") {
+		return nil, errHomeTransport
+	}
+	ctx, cancel := context.WithTimeout(caller, homeSetupTimeout)
+	defer cancel()
+	stop := context.AfterFunc(h.ctx, cancel)
+	defer stop()
+	h.mu.Lock()
+	if h.closed || h.ctx.Err() != nil || caller.Err() != nil || len(h.streams) >= homeStreamLimit {
 		h.mu.Unlock()
-		_ = s.local.Close()
-		if s.remote != nil {
-			_ = s.remote.Close()
+		return nil, errHomeTransport
+	}
+	s := &homeTransportStream{}
+	h.streams[s] = struct{}{}
+	h.wg.Add(1) // Close cannot finish while an admitted dial is still setting up.
+	h.mu.Unlock()
+	transferred := false
+	defer func() {
+		if !transferred {
+			h.release(s)
 		}
 	}()
-	deadline := time.Now().Add(homeSetupTimeout)
-	_ = s.local.SetDeadline(deadline)
-	reader := bufio.NewReaderSize(s.local, homeHeaderLimit+1)
-	if !readHomeConnect(reader) {
-		_, _ = io.WriteString(s.local, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-		return
-	}
-	ctx, cancel := context.WithDeadline(h.ctx, deadline)
-	defer cancel()
 	raw, err := (&net.Dialer{}).DialContext(ctx, "tcp4", h.upstream)
 	if err != nil {
-		homeConnectFailure(s.local)
-		h.cancel() // terminal upstream/verifier failure; never retry directly
-		return
+		if caller.Err() == nil {
+			h.cancel()
+		}
+		return nil, errHomeTransport
 	}
 	h.mu.Lock()
-	if h.closed {
+	if h.closed || h.ctx.Err() != nil {
 		h.mu.Unlock()
 		_ = raw.Close()
-		return
+		return nil, errHomeTransport
 	}
-	s.remote = raw // track before handshake; Close can interrupt any setup phase
+	s.remote = raw // Close owns the outer handshake as well as active relays.
 	h.mu.Unlock()
+	deadline, _ := ctx.Deadline()
 	_ = raw.SetDeadline(deadline)
 	upstream := tls.Client(raw, h.upstreamTLS)
 	if upstream.HandshakeContext(ctx) != nil {
-		homeConnectFailure(s.local)
-		h.cancel() // terminal upstream/verifier failure; never retry directly
-		return
+		if caller.Err() == nil {
+			h.cancel() // verification failure is terminal; never retry directly
+		}
+		return nil, errHomeTransport
 	}
-	// No remote application byte or local success precedes upstream verification.
-	if _, err := io.WriteString(s.local, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-		return
+	_ = upstream.SetDeadline(time.Time{})
+	client, server := net.Pipe()
+	h.mu.Lock()
+	if h.closed || h.ctx.Err() != nil || caller.Err() != nil {
+		h.mu.Unlock()
+		_ = client.Close()
+		_ = server.Close()
+		return nil, errHomeTransport
 	}
-	local := tls.Server(&homeBufferedConn{Conn: s.local, reader: reader}, h.localTLS)
-	if local.HandshakeContext(ctx) != nil {
-		return
+	s.local = server
+	h.mu.Unlock()
+	transferred = true
+	go h.serve(s, upstream, deadline)
+	// No connection or application byte precedes the pinned outer verification.
+	return client, nil
+}
+
+func (h *homeTransport) release(s *homeTransportStream) {
+	h.mu.Lock()
+	delete(h.streams, s)
+	h.mu.Unlock()
+	if s.local != nil {
+		_ = s.local.Close()
+	}
+	if s.remote != nil {
+		_ = s.remote.Close()
+	}
+	h.wg.Done()
+}
+
+func (h *homeTransport) serve(s *homeTransportStream, upstream *tls.Conn, deadline time.Time) {
+	defer h.release(s)
+	local := tls.Server(s.local, h.localTLS)
+	_ = local.SetDeadline(deadline)
+	if local.HandshakeContext(h.ctx) != nil {
+		return // a cancelled speculative client closes only its own stream
 	}
 	_ = local.SetDeadline(time.Time{})
-	_ = upstream.SetDeadline(time.Time{})
 	relayHomeTLS(local, upstream)
 }
-
-func homeConnectFailure(conn net.Conn) {
-	_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-}
-
-// Read only bounded headers. Preserve buffered TLS bytes after CONNECT, and
-// reject folded/control headers, bodies and every non-allowlisted request form.
-func readHomeConnect(reader *bufio.Reader) bool {
-	var header []byte
-	for {
-		line, err := reader.ReadSlice('\n')
-		if err != nil || len(header)+len(line) > homeHeaderLimit || !bytes.HasSuffix(line, []byte("\r\n")) {
-			return false
-		}
-		if len(header) > 0 && len(line) > 2 && (line[0] == ' ' || line[0] == '\t') {
-			return false
-		}
-		for _, b := range line[:len(line)-2] {
-			if b < 32 && b != '\t' || b == 127 {
-				return false
-			}
-		}
-		header = append(header, line...)
-		if len(line) == 2 {
-			break
-		}
-	}
-	req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(header)))
-	if err != nil {
-		return false
-	}
-	defer req.Body.Close()
-	if req.Method != "CONNECT" || req.Proto != "HTTP/1.1" && req.Proto != "HTTP/1.0" ||
-		req.RequestURI != homeControlName+":8443" && req.RequestURI != homeControlName+":443" ||
-		req.ContentLength != 0 || len(req.TransferEncoding) != 0 {
-		return false
-	}
-	// ReadRequest uses the CONNECT target as Host. Also validate an explicit Host
-	// header independently, rather than silently ignoring contradictory input.
-	for _, line := range strings.Split(string(header), "\r\n")[1:] {
-		key, value, ok := strings.Cut(line, ":")
-		if ok && strings.EqualFold(key, "Host") && strings.TrimSpace(value) != req.RequestURI {
-			return false
-		}
-	}
-	return true
-}
-
-type homeBufferedConn struct {
-	net.Conn
-	reader *bufio.Reader
-}
-
-func (c *homeBufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
 
 func relayHomeTLS(local, remote *tls.Conn) {
 	done := make(chan struct{}, 2)

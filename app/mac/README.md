@@ -1125,32 +1125,38 @@ merge checks.
 
 ## THR-327 slices 5e/5f: strict home-only transport and startup
 
-`tsnet-bridge/home_transport.go` implements section 6 B as a separately owned
-transport. `newHomeTransport` validates exactly one current CA DER/fingerprint
-and an RFC1918 IPv4, binds its own `127.0.0.1:0` listener, and creates an
-in-memory ephemeral CA and fixed `control.happyranch.invalid` DNS leaf. `Addr`
-exposes the owned proxy address; `LocalCA` returns only public issuer DER for
-the dedicated helper's isolated fallback pool. The caller must call `Close`; it cancels setup,
-closes the listener and both sides of all owned streams, then waits for handlers.
-Keys are never serialized, installed or logged.
+`tsnet-bridge/home_transport.go` implements the Client-only control/DERP
+transport without an OS CONNECT listener. `newHomeTransport` validates exactly
+one current CA DER/fingerprint and an RFC1918 IPv4, and creates an in-memory
+ephemeral CA and fixed `control.happyranch.invalid` DNS leaf. `LocalCA` returns
+only public issuer DER for the dedicated helper's isolated fallback pool.
+The caller must call `Close`; it cancels setup, closes both sides of all owned
+streams, waits for handlers and releases key references. Keys are never
+serialized, installed or logged.
 
-Only CONNECT for that exact name on 443 or 8443 is admitted; both use the same
-validated literal `dial_ip:8443`. Absolute HTTP (including Noise HTTP/80), other
-methods/authorities, bodies and malformed/oversize headers refuse before dialing.
-Headers are capped at 8 KiB, concurrent streams at 128 and setup at 10 seconds.
-An explicit upstream pool contains only the admitted home CA. Standard TLS
-checks the fixed DNS name, validity and server-auth purpose before CONNECT 200
-or any application byte. Then local TLS presents only the ephemeral leaf;
-the duplex relay preserves arbitrary upgrade/Noise/DERP bytes and TLS half-close.
+The owned `proxy.Dialer`/`proxy.ContextDialer` accepts only TCP/TCP4 to the exact
+home name or admitted IP on 443/8443; both map to literal `dial_ip:8443`.
+Other destinations, networks and port 80 refuse without invoking the supplied
+forwarding dialer or cancelling the permitted HTTPS fallback. Concurrent streams
+are capped at 128 and setup at 10 seconds. An explicit outer TLS pool contains
+only the admitted home CA. Standard verification checks the fixed DNS name,
+validity and server-auth purpose before returning any connection or application
+byte. Only then does an inner `net.Pipe` TLS server present the process-local
+leaf. The relay preserves arbitrary upgrade/Noise/DERP bytes and TLS half-close.
 There is no public-root, redirect or direct retry path in this transport.
 
 `home_helper.go` now wires this transport only in the dedicated executable.
-Startup validates the bounded exact v2 frame and CA/pin/dial IP, binds loopback,
-then creates the ephemeral issuer. It sets owned `GODEBUG=x509usefallbackroots=1`
+Startup validates the bounded exact v2 frame and CA/pin/dial IP, then creates
+the ephemeral issuer. It sets owned `GODEBUG=x509usefallbackroots=1`
 **before** the single `x509.SetFallbackRoots` call with only that local issuer.
 It clears inherited upper/lowercase proxy, trust and debug overrides, then sets
-`HTTP_PROXY` and `HTTPS_PROXY` to its owned listener. Registered upstream debug
-caches are reset too. A nonempty inherited `SSLKEYLOGFILE` refuses before roots
+a private `ALL_PROXY=happyranch-home://owned` selection after registering the
+owned x/net dialer, before proxy environment caches initialize. HTTP(S) proxy
+variables and upper/lower bypass variants stay absent. Before tsnet starts,
+startup requires netns to return that exact owned wrapper and rejects effective
+standard HTTP or Tailscale HTTP/system proxy selection, stale caches and bypass
+wrappers. Registered upstream debug caches are reset too. A nonempty inherited
+`SSLKEYLOGFILE` refuses before roots
 or clients: pinned tlsdial caches it at package init, so clearing it later would
 not revoke key logging. No keylog file is opened. The immutable process resolver
 and `dnscache.Get().Forward` answer only the fixed home name with admitted IPv4,
@@ -1158,16 +1164,17 @@ return empty AAAA and refuse other names through in-memory pipes. No host DNS
 configuration or resolver socket changes. Only then is tsnet constructed with
 the canonical URL. The C archive installs none of these globals.
 
-Listener/upstream dial/verifier failure, parent EOF, shutdown or cancellation
-closes tsnet admission, exported streams, the proxy and its owned streams. The
+Upstream dial/verifier failure, parent EOF, shutdown or cancellation closes
+tsnet admission, exported streams and the transport and its owned streams. The
 runtime socket also seals and closes its tracked local streams; relay peer ends
 close with them. Keys are released after TLS handlers exit. Local issuer expiry
 (24 hours) cancels this owner, requiring a fresh dedicated process; no expired
 issuer or direct/public fallback remains admitted. One home per process; a
-second initialization refuses and each start uses a new random port and issuer.
+second initialization refuses and each start uses a new issuer. Caller
+cancellation closes only its speculative stream and retains the admitted owner.
 The transport needs no root, signing, entitlement or trust-store installation.
 Real pinned controlclient `/key`/Noise and DERP region clients run through these
-proxy/root/resolver APIs against synthetic loopback upstreams on Linux. Full tsnet
+dialer/root/resolver APIs against synthetic loopback upstreams on Linux. Full tsnet
 netmap/startup and native unsigned Darwin, save/reopen/rebuild and sequential-home
 acceptance remain **NOT RUN**, not inferred from these checks.
 
@@ -1193,7 +1200,7 @@ The module declares Go 1.23.1; the existing documented verification pin is
 Go 1.23.12. `CGO_ENABLED=0 go test ./...` cannot compile this module because
 existing `bridge.go` C exports supply symbols used by `health.go` and the
 helper. The PR records that failed command separately; no cgo stubs were added.
-The two self-contained transport files also run directly with cgo disabled.
+The self-contained transport source and test also run directly with cgo disabled.
 Swift build/XCTest and actual unsigned Mac transport acceptance are NOT RUN on
 this Linux host. No hosted Mac/managed-m4 build is dispatched.
 
