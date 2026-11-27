@@ -210,12 +210,31 @@ At 200%, recovery also uses the maintained overlapping scroll plan, retaining
 bottom (at most 16 companions per locale). The original EN 60 / ZH 52 capture
 sets remain required; exact counts increase by each locale's recovery
 `capture_complete` page count. Its seventh completion receipt uses
-`dialog: recovery`, dark theme and 200% text. Every recovery screenshot records
-`recoveryVisible` booleans for guidance, quit-and-reopen copy and Recheck,
-checked against the requested computed font size, viewport/ancestor clipping
-and hit testing. Each item must be fully on-screen in at least one retained
-capture at each scale; DOM presence alone cannot pass. QA still inspects the
-actual PNGs. Scroll companions preserve the 760×560 viewport and full copy.
+`dialog: recovery`, dark theme and 200% text.
+At **each** scale, the qualifier additionally scrolls guidance, quit-and-reopen
+copy and Recheck into view with `scrollIntoView(block: start)`. It retains
+`mac-recovery-no-relaunch-{locale}-{scale}-{guidance,reopen,recheck}-N.png`;
+tall elements get overlapping slices (1–8 per element). Two additional
+`recovery_capture_complete` receipts declare each scale's three exact page
+counts. The collector requires every declared PNG and matching receipt,
+without replacing or lowering any original top/scroll count.
+
+Every recovery screenshot records strict whole-rectangle `recoveryVisible`
+booleans and per-element `recoveryDiagnostics`: identity/text prefix, actual
+computed root font size, bounding rectangle, effective ancestor client clip,
+style eligibility, hit-test point/target/result, visible interval and rejection
+reason. These remain in the collector's process events and recovery diagnostics,
+including failures. A fitting element must still be wholly visible in one
+capture. If its rectangle is taller than the effective viewport, the union of
+its visibly captured vertical intervals must cover its **entire** height.
+Each eligible segment must have the requested font size, visible styles,
+positive size, full horizontal containment and a successful hit test inside
+that segment; gaps, clipping in the horizontal direction, occlusion and wrong
+scale cannot pass. Stable identity/text/size/scale are required across intervals.
+This preserves the full-content requirement when one-frame containment is
+physically impossible. Boolean-only historical receipts retain the old strict
+requirement and cannot be upgraded into interval coverage. QA still inspects
+the actual PNGs; all companions preserve the 760×560 viewport and full copy.
 
 After independent exact-head review, the existing Jenkins `SUITE=app-scheme`
 still runs the full unfiltered XCTest + Swift Testing workload and transport

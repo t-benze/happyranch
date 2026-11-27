@@ -596,21 +596,22 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKScriptMe
                     arguments: [:], in: nil, contentWorld: .page)
             }
             guard let plan = value as? [[String: Any]], plan.count <= 8 else { throw AppAPIError.unavailable }
-            var seen = Set<String>()
+            var covered = [String: Bool]()
             @MainActor func captureRecovery(_ name: String, scroll: [String: Any]) async throws {
                 let value = try await dialogStep("mac-recovery-visibility", fields: ["name": name, "textPercent": scale]) {
                     try await view.callAsyncJavaScript(Self.recoveryVisibility,
-                        arguments: ["scale": scale, "recheck": locale == "zh" ? "重新检查" : "Recheck",
+                        arguments: ["scale": scale, "reset": scroll.isEmpty, "recheck": locale == "zh" ? "重新检查" : "Recheck",
                             "reopen": locale == "zh" ? "更新后，请退出 HappyRanch 并重新打开。"
                                 : "After updating, quit HappyRanch and open it again."], in: nil, contentWorld: .page)
                 }
-                guard let visible = value as? [String: Bool], Set(visible.keys) == ["guidance", "reopen", "recheck"] else {
-                    throw AppAPIError.unavailable
-                }
-                for (key, shown) in visible where shown { seen.insert(key) }
+                guard let result = value as? [String: Any], let visible = result["visible"] as? [String: Bool],
+                      let diagnostics = result["diagnostics"] as? [String: Any],
+                      let coverage = result["covered"] as? [String: Bool],
+                      Set(visible.keys) == ["guidance", "reopen", "recheck"] else { throw AppAPIError.unavailable }
+                covered = coverage
                 try await captureDialogPage(view, frame: frame, name: name, locale: locale,
                     theme: "dark", scale: scale, dialog: "main",
-                    scroll: scroll.merging(["recoveryVisible": visible]) { _, new in new })
+                    scroll: scroll.merging(["recoveryVisible": visible, "recoveryDiagnostics": diagnostics]) { _, new in new })
             }
             let suffix = scale == 100 ? "-100" : ""
             try await captureRecovery("mac-recovery-no-relaunch-\(locale)\(suffix).png", scroll: [:])
@@ -635,32 +636,136 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKScriptMe
                 log.write("capture_complete", ["locale": locale, "theme": "dark", "textPercent": scale,
                     "dialog": "recovery", "scrollCaptures": count, "scrollers": plan])
             }
-            guard seen == ["guidance", "reopen", "recheck"] else { throw AppAPIError.unavailable }
+            var elements = [[String: Any]]()
+            for key in ["guidance", "reopen", "recheck"] {
+                var pages = 1
+                for page in 0..<8 {
+                    if page >= pages { break }
+                    let value = try await dialogStep("mac-recovery-element-scroll", fields: ["element": key,
+                        "page": page + 1, "locale": locale, "textPercent": scale]) {
+                        try await view.callAsyncJavaScript(Self.recoveryTargetScroll,
+                            arguments: ["key": key, "page": page,
+                                "recheck": locale == "zh" ? "重新检查" : "Recheck",
+                                "reopen": locale == "zh" ? "更新后，请退出 HappyRanch 并重新打开。"
+                                    : "After updating, quit HappyRanch and open it again."], in: nil, contentWorld: .page)
+                    }
+                    guard let scroll = value as? [String: Any], let planned = scroll["recoveryPages"] as? Int,
+                          (1...8).contains(planned), page == 0 || planned == pages else { throw AppAPIError.unavailable }
+                    pages = planned
+                    try await captureRecovery("mac-recovery-no-relaunch-\(locale)-\(scale)-\(key)-\(page + 1).png", scroll: scroll)
+                }
+                elements.append(["key": key, "pages": pages])
+            }
+            log.write("recovery_capture_complete", ["locale": locale, "theme": "dark", "textPercent": scale,
+                "elements": elements])
+            guard Set(covered.keys) == ["guidance", "reopen", "recheck"], covered.values.allSatisfy({ $0 }) else {
+                throw AppAPIError.unavailable
+            }
         }
     }
 
-    /// Full on-screen rectangles, ancestor clipping and hit testing, at the
-    /// requested text size. DOM presence alone is not capture acceptance.
+    /// Strict whole rectangles for fitting elements; full vertical interval union
+    /// for taller elements, with the same font/style/clip/hit requirements.
     private static let recoveryVisibility = #"""
         const pane = document.querySelector('[data-native-recovery="incompatible"]');
-        function visible(e) {
-            if (!e || parseFloat(getComputedStyle(document.documentElement).fontSize) !== 16 * scale / 100) return false;
-            const r = e.getBoundingClientRect();
-            let top = 0, bottom = innerHeight, left = 0, right = innerWidth;
-            for (let parent = e; parent; parent = parent.parentElement) {
-                const s = getComputedStyle(parent), clip = parent.getBoundingClientRect();
-                if (s.display === 'none' || s.visibility !== 'visible' || Number(s.opacity) === 0) return false;
-                if (/auto|scroll|hidden|clip/.test(s.overflowY)) { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom); }
-                if (/auto|scroll|hidden|clip/.test(s.overflowX)) { left = Math.max(left, clip.left); right = Math.min(right, clip.right); }
-            }
-            if (r.width <= 0 || r.height <= 0 || r.top < top - 1 || r.bottom > bottom + 1 || r.left < left - 1 || r.right > right + 1) return false;
-            const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
-            return hit === e || e.contains(hit);
-        }
         const paragraphs = [...(pane?.querySelectorAll('p') || [])];
-        return {guidance: visible(paragraphs[0]),
-            reopen: visible(paragraphs.find(e => e.textContent.trim() === reopen)),
-            recheck: visible([...(pane?.querySelectorAll('button') || [])].find(e => e.textContent.trim() === recheck))};
+        const elements = {guidance: paragraphs[0],
+            reopen: paragraphs.find(e => e.textContent.trim() === reopen),
+            recheck: [...(pane?.querySelectorAll('button') || [])].find(e => e.textContent.trim() === recheck)};
+        if (reset) window.__hrRecoverySamples = {};
+        const samples = window.__hrRecoverySamples ||= {};
+        const diagnostics = {}, visible = {}, covered = {};
+        const box = r => ({top:r.top, bottom:r.bottom, left:r.left, right:r.right, width:r.width, height:r.height});
+        for (const [key, e] of Object.entries(elements)) {
+            const d = {identity:key, tag:e?.tagName || '', textPrefix:(e?.textContent || '').trim().slice(0,160),
+                rootFontSize:parseFloat(getComputedStyle(document.documentElement).fontSize),
+                rect:e ? box(e.getBoundingClientRect()) : null, clip:{top:0,bottom:innerHeight,left:0,right:innerWidth},
+                stylesOK:true, hit:{point:null, matches:false, tag:'', textPrefix:''}, segment:null, rejection:''};
+            for (let parent = e; parent; parent = parent.parentElement) {
+                const s = getComputedStyle(parent), r = parent.getBoundingClientRect();
+                if (s.display === 'none' || s.visibility !== 'visible' || Number(s.opacity) === 0) d.stylesOK = false;
+                // Client edges exclude ancestor borders and scrollbar gutters.
+                if (/auto|scroll|hidden|clip/.test(s.overflowY)) {
+                    d.clip.top = Math.max(d.clip.top, r.top + (parent.clientTop || 0));
+                    d.clip.bottom = Math.min(d.clip.bottom, r.top + (parent.clientTop || 0) + parent.clientHeight);
+                }
+                if (/auto|scroll|hidden|clip/.test(s.overflowX)) {
+                    d.clip.left = Math.max(d.clip.left, r.left + (parent.clientLeft || 0));
+                    d.clip.right = Math.min(d.clip.right, r.left + (parent.clientLeft || 0) + parent.clientWidth);
+                }
+            }
+            const r = d.rect, c = d.clip;
+            if (!e) d.rejection = 'missing-element';
+            else if (d.rootFontSize !== 16 * scale / 100) d.rejection = 'wrong-font-size';
+            else if (!d.stylesOK) d.rejection = 'hidden-style';
+            else if (r.width <= 0 || r.height <= 0) d.rejection = 'nonpositive-size';
+            else if (r.left < c.left || r.right > c.right) d.rejection = 'horizontal-clip';
+            else if (Math.min(r.bottom,c.bottom) <= Math.max(r.top,c.top)) d.rejection = 'outside-clip';
+            else {
+                const top = Math.max(r.top,c.top), bottom = Math.min(r.bottom,c.bottom);
+                const point = {x:(r.left+r.right)/2,y:(top+bottom)/2};
+                const hit = document.elementFromPoint(point.x,point.y);
+                d.hit = {point, matches:hit === e || e.contains(hit), tag:hit?.tagName || '',
+                    textPrefix:(hit?.textContent || '').trim().slice(0,80)};
+                if (!d.hit.matches) d.rejection = 'hit-test-miss';
+                else {
+                    d.segment = [top-r.top,bottom-r.top];
+                    if (r.top < c.top || r.bottom > c.bottom) d.rejection = 'partial-vertical';
+                }
+            }
+            visible[key] = d.rejection === '';
+            // Only an element taller than its effective viewport can use a
+            // partial segment. Fitting elements still need one whole capture.
+            const eligible = d.segment && (visible[key] || r.height > c.bottom-c.top);
+            const signature = e ? JSON.stringify([key,e.tagName,e.textContent,r.width,r.height,d.rootFontSize]) : '';
+            const state = samples[key] ||= {signature, intervals:[]};
+            if (state.signature !== signature) { state.signature = signature; state.intervals = []; }
+            if (eligible) state.intervals.push(d.segment);
+            let end = 0;
+            for (const [start, stop] of state.intervals.sort((a,b) => a[0]-b[0])) {
+                if (start > end) break;
+                end = Math.max(end,stop);
+            }
+            covered[key] = !!r && r.height > 0 && end >= r.height;
+            diagnostics[key] = d;
+        }
+        return {visible, diagnostics, covered};
+        """#
+
+    /// Align each required element first, then overlap slices of tall content.
+    /// Fixed-step companions remain unchanged and separately archived.
+    private static let recoveryTargetScroll = #"""
+        const pane = document.querySelector('[data-native-recovery="incompatible"]');
+        const paragraphs = [...(pane?.querySelectorAll('p') || [])];
+        const e = key === 'guidance' ? paragraphs[0] : key === 'reopen'
+            ? paragraphs.find(e => e.textContent.trim() === reopen)
+            : [...(pane?.querySelectorAll('button') || [])].find(e => e.textContent.trim() === recheck);
+        if (!e) throw Error('missing recovery element: ' + key);
+        if (page === 0) {
+            e.scrollIntoView({block:'start',inline:'nearest',behavior:'instant'});
+            let top = 0, bottom = innerHeight, scroller = null;
+            for (let p = e.parentElement; p; p = p.parentElement) {
+                const s = getComputedStyle(p), r = p.getBoundingClientRect();
+                if (/auto|scroll|hidden|clip/.test(s.overflowY)) {
+                    top = Math.max(top,r.top+p.clientTop); bottom = Math.min(bottom,r.top+p.clientTop+p.clientHeight);
+                }
+                if (!scroller && /auto|scroll/.test(s.overflowY) && p.scrollHeight > p.clientHeight) scroller = p;
+            }
+            const height = bottom-top, step = Math.max(1,Math.floor(height*.75));
+            if (height <= 0) throw Error('empty recovery clip');
+            const pages = 1 + Math.ceil(Math.max(0,e.getBoundingClientRect().height-height)/step);
+            if (pages > 8) throw Error('recovery element page limit');
+            window.__hrRecoveryTarget = {key, scroller, start:scroller?.scrollTop || 0, step, pages};
+        }
+        const plan = window.__hrRecoveryTarget;
+        if (plan.key !== key || page >= plan.pages) throw Error('recovery target mismatch');
+        if (page > 0) {
+            if (!plan.scroller) throw Error('tall recovery element has no scroller');
+            plan.scroller.scrollTo({top:plan.start+page*plan.step,behavior:'instant'});
+        }
+        await new Promise(resolve => setTimeout(resolve,25));
+        return {recoveryElement:key,recoveryPage:page+1,recoveryPages:plan.pages,
+            scrollTop:plan.scroller?.scrollTop || 0,viewportHeight:plan.scroller?.clientHeight || innerHeight};
         """#
 
     /// One real rendered Language choice, then later-opened dialogs in the same
