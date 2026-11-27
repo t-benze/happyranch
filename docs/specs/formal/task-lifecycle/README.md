@@ -8,6 +8,50 @@ or merge gate is added.
 
 New risky lifecycle changes must update a model per the [coding practice rules](../../../agent-guides/contracts/coding-practice-rules.md).
 
+<a id="sequential-closed-outcome-settlement-u1"></a>
+
+## Sequential closed-outcome settlement (U1/U2)
+
+`SequentialSettlement.tla` models the finite original-owner P0/P1 intent → native
+removal → closed receipt sequence and the existing original terminal/outer path.
+P2 with missing scratch/outer proof and U0–U5 retain sticky unknown. An interrupted
+intent cannot produce a positive receipt; no observer reconstructs native closure.
+The model freezes original results, launches and spent allowances, makes Held and
+its addressed inbox one atomic action, and models replay as stuttering.
+P1 execution failure now precedes a separate original outer-cleanup action:
+`OuterClean` admits the existing intent sequence, while `OuterUnknown` stays
+fenced. Execution failure supplies neither positive nor uncertain cleanup proof.
+
+| Action | Production owner |
+| --- | --- |
+| OuterClean / OuterUnknown | `SequentialDispatcher.dispatch` original P1 exception handoff, actual `run_step_impl` outer batch and unchanged `settle_failure` cleanup qualification |
+| Intent / RemoveNative / Receipt | `sequential_launch_failures.settle_failure`, original `TaskInvocation.close` and `TeamMoveCoordinator.release_task(failed=False)` |
+| Interrupted | Original failure before final closed receipt; retained intent/unsettled fence and native unknown |
+| Settle | `generic_closed_visit` / `generic_hold_cause`, dispatcher acceptance and deferred-FK `hold_and_wake_uncommitted` |
+| AuthorityReady | Existing admission writer becoming available; no access bypass |
+| Replay | Authenticated selected history, saved legacy predicates and original fallback closure; no allocation or history rewrite |
+
+Use the pinned [TLC recipe](#run-tlc) with module `SequentialSettlement` and
+`sequential-settlement.cfg`: all invariants and conditional `Completion` must pass.
+`sequential-settlement-before.cfg` must expose stranded clean negative/no-callback
+outcomes (temporal counterexample, exit 13). `sequential-settlement-unsafe.cfg`
+permits false settlement of unknown and must fail `NoFalseHold` (exit 12).
+
+Liveness assumes fair original finishing/settlement, eventual valid authority and
+successful durable writes; uncertain states have no promised business completion.
+The abstraction does not prove Python refinement, byte/digest authentication,
+native containment, queue delivery, semantic reports, external effects or live
+recovery. U2 extends `Restart`/`Sweep` over the closed-but-unsettled window,
+with lost queue hints, delayed readiness, replay and independent `Observe`.
+Restart before closure retains uncertainty; it never manufactures closure.
+`sequential-settlement-restart.cfg` checks conditional Completion, Delivery and
+UnknownObserved as well as the retained safety invariants. Weak fairness assumes
+eventual authority, scans, storage and delivery readiness; alarm state is a log
+observation only. Pages, digest/SQL budgets, clock thresholds, Python races and
+host containment remain outside this finite abstraction. TLC results are review
+evidence,
+never a CI gate; actual commands and limits belong in the PR/task output.
+
 ## Sequential first-launch refusals
 
 `RefusedSequentialLaunch.tla` / `sequential-refused.cfg` model the future-only

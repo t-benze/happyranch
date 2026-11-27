@@ -206,6 +206,31 @@ class ConnectionCLITests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 protocol.host_details(snapshot, raw)
 
+    def test_firewall_category_and_status_reach_cli(self) -> None:
+        for category in ('likely_blocked', 'unverified', 'clear'):
+            with self.subTest(category=category):
+                value = {'version': 2, **{key: dict(state='unknown', age_seconds=None)
+                    for key in ('setup', 'runtime', 'invite', 'address', 'policy', 'cleanup')}}
+                value['setup'] = dict(state='ready', age_seconds=0)
+                value['invite']['deadline_utc_seconds'] = None
+                value['firewall'] = dict(state=category, age_seconds=0)
+                self.bus.status_detail = value
+                code, result, error = self.run_native('status')
+                self.assertIn('firewallWarning', result)
+                self.assertEqual((code, result['setup'], result['firewallWarning']), (0, 'ready', category))
+                self.bus.terminal_frames = [json.dumps(dict(method='Enable',
+                    correlation=dict(serial=17, owner=':1.100'), outcome='completed', firewallWarning=category))]
+                code, result, error = self.run_native('enable')
+                self.assertEqual((code, result['code'], result['firewallWarning']), (0, 'enableCompleted', category))
+                if category == 'likely_blocked':
+                    self.assertIn('probably', error)
+                    self.assertIn('8443/tcp', error)
+                    self.assertIn('3478/udp', error)
+                    self.assertIn('home LAN only', error)
+                elif category == 'clear':
+                    self.assertEqual(error, '')
+                self.assertNotIn('/etc/', self.stdout + error)
+
     def test_invite_journal_detail_reaches_cli(self) -> None:
         for state in ('none', 'issued', 'expired', 'minting', 'encoding', 'pairing',
                       'refused', 'uncertain', 'recovered'):
@@ -752,6 +777,19 @@ class ConnectionCLITests(unittest.TestCase):
         self.bus.raw = json.dumps({**self.bus.snapshot, "private": "private-error-canary"})
         self.assertEqual(self.run_native("status")[1]["code"], "unavailable")
 
+    def test_named_status_read_refusals(self) -> None:
+        for remote, category in (
+                ('ai.happyranch.RemoteAccess1.Error.expired', 'timeout'),
+                ('ai.happyranch.RemoteAccess1.Error.unavailable', 'status_unavailable'),
+                ('org.freedesktop.DBus.Error.NoReply', 'status_unavailable')):
+            with self.subTest(remote=remote):
+                self.bus.status_error = remote
+                self.bus.calls.clear()
+                code, result, _ = self.run_native('status')
+                self.assertEqual((code, result), (1, dict(code='hostStateUnrecognized',
+                    category=category, effect='none', recovery='refresh')))
+                self.assertEqual([call[3] for call in self.bus.calls], ['Status'])
+
     def test_closed_host_state_diagnostic(self) -> None:
         for category in ("host_state_unrecognized", "owner_unknown", "owner_ambiguous",
                          "owner_unsupported", "owner_mismatch", "release_home_invalid",
@@ -778,7 +816,8 @@ class ConnectionCLITests(unittest.TestCase):
                 self.assertEqual(message.strip(), expected_message)
         self.bus.status_error = None
         self.bus.error = 'ai.happyranch.RemoteAccess1.Error.host_state_unrecognized_not_applicable'
-        for action in ('enable', 'turn-off', 'replace-failed'):
+        for action in ('enable', 'turn-off', 'replace-failed', 'create-invite', 'cancel-invite',
+                       'recover-invite', 'approve-device', 'reject-device'):
             with self.subTest(action=action):
                 self.bus.calls.clear()
                 code, result, message = self.run_native(action, choices='yes\n')
@@ -787,6 +826,22 @@ class ConnectionCLITests(unittest.TestCase):
                                              effect='none', recovery='refresh'))
                 self.assertIn('No change was made.', message)
                 self.assertEqual([call[3] for call in self.bus.calls], [native.METHODS[action]])
+
+    def test_outstanding_invite_refusal_is_named(self) -> None:
+        self.bus.error = 'ai.happyranch.RemoteAccess1.Error.host_state_unrecognized_invite_rate_limited'
+        code, result, message = self.run_native('create-invite')
+        self.assertEqual((code, result), (1, dict(code='hostStateUnrecognized',
+            category='invite_rate_limited', effect='none', recovery='refresh')))
+        self.assertIn('An invite was issued recently.', message)
+        self.assertEqual([call[3] for call in self.bus.calls], ['IssueInvite'])
+
+    def test_revoke_off_refuses_before_selection(self) -> None:
+        self.bus.snapshot.update(phase='off', ready=False, devices=[], pending=None, selected=None)
+        code, result, message = self.run_native('revoke-device')
+        self.assertEqual((code, result), (1, dict(code='hostStateUnrecognized',
+            category='not_applicable', effect='none', recovery='refresh')))
+        self.assertIn('No change was made.', message)
+        self.assertEqual([call[3] for call in self.bus.calls], ['Status', 'StatusV2'])
 
     def test_headless_unavailable(self) -> None:
         import gi
@@ -831,7 +886,7 @@ class ConnectionCLITests(unittest.TestCase):
                 self.assertEqual(call[:6], ("ai.happyranch.RemoteAccess1", "/ai/happyranch/RemoteAccess1",
                                            "ai.happyranch.RemoteAccess1", method, None, "(s)"))
                 self.assertEqual(call[6], Gio.DBusCallFlags.ALLOW_INTERACTIVE_AUTHORIZATION)
-                if method in ("Enable", 'Disable'):
+                if method != "IssueInvite":
                     self.assertEqual(call[7], 122000)  # Admission only; original operation budget stays held separately.
                 else:
                     self.assertGreater(call[7], budget)
@@ -852,6 +907,33 @@ class ConnectionCLITests(unittest.TestCase):
         self.assertEqual(stopped.exception.code, 2)
         help_text = parser._subparsers._group_actions[0].choices["connection"]._subparsers._group_actions[0].choices["host"].format_help()
         self.assertNotIn("lifecycle recovery are unavailable", help_text)
+
+    def test_cli_only_lifecycle_terminal_results(self) -> None:
+        for action, method, completed in (
+                ("replace-failed", "ReplaceFailed", "replaceFailedCompleted"),
+                ("cancel-invite", "CancelInvite", "cancelInviteCompleted"),
+                ("recover-invite", "RecoverInvite", "recoverInviteCompleted"),
+                ("retry-policy-renewal", "RetryPolicyRenewal", "policyRenewalCompleted")):
+            for early in (False, True):
+                for category in (None, "failed", "refused", "partial_cleanup", "uncertain"):
+                    with self.subTest(action=action, early=early, category=category):
+                        self.bus.calls.clear()
+                        self.bus.early = early
+                        frame = dict(method=method, correlation=dict(serial=17, owner=":1.100"),
+                                     outcome="failed" if category else "completed")
+                        if category:
+                            frame["category"] = category
+                        # A valid frame for another original method cannot settle this call.
+                        self.bus.terminal_frames = [terminal_frame(), json.dumps(frame), json.dumps(frame)]
+                        code, result, _ = self.run_native(action, "yes\n")
+                        expected = (dict(code=completed, effect="unknown", recovery="refresh") if category is None
+                            else dict(code="outcomeUnknown", effect="unknown", recovery="nativeRecovery")
+                            if category == "uncertain" else dict(code="lifecycleFailed", category=category,
+                                effect="unknown", recovery="nativeRecovery"))
+                        self.assertEqual((code, result), (0 if category is None else 1, expected))
+                        self.assertEqual([call[3] for call in self.bus.calls], [method])
+                        self.assertEqual(self.bus.calls[0][7], 122000)
+                        self.assertEqual((self.bus.filters, self.bus.subscriptions, self.bus.handlers), ({}, {}, {}))
 
     def test_terminal_admission_and_replace_confirmation(self) -> None:
         for action in ("create-invite", "replace-failed"):

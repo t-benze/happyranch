@@ -370,7 +370,7 @@ test('host view: approval, invite, unconfirmed and manage flags', async () => {
 test('host state categories survive parsing and select bilingual GUI copy', async () => {
   const en = (await import('../src/lib/i18n/locales/en.ts')).default;
   const zh = (await import('../src/lib/i18n/locales/zh-CN.ts')).default;
-  for (const category of ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'unknown', 'unverified', 'not_applicable']) {
+  for (const category of ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'status_unavailable', 'invite_rate_limited', 'unknown', 'unverified', 'not_applicable']) {
     const input = { code: 'hostStateUnrecognized', effect: 'none', recovery: 'refresh', category };
     const failure = conn.parseConnectionFailure(JSON.stringify(input));
     assert.deepEqual(failure, { ...input, category: category === 'unknown' ? 'unverified' : category });
@@ -411,4 +411,39 @@ test('a target-commit hold admits no save until released', async () => {
   assert.equal(owners.ownersFrozen(), false);
   assert.equal(await owners.awaitOwnersReceipt(records), true);
   target.__setNativeBridgeForTests(null);
+});
+
+
+test('host firewall advice preserves READY and renders bilingual LAN-only action', async () => {
+  const { HostView } = await import('../connection/src/host.ts');
+  const { catalogs } = await import('../connection/src/strings.ts');
+  for (const category of ['likely_blocked', 'unverified', 'clear']) {
+    const snapshot = host({ firewallWarning: category });
+    assert.deepEqual(conn.parseHostSnapshot(JSON.stringify(snapshot)), snapshot);
+    const view = model.hostView(snapshot, false);
+    assert.equal(view.badge, 'connection.host.hBadgeReady');
+    const key = category === 'likely_blocked' ? 'firewallLikelyBlocked' : 'firewallUnverified';
+    assert.equal(view.hints.includes('connection.host.' + key), category !== 'clear');
+    assert.deepEqual(conn.parseEnableFinished(JSON.stringify({ version: 1, operationId: 'a'.repeat(32),
+      method: 'Enable', outcome: 'completed', result: {code: 'enableCompleted', effect: 'unknown', recovery: 'refresh', firewallWarning: category} })),
+      {operationId: 'a'.repeat(32), outcome: 'completed', firewallWarning: category});
+    if (category === 'clear') continue;
+    for (const locale of ['en', 'zh-CN']) {
+      const reason = catalogs[locale][key];
+      assert.match(reason, locale === 'en' ? /home LAN only/ : /仅允许家庭局域网/);
+      assert.match(reason, /8443\/tcp/);
+      assert.match(reason, /3478\/udp/);
+      if (category === 'likely_blocked') assert.match(reason, locale === 'en' ? /probably/ : /可能/);
+      const receiver = { snapshot, unconfirmed: false, confirm: null,
+        pendingLabel: () => null, limited: () => false,
+        outcomeNodes: () => [], confirmation: () => [], invite: () => [], devices: () => [],
+        t: (name) => catalogs[locale][name], text: (_tag, textContent) => ({textContent}),
+        notice: (textContent) => ({textContent}), actions: (nodes) => nodes.filter(Boolean),
+        has: () => false, gate: (_command, create) => create(), button: () => ({dataset: {}}) };
+      const {nodes} = HostView.prototype.body.call(receiver, 'ready');
+      assert.ok(nodes.some(node => node.textContent === reason));
+    }
+  }
+  assert.equal(conn.parseHostSnapshot(JSON.stringify(host({ firewallWarning: '/private/rule' }))), null);
+  assert.deepEqual(conn.parseHostSnapshot(JSON.stringify(host())), host());
 });

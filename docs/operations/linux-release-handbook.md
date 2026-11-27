@@ -1165,8 +1165,10 @@ On launch and every start/retry, the window checks `NeedDaemonReload` and runs
 `systemctl --user daemon-reload` for the current user when it reports `yes`,
 before starting the service. This loads unit changes installed by a `.deb`
 upgrade. Reload failure or command timeout shows a localized error with
-**Retry**, without starting the service. No root maintainer script reloads
-other users' managers.
+**Retry**, without starting the service. The package's configure-only postinst
+reloads the system manager when `/run/systemd/system` exists, tolerating a
+missing or failing `systemctl`. No root maintainer script reloads other users'
+managers; the window's existing own-user reload remains necessary.
 
 Before start, the window inspects `systemctl --user show-environment`. Any
 `HAPPYRANCH_*` variable refuses startup and the message lists names only.
@@ -1624,10 +1626,18 @@ uses those packaged executables and retains separate config/state ownership. See
 | `/usr/share/icons/hicolor/{16x16,…,1024x1024,scalable}/apps/happyranch.*` | Existing brand icons |
 | `/usr/share/doc/happyranch/` | Debian copyright/changelog, unchanged PR1 licenses/notices/inventories and build-info |
 
-No maintainer scripts are needed. Ubuntu/Debian's `desktop-file-utils` and
-`hicolor-icon-theme` dpkg triggers refresh their caches when installed. Package
-removal deletes only package-owned files; it does not signal a running app or
-daemon. Quit the desktop app before upgrading/removing it. The release data in
+The sole maintainer script is a mode-0755 POSIX-sh postinst (`set -e`). On
+`configure` only, when `/run/systemd/system` is a directory, it runs
+`systemctl daemon-reload >/dev/null || true` using dpkg's maintainer-script PATH.
+This loads replaced system unit fragments so the strict renewal-unit
+`NeedDaemonReload=no` check can pass after an upgrade. It never enables, starts,
+stops, restarts or resets units, touches a user manager, or reads/repairs/migrates
+state; reload failure or an absent `systemctl` does not fail installation. dpkg
+runs the **new** package's postinst even when upgrading d05afaac/98a87688 packages
+that had none. No preinst, prerm or postrm is added. Ubuntu/Debian's
+`desktop-file-utils` and `hicolor-icon-theme` dpkg triggers still refresh their
+caches when installed. Package removal deletes only package-owned files; it does
+not signal a running app or daemon. Quit the desktop app before upgrading/removing it. The release data in
 `~/.local/share/happyranch` / `$XDG_DATA_HOME/happyranch` is preserved, including
 on purge. Any legacy `~/.happyranch-release` remains untouched and unused. The
 package never owns user data or `~/.happyranch`.
@@ -1702,8 +1712,9 @@ sudo apt install ./happyranch_0.1.0-1_amd64.deb
 
 For arm64 use `happyranch_<debversion>_arm64.deb`. Local .deb installation needs
 no HappyRanch apt source or archive key. The package deliberately ships neither
-a sources entry nor an archive keyring, and has no maintainer scripts to manage
-them. Source enrollment is an explicit user action below; removal/purge leaves
+a sources entry nor an archive keyring. Its sole postinst only reloads the
+system manager at configure; it never manages sources or keys. Source enrollment
+is an explicit user action below; removal/purge leaves
 that separately managed enrollment alone.
 
 ## Prepare, externally sign and publish the apt archive

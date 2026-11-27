@@ -846,9 +846,17 @@ def _generic_control_history(conn: sqlite3.Connection, *, org_slug: str, run: di
             _require(visit is not None and current['state'] == 'running' and current['progress'] != 'cancelling'
                 and current['active_visit_id'] == visit['id'] and body['node'] == visit['node_id']
                 and visit['selected'] == 0 and visit['state'] in ('held', 'cancelled'), 'generic_hold_state_conflict')
-            cause, proof = generic_hold_cause(conn, run=run, visit=visit, compiled=compiled, budget=budget,
-                                             unavailable=body['cause'] == 'assignee_unavailable',
-                                             launch_refused=body['cause'] == 'launch_refused')
+            if body['cause'] == 'terminal_outcome_unhandled':
+                # A saved non-advancing fallback authenticates original closure,
+                # even when a later classifier can name a more specific cause.
+                proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget)
+                _require(proof['kind'] == 'settled', 'generic_hold_proof_conflict')
+                cause = body['cause']
+            else:
+                cause, proof = generic_hold_cause(conn, run=run, visit=visit, compiled=compiled, budget=budget,
+                                                 unavailable=body['cause'] == 'assignee_unavailable',
+                                                 launch_refused=body['cause'] == 'launch_refused',
+                                                 saved_cause=body['cause'])
             closed_visits.add(visit['id'])
             _require((body['cause'], body['closure'], event['source_visit_id'], event['source_result_id']) ==
                 (cause, proof, visit['id'], proof['result_id']), 'generic_hold_proof_conflict')

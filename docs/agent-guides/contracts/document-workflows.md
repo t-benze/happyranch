@@ -739,3 +739,51 @@ changed target before COMMIT. It retains original events and an already committe
 cancellation overlay. Standalone intent/schema validation remains unchanged; captured
 document owners remain UNSETTLED under Option B. See the U6 authenticated legacy
 cancellation scope contract.
+
+## Sequential default holds and recovery duties (U1)
+
+For generic @2 visits, authenticated original host/outer closure is followed by a
+default Hold for blocked/failed native callbacks after clean exit, missing callback,
+invalid/oversized output or unhandled outcome. Host timeout/failure takes precedence.
+Original result/findings/status and spent budgets survive. No callback means NULL
+result IDs, no fabricated callback or output. Held and one addressed inbox event
+share the existing transaction; replay creates neither again. A saved generic
+fallback validates its original closed proof rather than requiring later label
+classification to remain unchanged.
+
+Only the finite original-owner P0/P1 positive no-launch path may replace host/outer
+proof with its distinct intent/closed receipt. P2 without complete original scratch
+proof and U0–U5 remain unsettled, with zero Held/inbox. Intent/unsettled receipts and
+native owners fence fresh delivery; no observer cleans or re-executes them. See
+[lifecycle boundaries](runtime-lifecycle.md#sequential-original-owner-failure-boundaries-u1-hardening).
+Authority admission and native status are separate from business disposition.
+
+Recovery after a closed execution with no accepted callback is read-only
+reconciliation. The trusted bound instruction suspends authored mutation duties.
+It follows immutable control lineage through retry/rebrief/reassignment and later
+holds, carries the bounded initiator supplement into the actual node prompt, and
+permits only existing-evidence/state observation and truthful reporting. A plain
+retry cannot drop that restriction. Missing/uncertain effect evidence requires a
+hold; it never authorizes repeating an effect. No automatic recovery is launched.
+These are supported instruction duties, not new OS or tool isolation.
+
+The trusted recovery lineage section beside that restriction lists each
+predecessor visit, causal Held event and closure/cause kind, and applied control
+ID/event/action, newest first. These identities come from the same authenticated
+immutable rows and bounded read, including for a plain retry with no supplement.
+Separate `held` events supply their cause/closure; reducer-held `transition`
+events supply the authenticated decision reason with a null absent closure kind.
+Authored reasons and supplements remain task data. Rendering changes neither
+persisted task briefs/control digests nor historical event bytes. A live invocation
+keeps its instruction frozen before preparation; restart does not adopt or
+re-render an unsettled sequential native owner.
+
+U2 mounts the same bounded closed-visit sweep before startup workers and on the
+existing periodic reaper. It discovers terminal selected visits and receipt-backed
+unbound Q visits, then reuses U1 settlement and cancellation owners. Each causal
+Held event commits exactly one recorded-initiator inbox item; periodic publication
+retries pending delivery through existing readiness and coalescing gates. A
+separate log-only five-minute stall observer still runs when settlement/authority
+or publication fails. Partial scans are explicit; missing live proof cannot
+establish death. Unknown native custody remains unheld and unchanged. See
+[U2 lifecycle](runtime-lifecycle.md#sequential-closed-visit-rediscovery-u2-hardening).

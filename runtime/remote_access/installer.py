@@ -205,6 +205,10 @@ class InstallerError(RuntimeError):
     """An unsafe path, incompatible account, command failure, or unit drift."""
 
 
+class HomeUnitResetRefused(InstallerError):
+    """Fixed partial cleanup cause; never grants repair authority."""
+
+
 @dataclass(frozen=True)
 class InstallInventory:
     """Read-only classification, never authority to remove or replay files."""
@@ -226,6 +230,15 @@ class ReplacementInventory:
     installation: InstallInventory
     journal_generation: str | None = None
     inventory_generation: str | None = None
+
+
+def previous_connector_unit(current: str) -> str:
+    """Exact d05afaac/98a87688 connector bytes from the fixed current renderer.
+
+    Callers supply generated text, never an observed or caller-selected unit.
+    All other directives, including the complete hardening, are identical.
+    """
+    return current.replace("StartLimitIntervalSec=0\n", "StartLimitIntervalSec=300\n", 1)
 
 
 def managed_units(layout: str = "source", *, connector_config: dict | None = None) -> dict[str, str]:
@@ -471,18 +484,140 @@ class ManagedInstaller:
     def _reload_unit_state(self, name: str) -> str:
         if name not in UNITS:
             raise InstallerError("reset-failed requires a fixed managed unit")
+        # Only services expose MainPID; sockets expose ControlPID, targets neither.
+        process = ({"MainPID": "0", "ControlPID": "0"} if name in (UNITS[0], UNITS[1], UNITS[4]) else
+                   {"ControlPID": "0"} if name == UNITS[3] else {})
         try:
             props = self.manager.show_properties(name, (
-                "LoadState", "FragmentPath", "DropInPaths", "MainPID", "ControlPID", "Job", "ActiveState",
+                "LoadState", "FragmentPath", "DropInPaths", *process, "Job", "ActiveState",
             ))
         except (ServiceManagerError, OSError):
             raise InstallerError(str(self.root / _UNIT_DIR / name)) from None
         if (props.get("LoadState") != "not-found" or props.get("FragmentPath") != ""
-                or props.get("DropInPaths") != "" or props.get("MainPID") != "0"
-                or props.get("ControlPID") != "0" or props.get("Job") != ""
+                or props.get("DropInPaths") != "" or any(props.get(key) != value for key, value in process.items())
+                or props.get("Job") != ""
                 or props.get("ActiveState") not in {"failed", "inactive"}):
             raise InstallerError(str(self.root / _UNIT_DIR / name))
         return props["ActiveState"]
+
+    def _reset_failed_home_units(self, *, require: Callable[[], None]) -> None:
+        """Clear only fixed owned markers behind the caller's existing fence.
+
+        Effect path only. Ordinary inventory's inactive-only staged/absent gates
+        remain unchanged; neither Status nor capture calls this method.
+        """
+        try:
+            for name in UNITS:
+                if self.manager.show_properties(name, ("ActiveState",)).get("ActiveState") != "failed":
+                    continue
+                require()
+                if self._service_owner is None:
+                    raise InstallerError("reset identity unconfirmed")
+                with self._publication_parent() as (parent, check):
+                    connector = self._json(self._read_file(parent, "connector.json",
+                        owner=(self.root_owner[0], self._service_owner[1]), mode=0o640))
+                    check()
+                units = managed_units(self.layout, connector_config=connector)
+                home = dict(units)
+                prefix = "happyranch-desktop" if self.layout == "deb" else "happyranch"
+                home[UNITS[1]] = render_sidecar_unit(SidecarUnitSpec(
+                    binary_path=f"/opt/{prefix}/bin/happyranch-tsnet-sidecar", home_transport=True))
+                with self._publication_parent(_UNIT_DIR) as (parent, check):
+                    try:
+                        sidecar = self._read_unit(parent, UNITS[1])
+                    except FileNotFoundError:
+                        sidecar = None
+                    try:
+                        data = self._read_unit(parent, name)
+                    except FileNotFoundError:
+                        data = None
+                    check()
+                if data is None:
+                    present = self._home_unit_inventory(units, home)
+                else:
+                    # Ordinary owned inventory already recognizes exact enabled
+                    # Wants links. The staged scanner intentionally rejects them.
+                    expected_units = home if sidecar == home[UNITS[1]].encode() else units
+                    self._inventory_units(connector, observed_units=expected_units)
+                    present = {name: expected_units[name].encode()}
+                # Reuse removal proof for an absent fixed unit, then add the
+                # cgroup and substate proof in the fresh read below.
+                if name not in present:
+                    self._reload_unit_state(name)
+                # Socket execution context has ControlPID/ControlGroup, no MainPID.
+                # The fixed target has no execution context; Unit state/job still apply.
+                process = ({"MainPID": "0", "ControlPID": "0", "ControlGroup": ""}
+                           if name in (UNITS[0], UNITS[1], UNITS[4]) else
+                           {"ControlPID": "0", "ControlGroup": ""} if name == UNITS[3] else {})
+                keys = ("FragmentPath", "DropInPaths", "NeedDaemonReload", "LoadState", "ActiveState",
+                        "SubState", *process, "Job")
+                expected = dict(FragmentPath=str(self.root / _UNIT_DIR / name) if name in present else "",
+                    DropInPaths="", NeedDaemonReload="no", LoadState="loaded" if name in present else "not-found",
+                    **process, Job="")
+                require()
+                with self._publication_parent(_UNIT_DIR) as (parent, check):
+                    if name in present:
+                        if self._read_unit(parent, name) != present[name]:
+                            raise InstallerError("reset fragment changed")
+                    else:
+                        self._refuse_provision_entry(parent, name)
+                    check()
+                    props = self.manager.show_properties(name, keys)
+                    if (any(props.get(key) != value for key, value in expected.items())
+                            or props.get("ActiveState") not in {"inactive", "failed"}
+                            or props.get("SubState") not in {"dead", "failed"}):
+                        raise InstallerError("reset quiescence unconfirmed")
+                    if props["ActiveState"] == "failed":
+                        self.manager.reset_failed(name)
+                    after = self.manager.show_properties(name, keys)
+                    if (any(after.get(key) != value for key, value in expected.items())
+                            or after.get("ActiveState") != "inactive" or after.get("SubState") != "dead"):
+                        raise InstallerError("reset inactivity unconfirmed")
+                    check()
+        except (OSError, InstallerError, ServiceManagerError):
+            raise HomeUnitResetRefused("owned unit reset unconfirmed") from None
+
+    def _reset_failed_headscale_unit(self, *, require: Callable[[], None], removed: bool) -> None:
+        """Only receipt-bound ready restart or B6's verified fragment removal.
+
+        A not-found .service still has a Service interface; missing PID/cgroup
+        properties are an error, never an implied zero or empty value.
+        """
+        try:
+            require()
+            name = headscale.UNIT
+            if not removed and self.manager.show_properties(name, ("ActiveState",)).get("ActiveState") != "failed":
+                return
+            expected = dict(Id=name, Names=name,
+                FragmentPath="" if removed else str(self.root / _UNIT_DIR / name), DropInPaths="",
+                NeedDaemonReload="no", LoadState="not-found" if removed else "loaded", MainPID="0", ControlPID="0",
+                ControlGroup="", Job="")
+            keys = (*expected, "ActiveState", "SubState")
+            with self._publication_parent(_UNIT_DIR) as (parent, check):
+                def fragment() -> None:
+                    self._headscale_no_pending(parent, name)
+                    if removed:
+                        self._refuse_provision_entry(parent, name)
+                    elif self._read_unit(parent, name) != render_headscale_unit(home_transport=True).encode():
+                        raise InstallerError("Headscale reset fragment changed")
+                    check()
+                fragment()
+                props = self.manager.show_properties(name, keys)
+                if (any(props.get(key) != value for key, value in expected.items())
+                        or props.get("ActiveState") not in {"inactive", "failed"}
+                        or props.get("SubState") not in {"dead", "failed"}):
+                    raise InstallerError("Headscale reset quiescence unconfirmed")
+                if props["ActiveState"] == "failed":
+                    require()
+                    self.manager.reset_failed(name)
+                after = self.manager.show_properties(name, keys)
+                if (any(after.get(key) != value for key, value in expected.items())
+                        or after.get("ActiveState") != "inactive" or after.get("SubState") != "dead"):
+                    raise InstallerError("Headscale reset inactivity unconfirmed")
+                fragment()
+                require()
+        except (OSError, InstallerError, ServiceManagerError, headscale.HeadscaleServiceError):
+            raise HomeUnitResetRefused("owned unit reset unconfirmed") from None
 
     def inventory(self) -> InstallInventory:
         """Classify only fixed managed destinations without executing old inputs.
@@ -2919,6 +3054,15 @@ class ManagedInstaller:
                 inventory()
                 if any(entry(path) for path in members):
                     raise InstallerError("live member returned")
+                # Retained fragments are final. Failed/dead proves a stop,
+                # but never the staged/off inventory required after retirement.
+                try:
+                    self._reset_failed_home_units(require=require)
+                    self._reset_failed_headscale_unit(require=require, removed=True)
+                except HomeUnitResetRefused:
+                    # Return inside the held lock: its generic error adapter
+                    # must not erase this fixed partial-cleanup cause.
+                    return {"state": "partial_cleanup", "residue": "owned units: reset unconfirmed"}
                 # Publication and activation evidence survive every earlier failure;
                 # the account receipt is last, exactly as in the inert owner.
                 retire = ([headscale.PUBLICATION] if publication else [])

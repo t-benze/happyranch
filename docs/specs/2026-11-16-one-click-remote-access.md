@@ -111,7 +111,10 @@ Keep every existing connector/sidecar system hardening directive, including `NoN
 capability/ambient sets, `ProtectSystem=strict`, `ProtectHome=yes`, private tmp/devices,
 kernel/control-group protections, address-family restrictions, SUID/realtime/personality
 restrictions, `MemoryDenyWriteExecute`, native syscall architecture and `UMask=0077`. Keep
-notify/watchdog, restart/start-limit and target/bind/uphold relationships. The verifier retains its
+notify/watchdog, restart-on-failure and target/bind/uphold relationships. The managed-identity
+connector start-rate limit is the later exception described in
+[the contract’s renewal unit upgrade section](../agent-guides/contracts/remote-access-and-remote-jobs.md#thr-327-renewal-unit-upgrade-task-19228);
+sidecar and legacy/other connector limits stay unchanged. The verifier retains its
 separate existing root capability budget and read-only home/proc proof. No user-mode substitution,
 broad filesystem access, new connector LAN listener or weakening for Python is permitted. Item D (bundled
 Python PT_GNU_STACK/MDWE) is delivered in **merged PR #1568, `1a8efca4`**; installation and packaged
@@ -177,23 +180,53 @@ requires a desktop and fresh native authorization. CLI timeouts are 482 seconds
 for Enable/ReplaceFailed, 302 for Disable and 122 for invite/policy methods.
 Create-invite requires `/dev/tty` before dispatch, validates the exact I4a terminal
 frame and displays the invite only there; stdout JSON carries only closed nonsecret
-action fields. Six methods acknowledge `accepted` before effects. The CLI keeps
-the dedicated bus alive through the operation budget plus margin for live-caller
-revalidation, then reports
-`outcomeUnknown` / effect `unknown`, exit 1, without inventing completion, denial
-or cleanup from admission. Private worker outcomes/residue alone are not a
-terminal receipt. Enable alone adds a unicast LifecycleCompleted(s) receipt
-before helper release, correlated to its original call serial and authenticated
-helper owner within the original 480s budget. Its sole method reply remains
-admission-only accepted. The closed 512-byte signal carries failed/completed
-and optionally one of B9's exact 19 typed preparation categories, preserving
-both dial spellings. The private exit-1 preparationFailure frame is bounded to
+action fields. Six methods acknowledge `accepted` before effects and send one
+unicast LifecycleCompleted(s) receipt before helper release, correlated to the
+original method/call serial and authenticated helper owner. CLI subscribes before
+the single send and consumes only that original receipt inside its original
+480s Enable/ReplaceFailed, 300s Disable or 120s invite/policy budget. Their sole
+method reply remains admission-only accepted. The closed 512-byte signal carries
+failed/completed and an optional failed category; Enable may also carry optional
+closed `firewallWarning` display advice (see F2 below). Enable preserves B9's typed
+preparation categories, including both dial spellings; Disable preserves its
+partial_cleanup/failed/uncertain categories. The four CLI-only methods report
+replaceFailedCompleted, cancelInviteCompleted, recoverInviteCompleted or
+policyRenewalCompleted with exit 0; known failure reports lifecycleFailed with
+failed/refused/partial_cleanup and exit 1. All retain effect unknown. Uncertain
+work maps to outcomeUnknown for the four CLI-only methods; valid Enable/Disable
+receipts preserve typed uncertainty, while a lost/invalid/late receipt or transport
+loss retains outcomeUnknown/exit 1.
+The caller fallback margin supplies no acceptance grace. No polling, replay,
+new window command/event or cleanup authority follows. Private worker
+outcomes/residue alone remain insufficient without the authenticated receipt.
+The private exit-1 preparationFailure frame is bounded to
 256 bytes. No paths, addresses or raw diagnostic text are exported.
 CLI consumes once: enablePreparationFailed/category/unknown/nativeRecovery
 returns exit 1; enableCompleted/unknown/refresh returns exit 0. Neither proves
 effect, Ready, Off or cleanup. Invalid/late/wrong-correlation/unsupported or
 absent frames retain outcomeUnknown. No lookup, replay, broadcast or redispatch.
 Turn off uses fresh system authorization without an additional CLI prompt.
+
+Invite capture without an activation receipt first reuses strict Enable
+recognition, then refuses not_applicable before authorization/effects. Device
+actions with unavailable connector status use the existing strict absence proof
+only to refuse: proven Off is not_applicable; other unverified state remains
+unverified. A display snapshot never admits a mutation. CLI revoke refuses a
+fresh known Off status before selection/dispatch. These no-effect refusals use
+the existing hostStateUnrecognized/category envelope and bilingual copy.
+The existing pre-write/pre-invalidation/pre-mint issuer rate fence reports the
+closed private result rate_limited, projected as invite_rate_limited/none with
+English and zh-CN copy. No other child refusal is relabelled as this cause.
+Status's short helper read timer uses timeout in that envelope, while helper
+unavailable or D-Bus NoReply uses the closed status_unavailable category, with
+English and zh-CN GUI parity. Neither names invite/policy expiry or changes the
+unknown-effect rule for a dispatched mutation. The Linux client preserves
+homeUnavailable and protocol errors; only explicit revocation responses prove
+revoked, and identity_denied remains ambiguous accessUnavailable.
+An IssueInvite refusal with no invite-state effect preserves an earlier issued
+observation with its original age, expiry and generation guards. Fresh-helper
+journal observation and dispatched uncertainty remain unchanged; no new
+privileged read or invite delivery is added.
 
 I5c / bridge slice 2b delivers only host.enable, host.turnOff and host.createInvite
 in the Linux packaged window, using the same validator and fixed zero-input
@@ -239,8 +272,8 @@ Off projection is known/offline with no devices, so the existing Turn on action
 is offered. StatusV2 reports setup off/runtime unavailable; a recognized live
 receipt still retains its own setup observation when the connector is down.
 The refusal keeps `hostStateUnrecognized` and optionally carries only the closed
-category residue, owner, provenance, custody, inventory, quiescence, timeout or
-unknown through child capture, HomeLifecycleClient, D-Bus, native protocol,
+category residue, owner, provenance, custody, inventory, quiescence, timeout
+or unknown through child capture, HomeLifecycleClient, D-Bus, native protocol,
 CLI JSON, Main relay and localized EN/zh-CN copy. Legacy owner-binding errors
 map to owner; absent/invalid categories map to unknown, with no host metadata.
 Status v1 successful serialization shape, status deadlines and mutation admission
@@ -387,6 +420,30 @@ mutation. The helper communicates with a fixed private connector control socket 
 connector checks kernel peer credentials before any trust mutation.
 
 ## 4. Generated inventory and custody
+
+TASK-19401 daemon outage retry: only the managed Linux identity connector's
+`StartLimitIntervalSec` changes from 300 to 0. Restart-on-failure, one-second
+restart delay, each 120-second start attempt, the watchdog, hardening and full
+pre-listener readiness remain. Daemon absence is never readiness or permission
+to serve; after restoration the connector retries without a button and its
+unchanged Upholds/BindsTo sidecar dependency recovers. Allow the existing two
+startup budgets plus polling/delay (250 seconds) with all other gates healthy;
+installed-systemd validation is separate.
+
+For an already-READY d05afaac/98a87688 host, package upgrade alone retains the
+old connector unit and old failure behaviour. The new package's configure-only
+postinst reloads the system manager after replacing packaged renewal fragments
+(also when the old package had no postinst), without touching user managers,
+unit activation or state. It tolerates reload failure; strict
+`NeedDaemonReload=no` admission is unchanged. After a successful package reload,
+fresh-auth Turn on again republishes only its exact previous rendering through
+the existing pinned-parent unit publisher under ready receipt/G/O/custody/deadline checks, reloads, then
+uses the existing reset/start/joined path. No receipt or transaction rewrite,
+mint, replay or new recovery admission. A renewal-unit property mismatch still
+refuses, now using syslog to emit only the fixed unit kind and property name.
+TASK-19410 proved package replacement left `NeedDaemonReload=yes`; no helper-side
+pre-inventory reload or stale-property admission is added. Acceptance of the
+postinst's installed upgrade behavior remains in the manager's VM lane.
 
 All persistent writes use literal no-follow parents, bounded regular single-link files, exclusive
 temporary writes, fsync + descriptor-relative rename. Existing unsafe metadata refuses, never
@@ -971,6 +1028,34 @@ User-visible states/actions (Linux and Mac; no state below grants runtime access
 | Host revocation / turn off | **Revoke device** denies only that device and closes its streams. **Turn off remote access** invalidates all devices, invites and approvals, removes owned remote services/secrets, and preserves release runtime/org data. Both require fresh auth. | **Access revoked — Create new invite on Linux**; close access and erase saved material when observed. An offline Mac cannot prove local erasure, but host denial is already effective. |
 | Partial cleanup / uncertain stop | **Remote access cleanup incomplete** names safe paths/components and whether host denial is confirmed; never claim **Off** or **Removed** without proof. **Retry turn off** is the same fixed Disable action with fresh auth; unknown ownership needs operator recovery. | Close local sessions; show **Local cleanup incomplete** or **Host cleanup status unknown** as applicable. **Retry removal** erases only local state; host cleanup needs Linux. |
 
+Authenticated Turn off clears retained failed markers only for the fixed five
+managed `UNITS`, after verified stop/final fragment form and before cleanup
+receipts retire. Ready-restart Enable uses the same reset before starting owned
+units, with its original G/O, custody, deadline and no-mint/replay fences. Each
+reset requires exact owned bytes/fixed FragmentPath, no drop-ins/reload, failed
+ActiveState, dead/failed SubState and empty Job. Services require
+MainPID=ControlPID=0 and empty ControlGroup; the fixed socket requires
+ControlPID=0 and empty ControlGroup, with no service-only MainPID. The fixed
+target has no execution context. Absent fixed units also require the no-fragment,
+not-found reload proof with only their supported PID fields.
+Re-read must prove inactive/dead. Reset failure is fixed partial cleanup during
+Turn off, never completed; real ready-restart failure keeps the Turn off advice.
+All five fragments/configs stay retained and strict inventory state sets stay
+unchanged. Receipt-bound B6 also resets only the fixed Headscale service after
+its verified removal and final daemon reload, before retiring the original
+receipts. Its absent-unit proof requires exact Id/Names, not-found LoadState,
+empty FragmentPath/DropInPaths, no reload requirement, zero MainPID/ControlPID,
+empty ControlGroup/Job, dead/failed SubState, original receipt/G/O/identity/custody
+fences and a fresh inactive/dead after-read. The not-found Service properties
+are required explicitly; missing properties refuse. Ready restart uses the same
+service proof for a failed loaded Headscale unit, with exact home bytes and its
+loaded FragmentPath, before the existing boot-equivalent start. The original
+receipt/G/O/custody/deadline/no-mint/no-replay fences remain. Reset or start
+failure keeps the existing named refusal and Turn off advice.
+Status never resets; an already
+stranded failed retained unit without a receipt still needs operator recovery
+because this change adds no no-receipt Disable admission.
+
 Enable first inventories only fixed managed destinations, exact unit fragments, drop-ins and package
 files, with no effects on unknown objects. Successful modern records resume idempotently; existing
 healthy manual installs require explicit migration, never infer failure from a stopped unit. For
@@ -1242,3 +1327,62 @@ Linux settings/window edits with its owner before slices 4/5; do not merge both 
 This docs-only amendment changes the spec and its three companion docs. Behavior, hosted M1/M2, native dialogs, Mac acceptance and
 founder-host failed-install replacement are **NOT RUN**. Return the revised flow and independent
 security findings for Product review before finalizing; source review never establishes acceptance.
+
+### THR-327 F2: read-only Linux host firewall advisory
+
+Firewall evidence never vetoes Enable. No firewall inspection runs in Enable
+preflight or before setup effects. After the lifecycle outcome is settled, the
+existing fixed child may supply optional display advice within the original
+deadline: only when more than six seconds remain, allowing at most two seconds
+for advice and preserving the remaining terminal/auth budget. Read errors
+produce `unverified`; insufficient remaining budget omits the observation.
+Neither advice nor its failure changes the settled outcome, authorization,
+audit, receipts, publication, setup READY or runtime availability.
+
+The fixed C-locale `/usr/sbin/ufw status verbose` observation has three named
+advisory categories:
+
+- `likely_blocked`: recognized active UFW, default deny incoming, neither an
+  IPv4 user allow for 8443/tcp nor one for 3478/udp, and stock IPv4 before/after
+  templates. This is a probability: live INPUT allows from initialization or
+  other owners can exist even when both files are stock.
+- `clear`: UFW is inactive, or recognized user allows cover both ports with
+  stock templates. This says nothing about end-to-end connectivity.
+- `unverified`: any active customization, unreadable/unknown evidence, partial
+  allow, default allow/reject without both user allows, command failure,
+  rate limit, unknown profile/interface, malformed output or timeout.
+
+LAN-scoped allows and port lists/ranges count as possible allows; IPv6-only
+allows do not cover the IPv4 home dial address. Fixed rule-file reads are
+read-only, no-follow, regular-file-only and limited to 64 KiB each. Any change,
+including harmless customizations, symlinks, missing files or oversized and
+non-ASCII content, downgrades active observations to `unverified`. Stock hashes
+never establish live rules. No iptables/nft execution or new capability is used.
+Missing UFW supplies no observation; firewalld/plain nftables are not inferred.
+
+StatusV2's optional `firewall` observation uses `state` and `age_seconds`, with
+`likely_blocked|unverified|clear` plus internal `unknown|stale` freshness states.
+Unknown is omitted. Status advice reserves 300 ms of the original two-second
+response deadline, leaving 200 ms before the unchanged 1.9-second watchdog. It
+is skipped when the resulting advice budget is at most 100 ms. Advice timeout
+or error omits the field and still returns the collected V2 observations; it
+never extends the original deadline. Frames without the field and original
+Status v1 retain compatibility. Fresh observations (at most 30 seconds old)
+project to the existing optional native host `firewallWarning`. Enable's settled terminal and
+successful native/CLI result may carry the same optional closed advisory.
+Absent advice never substitutes for setup/effect evidence. `clear` is carried
+without warning text; English and Simplified Chinese host views and CLI say
+that the **home computer's firewall probably blocks** the home ports for
+`likely_blocked`, and tell the user to allow **8443/tcp and 3478/udp from the
+home LAN only**, then check Status. Unverified advice is conditional on failed
+connections. No rule contents, addresses, paths or stderr cross the boundary.
+
+The remote client snapshot does not carry host firewall Status. Replacing the
+client's generic home-network-unavailable explanation therefore needs a new
+protocol field and remains follow-up; this change adds none to that snapshot.
+
+Inspection never adds/removes/modifies firewall rules. Automatic rule management
+remains Founder-reserved. Service user, sandbox, capabilities, ReadWritePaths,
+R2 custody, home-only trust and authentication/authorization remain unchanged.
+Installed-package/UFW and cross-device qualification remain separate from the
+standalone temporary-file/native-simulation venue.

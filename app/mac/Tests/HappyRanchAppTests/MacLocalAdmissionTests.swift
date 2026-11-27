@@ -63,6 +63,7 @@ extension AppSchemeSwitchTests {
     func testNativeRestartConsentDefaultsToCancelAndRetainsMain() async throws {
         _ = NSApplication.shared
         // Build92 demonstrated that this SwiftPM venue cannot attach sheets.
+        // sheet display not verifiable on Jenkins; founder exception THR-387 seq170
         // Exercise the production dialog and mapping without presentation.
         let name = "MAC-3 测试电脑"
         for zh in [false, true] {

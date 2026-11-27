@@ -83,7 +83,10 @@ def recover_owned_task(db: Any, queue: Any, slug: str, task_id: str, *, orchestr
     if ownership.kind == "legacy":
         return False
     if ownership.kind in SEQUENTIAL_HELD_KINDS:
-        return True  # No enqueue, reconciliation writer or sequential dispatch.
+        # Native retry/reconstruction remains unavailable. The separate U2
+        # startup/periodic business sweep consumes only original closed proofs,
+        # including terminal tasks that this ordinary enumeration never visits.
+        return True
     if ownership.kind in ('coding_attempt', 'coding_source_waiting', 'coding_carrier'):
         coding = getattr(orchestrator, '_workflow_coding_dispatch', None)
         if coding is not None:

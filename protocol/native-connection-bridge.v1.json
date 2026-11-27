@@ -204,6 +204,13 @@
               "type": "null"
             }
           ]
+        },
+        "firewallWarning": {
+          "enum": [
+            "likely_blocked",
+            "unverified",
+            "clear"
+          ]
         }
       },
       "required": [
@@ -521,6 +528,8 @@
                 "inventory",
                 "quiescence",
                 "timeout",
+                "status_unavailable",
+                "invite_rate_limited",
                 "unknown",
                 "unverified",
                 "not_applicable"
@@ -1266,6 +1275,13 @@
         },
         "recovery": {
           "const": "refresh"
+        },
+        "firewallWarning": {
+          "enum": [
+            "likely_blocked",
+            "unverified",
+            "clear"
+          ]
         }
       },
       "required": [

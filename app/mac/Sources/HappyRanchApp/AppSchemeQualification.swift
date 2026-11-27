@@ -26,6 +26,9 @@ private final class AppSchemeCaptureLocal: MacLocalControlBackend {
     }
     func cancelConsent() { consent?.resume(returning: false); consent = nil }
 }
+private enum AppSchemeScrollPlanError: Error {
+    case invalidShape, paneLimit(Int), invalidPageCount, pageLimit(Int)
+}
 private final class AppSchemeEventLog: @unchecked Sendable {
     private let lock = NSLock()
     private let descriptor: Int32
@@ -73,7 +76,7 @@ private final class AppSchemeCaptureStep: @unchecked Sendable {
         }
     }
     @discardableResult
-    func finish(_ result: String) -> Bool {
+    func finish(_ result: String, error: Error? = nil) -> Bool {
         lock.withLock {
             guard !finished else { return false }
             finished = true
@@ -82,6 +85,16 @@ private final class AppSchemeCaptureStep: @unchecked Sendable {
             var resultFields = result == "complete" ? ["step": fields["step"]!] : fields
             if result != "complete" || fields["step"] as? String == "navigation" {
                 resultFields["elapsedMs"] = (DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+            }
+            if let error {
+                let native = error as NSError
+                resultFields["errorDomain"] = String(native.domain.prefix(128))
+                resultFields["errorCode"] = native.code
+                let reason = error is AppSchemeScrollPlanError ? String(describing: error) : native.localizedDescription
+                resultFields["reason"] = String(reason.prefix(512))
+                if let reason = native.userInfo["WKJavaScriptExceptionMessage"] as? String {
+                    resultFields["javaScriptReason"] = String(reason.prefix(512))
+                }
             }
             log.write("capture_step", resultFields.merging(["result": result]) { _, new in new })
             if result == "timeout" {
@@ -378,12 +391,12 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
     }
 
     private func dialogStep<T>(_ name: String, fields: [String: Any],
-                               operation: () async throws -> T) async throws -> T {
+                               operation: @MainActor () async throws -> T) async throws -> T {
         let step = AppSchemeCaptureStep(log, name: name, fields: fields, timeout: 2)
         do {
             let value = try await operation()
             step.finish("complete"); return value
-        } catch { step.finish("error"); throw error }
+        } catch { step.finish("error", error: error); throw error }
     }
 
     /// WebKit supplies the composited dialogs/header; AppKit draws the frame.
@@ -474,21 +487,21 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKNavigati
                             arguments: [:], in: nil, contentWorld: .page)
                         guard let plan = value as? [[String: Any]] else {
                             log.write("failure", fields.merging(["step": "scroll-plan", "reason": "invalid plan shape"]) { _, new in new })
-                            throw AppAPIError.unavailable
+                            throw AppSchemeScrollPlanError.invalidShape
                         }
                         guard plan.count <= 8 else {
                             log.write("failure", fields.merging(["step": "scroll-plan", "reason": "pane limit", "paneCount": plan.count]) { _, new in new })
-                            throw AppAPIError.unavailable
+                            throw AppSchemeScrollPlanError.paneLimit(plan.count)
                         }
                         if scale == 200 {
                             var pages = 0
                             for pane in plan {
-                                guard let count = pane["pages"] as? Int, count > 0 else { throw AppAPIError.unavailable }
+                                guard let count = pane["pages"] as? Int, count > 0 else { throw AppSchemeScrollPlanError.invalidPageCount }
                                 pages += count
                             }
                             guard pages <= 16 else {
                                 log.write("failure", fields.merging(["step": "scroll-plan", "reason": "page limit", "pages": pages, "scrollers": plan]) { _, new in new })
-                                throw AppAPIError.unavailable
+                                throw AppSchemeScrollPlanError.pageLimit(pages)
                             }
                         }
                         return plan

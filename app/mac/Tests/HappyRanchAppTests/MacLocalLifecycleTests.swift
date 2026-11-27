@@ -285,6 +285,7 @@ extension AppSchemeSwitchTests {
             XCTAssertEqual(declinedStates, [], "Declined consent must not publish an interruption")
         }
         // Actual sheet attachment is not verifiable in this XCTest venue.
+        // sheet display not verifiable on Jenkins; founder exception THR-387 seq170
         // Use the bridge's confirmed branch so its busy reservation still
         // fences health publication while AppDelegate performs the real effects.
         let confirmed = LocalLifecycleConsent(app: app, response: .alertSecondButtonReturn)

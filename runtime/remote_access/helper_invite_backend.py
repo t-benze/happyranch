@@ -60,7 +60,8 @@ class HelperInviteBackend:
         if method not in ('IssueInvite', 'CancelInvite', 'RecoverInvite') or type(uid) is not int or uid < 1000:
             raise ValueError('refused')
         if step == 'capture' and expected is None:
-            return {'snapshot': self.capture(uid)}
+            from runtime.remote_access.home_activation_backend import HelperLifecycleBackend
+            return {'snapshot': HelperLifecycleBackend(self.io).capture(method, uid)}
         if method == 'IssueInvite' and step == 'status':
             if time.monotonic() >= deadline:
                 raise ValueError('refused')
@@ -127,7 +128,9 @@ class HelperInviteBackend:
                 issued = issuer.issue()
             except IssuerError as error:
                 code = error.args[0]
-                if code in ('refused', 'rate_limited', 'busy'):
+                if code == 'rate_limited' and not self.dispatched:
+                    return {'result': 'rate_limited'}  # Before journal write, invalidation or mint.
+                if code in ('refused', 'busy'):
                     return {'result': 'refused'}
                 if self.dispatched:
                     # Keep the existing journal vocabulary/rate fence. B11 selects

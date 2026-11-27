@@ -130,7 +130,7 @@ class ClientCLITests(unittest.TestCase):
 
     def test_foreground_observes_later_access_denial(self) -> None:
         cli.custody.SecretStore(cli.native).save(record())
-        for denial in ('revoked', 'accessUnavailable'):
+        for denial in ('revoked', 'accessUnavailable', 'homeUnavailable', 'protocol'):
             with self.subTest(denial=denial):
                 Session.calls = []
                 Session.health_error = denial

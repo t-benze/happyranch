@@ -3,6 +3,8 @@
 //   node --experimental-transform-types --test web/scripts/desktop-dialogs.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 
 const model = await import('../src/features/desktop-dialogs/dialogModel.ts');
 const {
@@ -112,4 +114,47 @@ test('links the dialog must leave alone stay native', () => {
   assert.equal(dialogLinkTarget(link('happyranch-app://app/orgs/acme/agents'), { button: 0, modified: true }, here), null);
   assert.equal(dialogLinkTarget(link('happyranch-app://app/orgs/acme/dashboard#top'), primary, here), null);
   assert.equal(dialogLinkTarget(link('not a url'), primary, here), null);
+});
+
+// Execute the qualifier's JavaScript, with geometry supplied independently of
+// its pane selection and page calculations. This does not simulate WebKit.
+const qualification = readFileSync(new URL('../../app/mac/Sources/HappyRanchApp/AppSchemeQualification.swift', import.meta.url), 'utf8');
+const scrollPlan = qualification.match(/static let dialogScrollPlan = #"""([\s\S]*?)"""#/)?.[1]
+  ?? qualification.match(/dialogStep\("scroll-plan"[\s\S]*?callAsyncJavaScript\(#"""([\s\S]*?)"""#/)?.[1];
+assert.ok(scrollPlan, 'execute the actual embedded scroll planner');
+function capturePane({ top = 80, bottom = 520, height = 440, content = 1800, overflow = 'auto', parent = null } = {}) {
+  return { clientHeight: height, scrollHeight: content, scrollTop: 20, parentElement: parent,
+    style: { overflowY: overflow, visibility: 'visible', display: 'block' },
+    getBoundingClientRect: () => ({ top, bottom, left: 0, right: 760, width: 760 }) };
+}
+function capturePlan(dialog, background = []) {
+  const page = { innerHeight: 560, innerWidth: 760, window: {},
+    getComputedStyle: e => e.style,
+    document: { scrollingElement: background[0] ?? null,
+      querySelector: () => dialog, querySelectorAll: () => [...background, ...(dialog ? [dialog, ...dialog.children] : [])] } };
+  const result = runInNewContext(`(function () { ${scrollPlan} })()`, page);
+  return { result: JSON.parse(JSON.stringify(result)), scrollers: Array.from(page.window.__hrCaptureScrollers) };
+}
+test('Mac 200% capture plans active Settings panes without spending pages on background Main', () => {
+  const dialog = capturePane({ height: 560, content: 560, top: 0, bottom: 560, overflow: 'hidden' });
+  const settings = capturePane({ parent: dialog });
+  dialog.children = [settings]; dialog.querySelectorAll = () => dialog.children;
+  const background = capturePane({ top: 559, bottom: 2000, height: 1441, content: 10000 });
+  const { result, scrollers } = capturePlan(dialog, [background]);
+  assert.deepEqual(scrollers, [settings]);
+  assert.deepEqual(result, [{ index: 0, step: 330, maximum: 1360, pages: 5 }]);
+  assert.equal(settings.scrollTop, 0);
+  assert.equal(background.scrollTop, 20, 'a modal capture does not move background Main');
+  const main = capturePane();
+  assert.deepEqual(capturePlan(null, [main]).result, [{ index: 0, step: 330, maximum: 1360, pages: 5 }], 'Main still captures its own overflow');
+});
+test('Mac capture excludes panes clipped by ancestors from the finite page budget', () => {
+  const dialog = capturePane({ height: 560, content: 560, top: 0, bottom: 560, overflow: 'hidden' });
+  const hidden = capturePane({ top: 600, bottom: 900, overflow: 'hidden', parent: dialog });
+  const clipped = capturePane({ parent: hidden });
+  const settings = capturePane({ parent: dialog });
+  dialog.children = [hidden, clipped, settings]; dialog.querySelectorAll = () => dialog.children;
+  const { result, scrollers } = capturePlan(dialog);
+  assert.deepEqual(scrollers, [settings]);
+  assert.equal(result.reduce((n, p) => n + p.pages, 0), 5);
 });

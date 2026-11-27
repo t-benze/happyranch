@@ -10,6 +10,7 @@ import json
 import os
 import pwd
 import ssl
+import syslog
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,6 +31,33 @@ from runtime.remote_access.policy_renew_units import SERVICE_NAME, TIMER_NAME, r
 from runtime.remote_access.service_manager import SystemdServiceManager
 from runtime.remote_access.systemd_unit import render_headscale_unit
 from scripts.test_home_activation_txn import Venue, put
+
+
+@pytest.mark.parametrize(('unit', 'key'), [(unit, key) for unit in (SERVICE_NAME, TIMER_NAME)
+    for key in ('FragmentPath', 'DropInPaths', 'Names', 'NeedDaemonReload', 'LoadState', 'Unit')
+    if key != 'Unit' or unit == TIMER_NAME])
+def test_renewal_property_diagnostic_preserves_refusal(venue, unit, key, monkeypatch):
+    messages = []
+    monkeypatch.setattr(syslog, 'syslog', lambda priority, message: messages.append((priority, message)))
+    v = venue
+    v.native.override[key] = 'synthetic-private-value'
+    # Limit the altered observation to the packaged renewal unit.
+    native = v.native.run
+    def run(args, **kw):
+        saved = v.native.override
+        if args[1:3] != ['show', unit]:
+            v.native.override = {}
+        try:
+            return native(args, **kw)
+        finally:
+            v.native.override = saved
+    v.production._io.manager = SystemdServiceManager(system=True, run=run)
+    with pytest.raises(ActivationRefused):
+        v.production._managed_fragments()
+    assert messages == [(syslog.LOG_WARNING,
+        f'remote-access-renewal-unit-mismatch unit={"timer" if unit == TIMER_NAME else "service"} property={key}')]
+    assert 'synthetic-private-value' not in repr(messages)
+    assert all(args[1] == 'show' for args in v.native.calls)
 
 
 class ConfigOwner:

@@ -1,5 +1,23 @@
 # Home Enable renewal ordering
 
+TASK-19401: `HomeDaemonRetry.tla` complements HomeRetry's ordinary-start
+abstraction. Timeout models repeated connector start-gate failures while the
+desktop daemon is absent; attempts saturate at five to keep the graph finite.
+`Limited=TRUE` abstracts the old finite start burst (including dependency/client
+starts, not an assertion that five NRestarts occur). With the new interval zero,
+timeouts retain a retryable starting state. Return assumes eventual stable
+daemon availability; fair Ready/Follow model full readiness and successful
+connector/sidecar startup with every other gate healthy. Invariants keep request
+admission closed before the daemon gate passes and require connector readiness
+before sidecar readiness. The Recovers property holds in daemon-retry.cfg;
+daemon-limited.cfg must fail it (exit 13). Use the pinned TLC recipe below with
+module HomeDaemonRetry and separate scratch state directories.
+
+This finite model proves neither wall-clock budgets, systemd scheduling and
+start counters, Python refinement, privileges/custody, installed upgrade nor
+the D5 property mismatch. Exact previous-unit publication is exercised by the
+retained production-composition keeper. Manager VM acceptance remains required.
+
 TASK-19025 / THR-327 restoration. Bounded review model for the forward Enable
 ordering and unchanged old-intent/Ready refusal paths. No dependency or CI trigger.
 

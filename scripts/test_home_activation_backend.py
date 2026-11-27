@@ -128,13 +128,19 @@ def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
             state = v.states.get(name, 'inactive')
             props = dict(Id=name, Names=name, FragmentPath=str(path) if path.exists() else '',
                 DropInPaths='', NeedDaemonReload='no', LoadState='loaded' if path.exists() else 'not-found',
-                ActiveState=state, SubState=('waiting' if name == policy.TIMER_NAME else 'running') if state == 'active' else 'dead', Job='',
+                ActiveState=state, SubState=('waiting' if name == policy.TIMER_NAME else 'running') if state == 'active' else ('failed' if state == 'failed' else 'dead'), Job='',
                 MainPID=str(os.getpid()) if state == 'active' else '0', ControlPID='0', ControlGroup='',
                 User='happyranch-headscale' if name == adapters._HEADSCALE else 'happyranch',
                 Group='happyranch-headscale' if name == adapters._HEADSCALE else 'happyranch',
                 DynamicUser='no', Unit=policy.SERVICE_NAME, Result='success', UnitFileState='enabled')
+            # Match systemd's per-type property shape, including omissions.
+            if not name.endswith('.service'):
+                props.pop('MainPID')
+            if not name.endswith(('.service', '.socket')):
+                props.pop('ControlPID')
+                props.pop('ControlGroup')
             return 0, '\n'.join(f'{key}={props[key]}' for key in
-                (arg.split('=', 1)[1] for arg in args if arg.startswith('--property=')))
+                (arg.split('=', 1)[1] for arg in args if arg.startswith('--property=')) if key in props)
         v.calls.append(args[1:])
         assert_locked(v)
         mark = len(v.writes)
@@ -147,7 +153,7 @@ def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
                     link.symlink_to(OWNED_LINK_TARGET if name == adapters._HEADSCALE else '../' + name)
             if verb == 'disable' and name in links:
                 v.path(links[name]).unlink(missing_ok=True)
-            if verb == 'stop': v.states[name] = 'inactive'
+            if verb in ('stop', 'reset-failed'): v.states[name] = 'inactive'
             if verb == 'start':
                 v.states[name] = 'active'
                 if name == adapters._HEADSCALE:
@@ -1624,8 +1630,8 @@ def test_thr327_disable_transitional_owned_only(composition: Any, state: str) ->
     assert v.receipts.current() is None
 
 
-@pytest.mark.parametrize('stopped', [adapters._HEADSCALE, adapters._TARGET, adapters._CONNECTOR, 'both'])
-def test_thr327_ready_ordinary_restart(composition: Any, stopped: str) -> None:
+@pytest.mark.parametrize('stopped', [adapters._HEADSCALE, adapters._TARGET, adapters._CONNECTOR, 'both', 'start-limit-hit', 'socket-start-limit-hit', 'headscale-start-limit-hit'])
+def test_thr327_ready_ordinary_restart(composition: Any, monkeypatch: pytest.MonkeyPatch, stopped: str) -> None:
     v = composition
     expected = v.lifecycle.capture('Enable', os.getuid())
     assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
@@ -1640,12 +1646,26 @@ def test_thr327_ready_ordinary_restart(composition: Any, stopped: str) -> None:
     if stopped in (adapters._HEADSCALE, 'both'): v.states[adapters._HEADSCALE] = 'inactive'
     if stopped in (adapters._TARGET, 'both'):
         for name in (adapters._TARGET, adapters._CONNECTOR, adapters._SIDECAR): v.states[name] = 'inactive'
+    failed_unit = (adapters._HEADSCALE if stopped == 'headscale-start-limit-hit' else
+                   'happyranch-release-verifier.socket' if stopped == 'socket-start-limit-hit' else adapters._SIDECAR)
+    if stopped in ('start-limit-hit', 'socket-start-limit-hit', 'headscale-start-limit-hit'):
+        v.states[failed_unit] = 'failed'
+        native = v.io.manager._run
+        def start_limited(args: list[str], **kw: Any) -> tuple[int, str]:
+            if args[:3] == ['systemctl', 'start', failed_unit] and v.states[failed_unit] == 'failed':
+                return 1, ''
+            return native(args, **kw)
+        monkeypatch.setattr(v.io.manager, '_run', start_limited)
     expected = v.lifecycle.capture('Enable', os.getuid())
     assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
                                 deadline=time.monotonic() + 480)['outcome'] == 'ready'
     assert v.path(ACTIVATION_PATH).read_bytes() == ready and v.path(TRANSACTION_PATH).read_bytes() == txn
     assert len(v.mints) == 1
-    assert all(call[0] == 'start' for call in v.calls[calls:])
+    if stopped in ('start-limit-hit', 'socket-start-limit-hit', 'headscale-start-limit-hit'):
+        assert v.calls[calls:] == [['reset-failed', failed_unit], ['start', failed_unit]]
+        assert v.states[failed_unit] == 'active'
+    else:
+        assert all(call[0] == 'start' for call in v.calls[calls:])
     assert v.states[adapters._HEADSCALE] == v.states[adapters._TARGET] == 'active'
 
 
@@ -1739,6 +1759,48 @@ def test_thr327_ready_repairs_policy_unit_and_timer(
         assert ['start', policy.TIMER_NAME] not in v.calls[calls:]
     else:
         assert link.is_symlink() and link.readlink() == Path('../' + policy.TIMER_NAME)
+    assert v.path(ACTIVATION_PATH).read_bytes() == ready and v.path(TRANSACTION_PATH).read_bytes() == txn
+    assert len(v.mints) == 1
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_thr327_ready_connector_retry_upgrade(composition: Any, monkeypatch: pytest.MonkeyPatch, failed: bool) -> None:
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    unit = v.path('/etc/systemd/system/' + adapters._CONNECTOR)
+    current = managed_units(v.io.layout, connector_config={'managed': {'profile': 'linux-managed-identity-v1'}})[adapters._CONNECTOR]
+    previous = current.replace('StartLimitIntervalSec=0\n', 'StartLimitIntervalSec=300\n', 1).encode()
+    # Independent digest of bda86a149's exact deb-layout managed rendering.
+    assert hashlib.sha256(previous).hexdigest() == 'd620b41f37777518231d8b4e404529767d85f860e88c8af589087cf3515ce0e7'
+    put(unit, previous, 0o644)
+    if failed:
+        v.states[adapters._CONNECTOR] = 'failed'
+        v.states[adapters._SIDECAR] = 'inactive'
+    native = v.io.manager._run
+    def run(args: list[str], **kw: Any) -> tuple[int, str]:
+        code, output = native(args, **kw)
+        if args[:3] == ['systemctl', 'start', adapters._CONNECTOR]:
+            # Native Upholds restarts its inactive sidecar after readiness.
+            v.states[adapters._SIDECAR] = 'active'
+        if failed and args[:3] == ['systemctl', 'show', adapters._CONNECTOR] and v.states[adapters._CONNECTOR] == 'failed':
+            output = output.replace('Result=success', 'Result=timeout')
+        return code, output
+    monkeypatch.setattr(v.io.manager, '_run', run)
+    ready, txn = v.path(ACTIVATION_PATH).read_bytes(), v.path(TRANSACTION_PATH).read_bytes()
+    calls = len(v.calls)
+    # Read-only capture recognizes historical bytes without changing them.
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert unit.read_bytes() == previous and len(v.calls) == calls
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    assert 'StartLimitIntervalSec=0\n' in unit.read_text()
+    assert unit.read_bytes() == current.encode()
+    assert ['daemon-reload'] in v.calls[calls:]
+    if failed:
+        assert v.calls[calls:].index(['daemon-reload']) < v.calls[calls:].index(['reset-failed', adapters._CONNECTOR])
+        assert v.states[adapters._CONNECTOR] == v.states[adapters._SIDECAR] == 'active'
     assert v.path(ACTIVATION_PATH).read_bytes() == ready and v.path(TRANSACTION_PATH).read_bytes() == txn
     assert len(v.mints) == 1
 
@@ -1839,3 +1901,234 @@ def test_renewal_activation_lock_contention(composition: Any, monkeypatch: pytes
     else:
         assert elapsed < 0.3 and invoked == []
         assert staged_inventory(v.fixture) == before
+
+
+@pytest.mark.parametrize(('name', 'case'), [
+    (adapters._SIDECAR, case) for case in ('owned', 'absent', 'MainPID', 'ControlPID', 'ControlGroup', 'Job',
+                                        'foreign', 'bytes', 'dropin', 'absent-cgroup')
+] + [
+    ('happyranch-release-verifier.socket', case) for case in
+    ('owned', 'absent', 'ControlPID', 'ControlGroup', 'Job', 'ActiveState', 'SubState', 'foreign', 'bytes', 'dropin', 'absent-cgroup')
+] + [(adapters._TARGET, case) for case in ('owned', 'absent', 'Job')])
+def test_thr327_failed_unit_reset_proof(composition: Any, monkeypatch: pytest.MonkeyPatch, name: str, case: str) -> None:
+    """Real installer proof observes owned bytes and the native reset boundary."""
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    v.states[name] = v.states['foreign.service'] = 'failed'
+    fragment = v.path('/etc/systemd/system/' + name)
+    if case.startswith('absent'):
+        fragment.unlink()
+        v.path('/etc/systemd/system/multi-user.target.wants/' + adapters._TARGET).unlink()
+        v.path('/etc/systemd/system/happyranch-managed.target.wants/happyranch-release-verifier.socket').unlink()
+
+    if case == 'bytes': fragment.write_bytes(fragment.read_bytes() + b'# foreign\n')
+    if case == 'dropin':
+        override = fragment.with_name(name + '.d')
+        override.mkdir(mode=0o755)
+        put(override / 'foreign.conf', b'[Service]\n', 0o644)
+    native = v.io.manager._run
+    guards = []
+    def run(args: list[str], **kw: Any) -> tuple[int, str]:
+        code, output = native(args, **kw)
+        if args[:3] == ['systemctl', 'show', name]:
+            if case in ('MainPID', 'ControlPID', 'ControlGroup', 'Job'):
+                output = output.replace(case + '=' + {'MainPID': '0', 'ControlPID': '0', 'ControlGroup': '', 'Job': ''}[case],
+                                        case + '=' + ('42' if case.endswith('PID') else '/live' if case == 'ControlGroup' else '42 start'))
+            if '--property=SubState' in args and case in ('ActiveState', 'SubState'):
+                output = output.replace(case + '=failed', case + '=' + ('active' if case == 'ActiveState' else 'running'))
+            if case == 'foreign': output = output.replace('FragmentPath=' + str(fragment), 'FragmentPath=/foreign.service')
+            if case == 'absent-cgroup': output = output.replace('ControlGroup=', 'ControlGroup=/live')
+        if args[:3] == ['systemctl', 'reset-failed', name]:
+            assert guards and v.receipts.current().phase == 'ready'
+        return code, output
+    monkeypatch.setattr(v.io.manager, '_run', run)
+    calls = len(v.calls)
+    from runtime.remote_access.installer import InstallerError, UNITS
+    with v.transactions.locked():
+        if case in ('owned', 'absent'):
+            try:
+                v.io._reset_failed_home_units(require=lambda: guards.append(True))
+            except InstallerError as error:
+                pytest.fail(f'fixed quiescent unit reset refused: {error}')
+            assert v.io.manager.show_properties(name, ('ActiveState', 'SubState')) == dict(ActiveState='inactive', SubState='dead')
+        else:
+            with pytest.raises(InstallerError):
+                v.io._reset_failed_home_units(require=lambda: guards.append(True))
+    resets = [call for call in v.calls[calls:] if call[0] == 'reset-failed']
+    assert resets == ([['reset-failed', name]] if case in ('owned', 'absent') else [])
+    assert all(call[1] in UNITS for call in resets)
+    assert v.states['foreign.service'] == 'failed'
+
+
+@pytest.mark.parametrize(('failed_unit', 'reset'), [
+    (name, reset) for name in (adapters._SIDECAR, 'happyranch-release-verifier.socket', adapters._HEADSCALE)
+    for reset in ('ok', 'error', 'still-failed')
+] + [(adapters._HEADSCALE, proof) for proof in (
+    'MainPID', 'ControlPID', 'ControlGroup', 'Job', 'Id', 'Names', 'FragmentPath',
+    'DropInPaths', 'NeedDaemonReload', 'LoadState', 'SubState',
+    'missing-MainPID', 'missing-ControlPID', 'missing-ControlGroup', 'after-Job', 'after-active')])
+def test_thr327_failed_restart_turn_off_enable(composition: Any, monkeypatch: pytest.MonkeyPatch, reset: str, failed_unit: str) -> None:
+    """Exercise the advice path with a marker retained across verified stop."""
+    from runtime.remote_access.installer import UNITS
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    units = {name: (v.path('/etc/systemd/system/' + name).stat().st_ino,
+                   v.path('/etc/systemd/system/' + name).read_bytes()) for name in UNITS}
+    v.states[failed_unit] = 'failed'
+    native = v.io.manager._run
+    def run(args: list[str], **kw: Any) -> tuple[int, str]:
+        if args[:3] == ['systemctl', 'start', failed_unit]:
+            v.states[failed_unit] = 'failed'
+            return 1, ''
+        if args[:3] == ['systemctl', 'stop', failed_unit]:
+            v.calls.append(args[1:])
+            return 0, ''
+        if args[:3] == ['systemctl', 'reset-failed', failed_unit] and reset in ('error', 'still-failed'):
+            v.calls.append(args[1:])
+            return (1 if reset == 'error' else 0), 'synthetic secret diagnostic'
+        code, output = native(args, **kw)
+        if (args[:3] == ['systemctl', 'show', adapters._HEADSCALE]
+                and '--property=Id' in args and '--property=ControlGroup' in args
+                and not v.path('/etc/systemd/system/' + adapters._HEADSCALE).exists()):
+            # The retained not-found .service still exposes Service properties.
+            # Only this final reset proof is varied, leaving prior B6 gates real.
+            if reset.startswith('missing-'):
+                key = reset.removeprefix('missing-')
+                output = '\n'.join(line for line in output.splitlines() if not line.startswith(key + '='))
+            elif reset.startswith('after-'):
+                if v.states[failed_unit] == 'inactive':
+                    key = 'Job' if reset == 'after-Job' else 'ActiveState'
+                    output = output.replace(key + '=' + ('' if key == 'Job' else 'inactive'),
+                                            key + '=' + ('42 start' if key == 'Job' else 'failed'))
+            elif reset not in ('ok', 'error', 'still-failed'):
+                values = dict(MainPID='42', ControlPID='42', ControlGroup='/live', Job='42 start',
+                    Id='foreign.service', Names=adapters._HEADSCALE + ' foreign.service',
+                    FragmentPath='/foreign.service', DropInPaths='/foreign.conf', NeedDaemonReload='yes',
+                    LoadState='loaded', SubState='running')
+                output = '\n'.join(reset + '=' + values[reset] if line.startswith(reset + '=') else line
+                                   for line in output.splitlines())
+        return code, output
+    monkeypatch.setattr(v.io.manager, '_run', run)
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    with pytest.raises(h.EnablePreparationRefused) as failure:
+        v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480)
+    assert failure.value.category == 'ready-restart-failed-turn-off'
+    v.observers.close()
+    v.states[failed_unit] = 'failed'
+    expected = v.lifecycle.capture('Disable', os.getuid())
+    assert v.lifecycle.dispatch('Disable', os.getuid(), 'stop', expected)['outcome'] == 'in_progress'
+    calls = len(v.calls)
+    result = v.lifecycle.dispatch('Disable', os.getuid(), 'cleanup', expected, revoke_succeeded=True)
+    assert result == ({'outcome': 'off', 'residue': []} if reset == 'ok' else
+                      {'outcome': 'partial_cleanup', 'residue': ['owned units: reset unconfirmed']})
+    assert [call for call in v.calls[calls:] if call[0] == 'reset-failed'] == (
+        [['reset-failed', failed_unit]] if reset in ('ok', 'error', 'still-failed', 'after-Job', 'after-active') else [])
+    assert {name: (v.path('/etc/systemd/system/' + name).stat().st_ino,
+                   v.path('/etc/systemd/system/' + name).read_bytes()) for name in UNITS} == units
+    if reset != 'ok':
+        assert v.receipts.current() is not None
+        assert v.states[failed_unit] == ('inactive' if reset.startswith('after-') else 'failed')
+        return
+    assert v.io.manager.show_properties(failed_unit, ('ActiveState', 'SubState')) == dict(ActiveState='inactive', SubState='dead')
+    assert v.io.inventory().detail == 'post-disable'
+    assert v.lifecycle.setup_status(os.getuid()) == {'setup': 'off'}
+    # Already-stranded shape stays read-only and named, never repaired by Status.
+    v.states[failed_unit] = 'failed'
+    status_calls = len(v.calls)
+    from runtime.remote_access.helper_generation import host_state_category
+    if failed_unit == adapters._HEADSCALE:
+        # Immediate post-90ab9044 not-found/failed is still read as Off;
+        # it has no receipt-bound Disable/reset admission. The later native
+        # error-load/account/CA shape needs separate recovery authority too.
+        assert v.lifecycle.setup_status(os.getuid()) == {'setup': 'off'}
+        from runtime.remote_access.helper_generation import GenerationUnavailable
+        with pytest.raises(GenerationUnavailable) as unavailable:
+            v.lifecycle.capture('Disable', os.getuid())
+        assert unavailable.value.category == 'not_applicable'
+    else:
+        try:
+            v.lifecycle.setup_status(os.getuid())
+        except Exception as error:
+            assert host_state_category(error) == 'inventory'
+        else:
+            pytest.fail('stranded failed unit must not report off')
+    assert v.states[failed_unit] == 'failed'
+    assert not any(call[0] == 'reset-failed' for call in v.calls[status_calls:])
+    v.states[failed_unit] = 'inactive'
+    monkeypatch.setattr(v.io.manager, '_run', native)
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    assert v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected,
+                                deadline=time.monotonic() + 480)['outcome'] == 'ready'
+    assert len(v.mints) == 2
+
+
+@pytest.fixture
+def ufw_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+    """Real stock UFW IPv4 files; redirect only the two fixed production reads."""
+    paths = {}
+    for name in ('before.rules', 'after.rules'):
+        path = tmp_path / name
+        path.write_bytes((Path(__file__).parent / 'fixtures' / 'ufw' / name).read_bytes())
+        paths[name] = path
+    native_open = os.open
+    def open_rules(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        fixed = {'/etc/ufw/' + name: fixture for name, fixture in paths.items()}
+        return native_open(fixed.get(str(path), path), flags, *args, **kwargs)
+    monkeypatch.setattr(os, 'open', open_rules)
+    return paths
+
+
+@pytest.mark.parametrize('case,output,state', [
+    ('deny-no-rule', '', 'likely_blocked'),
+    ('both', '8443/tcp  ALLOW IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n', 'clear'),
+    ('tcp-only', '8443/tcp  ALLOW IN  Anywhere\n', 'unverified'),
+    ('udp-only', '3478/udp  ALLOW IN  Anywhere\n', 'unverified'),
+    ('lan', '8443/tcp  ALLOW IN  192.168.1.0/24\n3478/udp  ALLOW IN  192.168.1.0/24\n', 'clear'),
+    ('inactive', 'Status: inactive\n', 'clear'),
+    ('unparsable', 'unrecognized synthetic output\n', 'unverified'),
+    ('profile', 'OpenSSH  ALLOW IN  Anywhere\n', 'unverified'),
+    ('v6-only', '8443/tcp (v6)  ALLOW IN  Anywhere (v6)\n3478/udp (v6)  ALLOW IN  Anywhere (v6)\n', 'likely_blocked'),
+    ('allow-default', 'Default: allow (incoming), allow (outgoing), deny (routed)\n', 'unverified'),
+    ('range', '3400:8500  ALLOW IN  192.168.1.0/24\n', 'clear'),
+    ('limit', '8443/tcp  LIMIT IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n', 'unverified'),
+    ('reject', 'Default: reject (incoming), allow (outgoing), deny (routed)\n', 'unverified'),
+])
+def test_thr327_firewall_read_only_child(composition: Any, ufw_rules: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+                                       case: str, output: str, state: str) -> None:
+    import subprocess
+    v = composition
+    prefix = 'Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing), deny (routed)\nNew profiles: skip\n'
+    if case in ('inactive', 'unparsable'):
+        raw = output
+    elif case in ('allow-default', 'reject'):
+        raw = 'Status: active\n' + output
+    else:
+        raw = prefix + ('\nTo                         Action      From\n--                         ------      ----\n' + output if output else '')
+    calls = []
+    def run(argv: tuple, **kwargs: Any) -> Any:
+        calls.append(argv)
+        assert kwargs['env'] == {'LC_ALL': 'C', 'LANG': 'C'}
+        assert 0 < kwargs['timeout'] <= 2
+        return SimpleNamespace(returncode=0, stdout=raw.encode())
+    monkeypatch.setattr(subprocess, 'run', run)
+    before, services = staged_inventory(v.fixture), list(v.calls)
+    result = v.lifecycle.dispatch('Enable', os.getuid(), 'firewall', None, deadline=time.monotonic() + 10)
+    assert result == {'firewall': state}
+    assert calls == [('/usr/sbin/ufw', 'status', 'verbose')]
+    assert staged_inventory(v.fixture) == before and v.calls == services
+    assert '192.168' not in json.dumps(result)
+
+
+def test_thr327_firewall_enable_reaches_ready(composition: Any, ufw_rules: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+    v = composition
+    expected = v.lifecycle.capture('Enable', os.getuid())
+    monkeypatch.setattr(subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=0,
+        stdout=b'Status: active\nDefault: deny (incoming), allow (outgoing), deny (routed)\n'))
+    result = v.lifecycle.dispatch('Enable', os.getuid(), 'enable', expected, deadline=time.monotonic() + 480)
+    assert result == {'outcome': 'ready', 'residue': []}
+    assert v.receipts.current().phase == 'ready' and len(v.mints) == 1

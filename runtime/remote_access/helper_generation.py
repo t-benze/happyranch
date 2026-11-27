@@ -11,6 +11,7 @@ from typing import Callable
 
 COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
            'runtime.remote_access.home_activation')
+FIREWALL_STATES = frozenset({'likely_blocked', 'clear', 'unverified', 'unknown'})
 HOST_STATE_CATEGORIES = frozenset({'residue', 'owner', 'provenance', 'custody',
                                     'inventory', 'quiescence', 'timeout', 'unknown', 'unverified', 'not_applicable'})
 SETUP_STATES = frozenset({'off', 'ready', 'pending', 'prepared_no_receipt', 'failed_uncertain',
@@ -58,6 +59,7 @@ def host_state_category(error: Exception) -> str:
         '_read_file': 'custody', '_record': 'custody', '_parent': 'custody',
         '_confirm_quiescent': 'quiescence', '_headscale_stopped': 'quiescence',
         '_home_unit_inventory': 'inventory', '_inventory': 'inventory',
+        '_home_staged_inventory': 'inventory',
         '_replacement_snapshot': 'inventory', '_home_staging_residue': 'residue',
         '_headscale_inventory': 'residue', '_issuer_inventory': 'residue',
         '_headscale_publication': 'residue', '_headscale_receipt': 'provenance',
@@ -156,7 +158,8 @@ class HomeLifecycleClient:
                 raise GenerationUnavailable()
             value = json.loads(result.stdout, object_pairs_hook=_unique_pairs)
             if result.returncode:
-                if (self.method in ('Enable', 'Disable', 'ReplaceFailed') and step == 'capture' and result.returncode == 1
+                if (self.method in ('Enable', 'Disable', 'ReplaceFailed', 'IssueInvite', 'CancelInvite', 'RecoverInvite')
+                        and step == 'capture' and result.returncode == 1
                         and type(value) is dict and set(value) == {'refusal'}):
                     raise GenerationUnavailable(value['refusal'])
                 raise GenerationUnavailable()
@@ -196,6 +199,15 @@ class HomeLifecycleClient:
         if set(value) != {'policy'} or value['policy'] not in ('current', 'renewing', 'expired', 'renewal_failed', 'uncertain'):
             raise GenerationUnavailable()
         return value
+
+    def firewall_status(self, remaining: float) -> str:
+        if self.method != 'Enable':
+            raise GenerationUnavailable()
+        value = self._call('firewall', None, remaining)
+        if (set(value) != {'firewall'} or type(value['firewall']) is not str
+                or value['firewall'] not in FIREWALL_STATES):
+            raise GenerationUnavailable()
+        return value['firewall']
 
     def setup_status(self, remaining: float) -> dict:
         if self.method != 'Enable':

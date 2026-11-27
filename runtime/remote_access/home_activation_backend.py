@@ -33,6 +33,7 @@ from runtime.remote_access.helper_owner import bootstrap_owner
 from runtime.remote_access.helper_lifecycle import log_enable_refusal, log_lifecycle_failure
 from runtime.remote_access.helper_generation import PREPARATION_CATEGORIES, GenerationUnavailable
 from runtime.remote_access.headscale_service import HeadscaleServiceError
+from runtime.remote_access.host_firewall import inspect_ufw
 
 
 class EnablePreparationRefused(Exception):
@@ -335,6 +336,11 @@ class HelperLifecycleBackend:
 
     def capture(self, method: str, uid: int) -> str:
         if method in ('IssueInvite', 'CancelInvite', 'RecoverInvite'):
+            if self.store.current() is None:
+                # Absence alone is not a clean/off proof. Reuse strict
+                # retained staging recognition before refusing any invite.
+                self.capture('Enable', uid)
+                raise GenerationUnavailable('not_applicable')
             from runtime.remote_access.helper_invite_backend import HelperInviteBackend
             return HelperInviteBackend(self.io).capture(uid)
         receipt = self.store.current()
@@ -476,6 +482,8 @@ class HelperLifecycleBackend:
             return {'snapshot': self.capture(method, uid)}
         if method == 'RetryPolicyRenewal' and step == 'status' and expected is None:
             return self.policy_status(uid)
+        if method == 'Enable' and step == 'firewall' and expected is None:
+            return {'firewall': inspect_ufw(timeout=2.0 if deadline is None else deadline - time.monotonic())}
         if method == 'Enable' and step == 'status' and expected is None:
             return self.setup_status(uid)
         if type(expected) is not str or self.capture(method, uid) != expected:
@@ -507,6 +515,8 @@ class HelperLifecycleBackend:
                 expected_control_plane_id=snapshot['activation']['control_plane_id'],
                 expected_connector_id=snapshot['activation']['connector_id'], expected_generation=snapshot['generation'],
                 expected_operation_id=snapshot['activation']['operation'], revoke_succeeded=revoke_succeeded)
+            if result.get('state') == 'partial_cleanup':
+                return {'outcome': 'partial_cleanup', 'residue': ['owned units: reset unconfirmed']}
             if result.get('state') != 'removed':
                 raise ActivationRefused()
             return {'outcome': 'off', 'residue': []}
@@ -558,7 +568,19 @@ class HelperLifecycleBackend:
                         require_ready()
                         if self.io.inventory().state != 'owned-activated':
                             raise ActivationRefused()
-                        coordinator._owner._managed_fragments(require_home=True)
+                        units = coordinator._owner._managed_fragments(require_home=True)
+                        from runtime.remote_access.installer import managed_units, previous_connector_unit
+                        with self.io._publication_parent() as (parent, check):
+                            connector = self.io._json(self.io._read_file(parent, 'connector.json',
+                                owner=(self.io.root_owner[0], self.io._service_owner[1]), mode=0o640))
+                            check()
+                        current_unit = managed_units(self.io.layout, connector_config=connector)[UNITS[0]]
+                        if units[UNITS[0]] != current_unit:
+                            publish_home_unit(self.io, UNITS[0], legacy=previous_connector_unit(current_unit).encode(),
+                                              home=current_unit.encode(), require=require_ready)
+                            self.io.manager.daemon_reload()
+                            require_ready()
+                            coordinator._owner._managed_fragments(require_home=True)
                         # Restore the exact Wants link before starting the target.
                         relative = 'etc/systemd/system/happyranch-managed.target.wants'
                         with self.io._publication_parent(relative) as (parent, check):
@@ -575,6 +597,11 @@ class HelperLifecycleBackend:
                                         str(self.io.root / 'usr/lib/systemd/system' / TIMER_NAME))):
                                 raise ActivationRefused()
                             check()
+                        def require_reset() -> None:
+                            require_ready()
+                            coordinator._owner._managed_fragments(require_home=True)
+                        self.io._reset_failed_home_units(require=require_reset)
+                        self.io._reset_failed_headscale_unit(require=require_reset, removed=False)
                         for name in ('happyranch-headscale.service', UNITS[2], UNITS[3], UNITS[0], UNITS[1]):
                             require_ready()
                             if self.io.manager.show_properties(name, ('ActiveState',)).get('ActiveState') != 'active':
@@ -811,7 +838,8 @@ def helper_main() -> int:
                 and request.get('step') in ('capture', 'stop', 'cleanup', 'replace')):
             log_lifecycle_failure(error, action='disable' if request['method'] == 'Disable' else 'replace-failed',
                                   step=request['step'])
-        if (type(request) is dict and request.get('method') in ('Enable', 'Disable', 'ReplaceFailed')
+        if (type(request) is dict and request.get('method') in (
+                'Enable', 'Disable', 'ReplaceFailed', 'IssueInvite', 'CancelInvite', 'RecoverInvite')
                 and request.get('step') == 'capture'):
             if request['method'] == 'Enable':
                 log_enable_refusal(error, child=True)

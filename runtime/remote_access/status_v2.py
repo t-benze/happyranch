@@ -159,6 +159,20 @@ class ConnectorObservation:
     age_seconds: int | None = None
 
 
+class FirewallState(_StringEnum):
+    UNKNOWN = 'unknown'
+    STALE = 'stale'
+    CLEAR = 'clear'
+    UNVERIFIED = 'unverified'
+    LIKELY_BLOCKED = 'likely_blocked'
+
+
+@dataclass(frozen=True)
+class FirewallObservation:
+    state: FirewallState = FirewallState.UNKNOWN
+    age_seconds: int | None = None
+
+
 @dataclass(frozen=True)
 class StatusV2:
     setup: SetupObservation = field(default_factory=SetupObservation)
@@ -167,6 +181,7 @@ class StatusV2:
     address: AddressObservation = field(default_factory=AddressObservation)
     policy: PolicyObservation = field(default_factory=PolicyObservation)
     cleanup: CleanupObservation = field(default_factory=CleanupObservation)
+    firewall: FirewallObservation = field(default_factory=FirewallObservation)
 
     def __post_init__(self) -> None:
         _validate_status(self)
@@ -179,10 +194,11 @@ _DIMENSIONS = (
     ('address', AddressObservation, AddressState),
     ('policy', PolicyObservation, PolicyState),
     ('cleanup', CleanupObservation, CleanupState),
+    ('firewall', FirewallObservation, FirewallState),
 )
 _ACTIVE_INVITE = frozenset({InvitePhase.ISSUED, InvitePhase.PENDING_APPROVAL})
 O = TypeVar('O', SetupObservation, RuntimeObservation, InviteObservation,
-            AddressObservation, PolicyObservation, CleanupObservation, ConnectorObservation)
+            AddressObservation, PolicyObservation, CleanupObservation, ConnectorObservation, FirewallObservation)
 
 
 def _integer(value: object, maximum: int) -> bool:
@@ -237,7 +253,8 @@ def build_status(*, now_utc_seconds: int, connector: ConnectorObservation | None
                  setup: SetupObservation | None = None, runtime: RuntimeObservation | None = None,
                  invite: InviteObservation | None = None, address: AddressObservation | None = None,
                  policy: PolicyObservation | None = None,
-                 cleanup: CleanupObservation | None = None) -> StatusV2:
+                 cleanup: CleanupObservation | None = None,
+                 firewall: FirewallObservation | None = None) -> StatusV2:
     """Normalize supplied facts without querying services or changing authority.
 
     A fresh stopped/unreachable connector proves runtime unavailable only.
@@ -262,7 +279,8 @@ def build_status(*, now_utc_seconds: int, connector: ConnectorObservation | None
     return StatusV2(_fresh(setup, SetupObservation, SetupPhase), availability, invitation,
                     _fresh(address, AddressObservation, AddressState),
                     _fresh(policy, PolicyObservation, PolicyState),
-                    _fresh(cleanup, CleanupObservation, CleanupState))
+                    _fresh(cleanup, CleanupObservation, CleanupState),
+                    _fresh(firewall, FirewallObservation, FirewallState))
 
 
 def encode(status: StatusV2) -> bytes:
@@ -271,6 +289,8 @@ def encode(status: StatusV2) -> bytes:
     value = {'version': 2}
     for name, _, _ in _DIMENSIONS:
         observation = getattr(status, name)
+        if name == 'firewall' and observation.state == FirewallState.UNKNOWN:
+            continue  # Optional extension: original frames keep their bytes.
         value[name] = {'state': observation.state.value, 'age_seconds': observation.age_seconds}
         if name == 'invite':
             value[name]['deadline_utc_seconds'] = observation.deadline_utc_seconds
@@ -306,11 +326,15 @@ def decode(raw: bytes) -> StatusV2:
         value = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique, parse_constant=_constant)
     except (ValueError, RecursionError):
         value = None
-    if (type(value) is not dict or set(value) != {'version', *(d[0] for d in _DIMENSIONS)}
+    if (type(value) is not dict or set(value) not in (
+            {'version', *(d[0] for d in _DIMENSIONS)},
+            {'version', *(d[0] for d in _DIMENSIONS if d[0] != 'firewall')})
             or type(value['version']) is not int or value['version'] != 2):
         raise StatusError()
     observations = {}
     for name, kind, states in _DIMENSIONS:
+        if name == 'firewall' and name not in value:
+            continue
         part = value[name]
         keys = {'state', 'age_seconds'} | ({'deadline_utc_seconds'} if name == 'invite' else set())
         if type(part) is not dict or set(part) != keys or type(part['state']) is not str:

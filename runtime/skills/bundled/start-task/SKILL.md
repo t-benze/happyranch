@@ -769,6 +769,34 @@ Holds even if a callback exists. References grant no domain capability or
 semantic proof. Preserve the actual task/agent/SID and genuine FINAL
 report-completion contract. This paragraph grants no start, setup or live operation.
 
+A persisted sequential visit supplies no `decision`, `manager_self_evaluation`
+(including null), or job-wait field, even for a manager-owned Final. The ordinary
+initiating manager's own turn still follows its v2 policy. Invalid generic carriers
+refuse categorical HTTP422 without landing a callback. After original safe native
+closure, a blocked/failed or absent callback Holds; it never creates a success or
+replays an ended agent callback. Runtime business re-settlement is distinct from
+native execution recovery and grants the agent no replay authority.
+The runtime's bounded startup/periodic sweep re-enters only the business writer
+using authentic original closed evidence, including positive no-launch receipts.
+It never invokes an ended callback or reconstructs a SID/native owner. Pending
+inbox publication retries existing readiness; the independent five-minute daemon
+log alarm is observational. Sticky unknown remains unknown and unheld. Neither
+sweep nor alarm grants new control, execution, merge or budget authority.
+
+A trusted read-only reconciliation restriction from held control lineage takes
+precedence over authored node mutation/merge duties. Read existing evidence and
+remote state, then report truthfully; never repeat an already performed or
+uncertain merge/effect to obtain a callback. Retry/rebrief cannot remove that
+restriction. Preserve original receipts, exact heads, uncertainty and spent
+allowances. An uncertain observation requires a hold. No new sandbox, access,
+live control, restart/deploy or automatic recovery authority follows.
+The adjacent trusted recovery lineage section identifies predecessor visits,
+causal Held events with closure/cause kinds, and applied control IDs/events/actions
+from authenticated immutable rows. It is present even on a plain retry without
+an initiator supplement; authored reasons and supplements remain task data.
+For reducer-held transitions, the cause kind is the authenticated decision reason
+and an absent closure kind is null; separate held events retain their cause/closure.
+
 ### Agent-owned Coding role duties (v3)
 
 Apply these duties only when actually bound to Coding v3 under the generic @2

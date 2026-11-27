@@ -15,6 +15,7 @@ const PAGE_KEYS: Record<OwnerRecord['page'], MessageKey> = {
   'agents.agent': 'owners.page.agents.agent',
   'agents.systemPrompt': 'owners.page.agents.systemPrompt',
   'agents.escalationPolicy': 'owners.page.agents.escalationPolicy',
+  'agents.create': 'owners.page.agents.create',
   'skills.assignment': 'owners.page.skills.assignment',
   'skills.customCreate': 'owners.page.skills.customCreate',
   'skills.customDetail': 'owners.page.skills.customDetail',

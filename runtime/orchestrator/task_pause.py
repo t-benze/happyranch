@@ -161,6 +161,11 @@ class TaskInvocation:
     refusal_attempt_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     launch_observed: bool = False
     preparation_cause: dict | None = None
+    commit_entered: bool = False
+    reserve_entered: bool = False
+    journal_entered: bool = False
+    prepare_complete: bool = False
+    preparation_effects_entered: bool = False
     _repository_preparations: dict = field(default_factory=dict, repr=False)
     _repository_effect_intervals: list = field(default_factory=list, repr=False)
     _repository_retained_effects: list = field(default_factory=list, repr=False)
@@ -203,18 +208,39 @@ class TaskInvocation:
         return self.orch._db._task_pause_store
 
     def prepare(self) -> None:
+        try:
+            self._prepare()
+            self.prepare_complete = True
+        except BaseException as exc:
+            from runtime.orchestrator.team_move import DeferredTeamMove
+            from runtime.workflows.sequential_engine import SequentialRefusal
+            deferred = (isinstance(exc, (DeferredRootPause, DeferredTeamMove))
+                or isinstance(exc, PauseControlError) and exc.detail['code'] == 'root_paused'
+                or isinstance(exc, SequentialRefusal) and not self.reserve_entered and not self.journal_entered)
+            if self.owner == 'sequential' and not deferred:
+                from runtime.workflows.sequential_launch_failures import observe_failure, settle_failure
+                observe_failure(self)
+                try:
+                    settle_failure(self, cleanup=None, failed=True, prepare_frame=True)
+                except BaseException as observation:
+                    exc.add_note('sequential original preparation disposition unavailable: ' + type(observation).__name__)
+            raise
+
+    def _prepare(self) -> None:
         if self.owner == "coding":
             self.orch._workflow_coding_dispatch.require_task_ready(self.task.id)
         elif self.owner == "sequential":
-            if not self.workflow_dispatcher.queue_admission_allowed(self.task.id):
+            if not self.workflow_dispatcher.queue_admission_allowed(self.task.id, invocation=self):
                 raise DeferredRootPause("sequential_queue_unavailable")
         with self.store.writer(self.task.id, admission=True) as (root, row):
             self.store.held_uncommitted(self.task.id)
+            self.journal_entered = True
             row = row or self.store.ensure_uncommitted(root["id"])
             _observe_settled_producers(self.store, row)
             entries = row["journal"]["entries"]
             if any(e["task_id"] == self.task.id and e["owner"] != "job" and not e["context"].get("producer_settled") for e in entries):
                 raise DeferredRootPause("invocation already owned")
+            self.reserve_entered = True
             self.move_reservation = self.orch._team_moves.reserve_task_uncommitted(self)
             entries.append({"id": self.identity, "org": self.store.org_slug, "root_task_id": root["id"],
                             "task_id": self.task.id, "agent": self.agent, "session_id": self.session_id,
@@ -283,6 +309,7 @@ class TaskInvocation:
         Successful completion proves only this interval. It cannot clear an
         earlier failed preparation, even if a later host/callback is clean.
         """
+        self.preparation_effects_entered = True
         # A retry can be safely deferred only until preparation resumes. Commit
         # that existing prepared state BEFORE effects so restart cannot replay
         # an unproved partial preparation after an interrupted evidence save.
@@ -400,6 +427,7 @@ class TaskInvocation:
 
     def _commit_local(self, ctx: Any = None) -> bool:
         """One writer commits with the terminal lock last and still owned."""
+        self.commit_entered = True
         from contextlib import nullcontext
         sessions = self.orch._sessions
         lease = sessions.binding_lease(self.task.id, self.agent) if sessions else nullcontext()
@@ -878,6 +906,8 @@ def origin_guard(org: Any, task_id: str | None):
 
 
 def release_live(invocation: TaskInvocation, *, failed: bool = False) -> None:
+    if getattr(invocation, 'sequential_failure_settled', False):
+        return
     with invocation.store.db._lock:
         invocation.store._live.pop(invocation.identity, None)
         from runtime.orchestrator.team_move import _task_tail
@@ -890,6 +920,9 @@ def release_live(invocation: TaskInvocation, *, failed: bool = False) -> None:
 
 def settle_live(invocation: TaskInvocation, *, failed: bool = False, cleanup: Any = None) -> None:
     """Close durable attribution only after reconcile and actual outer cleanup."""
+    from runtime.workflows.sequential_launch_failures import settle_failure
+    if settle_failure(invocation, cleanup=cleanup, failed=failed):
+        return
     original_error = sys.exception()
     reservation = invocation.move_reservation
     native_entry = None

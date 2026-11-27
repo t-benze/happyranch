@@ -804,7 +804,7 @@ class LifecycleManager(FakeManager):
         path = self.root / "etc/systemd/system" / unit
         loaded = path.is_file()
         state = self.states.get(unit, "inactive")
-        values = dict(FragmentPath=str(path) if loaded else "", DropInPaths="", NeedDaemonReload="no",
+        values = dict(Id=unit, FragmentPath=str(path) if loaded else "", DropInPaths="", NeedDaemonReload="no",
                       LoadState="loaded" if loaded else "not-found", ActiveState=state,
                       SubState="dead" if state == "inactive" else state,
                       MainPID="0", ControlPID="0", ControlGroup="", Job="")
@@ -2397,8 +2397,10 @@ def test_generated_profile_unit_bytes_and_legacy_main_parity(fixture: Fixture, l
     modern = module.managed_units(layout, connector_config=modern_config)
     assert modern[module.UNITS[0]].encode() == baseline[module.UNITS[0]].replace(
         "RuntimeDirectory=happyranch-connector\n",
-        "RuntimeDirectory=happyranch-connector\nRuntimeDirectoryMode=0700\n", 1).encode()
+        "RuntimeDirectory=happyranch-connector\nRuntimeDirectoryMode=0700\n", 1).replace(
+            "StartLimitIntervalSec=300\n", "StartLimitIntervalSec=0\n", 1).encode()
     assert modern[module.UNITS[0]].count("RuntimeDirectoryMode=0700\n") == 1
+    assert modern[module.UNITS[0]].count("StartLimitIntervalSec=0\n") == 1
     assert {name: modern[name].encode() for name in module.UNITS[1:]} == {
         name: baseline[name].encode() for name in module.UNITS[1:]}
     assert "SSL_CERT_" not in modern[module.UNITS[1]]  # Existing home_transport=False default.

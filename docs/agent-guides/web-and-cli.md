@@ -816,7 +816,9 @@ profile removal, custom-skill retire/restore, Organization's Work Hours
 toggle; the registry never marks these `failed`) shows “… Change this on
 {Host}. Nothing was sent.” / “… 未发送任何内容。” for the latest request; the
 next request clears it. The ownerless Create organization (Add organization,
-onboarding) and Add agent forms use `useRemoteRefusal`: they keep the entered
+onboarding) form and the Create team / Create agent form (itself an
+`agents.create` config owner, see below; a remote refusal is not sent, so it
+registers no unknown result) use `useRemoteRefusal`: they keep the entered
 fields and show the refused copy at once, before status reports the remote
 Host. {Host} is the live remote name, else the name captured at refusal, else
 “the Host computer” / “主机”. The schedule Edit dialog shows the same notice
@@ -1879,16 +1881,47 @@ source. Final independent full review/QA, applicable checks/hooks and guarded
 merge remain required. Source publication authorizes no deployment.
 See the [current naming contract](../specs/2026-10-09-identity-names-core.md).
 
-## Founder New agent dialog
+## Founder Create team / Create agent dialog
 
-New agent asks for a readable Name (1–64 ASCII letters, digits, underscores or
-hyphens, starting with a letter). It sends only `display_name` to founder
-`POST /agents`, alongside the existing role/team/executor/prompt fields. The
-server chooses the permanent ID and commits the initial name with enrollment.
-On success navigation uses returned `canonical_id`; agent detail displays
-Name · ID as read-only identity text. The dialog maps invalid, reserved, conflict
-and exhausted-ID errors to English and Simplified Chinese messages. The API's
-legacy `name` field still means an explicit ID; send exactly one name source.
+Agents (header and empty roster) offers **Create team** and **Create agent**,
+which open ONE shared form (`features/agents/AddAgentDialog.tsx`; rules in
+`createAgentForm.ts`, checked by `web/scripts/create-agent-form.test.mjs`).
+Create team fixes Role to Manager and sends `new_team`; Create agent defaults to
+Worker with an explicit existing-team chooser (no implicit selection) and sends
+`team`; choosing Manager there switches to `new_team`. Exactly one is sent.
+The form asks for a readable Name (1–64 ASCII letters, digits, underscores or
+hyphens, starting with a letter) and sends only `display_name`. A new team name
+must match `^[a-z][a-z0-9_]{0,63}$`, and `default` (any case) is reserved;
+existing nonconforming team keys stay selectable for workers. The team name is
+suggested from the manager name until edited; role changes never overwrite an
+edited team name, and a user-picked executor is never silently replaced.
+Server codes map to their field (`invalid_team_name`, `team_reserved`,
+`team_exists`, `unknown_team`, naming codes, `invalid_executor`) with other
+input kept. The create is a config owner (`agents.create`): single-flight, the
+request never re-sent on a 401 (`replayOnUnauthorized: false`), close/navigation/
+org switches held while pending or unknown. `agent_setup_incomplete` (500) shows
+"Agent created; setup incomplete" with `happyranch init-agent`; other lost or
+unrecognised answers (network loss, forwarded 499 cancellations, other 5xx, a
+raw 409 `target_changed`) show "Result unknown" and Check result. A change the
+transport proves native never forwarded (typed `NotSentError`,
+`ThrottledError`, or a 503 `NativeRecoveryError` such as busy/no_target) is
+"Not sent" instead: the draft stays, no unknown owner is registered, and only
+an explicit resubmit sends it. Check result first cancels in-flight roster and
+identity reads of the original org, then accepts only successful reads issued
+after that (`lib/freshReads.ts`), never an earlier first load or its
+completion time. Only a full match of the submitted fields resolves it; a name
+match alone stays unknown. Absence allows a new create only when naming
+observations are complete (`naming_diagnostic` explicitly null and every agent
+row `naming_status: ready`); unavailable or missing naming metadata keeps the
+result unknown. On success navigation uses returned `canonical_id`; the
+readback retires in-flight agents/enrollments/teams/identities reads before
+refetching, and a failed readback says "Created; refresh unavailable". The API's legacy `name` field still means
+an explicit ID; send exactly one name source.
+The Agents page's once-per-org auto-selection of the first agent never navigates
+while the form is open: a roster that settles after the form opened consumes
+the auto-selection, so a draft is not interrupted by an unsaved-changes prompt
+and closing the form does not select an agent later (browser regression:
+`web/scripts/w4a-browser-evidence.mjs --slice agents-create`).
 See the [naming contract](contracts/threads-and-naming.md) for derivation,
 transaction and rollback details. No manager-session enrollment contract changes.
 

@@ -2,11 +2,12 @@
 // module, `web/src/lib/remotePolicy`): the module loads the SAME authoritative
 // `protocol/remote-client-config-policy.v1.json` (through the
 // `@happyranch/remote-client-config-policy` build alias), every UI-named
-// operation is a policy entry and the 21 entries are all named, concrete
-// request matching follows the native template semantics, and the pre-forward
-// `403 remote_read_only` refusal is recognised and keeps the draft (a
-// confirmed failure, never unknown). Local evidence only (not wired into CI,
-// no Vitest or Product E2E selection). Run from the repository root:
+// operation is a policy entry and the 21 entries are all named, concrete web
+// requests match the policy templates, and `403 remote_read_only` errors are
+// recognised and classified as failed. Synthetic responses also exercise the
+// refusal selectors below, without rendering UI or checking retained drafts.
+// Local evidence only (not wired into CI; no Vitest or Product E2E selection).
+// Run from the repository root:
 //   node --experimental-transform-types --test web/scripts/remote-policy.test.mjs
 import { registerHooks } from 'node:module';
 import { existsSync, readFileSync } from 'node:fs';
@@ -86,7 +87,7 @@ test('concrete config requests match, with or without /api/v1 and a query', () =
   }
 });
 
-test('operations, reads and near-misses do not match', () => {
+test('listed non-config operations, reads and path near-misses do not match', () => {
   const misses = [
     ['GET', '/api/v1/orgs/s/settings/org'],
     ['GET', '/api/v1/orgs/s/schedules/abc'],
@@ -109,7 +110,7 @@ test('operations, reads and near-misses do not match', () => {
   for (const [method, path] of misses) assert.equal(matchesRemoteConfigRequest(method, path), false, `${method} ${path}`);
 });
 
-test('the pre-forward refusal is recognised and is a confirmed failure (draft kept)', () => {
+test('a 403 remote_read_only error is recognised and classified as failed', () => {
   const refusal = { name: 'ApiError', status: 403, code: 'remote_read_only', detail: { code: 'remote_read_only' } };
   assert.equal(isRemoteReadOnlyError(refusal), true);
   assert.equal(classifySaveError(refusal), 'failed');
@@ -119,12 +120,12 @@ test('the pre-forward refusal is recognised and is a confirmed failure (draft ke
   assert.equal(isRemoteReadOnlyError(new Error('remote_read_only')), false);
 });
 
-// --- Review F2/F3: the refusal comes from the response itself -----------------
-// The production chain without React: request() through the real client and
-// native target store (synthetic bridge/fetch; native has committed remote,
-// but app.stateChanged has NOT reached the page yet), the real owner registry
-// status derivation, and the refusal selectors `useConfigOwner` and
-// `useRemoteRefusal` render from (`lib/remotePolicy/refusal.ts`).
+// --- Review F2/F3: refusal selection from synthetic 403 responses -------------
+// request() uses the real client and native target store: a synthetic bridge
+// reports local status while synthetic fetch returns 403 remote_read_only.
+// No native target switch or app.stateChanged event is executed. These checks
+// use real owner-registry status derivation and the refusal selectors consumed
+// by useConfigOwner/useRemoteRefusal (`lib/remotePolicy/refusal.ts`), without React.
 class MemoryStorage {
   #m = new Map();
   getItem(k) { return this.#m.has(k) ? this.#m.get(k) : null; }
@@ -151,7 +152,7 @@ async function refusedBeforeStatusEvent(path, body) {
   return { error, sends, app: target.getAppStatus() };
 }
 
-test('F2: a draftless owner (profile removal / retire / Work Hours toggle) shows the 403 refusal before the status event', async () => {
+test('F2: a profile-removal 403 yields a draftless refusal selected for display while app status is local', async () => {
   const { remoteRefusalFor, shownRemoteRefusal } = await import('../src/lib/remotePolicy/refusal.ts');
   const { createOwnerRegistry } = await import('../src/lib/owners/ownerRegistry.ts');
   const { error, sends, app } = await refusedBeforeStatusEvent('/executors/runtime/profiles/studio-cli');
@@ -167,12 +168,12 @@ test('F2: a draftless owner (profile removal / retire / Work Hours toggle) shows
   const refusal = remoteRefusalFor(error, app, true);
   assert.deepEqual(refusal, { host: '', draftless: true }, 'Host not named yet: the UI shows the localized fallback');
   assert.deepEqual(shownRemoteRefusal(status, refusal), refusal, 'shown independently of failed/unsent-draft status');
-  // The next request clears it (pending hides it; a later success leaves none).
+  // Pending status and an absent refusal record both hide the refusal.
   assert.equal(shownRemoteRefusal('pending', refusal), null);
   assert.equal(shownRemoteRefusal(status, null), null);
 });
 
-test('F2 control: a draft refusal shows only while that draft is the failed one', async () => {
+test('F2 control: draft refusals require failed status; dirty/pending/unknown/missing status hides draftless refusals', async () => {
   const { shownRemoteRefusal } = await import('../src/lib/remotePolicy/refusal.ts');
   const draft = { host: 'Studio Host', draftless: false };
   assert.deepEqual(shownRemoteRefusal('failed', draft), draft);
@@ -183,13 +184,13 @@ test('F2 control: a draft refusal shows only while that draft is the failed one'
   for (const status of ['dirty', 'pending', 'unknown', undefined]) assert.equal(shownRemoteRefusal(status, action), null, String(status));
 });
 
-test('F3: Create organization / Add agent record the 403 from the response itself (local status, no raw string)', async () => {
+test('F3: an organization-create 403 is classified as raw and yields refusal records for local or remote status', async () => {
   const { remoteRefusalFor } = await import('../src/lib/remotePolicy/refusal.ts');
   const { classifyAddOrgError } = await import('../src/lib/addOrgError.ts');
   const { error, sends, app } = await refusedBeforeStatusEvent('/orgs', { slug: 'northwind' });
   assert.equal(sends, 1, 'not replayed');
   assert.equal(app.target.kind, 'local');
-  // Without the refusal record the classifier renders the raw diagnostic.
+  // The organization error classifier returns raw; refusal selection is separate.
   assert.equal(classifyAddOrgError(error, 'northwind').kind, 'raw');
   assert.deepEqual(remoteRefusalFor(error, app, false), { host: '', draftless: false });
   const remoteApp = { ...app, target: { kind: 'remote', id: 'saved', name: 'Studio Host' } };

@@ -28,7 +28,7 @@ from runtime.remote_access import home_activation_backend as backend
 from scripts.test_home_activation import store, put_pair, put, encoded, receipt_record, RECEIPT  # noqa: F401
 from scripts.test_headscale_custody import fixture as custody, b6_setup, b6_minters  # noqa: F401
 from scripts.test_installer_token_custody import fixture as renewal_fixture, renewal_intent, renewal_setup  # noqa: F401
-from scripts.test_home_activation_backend import composition, corrupt_composition  # noqa: F401
+from scripts.test_home_activation_backend import composition, corrupt_composition, ufw_rules  # noqa: F401
 from scripts.test_installer_token_custody import staged_inventory
 
 REAL_THREAD = threading.Thread
@@ -56,6 +56,9 @@ def test_enable_preparation_child_round_trip(
     monkeypatch.setattr(backend, 'ManagedInstaller', lambda **kw: v.io)
     frames = []
     def child(command: tuple, **kwargs: Any) -> Any:
+        if command == ('/usr/sbin/ufw', 'status', 'verbose'):
+            return SimpleNamespace(returncode=0, stdout=b'Status: inactive\n')
+        assert command == generation.LIFECYCLE_COMMAND
         output, errors = io.StringIO(), io.StringIO()
         with monkeypatch.context() as patch:
             patch.setattr(sys, 'argv', ['home_activation_backend.py'])
@@ -178,11 +181,13 @@ def test_enable_preparation_private_frame_rejected(
         assert code == 0 and value == {'preparationFailure': 'inventory'}
 
 
-@pytest.mark.parametrize('outcome', ['prepared', 'typed', 'completed', 'generic', 'audit', 'settlement', 'uid', 'owner',
+@pytest.mark.parametrize('outcome', ['prepared', 'typed', 'completed', 'completed_firewall', 'generic', 'audit', 'settlement', 'uid', 'owner',
     'late', 'auth_deadline', 'disconnect', 'absent_to_new', 'success_audit', 'success_settlement', 'intent', 'flush_error'])
 def test_enable_completion_unicast_envelope(
         mount: Any, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
     m = mount
+    if outcome == 'completed_firewall':
+        m.reader.firewall_status.return_value = 'likely_blocked'
     clock = [100.0]
     m.helper.clock = lambda: clock[0]
     m.message.get_member = lambda: 'Enable'
@@ -248,17 +253,19 @@ def test_enable_completion_unicast_envelope(
         assert sent == []
     else:
         expected = dict(method='Enable', correlation=dict(serial=17, owner=':1.100'),
-                        outcome='completed' if outcome in ('completed', 'absent_to_new') else 'failed')
+                        outcome='completed' if outcome in ('completed', 'completed_firewall', 'absent_to_new') else 'failed')
         if outcome in ('typed', 'audit', 'settlement', 'auth_deadline', 'flush_error'):
             expected['category'] = 'inventory'
         if outcome in ('generic', 'success_audit', 'success_settlement', 'intent'):
             expected['category'] = 'activation-unverified'
         if outcome == 'prepared':
             expected['category'] = 'activation-prepared-retry'
+        if outcome == 'completed_firewall':
+            expected['firewallWarning'] = 'likely_blocked'
         assert sent == [(':1.42', m.h.OBJECT_PATH, m.h.INTERFACE, 'LifecycleCompleted', expected)]
         assert order.index('signal') < order.index('flush') < order.index('release')
     assert m.helper.inflight is None
-    assert m.helper.lifecycle_result['outcome'] == ('ready' if outcome in ('completed', 'uid', 'owner', 'disconnect', 'absent_to_new') else 'in_progress' if outcome == 'prepared' else 'uncertain')
+    assert m.helper.lifecycle_result['outcome'] == ('ready' if outcome in ('completed', 'completed_firewall', 'uid', 'owner', 'disconnect', 'absent_to_new') else 'in_progress' if outcome == 'prepared' else 'uncertain')
     if outcome == 'audit':
         assert json.loads(m.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
 
@@ -308,6 +315,9 @@ def test_enable_preparation_production_trace(
     monkeypatch.setattr(backend, 'ManagedInstaller', lambda **kw: v.io)
     children, signals = [], []
     def child(command: tuple, **kwargs: Any) -> Any:
+        if command == ('/usr/sbin/ufw', 'status', 'verbose'):
+            return SimpleNamespace(returncode=0, stdout=b'Status: inactive\n')
+        assert command == generation.LIFECYCLE_COMMAND
         out, err = io.StringIO(), io.StringIO()
         with monkeypatch.context() as patch:
             patch.setattr(sys, 'argv', ['home_activation_backend.py'])
@@ -551,7 +561,7 @@ def test_thr327_capture_refusal_transport(composition: Any, monkeypatch: pytest.
         assert failure.value.category == 'unknown'
 
 
-@pytest.mark.parametrize('method', ['Enable', 'Disable', 'ReplaceFailed'])
+@pytest.mark.parametrize('method', ['Enable', 'Disable', 'ReplaceFailed', 'IssueInvite', 'CancelInvite', 'RecoverInvite'])
 @pytest.mark.parametrize('category', ['custody', 'unverified', 'not_applicable'])
 def test_thr327_lifecycle_capture_refusal_dbus(mount: Any, method: str, category: str) -> None:
     m = mount
@@ -568,13 +578,19 @@ def test_thr327_lifecycle_capture_refusal_dbus(mount: Any, method: str, category
     ('ReplaceFailed', 'clean', 'not_applicable'), ('ReplaceFailed', 'prepared', 'not_applicable'),
     ('ReplaceFailed', 'ready', 'not_applicable'), ('ReplaceFailed', 'failed', 'not_applicable'),
     ('Enable', 'partial', 'custody'),
+    *((method, prestate, 'not_applicable') for method in ('IssueInvite', 'CancelInvite', 'RecoverInvite')
+      for prestate in ('clean', 'prepared')),
+    *((method, 'off-unsafe', 'custody') for method in ('IssueInvite', 'CancelInvite', 'RecoverInvite')),
 ])
 def test_thr327_lifecycle_capture_named_child(composition: Any, monkeypatch: pytest.MonkeyPatch,
                                              method: str, prestate: str, category: str) -> None:
     from dataclasses import replace
     from runtime.remote_access import helper_generation as generation
     v, uid = composition, os.getuid()
-    if prestate == 'prepared':
+    if prestate == 'off-unsafe':
+        v.io.provision(release_user=v.fixture.user, data_home=v.fixture.home)
+        v.path('/etc/happyranch/sidecar.json').chmod(0o666)
+    elif prestate == 'prepared':
         with v.transactions.locked() as directory:
             v.lifecycle._enable_staging(uid, 'clean', directory, time.monotonic() + 480)
     elif prestate != 'clean':
@@ -768,6 +784,26 @@ def test_enable_child_diagnostic_preserves_closed_exit(
     assert capsys.readouterr() == ('{"refusal": "unverified"}\n', '')
 
 
+@pytest.mark.parametrize('method', ['ApprovePending', 'RejectPending', 'RevokeSelected'])
+@pytest.mark.parametrize('unsafe', [False, True])
+def test_thr327_off_device_actions_refuse(composition: Any, mount: Any,
+                                          monkeypatch: pytest.MonkeyPatch, method: str, unsafe: bool) -> None:
+    v, m, uid = composition, mount, os.getuid()
+    if unsafe:
+        corrupt_composition(v, 'partial')
+    m.helper.connection.call_sync.return_value = Variant('', (uid,))
+    m.helper.control = m.h.ControlClient(str(v.root / 'absent-connector.sock'))
+    m.reader.current_generation.side_effect = lambda _: v.lifecycle.capture('Enable', uid)
+    m.message.get_member = lambda: method
+    before, calls, mints = staged_inventory(v.fixture), list(v.calls), list(v.mints)
+    m.helper._dispatch(m.message)
+    m.helper._error.assert_called_once_with(m.message, 'host-state-unrecognized-' +
+                                           ('unverified' if unsafe else 'not_applicable'))
+    assert staged_inventory(v.fixture) == before and v.calls == calls and v.mints == mints
+    assert not m.helper.authority.call.called and not m.reader.effect.called
+    assert m.helper.inflight is None and not m.helper.audit.path.exists()
+
+
 @pytest.mark.parametrize('case', ['clean', 'partial', 'failed', 'pending', 'uid', 'unsafe', 'unknown', 'txn', 'source', 'audit', 'headscale-mode', 'clean-ca', 'clean-unit'])
 def test_public_enable_composes_or_refuses_before_auth(
     composition: Any, mount: Any, monkeypatch: pytest.MonkeyPatch, case: str,
@@ -916,7 +952,8 @@ def mount(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
     helper.audit = h._home_audit.HomeAudit(tmp_path / 'audit.jsonl', uid=os.getuid(), gid=os.getgid())
     effects = []
     token = 'protected-generation-and-operation'
-    reader = SimpleNamespace(current_generation=Mock(side_effect=lambda _: token),
+    reader = SimpleNamespace(firewall_status=Mock(return_value='unknown'),
+                             current_generation=Mock(side_effect=lambda _: token),
                              setup_status=Mock(return_value={'setup': 'ready'}))
     def effect(step: str, expected: str, remaining: float, **options: Any) -> dict:
         assert helper.inflight is not None and expected == 'protected-generation-and-operation'
@@ -1220,6 +1257,70 @@ def test_thr327_disable_terminal_before_slot_release(mount: Any, partial: bool) 
     assert v.helper.lifecycle_result['outcome'] == ('partial_cleanup' if partial else 'off')
     assert v.effects == ([] if partial else ['revoke']) + ['stop', 'cleanup']
     assert 'residue' not in frame  # No host paths or private diagnostics on this channel.
+
+
+@pytest.mark.parametrize('method', ['ReplaceFailed', 'CancelInvite', 'RecoverInvite', 'RetryPolicyRenewal'])
+@pytest.mark.parametrize('case', ['complete', 'refused', 'partial_cleanup', 'lost', 'late', 'disconnect'])
+def test_thr327_cli_lifecycle_terminal_before_slot_release(
+        mount: Any, monkeypatch: pytest.MonkeyPatch, method: str, case: str) -> None:
+    v = mount
+    v.message.get_member = lambda: method
+    v.message.get_serial = lambda: 17
+    v.helper.connection.get_unique_name = lambda: ':1.100'
+    sent, order = [], []
+    def signal(destination: str, path: str, interface: str, member: str, body: Any) -> None:
+        assert v.helper.inflight is not None
+        sent.append((destination, path, interface, member, json.loads(body.unpack()[0])))
+        order.append('signal')
+    v.helper.connection.emit_signal = signal
+    context = SimpleNamespace(push_thread_default=lambda: None, pop_thread_default=lambda: None)
+    v.h.GLib.MainContext = SimpleNamespace(new=lambda: context)
+    v.h.GLib.MainLoop = SimpleNamespace(new=lambda *a: SimpleNamespace(run=lambda: None, quit=lambda: None))
+    v.h.GLib.timeout_source_new = lambda *a: SimpleNamespace(set_callback=lambda *a: None,
+        attach=lambda *a: None, destroy=lambda: None)
+    v.h.Gio.Cancellable = lambda: SimpleNamespace(cancel=lambda: None)
+    v.helper.connection.flush_finish = lambda _: order.append('flush')
+    v.helper.connection.flush = lambda cancel, callback, data: callback(v.helper.connection, None, data)
+    release = v.helper.release
+    def released(capture: Any) -> None:
+        if v.helper.inflight is capture:
+            order.append('release')
+        release(capture)
+    v.helper.release = released
+    def result(*args: Any, **kwargs: Any) -> dict:
+        assert v.helper.inflight is not None
+        assert json.loads(v.helper.audit.path.read_text().splitlines()[-1])['stage'] == 'intent'
+        if case == 'lost':
+            raise OSError('synthetic lost child reply /private/path')
+        if case == 'late':
+            deadline = v.helper.lifecycle_operation.budget.deadline
+            v.helper.clock = v.helper.lifecycle_operation.budget.clock = lambda: deadline
+        if case == 'disconnect':
+            v.helper.cancelled = True
+        if method == 'ReplaceFailed':
+            return dict(outcome='off' if case == 'complete' else 'failed' if case == 'refused'
+                        else 'partial_cleanup' if case == 'partial_cleanup' else 'off', residue=[])
+        outcome = case if case in ('refused', 'partial_cleanup') else 'complete'
+        if method == 'RetryPolicyRenewal':
+            return dict(outcome='refused' if outcome == 'partial_cleanup' else outcome)
+        return dict(outcome=outcome, invite='cancelled', cleanup='complete')
+    v.reader.effect.side_effect = result
+    v.reader.recover_invite = Mock(side_effect=result)
+    v.reader.retry_policy = Mock(side_effect=result)
+    v.admit()
+    v.helper._reply.assert_called_once_with(v.message, 'accepted')
+    assert v.helper.inflight is None and order[-1] == 'release'
+    if case in ('late', 'disconnect'):
+        assert sent == []
+        return
+    frame = dict(method=method, correlation=dict(serial=17, owner=':1.100'),
+                 outcome='completed' if case == 'complete' else 'failed')
+    if case != 'complete':
+        frame['category'] = ('uncertain' if case == 'lost' else
+            'failed' if method == 'ReplaceFailed' and case == 'refused' else
+            'refused' if method == 'RetryPolicyRenewal' else case)
+    assert sent == [(':1.42', v.h.OBJECT_PATH, v.h.INTERFACE, 'LifecycleCompleted', frame)]
+    assert order == ['signal', 'flush', 'release']
 
 
 @pytest.mark.parametrize('change', ['generation', 'operation', 'uid', 'owner', 'denied', 'deadline'])
@@ -2315,17 +2416,42 @@ def test_issue_invite_refusal_uncertainty_and_deadline(issue_mount: Any, case: s
         assert settled['frame']['invite'] not in retained
 
 
-def test_issue_invite_rate_limit_no_second_delivery(issue_mount: Any) -> None:
+def test_issue_invite_rate_limit_no_second_delivery(issue_mount: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     v = issue_mount
     v.admit()
     assert v.helper._reply.call_count == 1
+    observed_at = v.helper.invite_observation[-1]
     initial = v.journal.read_bytes()
     v.helper._reply.reset_mock()
+    v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    v.message.new_method_error_literal = lambda name, category: SimpleNamespace(name=name, category=category)
+    v.helper.connection.send_message = Mock()
+    v.helper._error = Mock(wraps=v.h.RemoteAccessHelper._error.__get__(v.helper))
     v.renew()
     v.admit()
     assert v.helper.lifecycle_result['outcome'] == 'refused' and not v.helper._reply.called
+    v.helper._error.assert_called_once_with(v.message, 'host-state-unrecognized-invite_rate_limited')
+    refusal = v.helper.connection.send_message.call_args.args[0]
+    assert refusal.name == v.h.INTERFACE + '.Error.host_state_unrecognized_invite_rate_limited'
     assert len(v.admin.keys) == 1 and v.control.reserve_invite.call_count == 2
     assert v.journal.read_bytes() == initial and v.helper.inflight is None
+    v.renew()  # The lifecycle owner exits; retain its observation for projection.
+    observed = SimpleNamespace(generation=7, operation='b' * 32, release_uid=1000, phase='ready')
+    v.helper.generations = SimpleNamespace(current_generation=lambda _: observed)
+    v.helper.control.status = lambda: SimpleNamespace(owned=True, release_uid=1000, ready=True)
+    monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args=(), **kw:
+                        SimpleNamespace(start=lambda: target(*args)))
+    monkeypatch.setattr(v.h.threading, 'Timer', lambda *args: SimpleNamespace(start=lambda: None, cancel=lambda: None))
+    v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    reply = SimpleNamespace(set_body=lambda body: setattr(reply, 'body', body))
+    v.message.new_method_reply = lambda: reply
+    v.helper.connection.send_message = Mock()
+    monkeypatch.setattr(v.h.time, 'monotonic', lambda: observed_at + 1)
+    v.helper._status_v2(v.message, ':1.42')
+    status = json.loads(v.helper.connection.send_message.call_args.args[0].body.unpack()[0])
+    assert status['invite'] == dict(state='issued', age_seconds=1,
+                                    deadline_utc_seconds=v.record()['expires_at'])
+    assert v.journal.read_bytes() == initial and len(v.admin.keys) == 1
 
 
 @pytest.mark.parametrize('case', ['valid_large', 'repeat_ready', 'oversize', 'frame_at_limit', 'frame_limit', 'malformed', 'duplicate', 'extra', 'prefix', 'alphabet',
@@ -2744,3 +2870,184 @@ def test_thr327_invite_journal_status_after_restart(invite_mount: Any, monkeypat
     assert {p: p.read_bytes() for p in v.journal.parent.iterdir()} == before
     assert v.trust.snapshot() == trust and not v.events and not v.control.calls
     assert not commit.called and len(v.original.calls) == 1, 'no mint, cleanup, lock or commit'
+
+
+@pytest.mark.parametrize('state', ['likely_blocked', 'unverified', 'clear'])
+def test_thr327_firewall_public_preflight(mount: Any, state: str) -> None:
+    v = mount
+    v.reader.firewall_status.return_value = state
+    v.message.get_member = lambda: 'Enable'
+    v.helper._dispatch(v.message)
+    assert not v.helper._error.called
+    assert v.helper.inflight is not None and v.helper.authority.call.called
+    v.reader.firewall_status.assert_not_called()
+    assert not v.reader.effect.called and v.effects == []
+    assert not v.helper.audit.path.exists()
+
+
+@pytest.mark.parametrize('state', ['likely_blocked', 'unverified', 'clear', 'unknown',
+                                  'timeout', 'error', 'short-budget'])
+def test_thr327_firewall_ready_status(mount: Any, monkeypatch: pytest.MonkeyPatch, state: str) -> None:
+    from runtime.remote_access import helper_generation as generation
+    v = mount
+    v.helper.generations = SimpleNamespace(current_generation=lambda _: None)
+    v.helper.control.status = lambda: v.h.Snapshot(9, 1000, True, 'ready', True, None, ())
+    v.helper.cursors = {}
+    v.message.get_member = lambda: 'StatusV2'
+    native_timer, timers = v.h.threading.Timer, []
+    def timer(*args: Any, **kwargs: Any) -> Any:
+        # Timer initializes its Thread base dynamically; the mount runs the
+        # observation worker synchronously, but the watchdog must remain real.
+        with monkeypatch.context() as patch:
+            patch.setattr(v.h.threading, 'Thread', REAL_THREAD)
+            value = native_timer(*args, **kwargs)
+        timers.append(value)
+        return value
+    monkeypatch.setattr(v.h.threading, 'Timer', timer)
+    monkeypatch.setattr(v.h.threading, 'Thread', lambda target, args=(), **kw:
+                        SimpleNamespace(start=lambda: target(*args)))
+    def policy_status(remaining: float) -> dict:
+        if state == 'short-budget':
+            time.sleep(1.65)  # Earlier observations leave too little advice time.
+        return {'policy': 'current'}
+    v.reader.policy_status = Mock(side_effect=policy_status)
+    budgets = []
+    def child(command: tuple, **options: Any) -> Any:
+        assert command == generation.LIFECYCLE_COMMAND
+        assert json.loads(options['input'])['step'] == 'firewall'
+        budgets.append(options['timeout'])
+        if state == 'timeout':
+            time.sleep(options['timeout'])
+            raise subprocess.TimeoutExpired(command, options['timeout'])
+        if state == 'error':
+            raise OSError('synthetic private diagnostic')
+        return SimpleNamespace(returncode=0, stdout=json.dumps({'firewall': state}).encode())
+    monkeypatch.setattr(generation.subprocess, 'run', child)
+    v.reader.firewall_status.side_effect = generation.HomeLifecycleClient('Enable', 1000).firewall_status
+    v.h.Gio.DBusSendMessageFlags = SimpleNamespace(NONE=0)
+    reply = SimpleNamespace(set_body=lambda body: setattr(reply, 'body', body))
+    v.message.new_method_reply = lambda: reply
+    v.helper.connection.send_message = Mock()
+    v.helper._reply = v.h.RemoteAccessHelper._reply.__get__(v.helper)
+    started = time.monotonic()
+    try:
+        v.helper._dispatch(v.message)
+    finally:
+        for value in timers:
+            value.cancel()
+            value.join()
+    assert not v.helper._error.called, v.helper._error.call_args_list
+    assert v.helper.connection.send_message.call_count == 1
+    assert time.monotonic() - started < 2.0
+    result = json.loads(reply.body.unpack()[0])
+    assert result['version'] == 2
+    assert result['setup']['state'] == 'ready' and result['runtime']['state'] == 'available'
+    assert result['policy']['state'] == 'current'
+    if state in ('unknown', 'timeout', 'error', 'short-budget'):
+        assert 'firewall' not in result
+    else:
+        assert result['firewall'] == {'state': state, 'age_seconds': 0}
+    if state == 'short-budget':
+        v.reader.firewall_status.assert_not_called()
+        assert budgets == []
+    else:
+        assert len(budgets) == 1 and 0 < budgets[0] <= 1.7
+    assert v.helper.status_worker is None
+    assert not v.helper.authority.call.called and not v.reader.effect.called
+    assert not v.helper.audit.path.exists()
+
+
+@pytest.mark.parametrize('state', ['unknown', 'unverified', 'clear', 'likely_blocked', 'error', 'short-budget'])
+def test_thr327_firewall_ambiguous_does_not_veto(mount: Any, state: str) -> None:
+    v = mount
+    clock = [100.0]
+    v.helper.clock = lambda: clock[0]
+    v.reader.firewall_status.return_value = state
+    if state == 'error':
+        v.reader.firewall_status.side_effect = OSError('synthetic private diagnostic')
+    def effect(*args: Any, **kwargs: Any) -> dict:
+        v.reader.firewall_status.assert_not_called()
+        if state == 'short-budget':
+            clock[0] = 576.0
+        return {'outcome': 'ready', 'residue': []}
+    v.reader.effect.side_effect = effect
+    v.message.get_member = lambda: 'Enable'
+    v.admit()
+    assert v.helper.lifecycle_result['outcome'] == 'ready'
+    expected = 'unverified' if state == 'error' else state
+    if expected in ('unknown', 'short-budget'):
+        assert 'firewallWarning' not in v.helper.lifecycle_result
+        if state == 'short-budget':
+            v.reader.firewall_status.assert_not_called()
+    else:
+        assert v.helper.lifecycle_result['firewallWarning'] == expected
+    assert not v.helper._error.called and v.reader.effect.call_count == 1
+
+
+@pytest.mark.parametrize('case', [
+    'stock', 'stock-live-input-allow', 'inactive', 'both-user-allows', 'both-user-allows-custom', 'inactive-custom',
+    'before-lan', 'after-lan', 'multiport', 'broad', 'other-chain',
+    'unreadable-before', 'unreadable-after', 'oversized-before', 'oversized-after',
+])
+def test_thr327_firewall_rule_files_enable(mount: Any, ufw_rules: dict[str, Path],
+                                         monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    """Public Enable completes; incomplete firewall evidence only advises."""
+    from runtime.remote_access.host_firewall import inspect_ufw
+    v = mount
+    if case in ('before-lan', 'after-lan', 'multiport', 'broad', 'other-chain', 'both-user-allows-custom', 'inactive-custom'):
+        name = 'after.rules' if case == 'after-lan' else 'before.rules'
+        chain = 'ufw-after-input' if case == 'after-lan' else 'ufw-before-input'
+        if case == 'multiport':
+            rules = f'-A {chain} -p tcp -m multiport --dports 443,8443 -j ACCEPT\n'
+        elif case == 'broad':
+            rules = f'-A {chain} -j ACCEPT\n'
+        elif case == 'other-chain':
+            rules = ':custom-input - [0:0]\n-A custom-input -j ACCEPT\n'
+        else:
+            rules = (f'-A {chain} -s 192.168.1.0/24 -p tcp --dport 8443 -j ACCEPT\n'
+                     f'-A {chain} -s 192.168.1.0/24 -p udp --dport 3478 -j ACCEPT\n')
+        path = ufw_rules[name]
+        path.write_text(path.read_text().replace('COMMIT', rules + 'COMMIT'))
+    elif case.startswith('oversized-'):
+        ufw_rules[case.split('-')[1] + '.rules'].write_bytes(b'#' + b'x' * 65536)
+    elif case.startswith('unreadable-'):
+        unreadable = '/etc/ufw/' + case.split('-')[1] + '.rules'
+        native_open = os.open
+        def deny_read(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+            if str(path) == unreadable:
+                raise PermissionError('synthetic private diagnostic')
+            return native_open(path, flags, *args, **kwargs)
+        monkeypatch.setattr(os, 'open', deny_read)
+    def run(argv: tuple, **kwargs: Any) -> Any:
+        assert argv == ('/usr/sbin/ufw', 'status', 'verbose')
+        # TASK-19365's upstream formatter only lists ufw-user-* chains. A live
+        # INPUT allow installed by after.init/another owner yields these same
+        # bytes and stock files; no live firewall is executed by this fixture.
+        raw = b'Status: active\nDefault: deny (incoming), allow (outgoing), deny (routed)\n'
+        if case in ('inactive', 'inactive-custom'):
+            raw = b'Status: inactive\n'
+        elif case in ('both-user-allows', 'both-user-allows-custom'):
+            raw += b'To  Action  From\n--  ------  ----\n8443/tcp  ALLOW IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n'
+        return SimpleNamespace(returncode=0, stdout=raw)
+    monkeypatch.setattr(subprocess, 'run', run)
+    observed = []
+    def firewall_status(remaining: float) -> str:
+        state = inspect_ufw(timeout=remaining)
+        observed.append(state)
+        return state
+    v.reader.firewall_status = firewall_status
+    def effect(*args: Any, **kwargs: Any) -> dict:
+        assert observed == [], 'firewall inspection must follow settled effects'
+        return {'outcome': 'ready', 'residue': []}
+    v.reader.effect.side_effect = effect
+    v.message.get_member = lambda: 'Enable'
+    before = {name: path.read_bytes() for name, path in ufw_rules.items()}
+    v.admit()
+    expected = ('likely_blocked' if case in ('stock', 'stock-live-input-allow') else
+                'clear' if case in ('inactive', 'inactive-custom', 'both-user-allows') else 'unverified')
+    assert observed == [expected]
+    assert v.helper.lifecycle_result == {'outcome': 'ready', 'residue': [], 'firewallWarning': expected}
+    assert v.helper.inflight is None and v.helper.authority.call.called
+    assert not v.helper._error.called
+    assert {name: path.read_bytes() for name, path in ufw_rules.items()} == before
+    assert v.reader.effect.call_count == 1 and not v.effects

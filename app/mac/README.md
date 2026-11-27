@@ -227,12 +227,19 @@ clipping; covered Main panes cannot consume its scroll budget. Shape, pane-limit
 and page-limit failures identify `scroll-plan` (with bounded geometry for page
 exhaustion). A failure after successful admission is a capture `failure`, not
 `admission_failure`. The existing pane/page/image/time limits remain in force.
+The focused Node24 geometry regression runs with
+`node --experimental-transform-types --test web/scripts/desktop-dialogs.test.mjs`
+from the repository root; it executes the embedded planner without proving
+native WebKit layout or completed PNG captures.
 Before navigation/admission and each dialog/theme/locale/scroll/settle/snapshot/
 PNG step, the qualifier fsyncs `capture_progress` with its closed step name and
 capture coordinates. A background timer allocates navigation up to 10 seconds
 and each later step up to 2 seconds, independently of MainActor/WebKit callbacks,
 within the unchanged process watchdog and suite limits. `capture_step` records completion,
-error or timeout; timeout exits 124 with a short diagnostic line. Navigation
+error or timeout; errors retain bounded reason/domain/code and the WebKit
+JavaScript exception message when present. Scroll-plan validation distinguishes
+invalid shape/page counts and pane/page budget exhaustion. Timeout exits 124
+with a short diagnostic line. Navigation
 still waits for `WKNavigation.didFinish` before admission, with fsynced
 `capture_navigation` checkpoints for provisional/committed/finished phases and
 monotonic elapsed time on completion/timeout. This redistributes startup time
@@ -622,8 +629,11 @@ the packaged native binary also accepts the fixed internal grammar directly.
 Mac host commands remain unavailable/deferred.
 
 A controlling terminal is required before invite/selection work. Paste is hidden,
-limited to 5500 UTF-8 bytes and 120 seconds. The terminal displays the exact target;
-type `connect` to consent and optionally `save` to save access in login Keychain.
+limited to 5500 UTF-8 bytes and 120 seconds. Terminal readiness uses Darwin
+`select` with a 100 ms cancellation interval.
+Echo is disabled before the hidden prompt and terminal mode is restored on exit.
+The terminal displays the exact target; type `connect` to consent and optionally
+`save` to save access in login Keychain.
 The comparison phrase stays on the terminal for comparison with Linux Host.
 No invite arguments, environment/file/stdin intake, clipboard read or secret
 export exists. Saved connect/remove enumerates at most 32 choices, waits at most
@@ -649,7 +659,22 @@ read/action or cancellation, 1 a closed error, 2 invalid grammar without argumen
 echo. No GUI/other CLI session control or new IPC/service is provided.
 
 Focused native tests: from `app/mac`, `swift test --filter ConnectionCLITests`.
-They are NOT RUN on the Linux maker host. The existing unsigned
+They use `/usr/bin/script -q /dev/null` to create an isolated controlling PTY.
+An embedded `/usr/bin/python3` observer opens `/dev/tty` with the production flags
+and records actual `poll` ready/revents/errno before executing the adjacent built
+`HappyRanchApp --connection-client accept-invite`. The cause case requires
+`POLLNVAL`; a different native result is reported and fails that characterization.
+The CLI regression sends a synthetic malformed invite through the PTY master
+after the hidden prompt, requires `invalidInvite` instead of `unavailable`, and
+rejects echoed or unexpected terminal output. It adds no production test entry.
+Xcode's `/usr/bin/python3` and the SwiftPM-built product are required; missing
+prerequisites fail. Additional direct-slave PTY cases cover echo/restoration,
+editing (with CR/LF translation disabled), cancellation, deadline, Ctrl-D,
+byte limits and UTF-8 through the approved internal descriptor/timeout seam.
+Production still opens only `/dev/tty` with a 120-second deadline. Native tests
+and fail-before/pass-after proof are NOT RUN on the Linux maker host;
+reviewed-head QA uses the existing `app-scheme` venue described above.
+The existing unsigned
 `build-mac-app.yml` builds release app sources only and does not compile or run
 Swift tests. Native terminal/signal behavior, Keychain consent/unsigned reopen,
 helper integration and home/different-network acceptance remain NOT RUN.

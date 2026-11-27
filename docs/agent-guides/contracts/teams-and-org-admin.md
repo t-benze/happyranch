@@ -1,5 +1,44 @@
 # Teams and org administration contracts
 
+The canonical [Create team and Create agent Product build specification](../../product/prds/2026-11-26-team-and-agent-creation.md)
+consolidates creation UX and acceptance under THR-402 seq5. Its proposed entry
+points and recovery changes remain delivery work; it preserves the Default,
+membership, naming and remote-configuration contracts below. The historical
+May 30 web creation design is provenance, not deployed verification.
+
+## Founder creation API (THR-402)
+
+Founder `POST /agents` retains worker enrollment into an existing `team` and
+manager enrollment with a `new_team`. New team names must match
+`^[a-z][a-z0-9_]{0,63}$`: 1–64 ASCII characters, lowercase letter first, then
+lowercase letters, digits or underscores. Invalid names, including empty text,
+return HTTP422 `detail={"code":"invalid_team_name","team":<submitted value>}`.
+Case-insensitive `default` is reserved and returns HTTP409
+`detail={"code":"team_reserved","team":<submitted value>}` before grammar or
+duplicate checks. These checks precede membership and naming writes.
+Duplicate new teams retain HTTP409 `team_exists`; unknown worker teams retain
+HTTP404 `unknown_team`. Existing nonconforming team keys remain valid worker
+destinations. This tightens NEW team input only; the separate agent-initiated
+pending-worker enrollment and registered-team approval paths retain their rules.
+
+After enrollment commits, workspace bootstrap failure returns HTTP500
+`detail={"code":"agent_setup_incomplete","canonical_id":<id>,"team":<team>,"role":<role>}`.
+Agent definitions, membership and committed names remain retained; no rollback,
+deletion or automatic re-creation follows. Raised clone/workspace/directory
+errors are translated only around bootstrap, before the existing enrollment
+audit. A false clone result retains its existing uncertainty disposition and
+later bootstrap/audit call order, then returns the same incomplete signal.
+Audit failures retain their original handling. Success receipts are unchanged.
+Unrecognised errors, cancellation and transport loss still require unknown-result
+handling; this signal does not establish absence for any other failure.
+
+Focused synthetic ASGI/SQLite checks (no lifespan, listener, provider or live org):
+`PYTHONPATH=$PWD uv run --frozen pytest scripts/test_founder_create_contract.py scripts/test_empty_default.py -v --tb=short`.
+They cover new-name boundaries/refusals with unchanged files/claims, legacy worker
+teams, retained enrollment after bootstrap failure, unchanged audit placement,
+and ensure-default → worker enrollment on the same in-memory registry. They add
+no CI trigger and do not invoke retired units or skipped general integration.
+
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or
 > extends an earlier one, the later section controls; sections marked

@@ -358,7 +358,7 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
   construction is not a second lenient validation authority. See
   `docs/agent-guides/agent-executors-and-permissions.md`.
 
-- **Linux systemd supervision (THR-327 seq187/195).** The foreground `cmd/happyranch-tsnet-sidecar` loads validated JSON, waits for bounded `tsnet.Server.Up` and the existing connector probe/listener gates, then emits one `READY=1`. It sends `WATCHDOG=1` every `WATCHDOG_USEC/2` for the selected `WATCHDOG_PID`; SIGTERM/SIGINT emits `STOPPING=1` and stops the sidecar. Startup or serving failure exits nonzero. The Python connector waits for initial readiness under `TimeoutStartSec=120`; after READY, readiness or listener/thread loss closes admission and exits nonzero, with no in-process re-arm or second READY. Healthy persisted-revocation rotation remains inside the lifecycle boundary. Both rendered services use `Type=notify`, `Restart=on-failure`, `RestartSec=1`, `WatchdogSec=30`, and `StartLimitIntervalSec=300`/`StartLimitBurst=5`. In system mode, connector crashes after READY get the full five starts in 300 seconds; when the connector fails before READY, the `Upholds`/`BindsTo` pair adds start-limit checks, so restarts can be refused after as few as three real starts. The unit stays failed until the same explicit `reset-failed`/start recovery; a refused unit may report `Result=signal`, and its journal’s `Start request repeated too quickly` line identifies the refusal. The prior 30/60/120s backoff (3/600s) belonged to the removed Go supervisor and is superseded; systemd is the only supervisor. The sidecar has `After=` and `BindsTo=happyranch-connector.service`; the system-mode connector adds `Upholds=happyranch-tsnet-sidecar.service` (systemd >= 249) so connector recovery brings the sidecar back. Both have `PartOf=happyranch-managed.target`, whose `Wants=` names both; intentionally stopping the target stops the connector and its Upholds relationship. Existing hardening stays; only the sidecar adds `AF_NETLINK` for tsnet Linux interface monitoring. The bounded managed installer and passing initial systemd M1 lifecycle are described below. Consumed-credential restart admission is implemented (THR-327 seq187/227): after the existing no-symlink and owner-directory gates, a regular, current-user-owned `0600` marker with the exact SHA-256 digest of `RoleIdentity + NUL + ControlURL` admits restart with an empty auth key only when credential `Lstat` returns ENOENT. Any present credential entry (including a dangling symlink), invalid marker or other lookup error refuses without reading the credential. Marker ENOENT retains the one-time validate/read/redeem/durable-commit/delete enrollment path. The production tsnet adapter refuses enrollment and restart before tsnet construction if `TS_AUTHKEY`, `TS_AUTH_KEY`, `TSNET_FORCE_LOGIN` or `TS_DEBUGSYSPOLICY_AUTH_KEY` is set, including empty values; its error names the variable and asks that it be unset without exposing its value. Only the explicitly passed credential may supply an auth key; restart reuses the configured persistent node state. Restart never re-runs consumption or rewrites the marker and still requires engine start, the existing receipt gates (including durable state and expected-peer visibility), connector probe and listener success. Marker reads use nonblocking/no-follow opens and verify the opened regular file. Real systemd/tailnet restart and reboot acceptance remain **UNEXECUTED** and outside M1.
+- **Linux systemd supervision (THR-327 seq187/195).** The foreground `cmd/happyranch-tsnet-sidecar` loads validated JSON, waits for bounded `tsnet.Server.Up` and the existing connector probe/listener gates, then emits one `READY=1`. It sends `WATCHDOG=1` every `WATCHDOG_USEC/2` for the selected `WATCHDOG_PID`; SIGTERM/SIGINT emits `STOPPING=1` and stops the sidecar. Startup or serving failure exits nonzero. The Python connector waits for initial readiness under `TimeoutStartSec=120`; after READY, readiness or listener/thread loss closes admission and exits nonzero, with no in-process re-arm or second READY. Healthy persisted-revocation rotation remains inside the lifecycle boundary. Both rendered services use `Type=notify`, `Restart=on-failure`, `RestartSec=1` and `WatchdogSec=30`. The sidecar and legacy/other connector renderings retain `StartLimitIntervalSec=300`/`StartLimitBurst=5`. The fixed managed-identity connector uses `StartLimitIntervalSec=0` (no start-rate limit), with `StartLimitBurst=5` still rendered; see [THR-327 renewal unit upgrade](#thr-327-renewal-unit-upgrade-task-19228) for its retry and existing-host upgrade behavior. For the limited system-mode connector, crashes after READY get the full five starts in 300 seconds; when that connector fails before READY, the `Upholds`/`BindsTo` pair adds start-limit checks, so restarts can be refused after as few as three real starts. That limited unit stays failed until the same explicit `reset-failed`/start recovery; a refused unit may report `Result=signal`, and its journal’s `Start request repeated too quickly` line identifies the refusal. The prior 30/60/120s backoff (3/600s) belonged to the removed Go supervisor and is superseded; systemd is the only supervisor. The sidecar has `After=` and `BindsTo=happyranch-connector.service`; the system-mode connector adds `Upholds=happyranch-tsnet-sidecar.service` (systemd >= 249) so connector recovery brings the sidecar back. Both have `PartOf=happyranch-managed.target`, whose `Wants=` names both; intentionally stopping the target stops the connector and its Upholds relationship. Existing hardening stays; only the sidecar adds `AF_NETLINK` for tsnet Linux interface monitoring. The bounded managed installer and passing initial systemd M1 lifecycle are described below. Consumed-credential restart admission is implemented (THR-327 seq187/227): after the existing no-symlink and owner-directory gates, a regular, current-user-owned `0600` marker with the exact SHA-256 digest of `RoleIdentity + NUL + ControlURL` admits restart with an empty auth key only when credential `Lstat` returns ENOENT. Any present credential entry (including a dangling symlink), invalid marker or other lookup error refuses without reading the credential. Marker ENOENT retains the one-time validate/read/redeem/durable-commit/delete enrollment path. The production tsnet adapter refuses enrollment and restart before tsnet construction if `TS_AUTHKEY`, `TS_AUTH_KEY`, `TSNET_FORCE_LOGIN` or `TS_DEBUGSYSPOLICY_AUTH_KEY` is set, including empty values; its error names the variable and asks that it be unset without exposing its value. Only the explicitly passed credential may supply an auth key; restart reuses the configured persistent node state. Restart never re-runs consumption or rewrites the marker and still requires engine start, the existing receipt gates (including durable state and expected-peer visibility), connector probe and listener success. Marker reads use nonblocking/no-follow opens and verify the opened regular file. Real systemd/tailnet restart and reboot acceptance remain **UNEXECUTED** and outside M1.
 - **Trust-state publication consistency (THR-327 seq187/227).** `AtomicFileTrustStateStore.load()` holds `LOCK_SH` on the existing owner-only stable `<state>.lock` inode; `transaction()` and `save()` hold `LOCK_EX` across snapshot and anchor publication. Lock acquisition opens without following symlinks or blocking on special files and requires a regular, single-link, current-owner, owner-only inode distinct from the snapshot and configured anchor. Unsafe locks refuse with `StateStoreError`; existing lock metadata is never repaired, and pair-file metadata is never changed by reading. A reader cannot sample a writer's in-progress pair. A load on the same store by the thread already holding the exclusive lock reuses that ownership; other threads/processes still acquire their own shared lock. Readers use the existing bounded acquire and fail closed with `StateStoreError` on contention, never a default/empty state. Every stable-pair validation stays: partial, corrupt, torn, replayed, generation/digest-mismatched, symlinked and loose-permission state still refuses, including when a lock alias targets a loose pair file. A crash between publications leaves a genuinely torn pair that still refuses after the kernel releases the lock. Pairing and request semantics stay unchanged; there is no client-request retry. Post-READY readiness/listener loss still stops admission and exits nonzero. Both loss exits emit the failing gate names and provider/listener/thread booleans to the journal and STATUS, without exception text, paths, state values or credentials.
 
 - **Managed Linux installation (THR-327 seq187 item 2, seq195/207/227).** `python -m runtime.remote_access.installer install --enrollment-key-file /absolute/input.key` is a root operator action on a prepared host. Binaries, Python environment and validated connector/sidecar configuration must already be provisioned at `/opt/happyranch/` and `/etc/happyranch/`; the installer creates their directory layout but does not populate payload/configuration. The explicit transient enrollment handoff is described below. It creates or validates the dedicated non-root `happyranch:happyranch` account with `/nonexistent` home and a nologin shell. Payload/configuration directories are root-owned `0755`; service state/log/runtime directories belong to that account and are created with the shared renderer's systemd modes (`0755`, except sidecar state `0700`). The installer creates `/var/lib/happyranch-connector` at `0755` and accepts existing `0755` or the owner-only `0700` set by real trust-state saves. The installer's own validation and writes never chmod existing directories or widen their permissions. The credstore mode exception is described below; managed-directory mode requirements remain exact, and group/other-writable directories are refused except for the exact unmanaged `/var/log` ancestor described below. Before any account-creation or systemctl command, install and uninstall inspect all existing destinations for safe modes, types, no-follow traversal and validated ownership. If the service account is absent, an existing service state/log/runtime directory is refused because its required owner cannot be validated; a fresh install can create the account only when those service destinations are absent. The three root-owned `0644` units are exactly the shared renderer's connector, sidecar and `happyranch-managed.target` output. Literal descriptor-relative traversal and exclusive no-follow writes refuse linked/special files, loose/wrong ownership or modes, and differing pre-existing units. Matching units can be reused; there is no transactional upgrade, journal, rollback or interrupted-install recovery.
@@ -380,7 +380,7 @@ the OS cause of a particular bootstrap failure; native lifecycle proof is requir
 - **Managed remote access N0/N1/N2 amendment (THR-097 seq360/seq374/seq379/seq392).** The managed transport value is `embedded`: packaged macOS tsnet/userspace WireGuard is designed to connect to the Linux sidecar in `app/linux/tsnet-sidecar/`, which proxies raw TCP only to the N2 Python connector's explicit `managed` listener on literal `127.0.0.1`. `runtime/remote_access/managed_provider.py` reuses the existing pairing and locked gateway pipeline; the connector alone owns application identity, credentials, epoch, allow-list/route policy and revocation and injects the daemon bearer only on the final `127.0.0.1:<resolved-port>` hop. The N1 core fail-closes credential redemption/listener startup and removes external admission before active connections and engine state; persisted N2 revocation likewise stops the listener first, then seals/closes active flows, then performs downstream runtime cleanup, retaining failed cleanup handles for idempotent retry. Supervisor provider start, READY publication, persisted-revocation reconciliation, and shutdown share one re-entrant lifecycle boundary: either provider start completes first and stop follows it, or stop/revocation completes first and late start is refused/idempotent; partial start is cleaned without retained provider/registry state. Shutdown observably stops the listener, closes registered active flows, and drops cached registry/pairing runtime state exactly once, so repeated shutdown leaves no listener, active flow, or runtime residue. N2 adds no address selector or fallback and exposes readiness only after the existing connector gates pass and the loopback listener binds. The checksum-pinned N1 dependency/license artifacts are unchanged. The original N1/N2 slices defined the core/ingress boundary; the later THR-327 managed Linux command, composite supervision, installer and enrollment handoff are now shipped. M1 below passed the bounded initial systemd lifecycle. Tailnet transport (M2), full-daemon acceptance, restart/reboot recovery and deployment remain **UNEXECUTED** and outside M1; broader provisioning/distribution and N3–N6 obligations remain open. Neither endpoint requires system Tailscale; wildcard, LAN/plaintext, public-Tailscale, and public-DERP fallbacks remain forbidden. TASK-6298/TASK-6289 remains unchanged Supported-DIY, and Unit 4B-2 remains independent.
 - **Manual managed M1 (THR-327 seq187): PASSED.** [Hosted run 42978877282](https://github.com/t-benze/happyranch/actions/runs/42978877282) completed successfully on 2026-11-11 at main `455c9c5b689fa25f625e2df8cae1b551c2a1de86` (short `455c9c5b`), through install, both READY services, paired HTTP 200, product uninstall/purge and every residue assertion. This receipt belongs to that source head; later heads are not claimed rerun. `.github/workflows/managed-m1.yml` runs only on `workflow_dispatch` on a disposable Ubuntu 24.04 hosted runner. Its short Bash driver, `scripts/ci/m1_install_ready_uninstall.sh`, accepts an absent `/run/happyranch-tsnet-sidecar` or a retained real directory owned by `happyranch:happyranch` containing only an optional regular, non-symlink `health.json`, and provisions the rendered units' binaries/config, a disposable Headscale cell and expected peer, and a synthetic loopback HTTP backend; it invokes the product installer with a fresh single-use ten-minute file key, observes both notify services active/running, checks drift, makes a paired connector-loopback request, then uninstalls with `--purge` and checks documented residue. Payload, configuration, service logs and account are retained as the installer documents; runner disposal removes the fixture. Before the request and in always-run diagnostics, the script records runtime-directory owner/mode/type and loaded runtime directives; diagnostics also include manager reload timestamps alongside plain unit journals/status/cat and installer streams before stopping fixtures and uploading logs. This is separate from required lint/static checks and daily Product E2E. The passing run removed unit files/target enablement, enrollment source/link/operator input, persistent service state and both runtime directories. **M2 tailnet transport, full-daemon acceptance, restart/reboot recovery and deployment remain UNEXECUTED and outside M1.** The HTTP request enters the connector on loopback and uses a synthetic backend; it does not traverse the tailnet data path or run the full daemon, and initial startup/uninstall does not prove restart/reboot recovery.
 
-- **Manual managed M3 same-boot recovery (THR-327): UNEXECUTED.** Acceptance is defined by `.github/workflows/managed-m3.yml` and `scripts/ci/m3_recovery.sh` and remains unexecuted until the main-only manual workflow passes. The harness reuses M2 provisioning, READY, paired real-daemon tailnet request, logs, teardown and purge residue checks. It tests connector SIGKILL, sidecar SIGKILL with the same Headscale node ID/IP/count and consumed enrollment (no new preauthkey), connector SIGSTOP/watchdog, intentional stop/start, shipped start-limit exhaustion/reset/start, daemon-fixture restart without reinstall, then uninstall/purge. Each recovery requires both notify services active/running and a paired tailnet HTTP 200, with per-step MainPID, NRestarts, Result and journal evidence. Step 5 crashes the running (READY) connector exactly five times and proves start-limit refusal from the connector journal. Only steps 4 and 5 explicitly start product services after a fault; `BindsTo=` leaving the sidecar stopped is a failure. Both units’ rate accounting is reset at the start of steps 1–4 and 6 to isolate faults. Reboot is outside M3 and remains **UNEXECUTED**.
+- **Manual managed M3 same-boot recovery (THR-327): UNEXECUTED.** Acceptance is defined by `.github/workflows/managed-m3.yml` and `scripts/ci/m3_recovery.sh` and remains unexecuted until the main-only manual workflow passes. The harness reuses M2 provisioning, READY, paired real-daemon tailnet request, logs, teardown and purge residue checks. Its M2 config selects the legacy connector rendering, so its finite-limit assertions do not describe the current managed-identity connector; see [THR-327 renewal unit upgrade](#thr-327-renewal-unit-upgrade-task-19228). It tests connector SIGKILL, sidecar SIGKILL with the same Headscale node ID/IP/count and consumed enrollment (no new preauthkey), connector SIGSTOP/watchdog, intentional stop/start, shipped start-limit exhaustion/reset/start, daemon-fixture restart without reinstall, then uninstall/purge. Each recovery requires both notify services active/running and a paired tailnet HTTP 200, with per-step MainPID, NRestarts, Result and journal evidence. Step 5 crashes the running (READY) connector exactly five times and proves start-limit refusal from the connector journal. Only steps 4 and 5 explicitly start product services after a fault; `BindsTo=` leaving the sidecar stopped is a failure. Both units’ rate accounting is reset at the start of steps 1–4 and 6 to isolate faults. Reboot is outside M3 and remains **UNEXECUTED**.
 
 - **Manual managed M2 (THR-327 seq247): PASSED at main `8165e05d10a0a50238ccaa86aa6d79ed859e4428` and, after the readiness-wait fix, at main `5d5fa8662b3a566fc408d1c65a4a3e4d62aae463`.** [Hosted run 43004289479](https://github.com/t-benze/happyranch/actions/runs/43004289479) passed all seven M2 steps on 2026-11-11 on a fresh Ubuntu 24.04 runner: product install with both services notify-READY and check-drift; paired tailnet → sidecar → connector → real-daemon org teams returned 200; absent and never-paired credentials returned 403 with exactly `{"error":"identity_denied"}`; a second device returned 200, was revoked through the product CLI, then returned 403 with exactly `{"error":"identity_denied"}` after the bounded reconciliation wait. All six forbidden routes returned 403 with their exact categories: executor registration and adapter deletion returned `method_denied`; custom-CLI commit, runtime/use, org deletion and auth bootstrap returned `route_denied`. The synthetic org remained loaded and readable after forbidden DELETE. Product uninstall `--purge` passed the M1 residue rules, and plain logs were uploaded with `if: always()`. The test-owned real `python -m runtime.daemon` uses a disposable home/token and synthetic org; `ExpectedPeer` is startup visibility, not per-connection node authorization. Both manual workflows cache the pinned Headscale binary and Tailscale archive under version+SHA-256 keys; both drivers verify checksums on hits and misses before use and download only absent files. [Rerun 43004588741](https://github.com/t-benze/happyranch/actions/runs/43004588741) at the same head passed step 1 but failed at step 2's first pairing request with curl exit 97 before HTTP: the peer had netmap visibility before endpoint discovery. That run proved cache hits, successful checksum verification and plain-log upload on failure. The M2 script now waits up to 60s for a TSMP ping through WireGuard before its first tailnet request, failing with the last ping output on timeout; HTTP outcomes and assertions are unchanged. After that fix merged (PR #1408), [hosted run 43011862585](https://github.com/t-benze/happyranch/actions/runs/43011862585) and [repeat run 43012067135](https://github.com/t-benze/happyranch/actions/runs/43012067135) at main `5d5fa866` each passed all seven M2 steps on 2026-11-11 with the same results listed above, including cache hits and successful checksum verification for both pinned downloads. At the same head, [M1 run 43012072443](https://github.com/t-benze/happyranch/actions/runs/43012072443) passed with the cached Headscale/Tailscale downloads. These receipts belong to `5d5fa866`; later heads are not claimed rerun. Main-only `workflow_dispatch`, M1's receipt above, required lint/static checks and daily E2E are unchanged. Restart/reboot recovery and deployment remain **UNEXECUTED**.
 
@@ -1138,13 +1138,51 @@ The reload intent rechecks custody, full fixed inventory, quiescence and pinned
 no-follow parents before daemon-reload, then resets retained failed markers only
 for fixed managed unit names whose removal precedes this validated journal phase.
 Before each reset, fresh show must prove not-found, empty FragmentPath/DropInPaths,
-zero MainPID/ControlPID, empty Job and failed or inactive ActiveState; inactive
-units need no reset. Unknown shapes refuse. The fixed reset-failed argv uses the
+zero supported PID fields (MainPID/ControlPID for services, ControlPID for the
+socket, neither for the target), empty Job and failed or inactive ActiveState;
+inactive units need no reset. Unknown shapes refuse. The fixed reset-failed argv uses the
 existing service-manager transport and timeout. No caller supplies a unit name.
 The persisted replacement-reload phase is the durable intent for both idempotent
 effects; there is no new phase/schema. V1/v2 journals already at reload, including
 already-reloaded not-found/failed units, resume through this narrowly checked
 inventory route with unchanged authorization, caller and custody checks.
+Authenticated Turn off and ready-restart Enable additionally clear a failed
+marker for the fixed five `UNITS` names. Turn off does this after verified
+stop and final fragment form/daemon reload, before retiring cleanup evidence.
+Ready restart retains its existing receipt, G/O, custody, deadline and no-replay
+checks. Each effect freshly verifies the exact owned fragment at its fixed path,
+no drop-ins or reload requirement, inactive/failed ActiveState, dead/failed
+SubState and empty Job. Services additionally require zero MainPID/ControlPID
+and empty ControlGroup; the fixed socket requires zero ControlPID and empty
+ControlGroup (its Socket interface has no MainPID). The fixed target has no
+execution context. These are the properties exposed by the
+[systemd Unit, Service and Socket interfaces](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.systemd1.html).
+For an absent fixed unit, `_reload_unit_state` also requires the same supported
+PID fields, not-found LoadState and no fragment/drop-ins;
+Headscale remains outside `UNITS`; receipt-bound B6 additionally resets its fixed
+service name after verified removal and final daemon reload, before retiring the
+original activation/account/publication receipts. This separate absent-unit proof
+requires exact Id/Names, not-found LoadState, empty FragmentPath/DropInPaths, no
+reload requirement, MainPID=ControlPID=0, empty ControlGroup/Job and dead/failed
+SubState. A not-found .service still exposes its Service properties; any missing
+property refuses, never defaults to zero. B6 rechecks its original receipt/G/O,
+identity, process and custody fences before reset and after its fresh after-read.
+Reset must re-read as
+inactive/dead with the same ownership/quiescence properties. Failure leaves a
+fixed `partial_cleanup` outcome with `owned units: reset unconfirmed` during
+Turn off, or the existing `ready-restart-failed-turn-off` refusal during Enable.
+No paths, native output or contents enter that result. All ordinary inventory
+state sets stay strict. Status is read-only and never resets; post-disable staged
+refusal is projected through the existing inventory/residue categories.
+Ready restart also resets a failed Headscale unit behind its unchanged
+require-ready fence: exact home unit bytes/loaded FragmentPath, Id/Names and
+the same service quiescence/after-read proof are required before the existing
+boot-equivalent start. It retains the original receipt/G/O/custody/deadline and
+no-mint/no-replay rules. A failed reset/start still names
+`ready-restart-failed-turn-off`; B6 makes that advice safe for a receipted unit.
+Disable without a receipt still uses strict Enable capture: already-stranded
+failed retained units have no new authenticated recovery admission here.
+
 The retirement intent additionally requires the ordinary no-unit manager shape;
 cached own fragments no longer qualify and every absent unit must be inactive.
 If reset leaves a unit failed, refuse without looping or adding retry budget.
@@ -1529,7 +1567,7 @@ No live root/systemd acceptance is claimed.
 | Existing account (ruling A) | Exact expected shape without a valid creation receipt may be reused, but is UNOWNED and never modified or deleted. Preparation visibly returns `account=unowned` and `preservation="preserved: not created by HappyRanch"`; this is a typed visible preservation outcome, not cleanup success or failure. Shape mismatch refuses. |
 | Custody | `/etc/happyranch/headscale`, `/var/lib/happyranch-headscale`, `/run/happyranch-headscale`: service UID:GID 0700; policy service UID:GID 0600. Existing directories are validated, never chmod/chown repaired. Empty custody, the exact canonical inert policy, or the final root-receipted config/DERP/leaf/key set below is reusable; unreceipted config/DB/key/socket/pending/unknown entries refuse and are preserved, so preparation cannot adopt a running/unrelated Headscale installation. No payload/notices are changed. |
 | Policy/user layout | Fixed `/etc/happyranch/headscale/policy.hujson`, canonical JSON (valid HuJSON) with exactly one `acls` entry: `action=accept`, `proto=tcp`, `src=["happyranch-invite"]`, `dst=["happyranch-node:443"]`. All else denied by absence of a rule. No wildcard/autogroup/tag/SSH grant or invite-to-invite rule. Future node enrollment creates only the Linux-node user `happyranch-node`; future Mac minter receives dedicated user NAME `happyranch-invite`. These database users are not OS users, and are not created by this inert prefix. Port 443 is the spec's connector tailnet port, distinct from LAN control 8443. |
-| Unit | Separate exact-byte `render_headscale_unit`, `/etc/systemd/system/happyranch-headscale.service` root:root 0644. Fixed libexec binary and `/etc/happyranch/headscale/config.yaml`, service User/Group, empty capabilities and applicable existing system hardening. Only fixed state/runtime write paths, 0700 systemd directories, UMask 0077, restart limits, control-group kill and bounded start/stop. No Install section. No enable/start/reload during preparation. Exact old connector/sidecar unit bytes are unchanged. |
+| Unit | Separate exact-byte `render_headscale_unit`, `/etc/systemd/system/happyranch-headscale.service` root:root 0644. Fixed libexec binary and `/etc/happyranch/headscale/config.yaml`, service User/Group, empty capabilities and applicable existing system hardening. Only fixed state/runtime write paths, 0700 systemd directories, UMask 0077, restart limits, control-group kill and bounded start/stop. No Install section. No enable/start/reload during preparation. This Headscale preparation leaves connector/sidecar unit bytes unchanged; the later connector retry change is described in [THR-327 renewal unit upgrade](#thr-327-renewal-unit-upgrade-task-19228). |
 | Bounded startup | Tagged v0.25.1 `serve` does not emit sd_notify. The rendered unit uses Type=exec and isolated bundled Python `headscale_service wait-ready` as ExecStartPost: fixed loopback `127.0.0.1:19090` `/metrics`, one-second socket timeouts, 30-second retry deadline inside TimeoutStartSec=40. Tagged Serve opens metrics after HTTPS. This is startup evidence only, not tailnet/connector readiness; the probe is not invoked here. Output is suppressed in the service unit. |
 | Port preflight | `headscale_service.preflight_ports(dial_ip)` validates the same canonical RFC1918 IPv4 contract as the renderer, then samples exclusive AF_INET binds at dial_ip TCP8443/UDP3478 and 127.0.0.1 TCP19090/TCP50443. No reuse option, all probes closed. `occupied-port` on EADDRINUSE; other failures `port-check-uncertain`; invalid input `dial-ip`, no raw exceptions. The 3b-2f-2 prefix below now wires selection and this preflight into preparation; native binds remain NOT RUN in maker verification. A check is an observation, not a reservation against a later binder. |
 | Preparation output/refusals | Secret-free JSON with `state=inert`, `account=created/owned/unowned`, and `preservation=receipt-recorded` or the visible unowned statement. Closed refusal categories: `deb-layout-required`, `account-shape`, `account-create-uncertain`, `account-receipt-uncertain`, `foreign-unit`, `foreign-custody`, `custody-uncertain`; the config prefix adds `inventory`, `no_address`, `multiple_addresses`, `dial_ip`, `address-changed`, `publication-uncertain`, `occupied-port`, `port-check-uncertain`, `materializer-uncertain` and `cleanup-uncertain` (quiescence refusal). Native command text/output and underlying exception contexts are discarded. Partial objects are preserved for operator inspection; no automatic repair/deletion. |
@@ -2023,9 +2061,13 @@ are stripped, including duplicates, while the existing device-credential header
 continues to carry the device bearer. In the managed identity profile, slice
 2b-1 uses this verified frame for pinned pairing and every-request admission.
 
-`ConnectorUnitSpec.ingress_profile` adds only `RuntimeDirectoryMode=0700` for the
-fixed system service. Existing hardening, MDWE, AF_UNIX allowance, capabilities,
-notify/watchdog, restart limits and target/bind/uphold relations remain exact.
+Slice 2b-1 originally added only `RuntimeDirectoryMode=0700` through
+`ConnectorUnitSpec.ingress_profile` for the fixed system service. Existing
+hardening, MDWE, AF_UNIX allowance, capabilities, notify/watchdog and
+target/bind/uphold relations remain exact. The later managed-identity connector
+start-rate-limit change is described in
+[THR-327 renewal unit upgrade](#thr-327-renewal-unit-upgrade-task-19228);
+sidecar and legacy/other connector limits remain unchanged.
 The legacy installer still validates legacy configs; slice 3b owns generated
 profile/unit selection and migration. No service was installed or restarted.
 CA/TLS/control/DERP trust changes belong to slice 1b. Real Headscale v0.25.1 WhoIs
@@ -2192,14 +2234,19 @@ existing nonsecret action fields (`effect`, `inviteState`, UTC `expiresAt`, etc.
 Malformed/late/lost frames produce `outcomeUnknown` / effect `unknown` without
 display. ReplaceFailed uses section 7's exact warning and default-No terminal
 confirmation before dispatch. Turn off adds no prompt to its fresh native auth.
-The other six lifecycle replies acknowledge `accepted` before effects finish;
-the CLI keeps its dedicated bus alive through the original operation budget plus
-margin for the helper's live-caller revalidation, then reports the existing
-`outcomeUnknown` / effect `unknown`, exit 1,
-without polling or redispatch. Private worker outcome/partial_cleanup/uncertain
-and named residue are not terminal D-Bus receipts. Admission cannot establish
-host denial or any cleanup; no paths, identities, new result fields or success
-claims are inferred from it. This is CLI source delivery, not live acceptance.
+The other six lifecycle replies acknowledge `accepted` before effects finish.
+The CLI subscribes before its single send and consumes the authenticated unicast
+`LifecycleCompleted` receipt, correlated to the original method/call serial,
+within the original operation budget. Enable and Disable preserve their typed
+terminal results; CancelInvite, RecoverInvite, RetryPolicyRenewal and admitted
+ReplaceFailed report their named completion or known failure. Effect remains
+`unknown`. Uncertain work maps to `outcomeUnknown` for the four CLI-only methods;
+valid Enable/Disable receipts preserve typed uncertainty, while a lost/invalid/late
+receipt or transport loss retains `outcomeUnknown` / exit 1; the fallback margin
+for live-caller revalidation adds no receipt grace. There is no polling or redispatch. Private worker outcomes and
+named residue alone are insufficient without that receipt. Admission cannot
+establish host denial or cleanup; no paths, identities or success claims are
+inferred from it. This is CLI source delivery, not live acceptance.
 
 `remote_access_helper.py` exports `ai.happyranch.RemoteAccess1` at
 `/ai/happyranch/RemoteAccess1` with zero-input Status, StatusV2, NextDevice,
@@ -3428,7 +3475,10 @@ No B7/B11/minter evidence, live connector/sidecar/Headscale state, pending entry
 or other cleanup residue may remain. Partial cleanup retains the existing Retry
 turn off route. Initial invite-config publication uses the staged-byte proof
 without changing retained config bytes. B6 remains stop/disable/retain and its
-closed deletion map is unchanged; the next activation creates fresh authority.
+closed deletion map is unchanged; the next activation creates fresh authority. Retained
+failed markers are reset only with the fresh fixed-name/byte/manager proof above,
+before activation/account/publication receipts retire. The five fragments and
+configs remain retained; no file or unit bytes change for this recovery.
 Persist one root-generated activation operation ID before `mint_local_node`.
 A lost create/enroll/start outcome is `failed_uncertain`, never an automatic
 new ID. Fresh-auth Enable on that record re-lists the fixed user's keys/nodes:
@@ -3671,12 +3721,14 @@ status at most 2 seconds. B15 conveys progress/terminal outcomes using
 `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`.
 Transport loss after dispatch never means no change.
 
-Enable and Disable send a destination-addressed `LifecycleCompleted(s)` signal on
+Enable, Disable, ReplaceFailed, CancelInvite, RecoverInvite and RetryPolicyRenewal
+send a destination-addressed `LifecycleCompleted(s)` signal on
 `ai.happyranch.RemoteAccess1`, before captured slot/name release, to the original
 unique caller only. Its sole method reply stays JSON `"accepted"` (admission).
-The closed, duplicate-free, 512-byte frame has method=Enable|Disable,
+The closed, duplicate-free, 512-byte frame names that original method,
 correlation={serial:original call serial,owner:authenticated helper unique name},
-outcome=failed|completed, and optional category on failed only. No broadcast,
+outcome=failed|completed, and optional category on failed only. Enable may also
+carry optional closed `firewallWarning` display advice (see F2 below). No broadcast,
 cache, lookup, replay, cross-caller transfer or automatic Enable follows.
 Disable's failed receipt has only `partial_cleanup`, `failed` or `uncertain`
 as its category; it never sends residue paths. Only a settled Off produces its
@@ -3688,6 +3740,20 @@ unknown effect; the receipt supplies no reusable revoke or cleanup authority.
 Lost receipt retains `outcomeUnknown`; no poll, reconnect or mutation replay is
 added. GUI Disable still uses its admission and fresh Status observations;
 it cannot consume the Enable-only window event.
+
+The four CLI-only methods use the same original connection, method/serial/owner
+correlation, subscribe-before-send ordering and single receipt consumption.
+ReplaceFailed keeps its original 480s budget (482s fallback); CancelInvite,
+RecoverInvite and RetryPolicyRenewal keep 120s (122s fallback). Their worker
+settlement sends and flushes the receipt before releasing its capture. A settled
+completion returns `replaceFailedCompleted`, `cancelInviteCompleted`,
+`recoverInviteCompleted` or `policyRenewalCompleted`, respectively, with exit 0.
+A known failure returns `lifecycleFailed` with the closed category `failed`,
+`refused` or `partial_cleanup`, exit 1. These receipts retain effect `unknown`
+and carry no residue paths or cleanup authority. An uncertain worker sends
+category `uncertain`; CLI projects it as `outcomeUnknown`, as it does for a lost,
+invalid or late receipt. No Status polling, mutation replay, extra budget or
+window command/event is added. The GUI command set remains unchanged.
 
 Only HeadscaleServiceError.category at the actual prepare_headscale call mints
 preparation provenance. The private child emits one exact preparationFailure
@@ -4308,10 +4374,11 @@ observations, and I4b-2 reads policy/timer state through the same fixed bundled
 child into the existing policy dimension; address remains unknown. Observation ages measure time
 since the reads with a monotonic clock and pass through the existing stale normalization.
 No device data, IDs or receipt fields cross StatusV2. Status v1 serialization is unchanged.
-The frozen `StatusV2` has exactly
+`StatusV2` requires the six dimensions
 `setup`, `runtime`, `invite`, `address`, `policy`, `cleanup`; wire JSON additionally
-has integer `version: 2`. Each dimension has exactly `state` and `age_seconds`;
-invite additionally has `deadline_utc_seconds`. All vocabularies include
+has integer `version: 2` and may include the optional `firewall` observation
+specified in the THR-327 F2 amendment below. Each dimension has exactly `state`
+and `age_seconds`; invite additionally has `deadline_utc_seconds`. All vocabularies include
 `unknown` and `stale`, plus only:
 
 - setup: `ready`, `off`, `in_progress`, `failed`, `uncertain`, `partial_cleanup`,
@@ -4500,9 +4567,12 @@ No new method: fresh-auth `Enable()` repairs only a positively classified
 Close admission/quiesce → same recorded release UID/home → same-FD token read
 → transactional exact-file/digest update → loaded-unit/READY revalidation →
 reopen. Preserve installation IDs, pins, epochs and revocations. Package postinst
-never repairs; after upgrade classify only a listed known prior profile version
-as repair_required for one Enable with devices retained. Unknown/torn versions
-remain closed with a fixed category, never automatic migration or trust reset.
+never repairs; its only action is a configure-time system-manager daemon-reload
+when systemd is running (failure tolerated), so the strict renewal-unit
+`NeedDaemonReload=no` check can pass after package replacement. It never touches
+user managers or protected state. After upgrade classify only a listed known
+prior profile version as repair_required for one Enable with devices retained.
+Unknown/torn versions remain closed with a fixed category, never automatic migration or trust reset.
 Why no founder: the approved authenticated repair/keep-devices upgrade behavior.
 
 ### Unwired home join-key adapter (THR-327 slice 3b-2c)
@@ -4635,8 +4705,9 @@ explicit, authenticated Turn on performs the renewal above. No retained-file
 manipulation or other host action is required for that validated shape.
 
 `hostStateUnrecognized` retains its code and adds optional closed category
-`residue|owner|provenance|custody|inventory|quiescence|timeout|unknown|unverified|not_applicable`. The child
-emits only `{refusal: category}` on Enable, Disable or ReplaceFailed capture refusal; HomeLifecycleClient
+`residue|owner|provenance|custody|inventory|quiescence|timeout|status_unavailable|invite_rate_limited|unknown|unverified|not_applicable`. The child
+emits only `{refusal: category}` on Enable, Disable, ReplaceFailed, IssueInvite,
+CancelInvite or RecoverInvite capture refusal; HomeLifecycleClient
 validates the closed frame; helper D-Bus uses `host_state_unrecognized_<category>`.
 The shared native request projection, CLI JSON, Main protocol/relay and Connection
 parser preserve it to English and Simplified Chinese copy. Legacy owner-binding
@@ -4671,6 +4742,44 @@ that sub-case remains a decision, not an offline revocation exception.
 
 
 ### THR-327 renewal unit upgrade (TASK-19228)
+
+TASK-19401: the fixed Linux managed-identity connector changes only
+`StartLimitIntervalSec=300` to `StartLimitIntervalSec=0`. It keeps
+`Restart=on-failure`, `RestartSec=1`, `TimeoutStartSec=120`, the 30-second
+watchdog, all hardening and all readiness gates. A missing desktop daemon
+therefore keeps retrying startup instead of exhausting the start limit.
+No listener or request admission opens until all gates pass. The sidecar's
+`After`/`BindsTo` connector and the connector's `Upholds` sidecar are unchanged.
+With the daemon restored and every other gate healthy, allow up to 250 seconds
+for the existing two 120-second startup budgets, restart delay and readiness
+polling; normally the connector notices within its five-second poll and the
+sidecar follows. This is a source budget requiring installed-systemd acceptance.
+Persistent unrelated failures also keep retrying; this changes no failure into
+readiness. Sidecar rate limiting remains unchanged.
+
+An already-READY d05afaac/98a87688 host retains its exact previous connector
+unit across package upgrade. With **no button**, it retains the old retry
+behaviour, including a terminal failure already reached. The new package's
+configure-only postinst reloads the system manager after replacing packaged
+renewal fragments, including upgrades from packages with no postinst; it does
+not republish the connector unit. After a successful reload, authenticated
+**Turn on again** uses the existing ready receipt/ordinary admission and
+activation lock to atomically republish only those exact previous bytes, then daemon-reloads
+before the existing failed-unit reset/start/joined checks. Capture and Status
+only recognize the previous rendering; they never publish or repair. Receipt,
+transaction, G/O, token source, enabled-link, custody and deadline checks remain;
+no mint or activation replay occurs. Unknown bytes refuse.
+
+The renewal-unit loaded-property comparison remains strict. A refusal now
+uses the same syslog warning path as the neighboring activation failure and
+journals `remote-access-renewal-unit-mismatch unit=service|timer property=<fixed
+property name>` without the observed value. TASK-19410 proved package replacement
+left `NeedDaemonReload=yes` before this postinst existed. The helper never
+reloads before inventory or admits stale loaded properties; if the package's
+best-effort reload fails or another property mismatches, Turn on again still
+refuses `ready-restart-failed-turn-off`. Installed upgrade acceptance of this
+postinst remains the manager's VM lane. Transitional-unit admission,
+partial-cleanup recovery and richer waiting-for-daemon Status are unchanged.
 
 The fixed renewal oneshot uses User=root, Group=root and
 SupplementaryGroups=happyranch, retaining empty capability sets and existing
@@ -4757,7 +4866,9 @@ health reads at one-second intervals (no overlapping reads or transport retries)
 A later error terminates through the existing named CLI error and bounded local
 session cleanup. Only the existing revocation_denied/revocation_stream_closed
 responses map to revoked; generic identity denial remains accessUnavailable,
-never proof of confirmed revocation. This adds no network/auth/credential change,
+never proof of confirmed revocation. Transport loss remains homeUnavailable and
+malformed HTTP remains protocol in CLI JSON; neither collapses to unavailable
+or proves revocation. This adds no network/auth/credential change,
 no keyring deletion, and no UI-loaded/Connected claim. The native GUI's existing
 health action already distinguishes revokedConfirmed from accessDenied.
 
@@ -4802,7 +4913,7 @@ that every CLI response is a success object or treat file-write success as READY
 
 ### Attributed lifecycle refusals
 
-Enable, Turn off and replace-failed capture refusals retain the same closed
+Enable, Turn off, replace-failed and invite capture refusals retain the same closed
 host-state category through the fixed child, D-Bus, native CLI and both Host
 views. Recognized inapplicable actions use `not_applicable` with `effect=none`
 before admission. Turn off with no activation receipt first proves recognized
@@ -4811,6 +4922,32 @@ only the existing `known-failed-or-partial` installer candidate and its exact
 inventory/journal generation; a home activation receipt never qualifies. It is
 not home activation recovery. Unsafe inventory retains its attributed refusal.
 No replacement, cleanup, mint, replay or authentication gate is widened.
+
+With no activation receipt, IssueInvite/CancelInvite/RecoverInvite likewise
+require strict Enable capture before returning not_applicable. Device actions
+whose connector snapshot is unavailable reuse the existing strict absence proof
+only to refuse: proven Off returns not_applicable, otherwise unverified. Its
+display snapshot never admits a device mutation. CLI revoke with fresh known
+Off status refuses not_applicable before selection or mutation dispatch.
+
+When IssueInvite's existing issuer rate fence positively refuses before journal
+write, invalidation or mint, its private terminal result is rate_limited. Only
+that exact result projects invite_rate_limited with effect none, through CLI
+and both bilingual Host views. It means a recent invite must be used or the
+caller must wait; a generic refused or unavailable result does not prove that
+cause and retains its existing effect semantics.
+
+The helper's short Status read expiry is projected as hostStateUnrecognized /
+timeout, never invite or policy expiry. Helper unavailable and D-Bus NoReply
+for Status use status_unavailable. Both are no-effect reads and retain their
+closed category through CLI and both bilingual Host views. Other action and
+transport-loss effect semantics remain unchanged.
+
+A positively refused IssueInvite with no invite-state effect does not overwrite
+an earlier same-generation issued observation with unknown. Status keeps the
+original observation age and expiry and its existing UID/generation guards;
+fresh helpers still use the existing protected journal reader. Dispatched
+uncertainty remains uncertain. No privileged read or invite delivery is added.
 
 A prepared activation receipt which has not reached ready is displayed as
 `setup_unverified`, rather than an unqualified pending state. Prepared staging
@@ -4844,3 +4981,62 @@ and timer schedule are unchanged. The bounded unattended
 lock wait and EROFS removal behavior are specified above. No arbitrary exception message,
 path, file contents, identity, credential or invite is journaled. Journal
 failure preserves the original refusal and retained evidence.
+
+### THR-327 F2: read-only Linux host firewall advisory
+
+Firewall evidence never vetoes Enable. No firewall inspection runs in Enable
+preflight or before setup effects. After the lifecycle outcome is settled, the
+existing fixed child may supply optional display advice within the original
+deadline: only when more than six seconds remain, allowing at most two seconds
+for advice and preserving the remaining terminal/auth budget. Read errors
+produce `unverified`; insufficient remaining budget omits the observation.
+Neither advice nor its failure changes the settled outcome, authorization,
+audit, receipts, publication, setup READY or runtime availability.
+
+The fixed C-locale `/usr/sbin/ufw status verbose` observation has three named
+advisory categories:
+
+- `likely_blocked`: recognized active UFW, default deny incoming, neither an
+  IPv4 user allow for 8443/tcp nor one for 3478/udp, and stock IPv4 before/after
+  templates. This is a probability: live INPUT allows from initialization or
+  other owners can exist even when both files are stock.
+- `clear`: UFW is inactive, or recognized user allows cover both ports with
+  stock templates. This says nothing about end-to-end connectivity.
+- `unverified`: any active customization, unreadable/unknown evidence, partial
+  allow, default allow/reject without both user allows, command failure,
+  rate limit, unknown profile/interface, malformed output or timeout.
+
+LAN-scoped allows and port lists/ranges count as possible allows; IPv6-only
+allows do not cover the IPv4 home dial address. Fixed rule-file reads are
+read-only, no-follow, regular-file-only and limited to 64 KiB each. Any change,
+including harmless customizations, symlinks, missing files or oversized and
+non-ASCII content, downgrades active observations to `unverified`. Stock hashes
+never establish live rules. No iptables/nft execution or new capability is used.
+Missing UFW supplies no observation; firewalld/plain nftables are not inferred.
+
+StatusV2's optional `firewall` observation uses `state` and `age_seconds`, with
+`likely_blocked|unverified|clear` plus internal `unknown|stale` freshness states.
+Unknown is omitted. Status advice reserves 300 ms of the original two-second
+response deadline, leaving 200 ms before the unchanged 1.9-second watchdog. It
+is skipped when the resulting advice budget is at most 100 ms. Advice timeout
+or error omits the field and still returns the collected V2 observations; it
+never extends the original deadline. Frames without the field and original
+Status v1 retain compatibility. Fresh observations (at most 30 seconds old)
+project to the existing optional native host `firewallWarning`. Enable's settled terminal and
+successful native/CLI result may carry the same optional closed advisory.
+Absent advice never substitutes for setup/effect evidence. `clear` is carried
+without warning text; English and Simplified Chinese host views and CLI say
+that the **home computer's firewall probably blocks** the home ports for
+`likely_blocked`, and tell the user to allow **8443/tcp and 3478/udp from the
+home LAN only**, then check Status. Unverified advice is conditional on failed
+connections. No rule contents, addresses, paths or stderr cross the boundary.
+
+The remote client snapshot does not carry host firewall Status. Replacing the
+client's generic home-network-unavailable explanation therefore needs a new
+protocol field and remains follow-up; this change adds none to that snapshot.
+
+Inspection never adds/removes/modifies firewall rules. Automatic rule management
+remains Founder-reserved. Service user, sandbox, capabilities, ReadWritePaths,
+R2 custody, home-only trust and authentication/authorization remain unchanged.
+Installed-package/UFW and cross-device qualification remain separate from the
+standalone temporary-file/native-simulation venue.

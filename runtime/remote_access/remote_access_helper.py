@@ -59,6 +59,8 @@ AUTH_DEADLINE = _helper_lifecycle.AUTH_DEADLINE
 LIFECYCLE_ACTIONS = {'Enable': 'enable', 'ReplaceFailed': 'replace-failed', 'Disable': 'disable',
                      'RetryPolicyRenewal': 'retry-policy-renewal',
                      **_helper_invite.METHODS}
+TERMINAL_METHODS = frozenset({'Enable', 'Disable', 'ReplaceFailed', 'CancelInvite',
+                             'RecoverInvite', 'RetryPolicyRenewal'})
 IDLE_SECONDS = 60.0
 SERVICE_PATHS = tuple('/' + parent + '/happyranch-' + service
     for parent in ('var/lib', 'run') for service in ('headscale', 'connector', 'tsnet-sidecar'))
@@ -327,8 +329,19 @@ class RemoteAccessHelper:
                     policy = _status_v2.PolicyObservation(_status_v2.PolicyState(state['policy']), 0)
                 except Exception:
                     pass  # Unavailable evidence remains unknown, never current.
+                firewall = None
+                try:
+                    # Keep encoding/delivery ahead of the 1.9s watchdog within
+                    # the original 2s deadline. Advice must not erase facts.
+                    remaining = deadline - time.monotonic() - .3
+                    if remaining > .1:
+                        state = _helper_generation.HomeLifecycleClient('Enable', uid).firewall_status(remaining)
+                        if state != 'unknown':
+                            firewall = _status_v2.FirewallObservation(_status_v2.FirewallState(state), 0)
+                except Exception:
+                    pass  # No firewall evidence must not change setup or runtime.
                 raw = _status_v2.encode(_status_v2.build_status(now_utc_seconds=int(time.time()),
-                    setup=setup, connector=connector, runtime=runtime, invite=invite, cleanup=cleanup, policy=policy))
+                    setup=setup, connector=connector, runtime=runtime, invite=invite, cleanup=cleanup, policy=policy, firewall=firewall))
             except Exception as error:
                 category = error.category if isinstance(error, (Refused, OwnerRefused)) else 'unavailable'
             settled(raw, category)
@@ -479,7 +492,17 @@ class RemoteAccessHelper:
                 owner = self._binding(uid)
                 if method in MUTATIONS and (busy_on_arrival or self.inflight is not None):
                     raise Refused('busy')
-                snapshot = self._snapshot(uid)
+                try:
+                    snapshot = self._snapshot(uid)
+                except Refused as error:
+                    if method not in MUTATIONS or error.category != 'unavailable':
+                        raise
+                    # Use the existing absence proof only to refuse. Its
+                    # display snapshot never admits a device mutation.
+                    _, closed, _ = self._status_snapshot(uid, time.monotonic() + 2.0)
+                    if closed:
+                        raise Refused('host-state-unrecognized-not_applicable') from None
+                    raise Refused('host-state-unrecognized-unverified') from None
                 if method in ('Status', 'NextDevice'):
                     if method == 'NextDevice':
                         if self.inflight is not None and self.inflight.sender == sender:
@@ -521,7 +544,7 @@ class RemoteAccessHelper:
             if isinstance(self.inflight, Capture) and self.inflight.message == message:
                 self._cancel('unavailable')
             else:
-                if isinstance(error, _helper_generation.GenerationUnavailable) and message.get_member() in ('Enable', 'Disable', 'ReplaceFailed'):
+                if isinstance(error, _helper_generation.GenerationUnavailable) and message.get_member() in LIFECYCLE_ACTIONS:
                     category = 'unverified' if error.category == 'unknown' else error.category
                     self._error(message, 'host-state-unrecognized-' + category)
                 else:
@@ -647,11 +670,12 @@ class RemoteAccessHelper:
                     self._error(capture.message, error.category if isinstance(error, Refused) else 'changed')
                 self._clear()
 
-    def _emit_enable_terminal(self, operation: object, outcome: object, category: str | None) -> None:
+    def _emit_enable_terminal(self, operation: object, outcome: object, category: str | None,
+                              firewall: str | None = None) -> None:
         """One receive-only receipt, still held by the original worker/slot."""
         capture = operation.capture
         budget = operation.budget
-        if (capture.method not in ('Enable', 'Disable') or not operation.accepted or self.cancelled
+        if (capture.method not in TERMINAL_METHODS or not operation.accepted or self.cancelled
                 or self.inflight is not capture or budget.remaining() <= 2.0):
             return
         # _uid retains its fixed 2s authentication read. Never start it with less
@@ -669,6 +693,10 @@ class RemoteAccessHelper:
         if (category is None and capture.method == 'Enable'
                 and outcome in (_helper_lifecycle.SetupPhase.FAILED, _helper_lifecycle.SetupPhase.UNCERTAIN)):
             category = 'activation-unverified'
+        elif (category is None and capture.method not in ('Enable', 'Disable')
+                and outcome in (_helper_lifecycle.SetupPhase.FAILED, _helper_lifecycle.SetupPhase.UNCERTAIN,
+                                _helper_lifecycle.SetupPhase.PARTIAL_CLEANUP)):
+            category = outcome.value
         if category is not None:
             frame['category'] = category
         elif capture.method == 'Disable' and outcome != _helper_lifecycle.SetupPhase.OFF:
@@ -676,6 +704,8 @@ class RemoteAccessHelper:
                                  else 'uncertain' if outcome == _helper_lifecycle.SetupPhase.UNCERTAIN else 'failed')
         elif outcome not in (_helper_lifecycle.SetupPhase.FAILED, _helper_lifecycle.SetupPhase.UNCERTAIN):
             frame['outcome'] = 'completed'
+        if capture.method == 'Enable' and firewall in ('likely_blocked', 'unverified', 'clear'):
+            frame['firewallWarning'] = firewall
         raw = json.dumps(frame, separators=(',', ':'))
         budget.remaining()
         self.connection.emit_signal(capture.sender, OBJECT_PATH, INTERFACE,
@@ -725,14 +755,25 @@ class RemoteAccessHelper:
         residue: list[str] = []
         outcome = lifecycle.SetupPhase.UNCERTAIN
         preparation_category, send_attempted = None, False
+        firewall = None
 
         def deliver(settled: object) -> None:
-            nonlocal send_attempted
-            if send_attempted or capture.method not in ('Enable', 'Disable'):
+            nonlocal send_attempted, firewall
+            if send_attempted:
                 return
             send_attempted = True
+            # Outcome is already settled by complete(). Reserve the original
+            # terminal/auth budget; advice has no effect on operation success.
+            if capture.method == 'Enable':
+                try:
+                    if operation.budget.remaining() > 6.0:
+                        observed = client.firewall_status(2.0)
+                        if observed in ('likely_blocked', 'unverified', 'clear'):
+                            firewall = observed
+                except Exception:
+                    firewall = 'unverified'
             try:
-                self._emit_enable_terminal(operation, settled, preparation_category)
+                self._emit_enable_terminal(operation, settled, preparation_category, firewall)
             except Exception:
                 pass  # One attempt; receipt loss does not settle effects.
 
@@ -853,8 +894,7 @@ class RemoteAccessHelper:
             # all effects return, so transient contention cannot strand its slot.
             with self.lock:
                 try:
-                    settled = (operation.complete(outcome, before_release=deliver) if capture.method in ('Enable', 'Disable')
-                               else operation.complete(outcome))
+                    settled = operation.complete(outcome, before_release=deliver)
                     self.lifecycle_result = {'outcome': settled.value, 'residue': residue}
                 except Exception:
                     deliver(lifecycle.SetupPhase.UNCERTAIN)
@@ -863,6 +903,8 @@ class RemoteAccessHelper:
                     # A failed completion is uncertain, never synthetic success.
                     # Seal admission and let the next activation read the journal.
                     self.exit_requested = True
+                    if firewall is not None:
+                        self.lifecycle_result['firewallWarning'] = firewall
                     self.release(capture)
 
     def _run_policy_renewal(self, operation: object) -> None:
@@ -906,7 +948,13 @@ class RemoteAccessHelper:
                     pass
         finally:
             self.lifecycle_result = result
-            self.release(capture)
+            try:
+                self._emit_enable_terminal(operation, result['outcome'],
+                    None if result['outcome'] == 'complete' else result['outcome'])
+            except Exception:
+                pass  # A lost terminal receipt never changes the settled worker result.
+            finally:
+                self.release(capture)
 
     def _run_issue_invite(self, operation: object) -> None:
         """One authenticated terminal reply; secret never enters helper state."""
@@ -931,6 +979,9 @@ class RemoteAccessHelper:
                 frame = operation.generations.issue_invite(capture.generation,
                     operation.budget.deadline, before_commit)
                 operation.budget.remaining()
+                if frame == {'result': 'rate_limited'}:
+                    dispatched = False  # Child positively proved a pre-effect refusal.
+                    raise Refused('host-state-unrecognized-invite_rate_limited')
                 if frame == {'result': 'refused'}:
                     dispatched = False  # Child positively proved refusal.
                     raise Refused('unavailable')
@@ -964,7 +1015,10 @@ class RemoteAccessHelper:
                 self._error(capture.message, category)
         finally:
             self.lifecycle_result = result
-            self.invite_observation = (capture.uid, capture.generation, result, time.monotonic())
+            # A positive refusal observed no invite-state effect. Preserve the
+            # earlier observation; a fresh helper still uses the existing journal.
+            if result['invite'] != 'unknown':
+                self.invite_observation = (capture.uid, capture.generation, result, time.monotonic())
             self.release(capture)  # Held through the sole terminal reply attempt.
 
     def _run_invite(self, operation: object) -> None:
@@ -1016,7 +1070,13 @@ class RemoteAccessHelper:
         finally:
             self.lifecycle_result = result
             self.invite_observation = (capture.uid, capture.generation, result, time.monotonic())
-            self.release(capture)
+            try:
+                self._emit_enable_terminal(operation, result['outcome'],
+                    None if result['outcome'] == 'complete' else result['outcome'])
+            except Exception:
+                pass  # One attempt, held through delivery on the original caller/deadline.
+            finally:
+                self.release(capture)
 
     def _authorized(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult, capture: Capture | LifecycleCapture) -> None:
         terminal = False

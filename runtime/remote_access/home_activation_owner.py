@@ -9,6 +9,7 @@ import hashlib
 import os
 import re
 import ssl
+import syslog
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
@@ -230,8 +231,13 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
             for name, expected in units.items():
                 self._io._headscale_no_pending(parent, name)
                 allowed = (expected.encode(), legacy) if name == _SIDECAR and not require_home else (expected.encode(),)
-                if self._io._read_unit(parent, name) not in allowed:
+                if name == _CONNECTOR:
+                    allowed += (installer.previous_connector_unit(expected).encode(),)
+                observed = self._io._read_unit(parent, name)
+                if observed not in allowed:
                     raise ActivationRefused()
+                if name == _CONNECTOR:
+                    units[name] = observed.decode("utf-8")
                 props = self._io.manager.show_properties(name, (
                     "FragmentPath", "DropInPaths", "NeedDaemonReload", "LoadState"))
                 if props != dict(FragmentPath=str(self._io.root / "etc/systemd/system" / name),
@@ -248,8 +254,17 @@ class HomeActivationOwner(HomeSystemdProcessOwner):
                                 DropInPaths="", Names=name, NeedDaemonReload="no", LoadState="loaded")
                 if name == TIMER_NAME:
                     expected["Unit"] = SERVICE_NAME
-                if self._io.manager.show_properties(name, tuple(expected)) != expected:
-                    raise ActivationRefused()
+                props = self._io.manager.show_properties(name, tuple(expected))
+                for key, value in expected.items():
+                    if props.get(key) != value:
+                        # Fixed labels only: never journal manager values,
+                        # paths, file contents or exception text.
+                        try:
+                            syslog.syslog(syslog.LOG_WARNING,
+                                f'remote-access-renewal-unit-mismatch unit={"timer" if name == TIMER_NAME else "service"} property={key}')
+                        except Exception:
+                            pass  # Diagnostic loss preserves the original refusal.
+                        raise ActivationRefused()
             check()
         return units
 

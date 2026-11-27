@@ -68,7 +68,7 @@ EXPECTED_REGISTERED_DEFINITIONS = (
      '7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2',
      'f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65'),
 )
-DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 35)) + ('caller_ledger',)
+DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 35)) + ('caller_ledger', 'U1_policy')
 draft_review_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--draft-review='):
     draft_review_case = sys.argv[1].split('=', 1)[1]
@@ -126,16 +126,21 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--s6a='):
     sys.argv[1:] = ['--assignments']
 S5_CASES = ('batch_all_or_none', 'source_outer_all_runs', 'hold_A_run_B', 'return_A_run_B',
     'duplicate_wake', 'crash_before_ack', 'crash_after_ack', 'source_with_ordinary_deps',
-    'later_sid_no_batch_settle')
+    'later_sid_no_batch_settle', 'u1_hold_atomicity', 'settlement_startup',
+    'settlement_delivery', 'settlement_alarm', 'settlement_safety', 'settlement_receipt',
+    'settlement_unknown', 'settlement_success_cancel')
 s5_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s5='):
     s5_case = sys.argv[1].split('=', 1)[1]
-    assert s5_case in ('all', *S5_CASES)
+    assert s5_case in ('all', 'pilot_copy', *S5_CASES)
     sys.argv[1:] = ['--assignments']
 S4B_CASES = ('native_before_outer', 'failed_session_closed', 'generic_json', 'no_coding_witness',
     'private_recipient', 'exhausted_at_4094', 'launch_assignment_drift', 'v1_unchanged',
-    'task_failed_after_result', 'task_timed_out_after_result', 'shutdown_after_result', 'terminal_reason_causes',
-    'native_progress_prefix', 'cancel_fences_acceptance', 'read_budget_rollback')
+    'task_failed_after_result', 'task_timed_out_after_result', 'shutdown_after_result', 'terminal_reason_causes', 'legacy_cause_history',
+    'native_progress_prefix', 'cancel_fences_acceptance', 'read_budget_rollback',
+    'native_status_clean_exit', 'clean_exit_no_callback', 'terminal_fallback', 'nonrender_launch_failure', 'recovery_read_only',
+    'lineage_retry', 'lineage_rebrief', 'lineage_reassign', 'lineage_conflict', 'lineage_compatibility',
+    'lineage_transition_retry', 'lineage_transition_rebrief', 'lineage_transition_reassign', 'lineage_transition_historical')
 s4b_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s4b='):
     s4b_case = sys.argv[1].split('=', 1)[1]
@@ -2516,7 +2521,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             with ExitStack() as f.cursor_patches:
                 yield f
 
-    def s4closed(f, visit_id, *, summary=None, terminal='timeout', positive=True, native_status=None, classification=None, preserve_session=False):
+    def s4closed(f, visit_id, *, summary=None, terminal='timeout', positive=True, native_status=None, classification=None, preserve_session=False, callback_status='completed'):
         visit = s4row(f, 'workflow_seq_visits', visit_id)
         sid = visit['session_id'] if preserve_session else 'private-session-' + str(visit['ordinal'])
         f.conn.execute("UPDATE workflow_seq_visits SET session_id=?,state='running' WHERE id=?", (sid, visit_id))
@@ -2526,9 +2531,9 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         callback = None
         if summary is not None:
             result = f.conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,output_summary,created_at) VALUES (?,?,?,?,?,?)',
-                (visit['task_id'], visit['principal'], sid, 'completed', summary, '2026-11-19T00:00:00+00:00')).lastrowid
+                (visit['task_id'], visit['principal'], sid, callback_status, summary, '2026-11-19T00:00:00+00:00')).lastrowid
             callback = dict(task_id=visit['task_id'], principal=visit['principal'], session_id=sid,
-                result_id=result, status='completed', carrier_digest=hashlib.sha256(summary.encode('utf8')).hexdigest())
+                result_id=result, status=callback_status, carrier_digest=hashlib.sha256(summary.encode('utf8')).hexdigest())
         common = dict(task_id=visit['task_id'], principal=visit['principal'], session_id=sid)
         invocation = 'private-invocation-' + str(visit['ordinal'])
         _evidence(f.conn, f.ids.run_id, visit_id, 'terminal', dict(format='workflow-sequential-terminal@1',
@@ -3513,6 +3518,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 raise AssertionError(case + ': persisted event/native identity or projection was not authenticated: ' + str(exc)) from exc
             assert f.ids.run_id in persisted.run_ids, case + ': run missing from authenticated history'
         print('PASS S4a', case, 'real private writers/native rows; no provider or live cancellation', flush=True)
+    original_failure_rows = None
     for case in (S4B_CASES if s4b_case or not sys.argv[1:] else ()):
         if s4b_case not in (None, 'all', case):
             continue
@@ -3576,6 +3582,352 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             assert (run['visit_count'], run['recovery_count']) == (1, 0)
                             assert tuple(failed.conn.execute('SELECT * FROM workflow_seq_node_counters')) == counters
                             assert failed.ids.run_id in read_sequential_history(failed.conn, expected_org_slug='scratch').run_ids
+        elif case.startswith('lineage_transition_'):
+            action = case.removeprefix('lineage_transition_')
+            with s4fixture(events=32, recovery=True) as f:
+                predecessor = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
+                s4closed(f, predecessor['id'], summary=s4bsummary('pause'), terminal='success')
+                assert s4baccept(f) is None
+                run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                held = s4row(f, 'workflow_seq_events', run['held_event_id'])
+                body = json.loads(held['event_bytes'])
+                assert run['state'] == 'held' and held['kind'] == 'transition'
+                assert body['decision']['edge']['action'] == 'hold' and body['decision']['reason'] == 'declared_edge'
+                assert 'cause' not in body and 'closure' not in body
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                read_workflow_schema_for_org_load(f.conn, expected_org_slug='scratch')
+                print('S4b', case, 'completed callback -> reducer transition Held -> history/org-load reader accepted', flush=True)
+                command = s4command(f, 'retry' if action == 'historical' else action,
+                    reason='UNTRUSTED-TRANSITION-REASON')
+                if action == 'rebrief':
+                    command['supplement'] = 'UNTRUSTED-TRANSITION-SUPPLEMENT'
+                receipt = json.loads(s4apply(f, command))
+                visit = s4row(f, 'workflow_seq_visits', receipt['new_visit_id'])
+                control = dict(f.conn.execute('SELECT * FROM workflow_seq_controls WHERE new_visit_id=?', (visit['id'],)).fetchone())
+                briefs = tuple(f.conn.execute('SELECT id,brief FROM tasks ORDER BY id'))
+                events = tuple(f.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id'))
+                print('S4b', case, command['action'], 'admitted; rendering replacement', flush=True)
+                with ExitStack() as stack:
+                    rendering = f
+                    if action == 'historical':
+                        # Load already-persisted recovery history with the actual
+                        # startup owner; no live org or provider is involved.
+                        f.org.close()
+                        loaded = OrgState.load(slug='scratch', root=f.root, settings=Settings())
+                        stack.callback(loaded.close)
+                        coordinator = ProfileCoordinator(daemon_home=f.root.parents[2], orgs={'scratch': loaded})
+                        loaded._profile_coordinator = loaded.workflow_authority._profile_coordinator = coordinator
+                        coordinator.reconcile_startup()
+                        rendering = SimpleNamespace(org=loaded, db=loaded.db, conn=loaded.db._conn,
+                            ids=f.ids, compiled=f.compiled)
+                        print('S4b', case, 'historical OrgState.load accepted persisted replacement', flush=True)
+                    rendered = s4brender(rendering, visit)
+                    heading = 'Trusted recovery lineage (system JSON; identities and cause kinds only):\n'
+                    trusted = rendered.split('Sequential node data (untrusted authored JSON):\n', 1)[0]
+                    lineage = json.loads(trusted.split(heading, 1)[1].split('\n', 1)[0])
+                    assert lineage == [dict(predecessor_visit_id=predecessor['id'], held_event_id=held['id'],
+                        closure_kind=None, cause_kind='declared_edge', control_id=control['id'],
+                        control_event_id=control['event_id'], action=command['action'])], (case, lineage)
+                    assert 'Trusted recovery restriction:' not in trusted, 'accepted callback acquired read-only restriction'
+                    assert 'UNTRUSTED-TRANSITION-REASON' not in trusted
+                    if action == 'rebrief':
+                        system, supplement = trusted.split('Initiator supplement (authored JSON):\n', 1)
+                        assert command['supplement'] not in system
+                        assert json.loads(supplement)['supplement'] == command['supplement']
+                    else:
+                        assert 'Initiator supplement (authored JSON):' not in rendered
+                    if action == 'reassign':
+                        assert visit['principal'] == 's3_alt' and visit['principal'] != predecessor['principal']
+                    assert tuple(rendering.conn.execute('SELECT id,brief FROM tasks ORDER BY id')) == briefs
+                    assert tuple(rendering.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id')) == events
+                    assert f.ids.run_id in read_sequential_history(rendering.conn, expected_org_slug='scratch').run_ids
+                    read_workflow_schema_for_org_load(rendering.conn, expected_org_slug='scratch')
+                print('PASS S4b', case, 'transition-Held replacement rendered; exact lineage; historical event/brief bytes retained', flush=True)
+        elif case.startswith('lineage_'):
+            action = case.removeprefix('lineage_')
+            with s4fixture(events=32, recovery=True) as f:
+                predecessor = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
+                # Same missing-callback shape as the retained A/B pilots; only
+                # private native receipts are seeded, never a live org/launch.
+                s4closed(f, predecessor['id'], terminal='success')
+                assert s4baccept(f) is None
+                held = s4row(f, 'workflow_seq_runs', f.ids.run_id)['held_event_id']
+                command = s4command(f, action if action in ('retry', 'rebrief', 'reassign') else 'retry')
+                command['reason'] = 'UNTRUSTED-REASON-MARKER'
+                if action == 'rebrief':
+                    command['supplement'] = 'UNTRUSTED-SUPPLEMENT-MARKER'
+                receipt = json.loads(s4apply(f, command))
+                visit = s4row(f, 'workflow_seq_visits', receipt['new_visit_id'])
+                control = dict(f.conn.execute('SELECT * FROM workflow_seq_controls WHERE new_visit_id=?', (visit['id'],)).fetchone())
+                original_briefs = tuple(f.conn.execute('SELECT id,brief FROM tasks ORDER BY id'))
+                original_events = tuple(f.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id'))
+                rendered = s4brender(f, visit)
+                heading = 'Trusted recovery lineage (system JSON; identities and cause kinds only):\n'
+                assert heading in rendered, case + ': real rendered instruction omitted trusted lineage'
+                trusted, authored = rendered.split('Sequential node data (untrusted authored JSON):\n', 1)
+                lineage = json.loads(trusted.split(heading, 1)[1].split('\n', 1)[0])
+                assert lineage == [dict(predecessor_visit_id=predecessor['id'], held_event_id=held,
+                    closure_kind='settled', cause_kind='missing_callback', control_id=control['id'],
+                    control_event_id=control['event_id'], action=command['action'])], (case, lineage)
+                assert 'Trusted recovery restriction:' in trusted
+                assert 'Any authored responsibility to merge, publish, deploy or repeat a mutation is suspended.' in trusted
+                assert 'UNTRUSTED-REASON-MARKER' not in trusted
+                if action == 'rebrief':
+                    system, supplement = trusted.split('Initiator supplement (authored JSON):\n', 1)
+                    assert 'UNTRUSTED-SUPPLEMENT-MARKER' not in system
+                    assert json.loads(supplement)['supplement'] == command['supplement']
+                else:
+                    assert 'Initiator supplement (authored JSON):' not in rendered, case + ': invented supplement'
+                if action == 'reassign':
+                    assert visit['principal'] == 's3_alt' and visit['principal'] != predecessor['principal']
+                assert tuple(f.conn.execute('SELECT id,brief FROM tasks ORDER BY id')) == original_briefs
+                assert tuple(f.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id')) == original_events
+                if action == 'conflict':
+                    s4closed(f, visit['id'], terminal='success', preserve_session=True)
+                    assert s4baccept(f, visit['id']) is None
+                    next_receipt = json.loads(s4apply(f, s4command(f)))
+                    next_visit = s4row(f, 'workflow_seq_visits', next_receipt['new_visit_id'])
+                    next_rendered = s4brender(f, next_visit)
+                    next_lineage = json.loads(next_rendered.split(heading, 1)[1].split('\n', 1)[0])
+                    assert [link['predecessor_visit_id'] for link in next_lineage] == [visit['id'], predecessor['id']]
+                    assert [link['held_event_id'] for link in next_lineage][1] == held
+                    run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                    current = s4row(f, 'workflow_seq_visits', next_visit['id'])
+                    capture = f.org.workflow_authority.capture_admission()
+                    before = s4snap(f)
+                    # The otherwise valid current render tuple cannot claim
+                    # the prior control as its immediate predecessor.
+                    current['predecessor_event_id'] = control['event_id']
+                    with f.org.workflow_authority.admission_writer(capture) as writer:
+                        try:
+                            SequentialDispatcher(f.org)._generic_node_instruction(writer, run, current,
+                                f.compiled, current['principal'], current['session_id'], capture, seq_history._ReadBudget())
+                        except ValueError as exc:
+                            assert str(exc) == 'workflow_seq_control_lineage_conflict', str(exc)
+                        else:
+                            raise AssertionError('lineage_conflict: accepted foreign control/new-visit tuple')
+                    assert s4snap(f) == before
+                if action == 'compatibility':
+                    # A prepared invocation returns the exact bytes frozen by
+                    # its original queue owner, even across a renderer change.
+                    dispatcher = SequentialDispatcher(f.org)
+                    invocation = SimpleNamespace(agent=visit['principal'], sequential_instruction='pre-upgrade frozen instruction')
+                    with patch.object(dispatcher, '_invocation', return_value=invocation), patch.object(
+                            dispatcher, '_render_node_instruction', side_effect=AssertionError('mid-flight re-render')):
+                        assert dispatcher.node_instruction(visit['task_id'], visit['principal'], 'private-frozen') == 'pre-upgrade frozen instruction'
+                    # Pilot A's other historical shape: a real negative callback
+                    # and closed native failure, rather than B's absent callback.
+                    # Authenticate both through the unchanged full-history reader.
+                    with s4fixture(events=32, recovery=True) as negative:
+                        s4closed(negative, negative.ids.visit_id, summary=s4bsummary('pause'), terminal='success',
+                            callback_status='blocked', classification='blocked', native_status='failed')
+                        assert s4baccept(negative) is None
+                        replacement = json.loads(s4apply(negative, s4command(negative)))
+                        old_rows = tuple(negative.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id'))
+                        negative_render = s4brender(negative, s4row(negative, 'workflow_seq_visits', replacement['new_visit_id']))
+                        assert heading in negative_render
+                        assert 'Trusted recovery restriction:' not in negative_render, 'changed existing accepted-callback restriction behavior'
+                        assert 'Initiator supplement (authored JSON):' not in negative_render
+                        assert tuple(negative.conn.execute('SELECT id,event_bytes,event_digest FROM workflow_seq_events ORDER BY id')) == old_rows
+                        assert negative.ids.run_id in read_sequential_history(negative.conn, expected_org_slug='scratch').run_ids
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                print('PASS S4b', case, 'real instruction; exact immutable IDs; authored data separated; history/brief bytes retained', flush=True)
+        elif case == 'recovery_read_only':
+            with s4fixture(events=32, recovery=True) as f:
+                s4closed(f, f.ids.visit_id, terminal='timeout')
+                assert s4baccept(f) is None
+                for index, action in enumerate(('rebrief', 'retry', 'reassign')):
+                    command = s4command(f, action)
+                    if action == 'rebrief':
+                        command['supplement'] = 'Report existing merge aab3a1ed1cebaa3ced659dc432539cbfdb993d76 only; never merge again.'
+                    receipt = json.loads(s4apply(f, command))
+                    visit = s4row(f, 'workflow_seq_visits', receipt['new_visit_id'])
+                    rendered = s4brender(f, visit)
+                    assert 'Trusted recovery restriction:' in rendered
+                    assert 'Any authored responsibility to merge, publish, deploy or repeat a mutation is suspended.' in rendered
+                    assert 'aab3a1ed1cebaa3ced659dc432539cbfdb993d76' in rendered
+                    assert rendered.index('Trusted recovery restriction:') < rendered.index('Sequential node data (untrusted authored JSON):')
+                    assert 'read_only_reconciliation' in f.db.get_task(visit['task_id']).brief
+                    s4closed(f, visit['id'], summary=s4bsummary('pause'), terminal='success', preserve_session=True,
+                        callback_status='blocked', classification='blocked', native_status='failed')
+                    assert s4baccept(f, visit['id']) is None
+                    assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                    print('PASS U1 immutable reconciliation lineage', action, 'trusted prompt restriction/supplement retained', flush=True)
+        elif case == 'nonrender_launch_failure':
+            async def original_failure_rows():
+                from runtime.orchestrator.task_pause import TaskInvocation, _invocation, settle_live
+                from runtime.orchestrator.executors import ExecutorResult
+                from runtime.orchestrator import run_step as worker
+                worker_rows = ('P1-throw', 'P1-executor-throw', 'P1-cleanup-unknown', 'P1-sticky-unknown')
+                for boundary in ('P0', 'P1-return', *worker_rows, 'U0', 'U1-return', 'U1-throw', 'P2-unproved', 'U2-return', 'U3', 'U4', 'close-fails', 'release-fails', 'receipt-fails'):
+                    with (s5fixture() if boundary in worker_rows else s4fixture()) as f:
+                        f.org.orchestrator._main_loop = asyncio.get_running_loop()
+                        if boundary in worker_rows:
+                            await asyncio.to_thread(s5release, f)
+                        task = f.db.get_task(f.ids.visit_task_id)
+                        dispatcher = f.org.workflow_sequential_dispatch
+                        if boundary in worker_rows:
+                            owner = await asyncio.to_thread(dispatcher.queue_started, task.id)
+                            inv = owner['invocation']
+                            assert inv.prepare_complete and not inv.preparation_effects_entered
+                            calls = []
+                            def early_throw(*args):
+                                calls.append(args)
+                                assert not inv.commit_entered and not inv.preparation_effects_entered
+                                if boundary == 'P1-sticky-unknown':
+                                    inv.move_reservation.failed_cleanup()
+                                raise RuntimeError('controlled original P1 exception')
+                            try:
+                                with ExitStack() as faults:
+                                    target = '_build_executor' if boundary == 'P1-executor-throw' else '_resolve_agent_def'
+                                    faults.enter_context(patch.object(inv.orch, target, early_throw))
+                                    if boundary == 'P1-cleanup-unknown':
+                                        # Fault the actual cleanup owner; its real wrapper must return unknown.
+                                        faults.enter_context(patch.object(worker, '_root_worktree_batch_impl',
+                                            side_effect=RuntimeError('controlled outer cleanup failure')))
+                                    try:
+                                        await asyncio.to_thread(worker.run_step_impl, inv.orch, task.id)
+                                    except RuntimeError as exc:
+                                        assert str(exc) == 'controlled original P1 exception'
+                                assert len(calls) == 1, (boundary, calls)
+                            finally:
+                                await asyncio.to_thread(dispatcher.queue_finished, task.id, owner)
+                        else:
+                            inv = TaskInvocation(f.org.orchestrator, task, task.assigned_agent,
+                                'original-failure-session', owner='sequential', workflow_dispatcher=dispatcher)
+                        if boundary in worker_rows:
+                            pass  # The actual worker already performed original outer settlement.
+                        elif boundary == 'P0':
+                            original_held = inv.store.held_uncommitted
+                            calls = []
+                            def fail_before_reservation(task_id):
+                                calls.append(task_id)
+                                if len(calls) == 1:
+                                    raise RuntimeError('controlled original pre-reservation failure')
+                                return original_held(task_id)
+                            with patch.object(inv.store, 'held_uncommitted', fail_before_reservation):
+                                try: await asyncio.to_thread(inv.prepare)
+                                except RuntimeError: pass
+                        elif boundary == 'U0':
+                            original_reserve = inv.orch._team_moves.reserve_task_uncommitted
+                            def uncertain_reserve(owner):
+                                original_reserve(owner)
+                                raise RuntimeError('original reserve returned uncertain')
+                            with patch.object(inv.orch._team_moves, 'reserve_task_uncommitted', uncertain_reserve):
+                                try: await asyncio.to_thread(inv.prepare)
+                                except RuntimeError: pass
+                        else:
+                            inv.prepare()
+                            if boundary.startswith(('U1', 'U2', 'P2')):
+                                with inv.preparation_effects():
+                                    pass
+                            if boundary == 'U4':
+                                assert await asyncio.to_thread(inv.commit)
+                            if boundary == 'U3':
+                                with patch.object(inv.store, 'held_uncommitted', side_effect=RuntimeError('launch writer failed')):
+                                    try: await asyncio.to_thread(inv.commit)
+                                    except RuntimeError: pass
+                            def failed_impl(*args, **kwargs):
+                                if boundary.endswith('throw') or boundary == 'U3':
+                                    raise RuntimeError('controlled original failure')
+                                return ExecutorResult(success=False, duration_seconds=0, session_id=inv.session_id), None
+                            token = _invocation.set(inv)
+                            try:
+                                with patch.object(inv.orch, '_run_agent_impl', failed_impl):
+                                    try: await asyncio.to_thread(inv.orch._run_agent, task.id, task.assigned_agent, task.brief)
+                                    except RuntimeError: pass
+                            finally:
+                                _invocation.reset(token)
+                            with ExitStack() as faults:
+                                if boundary == 'close-fails':
+                                    faults.enter_context(patch.object(inv, 'close', side_effect=RuntimeError('native close failed')))
+                                if boundary == 'release-fails':
+                                    faults.enter_context(patch.object(inv.orch._team_moves, 'release_task', side_effect=RuntimeError('native release failed')))
+                                if boundary == 'receipt-fails':
+                                    from runtime.workflows import sequential_launch_failures as failure_owner
+                                    append = failure_owner._append
+                                    def failed_receipt(conn, body):
+                                        if body['stage'] == 'closed': raise RuntimeError('receipt storage failed')
+                                        return append(conn, body)
+                                    faults.enter_context(patch.object(failure_owner, '_append', failed_receipt))
+                                try:
+                                    await asyncio.to_thread(settle_live, inv, failed=boundary.endswith('throw'),
+                                        cleanup=SimpleNamespace(kind='safe', processes=[]))
+                                except RuntimeError:
+                                    assert boundary in ('close-fails', 'release-fails', 'receipt-fails')
+
+                        run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                        receipts = [json.loads(r[0]) for r in f.conn.execute(
+                            "SELECT payload FROM audit_log WHERE action='workflow_seq_native_launch_failure' ORDER BY id")]
+                        positive = boundary in ('P0', 'P1-return', 'P1-throw', 'P1-executor-throw')
+                        assert run['state'] == ('held' if positive else 'running'), (boundary, run, receipts)
+                        assert [r['stage'] for r in receipts] == (['intent', 'closed'] if positive else ['intent', 'unsettled'] if boundary in ('close-fails', 'release-fails', 'receipt-fails') else ['unsettled']), (boundary, receipts)
+                        assert f.db.get_task(task.id).current_session_id == (inv.session_id if boundary == 'U4' else None)
+                        assert f.conn.execute('SELECT count(*) FROM task_results WHERE task_id=?', (task.id,)).fetchone()[0] == 0
+                        native = deepcopy(inv.store.row_uncommitted(inv.store.root_uncommitted(task.id)['id']))
+                        before = s4snap(f)
+                        if boundary in worker_rows:
+                            queued = tuple(f.queue._queue._queue)
+                            assert sum(item[1] == f.source.id for item in queued) == int(positive), (boundary, queued)
+                            current = f.db.get_task(task.id)
+                            assert current.status == 'pending' and current.orchestration_step_count == task.orchestration_step_count
+                        for delivery in range(5):
+                            assert not dispatcher.queue_admission_allowed(task.id), (boundary, delivery)
+                            dispatcher.notify_queued(task.id, SimpleNamespace(enqueue_if_absent=lambda *args: (_ for _ in ()).throw(AssertionError('failure requeued'))))
+                        assert s4snap(f) == before
+                        if boundary in worker_rows:
+                            assert tuple(f.queue._queue._queue) == queued, (boundary, 'duplicate initiator wake')
+                        assert inv.store.row_uncommitted(inv.store.root_uncommitted(task.id)['id']) == native
+                        assert f.conn.execute("SELECT count(*) FROM audit_log WHERE action='workflow_seq_native_launch_failure'").fetchone()[0] == len(receipts)
+                        if positive:
+                            event = json.loads(f.conn.execute("SELECT event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()[0])
+                            assert event['cause'] == 'launch_failed_before_start', (boundary, event)
+                            assert f.conn.execute("SELECT count(*) FROM workflow_seq_events WHERE kind='held'").fetchone()[0] == 1
+                            inbox = [tuple(row) for row in f.conn.execute('SELECT initiator_task_id,run_id FROM workflow_seq_inbox')]
+                            assert inbox == ([(f.source.id, f.ids.run_id)] if boundary in worker_rows else []), (boundary, inbox)
+                            assert not any(e['id'] == inv.identity for e in ([] if native is None else native['journal']['entries']))
+                            assert inv.identity not in inv.orch._team_moves._reservations
+                            assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                        else:
+                            assert f.conn.execute("SELECT count(*) FROM workflow_seq_events WHERE kind='held'").fetchone()[0] == 0
+                            assert f.conn.execute('SELECT count(*) FROM workflow_seq_inbox').fetchone()[0] == 0
+                            assert any(e['id'] == inv.identity and e['phase'] == 'unknown' and e['context']['execution_unknown'] for e in native['journal']['entries'])
+                        print('PASS U1 original boundary', boundary, 'five delivery checks; native receipts/no growth; provider NOT RUN', flush=True)
+        elif case == 'terminal_fallback':
+            with s4fixture() as f:
+                s4closed(f, f.ids.visit_id, summary=s4bsummary('pause'), terminal='success',
+                    native_status='failed', classification='blocked', callback_status='blocked')
+                with patch('runtime.workflows.sequential_business_hold._specific_generic_hold_cause', return_value=None):
+                    assert s4baccept(f) is None
+                event = json.loads(f.conn.execute("SELECT event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()[0])
+                assert event['cause'] == 'terminal_outcome_unhandled', event
+                assert event['closure']['result_id'] is not None
+                assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                before = s4snap(f)
+                assert s4baccept(f) is None and s4snap(f) == before
+        elif case in ('native_status_clean_exit', 'clean_exit_no_callback'):
+            statuses = ('blocked', 'failed') if case == 'native_status_clean_exit' else (None,)
+            for status in statuses:
+                for malformed in ((False, True) if status else (False,)):
+                    with s4fixture() as f:
+                        summary = None if status is None else ('{bad callback' if malformed else s4bsummary('pause'))
+                        s4closed(f, f.ids.visit_id, summary=summary, terminal='success', native_status='failed',
+                            classification=status or 'unknown', callback_status=status)
+                        f.conn.execute('UPDATE task_results SET confidence_score=80 WHERE confidence_score IS NULL')
+                        f.conn.commit()
+                        results = tuple(tuple(row) for row in f.conn.execute('SELECT * FROM task_results'))
+                        counters = tuple(tuple(row) for row in f.conn.execute('SELECT * FROM workflow_seq_node_counters'))
+                        assert s4baccept(f) is None
+                        event = json.loads(f.conn.execute("SELECT event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()[0])
+                        assert event['cause'] == ('missing_callback' if status is None else 'task_' + status + '_after_clean_exit'), event
+                        assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['state'] == 'held'
+                        assert not f.conn.execute('SELECT 1 FROM workflow_seq_outputs').fetchall()
+                        assert tuple(tuple(row) for row in f.conn.execute('SELECT * FROM task_results')) == results
+                        assert tuple(tuple(row) for row in f.conn.execute('SELECT * FROM workflow_seq_node_counters')) == counters
+                        before = s4snap(f)
+                        assert s4baccept(f) is None and s4snap(f) == before
+                        assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                        print('PASS U1', case, status, malformed, 'Held/no allocation/replay', flush=True)
         elif case == 'terminal_reason_causes':
             from runtime.platform.session_backend import TerminalReason
             from runtime.workflows.sequential_business_hold import generic_hold_cause
@@ -3589,14 +3941,62 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
                         visit = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
                         if reason in ('success', 'unknown-native'):
-                            s4refuses(f, lambda: generic_hold_cause(f.conn, run=run, visit=visit,
-                                compiled=f.compiled, budget=seq_history._ReadBudget()), 'hold_cause_unavailable')
+                            cause, proof = generic_hold_cause(f.conn, run=run, visit=visit,
+                                compiled=f.compiled, budget=seq_history._ReadBudget())
+                            assert cause == ('missing_callback' if reason == 'success' and summary is None else 'terminal_outcome_unhandled')
                         else:
                             cause, proof = generic_hold_cause(f.conn, run=run, visit=visit,
                                 compiled=f.compiled, budget=seq_history._ReadBudget())
                             expected = 'task_timed_out' if reason == 'timeout' else 'task_failed'
                             assert cause == expected + ('_without_result' if summary is None else '_after_result'), (reason, cause)
                             assert (proof['result_id'] is None) == (summary is None)
+        elif case == 'legacy_cause_history':
+            from runtime.workflows import sequential_business_hold as causes
+            # Historical input labels come from the pre-U1 cause table. The fixture
+            # writer is patched only to persist those original labels; the actual
+            # schema reader below runs unpatched against byte-unchanged saved rows.
+            legacy_rows = (
+                ('unknown_outcome', 'success', s4bsummary('REVISE')),
+                ('result_bad_shape', 'success', ''),
+                ('result_bad_shape', 'success', '{bad callback'),
+                ('result_too_large', 'success', s4bsummary(content=b'x' * 49153)),
+                ('revision_limit_exhausted', 'success', s4bsummary('revise')),
+                ('task_timed_out_after_result', 'timeout', s4bsummary()),
+                ('task_failed_after_result', 'failure', s4bsummary()),
+            )
+            for status in ('blocked', 'failed'):
+                for saved_cause, reason, summary in legacy_rows:
+                    with s4fixture() as f:
+                        s4closed(f, f.ids.visit_id, summary=summary, terminal=reason,
+                            native_status='failed', classification=status, callback_status=status)
+                        proof = causes.generic_closed_visit(f.conn,
+                            run=s4row(f, 'workflow_seq_runs', f.ids.run_id),
+                            visit=s4row(f, 'workflow_seq_visits', f.ids.visit_id), budget=seq_history._ReadBudget())
+                        with patch.object(causes, 'generic_hold_cause', return_value=(saved_cause, proof)):
+                            assert s4baccept(f) is None
+                        before = tuple(f.conn.iterdump())
+                        try:
+                            read_workflow_schema_for_org_load(f.conn, expected_org_slug='scratch')
+                        except ValueError as exc:
+                            raise AssertionError((case, 'legacy schema load rejected', status, saved_cause, str(exc))) from exc
+                        assert tuple(f.conn.iterdump()) == before, (case, 'history rewritten', status, saved_cause)
+                        event = json.loads(f.conn.execute("SELECT event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()[0])
+                        assert event['cause'] == saved_cause and event['closure'] == proof
+                        print('PASS U1 legacy saved cause/schema reader', status, saved_cause, 'unchanged rows', flush=True)
+                # A saved specialized label is not sufficient: its original output
+                # predicate must still hold, even with a valid negative callback.
+                for saved_cause in ('unknown_outcome', 'result_bad_shape', 'result_too_large', 'revision_limit_exhausted'):
+                    with s4fixture() as f:
+                        s4closed(f, f.ids.visit_id, summary=s4bsummary(), terminal='success',
+                            native_status='failed', classification=status, callback_status=status)
+                        proof = causes.generic_closed_visit(f.conn,
+                            run=s4row(f, 'workflow_seq_runs', f.ids.run_id),
+                            visit=s4row(f, 'workflow_seq_visits', f.ids.visit_id), budget=seq_history._ReadBudget())
+                        with patch.object(causes, 'generic_hold_cause', return_value=(saved_cause, proof)):
+                            assert s4baccept(f) is None
+                        s4refuses(f, lambda: read_workflow_schema_for_org_load(f.conn, expected_org_slug='scratch'),
+                            'workflow_seq_generic_hold_proof_conflict')
+                        print('PASS U1 legacy predicate refusal', status, saved_cause, flush=True)
         elif case == 'native_progress_prefix':
             with s4fixture() as f:
                 visit = s4row(f, 'workflow_seq_visits', f.ids.visit_id)
@@ -3772,7 +4172,8 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             assert f.db.get_task(f.source.id) == f.source, case + ': S5 source behavior leaked'
                     if case != 'exhausted_at_4094':
                         assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
-        print('PASS S4b', case, 'real private production boundary; native multi-process NOT RUN', flush=True)
+        if case != 'nonrender_launch_failure':
+            print('PASS S4b', case, 'real private production boundary; native multi-process NOT RUN', flush=True)
     # S5 extends the existing private assignment/native fixture. Real SQL
     # transactions and TaskQueue insertion are observed; no provider is launched.
     from copy import deepcopy
@@ -3909,8 +4310,438 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             f.conn.rollback()
             raise
 
+    # The P1 worker cases reuse S5's real initiator/batch fixture. Run the
+    # S4b table after that fixture is defined, including in the full aggregate.
+    if original_failure_rows is not None:
+        asyncio.run(original_failure_rows())
+        print('PASS S4b nonrender_launch_failure real private production boundary; native multi-process NOT RUN', flush=True)
+
+    # Explicit copied-data opt-in, excluded from every synthetic aggregate.
+    # The caller supplies a fresh authentic backup and byte-matching authority
+    # mirrors under its own TMPDIR. This never opens a live org or creates facts.
+    if s5_case == 'pilot_copy':
+        import asyncio
+        import hashlib
+        import json
+        import os
+        import re
+        import signal
+        import sys
+        import time
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        TASK_TMP = Path(os.environ['TMPDIR']).resolve()
+        PRIVATE = Path(os.environ['WORKFLOW_PILOT_PRIVATE_ROOT']).resolve()
+        ROOT = PRIVATE / 'runtime/orgs/happyranch'
+        assert ROOT.resolve().is_relative_to(TASK_TMP)
+        os.environ['HAPPYRANCH_DAEMON_HOME'] = str(PRIVATE)
+        os.environ['SQLITE_TMPDIR'] = str(PRIVATE)
+        assert Path(os.environ['WORKFLOW_PILOT_COPY_DB']).resolve() == ROOT / 'happyranch.db'
+        RUNS = (
+            'seq-run-9aec48e6b4149729643a9fdb26736f22a4aa344bee9e80a0f4dd8354b928dcb9',
+            'seq-run-eacd4216b80ebfbde6a94f1cd92326dca7890505dd704e27bf036ed67c220089',
+        )
+        record = dict(source='fresh read-only SQLite backup', synthetic_rows=False,
+                      private_runtime=True, queue='dry observer only', status='NOT RUN')
+        started = time.monotonic()
+        db = None
+        phase = 'private_dependencies'
+
+        class DryQueue:
+            def __init__(self): self.items = set()
+            def enqueue_if_absent(self, slug, task_id):
+                before = len(self.items)
+                self.items.add((slug, task_id))
+                return len(self.items) > before
+
+        def bounded(signum, frame): raise TimeoutError('private probe deadline')
+        signal.signal(signal.SIGALRM, bounded)
+        signal.alarm(40)
+        try:
+            from runtime.infrastructure.database import Database
+            from runtime.infrastructure.task_pause_controls import TaskPauseStore
+            from runtime.daemon.sessions import SessionTracker
+            from runtime.orchestrator._paths import OrgPaths
+            from runtime.orchestrator.teams import TeamsRegistry
+            from runtime.orchestrator.workflow_continuation import WorkflowContinuation
+            from runtime.workflows.authority import WorkflowAuthorityCoordinator, WorkflowAuthorityError
+            from runtime.workflows.profile_coordinator import ProfileCoordinator, ProfileCoordinatorError
+            from runtime.workflows.sequential_dispatch import SequentialDispatcher
+            from runtime.daemon.__main__ import discover_completed_workflow_handoffs
+            from runtime.workflows.sequential_business_hold import generic_closed_visit
+            from runtime.workflows.sequential_history import _ReadBudget, _bytes, read_sequential_history
+            from runtime.workflows.sequential_control import prepare_control, result_counters
+            from runtime.workflows.sequential_contracts import GenericControl, GenericLimits
+            from runtime.workflows.sequential_definition import generic_limits, parse_generic_start
+            from runtime.workflows.sequential_reducer import reduce_generic_control
+            record['runtime'] = dict(executable=sys.executable, version=sys.version)
+            db = Database(ROOT / 'happyranch.db', acquisition_timeout=.25)
+            db._task_ownership_org = 'happyranch'
+            db._task_pause_store = TaskPauseStore(db, 'happyranch')
+            org = SimpleNamespace(slug='happyranch', root=ROOT, db=db, teams=TeamsRegistry.load(ROOT),
+                                  teams_lock=asyncio.Lock(), db_lock=asyncio.Lock())
+            queue = DryQueue()
+            org.orchestrator = SimpleNamespace(_db=db, _slug=org.slug, _paths=OrgPaths(ROOT),
+                _sessions=SessionTracker(), _queue=queue)
+            org.workflow_authority = WorkflowAuthorityCoordinator(db=db, org_slug=org.slug, root=ROOT, teams=org.teams)
+            org.workflow_sequential_dispatch = SequentialDispatcher(org)
+            db._workflow_sequential_dispatch = org.workflow_sequential_dispatch
+            bridge = WorkflowContinuation(org)
+            org.orchestrator._workflow_continuation = db._workflow_continuation = bridge
+            state = SimpleNamespace(queue=queue, orgs_snapshot=lambda: {org.slug: org})
+            # The unrelated submission owner is deliberately unavailable in
+            # this private construction; the real startup boundary isolates it.
+            async def startup():
+                await discover_completed_workflow_handoffs(state)
+            record['unrelated_submission_owner'] = 'unavailable in private fixture'
+            coordinator = ProfileCoordinator(daemon_home=PRIVATE, orgs={org.slug: org})
+            org.workflow_authority._profile_coordinator = coordinator
+            authority = org.workflow_authority
+            with db.coherent_read_view() as conn:
+                pointer = authority._pointer(conn, authority.namespace)
+                assert pointer[3] == 'ready' and authority._active_journal(conn, authority.namespace) is None
+            # Only rehydrate the already-ready original cache. Never publish or repair.
+            assert authority.recover() == 'rehydrated_coherent'
+            capture = authority.capture_admission()
+            assert capture.pointer == pointer
+            assert hashlib.sha256(capture.ready.snapshot_bytes).hexdigest() == pointer[2]
+            record['authority'] = dict(generation=pointer[0], snapshot_digest=pointer[2],
+                                      private_bytes_match=True, profile_count=len(capture.profile_names))
+            phase = 'baseline'
+            identities = []
+            with db.coherent_read_view() as conn:
+                for run_id in RUNS:
+                    row = conn.execute('SELECT active_visit_id FROM workflow_seq_runs WHERE id=?', (run_id,)).fetchone()
+                    assert row is not None and row[0] is not None
+                    task_id = conn.execute('SELECT task_id FROM workflow_seq_visits WHERE id=?', (row[0],)).fetchone()[0]
+                    run, visit, compiled = org.workflow_sequential_dispatch._entry(conn, task_id)
+                    proof = generic_closed_visit(conn, run=run, visit=visit, budget=_ReadBudget())
+                    assert run['state'] == 'running' and run['source_task_id'] == 'TASK-19206'
+                    assert proof['kind'] == 'settled'
+                    identities.append((run, visit, compiled, proof))
+                assert [item[3]['result_id'] for item in identities] == [34717, None]
+                read_sequential_history(conn, expected_org_slug=org.slug)
+            # Snapshot original rows without exporting payloads/DB. Full streams never
+            # include native findings, prompts, profiles, results or original proof bytes.
+            def snapshot():
+                with db.coherent_read_view() as conn:
+                    result = {}
+                    for table in ('tasks', 'task_results', 'workflow_seq_outputs', 'workflow_seq_evidence',
+                                  'workflow_seq_assignments', 'workflow_seq_controls', 'workflow_seq_node_counters',
+                                  'workflow_seq_source_wait_sets', 'workflow_seq_source_memberships',
+                                  'workflow_seq_consumption_receipts', 'workflow_seq_inbox_deliveries',
+                                  'workflow_seq_consumed_notifications', 'workflow_seq_runs', 'workflow_seq_visits',
+                                  'workflow_seq_events', 'workflow_seq_inbox'):
+                        if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?", (table,)).fetchone():
+                            # All copied workflow rows are small and bounded by the
+                            # production reader above; native rows select exact tasks.
+                            if table in ('tasks', 'task_results'):
+                                ids = [item[1]['task_id'] for item in identities] + ['TASK-19206']
+                                rows = conn.execute('SELECT * FROM '+table+' WHERE '+('id' if table=='tasks' else 'task_id')+' IN (?,?,?) ORDER BY rowid', ids)
+                            else:
+                                rows = conn.execute('SELECT * FROM '+table+' ORDER BY rowid')
+                            result[table] = tuple(tuple(row) for row in rows)
+                    result['native_result_count'] = conn.execute('SELECT count(*) FROM task_results').fetchone()[0]
+                    return result
+            before = snapshot()
+            phase = 'sweep'
+            asyncio.run(startup())
+            record['observed_states'] = [db._conn.execute('SELECT state FROM workflow_seq_runs WHERE id=?', (key,)).fetchone()[0] for key in RUNS]
+            outcomes = []
+            with db.coherent_read_view() as conn:
+                for (original, visit, compiled, proof), expected in zip(identities, ('task_blocked_after_clean_exit', 'missing_callback')):
+                    run = dict(conn.execute('SELECT * FROM workflow_seq_runs WHERE id=?', (original['id'],)).fetchone())
+                    assert run['state'] == 'held', 'actual copied run did not reach Held'
+                    event = dict(conn.execute('SELECT * FROM workflow_seq_events WHERE id=?', (run['held_event_id'],)).fetchone())
+                    assert json.loads(event['event_bytes'])['cause'] == expected
+                    inbox = conn.execute('SELECT notification_id,event_id,initiator_task_id,notification_bytes FROM workflow_seq_inbox WHERE run_id=?', (run['id'],)).fetchall()
+                    assert len(inbox) == 1 and inbox[0]['event_id'] == event['id'] and inbox[0]['initiator_task_id'] == 'TASK-19206'
+                    assert json.loads(inbox[0]['notification_bytes'])['result_id'] == proof['result_id']
+                    assert run['visit_count'] == original['visit_count'] and run['recovery_count'] == original['recovery_count']
+                    moving = {'state', 'progress', 'active_visit_id', 'held_node_id', 'held_event_id', 'last_event_id', 'cas', 'event_count'}
+                    assert all(run[key] == value for key, value in original.items() if key not in moving), 'original run pins/counters changed'
+                    outcomes.append(dict(run_id=run['id'], state=run['state'], cause=expected,
+                        event_id=event['id'], inbox_id=inbox[0]['notification_id'], source_result_id=proof['result_id']))
+                read_sequential_history(conn, expected_org_slug=org.slug)
+            after = snapshot()
+            for table in ('tasks','task_results','workflow_seq_outputs','workflow_seq_evidence','workflow_seq_assignments',
+                          'workflow_seq_controls','workflow_seq_node_counters','workflow_seq_source_wait_sets',
+                          'workflow_seq_source_memberships','workflow_seq_consumption_receipts',
+                          'workflow_seq_inbox_deliveries','workflow_seq_consumed_notifications','native_result_count'):
+                assert before.get(table) == after.get(table), 'original copied facts changed: '+table
+            for _ in range(5): asyncio.run(startup())
+            bridge.rediscover(queue=queue)
+            assert snapshot() == after, 'further sweeps grew durable work'
+            record.update(status='PASS sweep/replay', outcomes=outcomes, redeliveries=5, new_callbacks=0,
+                          queue_items=len(queue.items), native_facts_unchanged=True)
+            phase = 'control_preflight'
+            source = db.get_task('TASK-19206')
+            assert source is not None and source.status == 'in_progress' and source.assigned_agent == 'engineering_manager'
+            controls = []
+            for original, visit, compiled, proof in identities:
+                with db.coherent_read_view() as conn:
+                    run = dict(conn.execute('SELECT * FROM workflow_seq_runs WHERE id=?', (original['id'],)).fetchone())
+                    command = dict(format='workflow-sequential-control@2', run_id=run['id'], operation_key='private-u2-preflight',
+                        expected_cas=run['cas'], expected_held_event_id=run['held_event_id'], action='rebrief',
+                        reason='Private admissibility only; no callback or execution',
+                        supplement='Read and report existing evidence only. Merge aab3a1ed1cebaa3ced659dc432539cbfdb993d76 at head e546dddcf6157fe7ce623d3e4378f95f1fb42539 already exists; never merge again.')
+                    history = {name: [dict(row) for row in conn.execute('SELECT * FROM workflow_seq_'+name+' WHERE run_id=?', (run['id'],))]
+                               for name in ('visits','events','controls','node_counters')}
+                    run['hold_cause'] = next(row['cause'] for row in record['outcomes'] if row['run_id']==run['id'])
+                    counts = result_counters(run, compiled, history['visits'], history['events'], history['controls'], history['node_counters'])
+                    limits = generic_limits(compiled, GenericLimits.model_validate_json(run['original_limits_bytes']), parse_generic_start(run['start_bytes']).lower_limits)
+                    reduce_generic_control(compiled, GenericControl.model_validate(command), run=run, counters=counts, limits=limits)
+                prepared = prepare_control(org, command_bytes=_bytes(command), compiled=compiled)
+                assert prepared.prior_cas == run['cas'] and prepared.assignment is not None
+                controls.append(dict(run_id=run['id'], admissible=True, recovery_spent=run['recovery_count']))
+            assert snapshot() == after, 'control preflight wrote copied business data'
+            record.update(status='PASS private-copy done-test', control_preflight=controls,
+                limits='Private production code; dry queue/relocated filesystem/control admissibility only. No actual initiator callback, live wake, real merge or daemon restart.')
+        except Exception as exc:
+            value = str(exc)
+            safe = value if re.fullmatch(r'(?:workflow_|authority_|profile_)[a-z0-9_:-]{1,150}', value) else type(exc).__name__
+            record.update(status='NOT RUN' if phase in ('private_dependencies','baseline') and isinstance(exc, (WorkflowAuthorityError, ProfileCoordinatorError)) else 'NOT PASSED', phase=phase, reason=safe)
+        finally:
+            signal.alarm(0)
+            if db is not None: db.close()
+            record['seconds'] = round(time.monotonic()-started,2)
+            print(json.dumps(record))
+        sys.exit(0 if record['status'] == 'PASS private-copy done-test' else 2 if record['status'] == 'NOT RUN' else 1)
+
     for case in (S5_CASES if s5_case or not sys.argv[1:] else ()):
         if s5_case not in (None, 'all', case):
+            continue
+        if case.startswith('settlement_'):
+            from runtime.daemon.__main__ import discover_completed_workflow_handoffs
+            from runtime.daemon.zombie_reaper import zombie_reaper_loop
+            from runtime.daemon.sessions import SessionTracker
+            with s5fixture() as f:
+                s5release(f)
+                state = SimpleNamespace(queue=f.queue, orgs_snapshot=lambda: {'scratch': f.org},
+                    metrics_registry=SimpleNamespace(record_loop_tick=lambda *args: None))
+                async def startup():
+                    await discover_completed_workflow_handoffs(state)
+                async def periodic():
+                    # Stop only after the real loop's first complete pass.
+                    class EndTick(BaseException): pass
+                    with patch('runtime.daemon.zombie_reaper.asyncio.sleep', side_effect=EndTick):
+                        try: await zombie_reaper_loop(state)
+                        except EndTick: pass
+                if case == 'settlement_receipt':
+                    from runtime.orchestrator.task_pause import TaskInvocation
+                    async def original_p0():
+                        f.org.orchestrator._main_loop = asyncio.get_running_loop()
+                        task = f.db.get_task(f.ids.visit_task_id)
+                        inv = TaskInvocation(f.org.orchestrator, task, task.assigned_agent,
+                            'original-u2-p0-session', owner='sequential', workflow_dispatcher=f.dispatcher)
+                        original = inv.store.held_uncommitted
+                        calls = []
+                        def fail_once(task_id):
+                            calls.append(task_id)
+                            if len(calls) == 1: raise RuntimeError('original pre-reservation failure')
+                            return original(task_id)
+                        with patch.object(inv.store, 'held_uncommitted', fail_once), \
+                                patch.object(f.dispatcher, '_advance_generic', side_effect=RuntimeError('lost observation')):
+                            try: await asyncio.to_thread(inv.prepare)
+                            except RuntimeError: pass
+                        assert inv.sequential_failure_closed and not inv.reserve_entered
+                    asyncio.run(original_p0())
+                    native = f.db.get_task(f.ids.visit_task_id)
+                    assert native.status == 'pending' and native.current_session_id is None
+                    receipts = [json.loads(row[0]) for row in f.conn.execute(
+                        "SELECT payload FROM audit_log WHERE task_id=? AND action='workflow_seq_native_launch_failure' ORDER BY id",
+                        (native.id,))]
+                    assert [row['stage'] for row in receipts] == ['intent', 'closed'], 'original P0 receipts missing'
+                    assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['state'] == 'running'
+                    asyncio.run(startup())
+                    run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                    assert run['state'] == 'held', 'startup stranded original receipt-backed queued visit'
+                    assert json.loads(s4row(f, 'workflow_seq_events', run['held_event_id'])['event_bytes'])['cause'] == 'launch_failed_before_start'
+                    assert f.db.get_task(native.id) == native
+                    assert f.conn.execute('SELECT count(*) FROM task_results WHERE task_id=?', (native.id,)).fetchone()[0] == 0
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_inbox').fetchone()[0] == 1
+                    after = s5snap(f)
+                    for _ in range(5): asyncio.run(startup())
+                    assert s5snap(f) == after, 'receipt re-delivery grew obligations'
+                    assert len(read_sequential_history(f.conn, expected_org_slug='scratch').run_ids) == 2
+                elif case == 'settlement_unknown':
+                    from runtime.orchestrator.task_pause import TaskInvocation
+                    task = f.db.get_task(f.ids.visit_task_id)
+                    inv = TaskInvocation(f.org.orchestrator, task, task.assigned_agent,
+                        'original-u2-unknown', owner='sequential', workflow_dispatcher=f.dispatcher)
+                    inv.prepare(); inv.failed_cleanup()
+                    s4closed(f, f.ids.visit_id, terminal='success')
+                    # Restart-shaped private reader: persisted unknown, no live
+                    # tracker or invocation to deny before the journal guard.
+                    f.db._task_pause_store = TaskPauseStore(f.db, 'scratch')
+                    before = s5snap(f)
+                    journal = f.conn.execute('SELECT admission_journal_json FROM task_pause_controls').fetchall()
+                    asyncio.run(startup()); asyncio.run(periodic())
+                    assert s5snap(f) == before, 'sticky unknown falsely settled'
+                    assert [tuple(row) for row in f.conn.execute('SELECT admission_journal_json FROM task_pause_controls')] == [tuple(row) for row in journal]
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_inbox').fetchone()[0] == 0
+                elif case == 'settlement_success_cancel':
+                    s4closed(f, f.ids.visit_id, summary=s4bsummary('finish'), terminal='success')
+                    f.conn.execute('UPDATE task_results SET confidence_score=80 WHERE confidence_score IS NULL')
+                    f.conn.commit()
+                    f.ids = f.batch_ids[1]
+                    s4closed(f, f.ids.visit_id, terminal='success')
+                    # Synthetic live source phase for the existing control writer;
+                    # genuine callback/control wiring belongs to U3.
+                    f.db.update_task(f.source.id, block_kind=None)
+                    f.actor = RetryClaim.from_task(f.db.get_task(f.source.id), result_row_id=f.actor.result_row_id)
+                    s4apply(f, s4command(f, 'cancel'))
+                    assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['progress'] == 'cancelling'
+                    asyncio.run(startup())
+                    runs = [s4row(f, 'workflow_seq_runs', ids.run_id) for ids in f.batch_ids]
+                    assert [(row['state'], row['terminal_outcome']) for row in runs] == [('finished', 'completed'), ('finished', 'cancelled')], 'success/cancellation owner was bypassed'
+                    assert f.conn.execute("SELECT count(*) FROM workflow_seq_events WHERE kind='held'").fetchone()[0] == 0
+                    after = s5snap(f)
+                    asyncio.run(startup()); asyncio.run(periodic())
+                    assert s5snap(f) == after
+                    assert len(read_sequential_history(f.conn, expected_org_slug='scratch').run_ids) == 2
+                elif case == 'settlement_startup':
+                    for index, status in enumerate(('blocked', None)):
+                        f.ids = f.batch_ids[index]
+                        s4closed(f, f.ids.visit_id,
+                            summary=None if status is None else s4bsummary('pause'),
+                            terminal='success', native_status='failed', classification=status or 'unknown',
+                            callback_status=status)
+                    f.conn.execute('UPDATE task_results SET confidence_score=80 WHERE confidence_score IS NULL')
+                    f.conn.commit()
+                    before = s5snap(f)
+                    assert len(read_sequential_history(f.conn, expected_org_slug='scratch').run_ids) == 2
+                    asyncio.run(startup())
+                    runs = [s4row(f, 'workflow_seq_runs', ids.run_id) for ids in f.batch_ids]
+                    assert [run['state'] for run in runs] == ['held', 'held'], 'startup stranded authentic terminal visits'
+                    inbox = f.conn.execute('SELECT run_id,event_id,initiator_task_id FROM workflow_seq_inbox').fetchall()
+                    assert len(inbox) == 2 and {row['run_id'] for row in inbox} == {ids.run_id for ids in f.batch_ids}
+                    assert all(row['initiator_task_id'] == f.source.id for row in inbox), 'wrong initiator'
+                    causes = [json.loads(s4row(f, 'workflow_seq_events', run['held_event_id'])['event_bytes'])['cause'] for run in runs]
+                    assert causes == ['task_blocked_after_clean_exit', 'missing_callback'], causes
+                    after = s5snap(f)
+                    for table in ('tasks', 'task_results', 'workflow_seq_evidence', 'workflow_seq_assignments'):
+                        assert before[table] == after[table], 'sweep altered original facts: ' + table
+                    # Forget traversal/observation memory as on a new boot. The
+                    # persisted event/inbox pair must remain the sole owner.
+                    del f.org._sequential_settlement_discovery
+                    for _ in range(5):
+                        asyncio.run(startup()); asyncio.run(periodic())
+                    assert s5snap(f) == after, 'five redeliveries grew obligations'
+                    with s5reopen(f) as conn:
+                        assert len(read_sequential_history(conn, expected_org_slug='scratch').run_ids) == 2
+                        assert conn.execute('SELECT count(*) FROM workflow_seq_inbox').fetchone()[0] == 2
+                    assert f.queue._queue.qsize() == 3, 'entry wakes plus coalesced source wake changed'
+                elif case == 'settlement_delivery':
+                    s5hold(f)
+                    f.conn.execute("UPDATE tasks SET block_kind='blocked_on_job' WHERE id=?", (f.source.id,))
+                    f.conn.commit()
+                    while not f.queue._queue.empty(): f.queue._queue.get_nowait()
+                    f.queue = TaskQueue(); f.org.orchestrator._queue = f.queue; state.queue = f.queue
+                    before = s5snap(f)
+                    asyncio.run(periodic())
+                    assert f.source.id not in [item[1] for item in f.queue._queue._queue], 'job-blocked source was prematurely published'
+                    f.conn.execute("UPDATE tasks SET block_kind='delegated' WHERE id=?", (f.source.id,))
+                    f.conn.commit()
+                    asyncio.run(periodic())
+                    queued = [item[1] for item in list(f.queue._queue._queue)]
+                    assert f.source.id in queued, 'periodic pass lost pending initiator inbox'
+                    after = s5snap(f)
+                    assert after['workflow_seq_inbox'] == before['workflow_seq_inbox'], 'publication created another inbox'
+                    asyncio.run(periodic())
+                    assert s5snap(f) == after and f.queue._queue.qsize() == len(queued), 'publication replay grew work'
+                elif case == 'settlement_alarm':
+                    records = []
+                    log = logging.getLogger('happyranch.workflows.sequential_settlement')
+                    class Capture(logging.Handler):
+                        def emit(self, record): records.append(record.getMessage())
+                    handler = Capture(); log.addHandler(handler)
+                    before = s5snap(f)
+                    try:
+                        with patch('time.monotonic', return_value=1000): asyncio.run(startup())
+                        assert not any('sequential_stall ' in line for line in records)
+                        # The observer must run even with settlement and wake unavailable.
+                        with patch('time.monotonic', return_value=1301), \
+                                patch.object(f.org.workflow_authority, 'capture_admission', side_effect=ValueError('unavailable')), \
+                                patch.object(f.org.orchestrator._workflow_continuation, 'rediscover', side_effect=ValueError('unavailable')):
+                            asyncio.run(startup()); asyncio.run(startup())
+                        stalls = [line for line in records if 'sequential_stall ' in line]
+                        assert len(stalls) == 2 and all('no_verified_live_session' in line for line in stalls), 'independent rate-limited stall alarm missing'
+                        assert s5snap(f) == before, 'observational alarm mutated database'
+                        from runtime.workflows import sequential_settlement as settlement
+                        with patch.object(settlement, '_page', side_effect=sqlite3.OperationalError('unreadable')):
+                            asyncio.run(startup())
+                        assert any('sweep_failed ' in line for line in records)
+                        assert any('observation_incomplete ' in line for line in records), 'unreadable alarm scan claimed completeness'
+                        sessions = SessionTracker(); f.org.orchestrator._sessions = sessions
+                        row = settlement._page(f.org, '')[0][0]
+                        # Live verification requires the exact bound tuple.
+                        f.conn.execute('UPDATE tasks SET current_session_id=? WHERE id=?', ('alarm-live', row['task_id']))
+                        f.conn.execute('UPDATE workflow_seq_visits SET session_id=? WHERE id=?', ('alarm-live', row['visit_id']))
+                        f.conn.commit()
+                        sessions.set_active(row['task_id'], row['principal'], 'alarm-live', org_slug='scratch')
+                        with patch('time.monotonic', return_value=1700): settlement.observe_stalls(f.org)
+                        assert len([line for line in records if 'sequential_stall ' in line]) == 2, 'verified live session alarmed'
+                    finally:
+                        log.removeHandler(handler)
+                elif case == 'settlement_safety':
+                    for index in range(2):
+                        f.ids = f.batch_ids[index]
+                        s4closed(f, f.ids.visit_id, terminal='success', positive=index == 1)
+                    # One missing proof must not prevent an independent valid candidate.
+                    asyncio.run(startup())
+                    assert [s4row(f, 'workflow_seq_runs', ids.run_id)['state'] for ids in f.batch_ids] == ['running', 'held']
+                    from runtime.workflows import sequential_settlement as settlement
+                    # Reopen at the SQL rollback boundary, then retry using real writer.
+                    f.ids = f.batch_ids[0]
+                    terminal = _evidence(f.conn, f.ids.run_id, f.ids.visit_id, 'terminal')
+                    common = {key: terminal[key] for key in ('invocation_id', 'task_id', 'principal', 'session_id', 'callback')}
+                    _evidence(f.conn, f.ids.run_id, f.ids.visit_id, 'outer', dict(format='workflow-sequential-outer@1',
+                        **common, positive=True, tracker_clear=True, native_phase='result_processing', close_removed=True,
+                        release_removed=True, release_owner=terminal['invocation_id'], execution_unknown=False))
+                    f.conn.commit()
+                    before = s5snap(f)
+                    f.conn.set_authorizer(lambda action, table, *args: sqlite3.SQLITE_DENY
+                        if action == sqlite3.SQLITE_INSERT and table == 'workflow_seq_events' else sqlite3.SQLITE_OK)
+                    try: asyncio.run(settlement.settle_closed_visits(f.org, f.queue))
+                    finally: f.conn.set_authorizer(None)
+                    assert s5snap(f) == before, 'sweep SQL fault leaked inbox/event'
+                    with patch.object(settlement, 'PAGE_SIZE', 1):
+                        for _ in range(3): asyncio.run(startup())
+                    assert all(s4row(f, 'workflow_seq_runs', ids.run_id)['state'] == 'held' for ids in f.batch_ids)
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_inbox').fetchone()[0] == 2
+                print('PASS S5', case, 'private production startup/periodic; no live/provider operations', flush=True)
+            continue
+        if case == 'u1_hold_atomicity':
+            for status in ('blocked', 'failed', None):
+                with s5fixture() as f:
+                    s5release(f)
+                    s4closed(f, f.ids.visit_id, summary=None if status is None else s4bsummary('pause'),
+                        terminal='success', native_status='failed', classification=status or 'unknown', callback_status=status)
+                    f.conn.execute('UPDATE task_results SET confidence_score=80 WHERE confidence_score IS NULL')
+                    f.conn.commit()
+                    before = s5snap(f)
+                    f.conn.set_authorizer(lambda action, table, *args: sqlite3.SQLITE_DENY
+                        if action == sqlite3.SQLITE_INSERT and table == 'workflow_seq_events' else sqlite3.SQLITE_OK)
+                    try:
+                        try: s4baccept(f)
+                        except sqlite3.DatabaseError: pass
+                        else: raise AssertionError('Held event SQL fault was not observed')
+                    finally:
+                        f.conn.set_authorizer(None)
+                    assert s5snap(f) == before, 'inbox escaped rolled-back Held transaction'
+                    with patch('runtime.workflows.sequential_business_hold._specific_generic_hold_cause', return_value=None):
+                        assert s4baccept(f) is None
+                    held = f.conn.execute("SELECT id,event_bytes FROM workflow_seq_events WHERE kind='held'").fetchone()
+                    assert json.loads(held[1])['cause'] == 'terminal_outcome_unhandled'
+                    inbox = f.conn.execute('SELECT initiator_task_id,event_id FROM workflow_seq_inbox').fetchall()
+                    assert [tuple(row) for row in inbox] == [(f.source.id, held[0])]
+                    assert f.ids.run_id in read_sequential_history(f.conn, expected_org_slug='scratch').run_ids
+                    before = s5snap(f)
+                    assert s4baccept(f) is None and s5snap(f) == before
+                    assert SequentialDispatcher(f.org).queue_admission_allowed(f.batch_ids[1].visit_task_id)
+                    print('PASS U1 atomic Held/inbox fallback replay', status, flush=True)
             continue
         if case == 'batch_all_or_none':
             with s5fixture(admitted=False) as f:
@@ -7904,8 +8735,10 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 parse_error=exc
                 if rejected is None: raise
             if rejected is not None:
-                assert parse_error is not None and str(parse_error)==rejected,(rejected,parse_error)
-                print('C16 existing ASGI parser exception',rejected,'(unhandled server error, not HTTP4xx)',flush=True)
+                assert parse_error is None, (rejected, parse_error, 'expected categorical HTTP422')
+                assert response.status_code == 422, response.text
+                assert response.json()['detail']['code'] == 'workflow_sequential_callback_invalid', response.text
+                print('C16 categorical ASGI refusal', rejected, 'HTTP422; zero result', flush=True)
                 assert f.db.get_latest_task_result(visit['task_id'],visit['principal'],sid) is None
                 assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs WHERE visit_id=?',(visit['id'],)).fetchone()[0]==0
                 assert s4row(f,'workflow_seq_runs',run_id)['visit_count']==run['visit_count']
@@ -8823,6 +9656,60 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             finally:
                 state.metrics_store.close(); state.direct_connect_authority_store.close()
 
+    async def dr_manager_policy():
+        from runtime.orchestrator.executors import ExecutorResult
+        from runtime.orchestrator.task_pause import _invocation
+        from runtime.orchestrator.active_authority_policy import load_session_policy_binding
+        async with dr_fixture(launch=True) as f:
+            run = (await dr_start(f, ('release/happyranch/coding',)))[0]
+            for outcome in ('produced', 'APPROVE', 'PASS'):
+                await dr_visit(f, run['id'], outcome)
+            run = dr_select(f, run['id'])
+            visit = s4row(f, 'workflow_seq_visits', run['active_visit_id'])
+            task = f.db.get_task(visit['task_id'])
+            assert f.org.teams.is_team_manager(task.assigned_agent)
+            workspace = f.root / 'workspaces' / task.assigned_agent
+            workspace.mkdir(parents=True, exist_ok=True)
+            (workspace / 'AGENTS.md').write_text('Private policy fixture. Follow the bound node callback.\n')
+            (workspace / 'CLAUDE.md').symlink_to('AGENTS.md')
+            marker = f.org.orchestrator._readiness_marker(workspace, 'codex')
+            marker.parent.mkdir(parents=True, exist_ok=True); marker.write_text('private initialized marker')
+            inv = TaskInvocation(f.org.orchestrator, task, task.assigned_agent, 'final-original-session',
+                owner='sequential', workflow_dispatcher=f.dispatcher)
+            inv.prepare()
+            prompts = []
+            def launch(**kwargs):
+                prompts.append(kwargs['full_prompt'])
+                assert inv.commit()
+                binding = load_session_policy_binding(db=f.db, task_id=task.id,
+                    session_id=inv.session_id, agent_name=inv.agent)
+                assert binding is None, binding
+                return ExecutorResult(success=True, duration_seconds=0, session_id=inv.session_id)
+            token = _invocation.set(inv)
+            try:
+                with patch.object(inv.orch, '_launch_agent_with_scratch', launch):
+                    await asyncio.to_thread(inv.orch._run_agent, task.id, task.assigned_agent, task.brief)
+            finally:
+                _invocation.reset(token)
+            assert prompts and 'Omit decision, waiting_on_job_ids, and manager_self_evaluation' in prompts[0]
+            assert '## [RESERVED] Active Team Escalation Policy' not in prompts[0]
+            summary = s4bytes(dict(format='workflow-sequential-callback@2', outcome='merged',
+                content_base64=base64.b64encode(b'{"report":"existing effect only"}').decode(), findings=[])).decode()
+            payload = dict(agent=inv.agent, session_id=inv.session_id, status='completed', confidence=80, output_summary=summary)
+            for value in (None, {}, {'looks': 'valid'}):
+                before = dr_inventory(f)
+                response = await f.client.post('/api/v1/orgs/scratch/tasks/' + task.id + '/completion',
+                    headers=f.auth, json=dict(payload, manager_self_evaluation=value))
+                assert response.status_code == 400 and response.json()['detail']['code'] == 'manager_self_evaluation_not_available', response.text
+                assert dr_inventory(f) == before
+            response = await f.client.post('/api/v1/orgs/scratch/tasks/' + task.id + '/completion', headers=f.auth, json=payload)
+            assert response.status_code == 200, response.text
+            row = f.db.get_latest_task_result(task.id, inv.agent, inv.session_id)
+            assert row['decision_json'] is None
+            assert f.db.get_authority_policy_v2_attempt_for_result(row['id']) is None
+            f.org.sessions.clear_if_active_session(task.id, inv.agent, inv.session_id)
+            print('PASS U1 manager policy: actual Final prompt, launch binding and route; null/object presence rejected; omitted accepted; ordinary source v2 retained', flush=True)
+
     async def dr_coding_launch():
         snapshot = os.environ.get('WORKFLOW_CODING_QUEUED_DB')
         if snapshot:
@@ -9035,7 +9922,9 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
     if draft_review_case:
         for case in DRAFT_REVIEW_CASES:
             if draft_review_case in ('all',case):
-                if case == 'C27':
+                if case == 'U1_policy':
+                    asyncio.run(dr_manager_policy())
+                elif case == 'C27':
                     asyncio.run(dr_first_launch(snapshot=os.environ.get('WORKFLOW_QUEUED_DB')))
                 elif case == 'C28':
                     asyncio.run(dr_render_tuples())

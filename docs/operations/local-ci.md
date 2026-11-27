@@ -113,10 +113,9 @@ SQL-seeded new definitions/Allowed defaults substitute for those owners.
 Test-side native closure receipts are synthetic; actual task invocation,
 ASGI completion intake, INTEGER results, consumption and stored transitions are
 observed. No provider is launched. Unknown/malformed outcomes are distinct:
-undeclared `REVISE` lands then holds; malformed generic callbacks currently
-propagate `SequentialContractError` through ASGI, with no committed result or
-output. Those rows record the exact parser exception, **not** a successful4xx
-transport projection. This slice does not change that existing error mapping.
+undeclared `REVISE` lands then holds; malformed generic callbacks refuse
+categorical HTTP422 `workflow_sequential_callback_invalid` with no committed
+result or output. C16 observes that transport boundary (U1 hardening).
 The completion API allocates its own INTEGER result ID and ignores a supplied
 extra `result_id`. C16 checks the allocated identity, then uses the actual
 accepted envelope and pre-acceptance state to check wrong output-result and
@@ -2599,6 +2598,20 @@ other scratch, pre-existing `pytest-of-*` tree, or historical backlog.
 
 ## Git hooks and evidence
 
+U3a recovery prompt selectors use the private schema venue:
+`WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s4b=lineage_retry`
+(also 3.14). `lineage_rebrief`, `lineage_reassign`, `lineage_conflict` and
+`lineage_compatibility` observe real rendered trusted IDs, truthful supplement
+presence/absence, principal changes, chained conflict refusal, frozen invocation
+bytes and retained full-history/task-brief compatibility. The existing
+`recovery_read_only` case owns restriction/supplement inheritance across controls.
+`lineage_transition_retry`, `lineage_transition_rebrief`,
+`lineage_transition_reassign` and `lineage_transition_historical` cover completed
+callbacks reduced to Held transitions, recovery rendering and retained bytes;
+the historical case reloads a persisted replacement through `OrgState.load`.
+These are private writer/renderer checks; live pilot replay and executor lifecycle
+coverage remain separate.
+
 The project does not install/manage hooks for linked worktrees. Worktree-guard
 setup may remove only its known stale pre-PR607 injected hook configuration.
 Follow normal repository hooks; `--no-verify` and force push remain prohibited.
@@ -4069,6 +4082,30 @@ checks change systemd hardening, required CI selection or workflow triggers.
 
 ## Fixed remote-access helper
 
+F2 firewall fixtures and the real helper admission/status mount extend the
+existing standalone script selection:
+`PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_home_activation_backend.py scripts/test_helper_mount.py -k thr327_firewall -q --tb=short`.
+They cover UFW active-deny/reject, both/single/LAN/range/v6 rules, inactivity,
+ambiguous profiles/rate limits and malformed output; stock UFW IPv4 before/after
+rules, LAN/multiport/broad/custom-chain allows and unreadable/oversized files;
+Enable admission and READY completion regardless of firewall evidence,
+post-settlement advice/error/absence, and READY plus separate Status advice.
+The existing Status table uses the real 1.9-second watchdog and fixed child
+transport with synthetic slow/error results: advice timeout retains V2
+READY/available/current-policy observations without `expired`, and insufficient
+advice time skips the child within the original two-second response budget.
+The stock-files/live-INPUT-allow counterexample shares the reviewer’s UFW
+formatter output; it cannot prove live packet acceptance. Stock templates in
+`scripts/fixtures/ufw/` come from the UFW
+package's `usr/share/ufw/iptables` defaults; supplemental files are redirected to
+temporary copies while the production inspector and public Enable run. Command
+output is synthetic; no host firewall, system bus or services are touched.
+The existing Linux `test_connection.py`, `test_connection_cli.py`,
+`test_app_events.py` and Node `connection-dialog.test.mjs` selections cover the
+closed native projection/relay, CLI LAN-only action and bilingual host copy.
+These are local owner checks, with no new required CI or daily E2E trigger.
+
+
 I3a supervisor B10 wiring uses the retained standalone venue:
 `PYTHONPATH=$PWD uv run --frozen pytest scripts/test_invite_control.py -v --tb=short`.
 Its supervisor cases use a real private control listener, the serving pinned
@@ -4457,3 +4494,98 @@ within the PR's founder-approved combined unsigned build allowance (current
 ledger in the PR body). Native execution,
 Swift tests, real SSE timing and save-panel/remote acceptance are NOT RUN by
 the Linux maker. This adds no required check, job definition edit or E2E run.
+
+## U1 sequential hardening cases
+
+Use the existing schema-shell venue with `WORKFLOW_SCHEMA_PYTHON=3.12` and `3.14`:
+`bash scripts/test-workflow-schema-load.sh --s4b=native_status_clean_exit`,
+`--s4b=clean_exit_no_callback`, `--s4b=terminal_fallback`,
+`--s4b=nonrender_launch_failure`, `--s4b=recovery_read_only`, and
+`--s5=u1_hold_atomicity`. `--s4b=legacy_cause_history` extends the cause/history
+matrix through the actual org-load schema reader with unchanged saved labels
+and negative callbacks; false original predicates remain refused. These cases
+belong to existing aggregates/full execution.
+`--draft-review=U1_policy` reuses the configured released Coding fixture for actual
+Final prompt/launch COMMIT/route ownership; the authority-omission script invokes
+that same keeper after its ordinary v2 preservation table. That script now honors
+`WORKFLOW_SCHEMA_PYTHON` too (default 3.14). Required checks remain Source Boundary
+Lint and Web Lint (Node 24); no CI trigger/check or Product E2E change follows.
+
+| Case | Observable assertion / proof limit |
+| --- | --- |
+| Native clean negatives / missing callback | Blocked/failed valid and malformed summaries and clean no-result Hold without changing native results/counters or making output/successor; repeat settlement stutters |
+| F1 / atomicity | Fault only the optional specific-cause label on an authentic-shaped closed tuple; persist fallback Held/inbox and replay after restoring classification. SQL refusal between deferred inbox and Held rolls back both; retry commits exactly one pair |
+| P0 | Original synchronous pre-reservation frame; no reservation/journal/effects/launch entered; explicit not-created intent/closed facts |
+| P1 | Original clean prepared invocation; unsuccessful return and actual queue_started → _run_agent → run_step_impl throws at AgentDef resolution/executor construction, real safe outer cleanup, observed close/release removal, one causal initiator inbox; actual cleanup failure and sticky unknown remain fenced |
+| P2 | No complete original scratch certificate is currently available: unproved P2 stays U, never a positive receipt or inferred compensation proof |
+| U0 | Actual original reservation call interrupted before preparation certainty; same unresolved journal/invocation retained |
+| U1/U2 | Controlled original-frame false returns/throws after preparation effects remain unknown; actual integrity/scratch failed-return wiring is NOT RUN in this fixture |
+| U3/U4 | Entered launch writer and committed possible-launch retain unknown; no positive receipt from a failed commit or absent PID |
+| Failed P finishing | Inject close, release and final receipt-storage failures; only intent/unsettled, no Held |
+| Redelivery | Every finite row observes five cycles with no new SID/reservation/preparation/launch/result/Held/inbox or receipt growth after first disposition |
+| U5 | Existing authentic host/outer closure keepers own positive T. Real spawn/PID loss or survivor lifecycle proof remains NOT RUN in U1's provider-free venue; U3 owns process wiring |
+| Policy | Genuine manager Final renders assessment-free node instruction, launch creates no ordinary v2 binding, supplied null/object assessment refuses 400, omitted assessment lands one native result with NULL decision and no v2 attempt; genuine ordinary source v2 remains |
+| Reconciliation | Immutable control lineage carries trusted read-only duty and bounded supplement into the actual renderer across rebrief/retry/reassignment and later callback Hold; never repeats an existing merge |
+
+Native receipt tests use original `TaskInvocation`/Pause/move writers. Synthetic
+host/outer fixtures are explicitly simulated closure evidence, never a claim of
+real containment. Classification fallback catches no authentication/history failure.
+The production receipt reader authenticates task/run/visit/principal, original
+prospective SID/invocation/fingerprint, committed intent/digest and exact positive
+close/release facts; any unresolved same-task native journal refuses positive proof.
+Original audit scope, sticky uncertainty and history work/byte/deadline limits stay
+unchanged. This unit adds no sweep, alarm, provider effect or integration module.
+General integration stays skipped; live-host integration and ad hoc Product E2E
+remain forbidden by this brief. TLC uses the documented pinned task-scratch recipe.
+
+## Sequential closed-visit sweep and stall observation (U2)
+
+Use the existing private schema-shell venue on both Python 3.12 and 3.14:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_startup
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_delivery
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_alarm
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_safety
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_receipt
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_unknown
+WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settlement_success_cancel
+```
+
+These cases extend S5 and run in the full aggregate. Startup and periodic mounts
+are actual production hooks, with a bounded one-tick periodic fixture. They check
+terminal T and original-owner receipt-backed Q discovery, atomic Held/inbox and
+SQL rollback/replay, exactly one causal item per run, five redeliveries without
+growth, missed notification publication through existing readiness, sticky
+journal unknown, and success/cancellation ownership. Native terminal/outer T
+receipts are synthetic private fixture facts; Q uses actual TaskInvocation P0
+receipt production. Synthetic control setup does not prove a genuine initiator
+callback. The fixed-clock logger case observes no DB mutation and still warns
+when authority/publication fail. It checks rate limiting and exact live-session
+suppression without sleeping. Partial pages/errors are never absence-of-stall
+proof. Retain U1 cause/ownership/read-only-lineage keepers unchanged.
+
+A copied-pilot done-test requires a fresh SQLite `.backup` from a read-only live
+source into task TMPDIR and byte-authenticated private authority/profile/roster
+mirrors matching the copied ready pointer. No fake capture, Save/Allow, pointer
+rewrite, fabricated callback/result/proof or source-session insertion is allowed.
+Only the private copy may be written. The opt-in case is excluded from all
+synthetic aggregates and requires explicit absolute private paths:
+
+```bash
+WORKFLOW_SCHEMA_PYTHON=3.12 WORKFLOW_PILOT_PRIVATE_ROOT=/absolute/task-tmp/private-home WORKFLOW_PILOT_COPY_DB=/absolute/task-tmp/private-home/runtime/orgs/happyranch/happyranch.db bash scripts/test-workflow-schema-load.sh --s5=pilot_copy
+```
+
+It rehydrates only an already-ready original authority cache, refuses an active
+publication journal and compares the captured bytes/digest to the copied pointer.
+It uses the shipping sweep, real history/writer/controls and a dry queue observer;
+no original initiator session/result is inserted. Exit 2 with NOT RUN identifies
+unavailable authentic authority closure; other executed failures remain failures.
+Actual A/B Held/inbox/control admissibility must be reported separately from synthetic S5; an unavailable authentic authority
+closure is NOT RUN, never a simulated done-test PASS. No DB/mirrors go in output.
+
+Run full schema suites and ordinary-authority omission on both Pythons, plus
+`scripts/local_ci.sh all`, as durable jobs at the exact committed head. Retain
+[TLC](../specs/formal/task-lifecycle/README.md#run-tlc) current/restart and negative
+controls. This adds no CI trigger/check, U3 module, ad hoc Product E2E or live
+recovery. General integration stays SKIPPED under THR-243.

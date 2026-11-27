@@ -277,7 +277,9 @@ def generic_closed_visit(conn: sqlite3.Connection, *, run: dict, visit: dict, bu
                  and native[0][2] in ('pending', 'cancelled') and native[0][3:] == (None, None), 'hold_unsettled')
         _require(conn.execute('SELECT 1 FROM task_results WHERE task_id=? LIMIT 1', (visit['task_id'],)).fetchone() is None,
                  'hold_native_conflict')
-        return dict(kind='never_launched', result_id=None)
+        from runtime.workflows.sequential_launch_failures import closed_proof
+        failure = closed_proof(conn, run, visit, budget)
+        return failure if failure is not None else dict(kind='never_launched', result_id=None)
     terminal, terminal_digest = _proof(conn, run['id'], visit['id'], 'terminal', budget)
     outer, outer_digest = _proof(conn, run['id'], visit['id'], 'outer', budget)
     common = dict(task_id=visit['task_id'], principal=visit['principal'], session_id=visit['session_id'])
@@ -330,7 +332,8 @@ def generic_closed_visit(conn: sqlite3.Connection, *, run: dict, visit: dict, bu
 
 
 def generic_hold_cause(conn: sqlite3.Connection, *, run: dict, visit: dict, compiled: object,
-                       budget: _ReadBudget, unavailable: bool = False, launch_refused: bool = False) -> tuple[str, dict]:
+                       budget: _ReadBudget, unavailable: bool = False, launch_refused: bool = False,
+                       saved_cause: str | None = None) -> tuple[str, dict]:
     from runtime.platform.session_backend import TerminalReason
     from runtime.workflows.sequential_definition import SequentialContractError, parse_generic_callback
     proof = generic_closed_visit(conn, run=run, visit=visit, budget=budget)
@@ -341,34 +344,52 @@ def generic_hold_cause(conn: sqlite3.Connection, *, run: dict, visit: dict, comp
     if unavailable:
         _require(proof['kind'] == 'never_launched', 'hold_unavailable_conflict')
         return 'assignee_unavailable', proof
+    if proof['kind'] == 'launch_failed_before_start':
+        return 'launch_failed_before_start', proof
     _require(proof['kind'] == 'settled', 'hold_cause_unavailable')
-    if proof['result_id'] is None:
-        terminal, _ = _proof(conn, run['id'], visit['id'], 'terminal', budget)
-        reason = terminal['receipt']['terminal_reason']
-        _require(reason in tuple(item.value for item in TerminalReason if item != TerminalReason.SUCCESS)
-                 + ('failed', 'error'), 'hold_cause_unavailable')
-        return ('task_timed_out_without_result' if reason == TerminalReason.TIMEOUT.value else 'task_failed_without_result'), proof
+    # Authenticate first. Optional business classification cannot grant closure.
+    cause = _specific_generic_hold_cause(conn, run=run, visit=visit, compiled=compiled,
+                                         budget=budget, proof=proof, saved_cause=saved_cause)
+    return cause or 'terminal_outcome_unhandled', proof
+
+
+def _specific_generic_hold_cause(conn: sqlite3.Connection, *, run: dict, visit: dict,
+                                 compiled: object, budget: _ReadBudget, proof: dict,
+                                 saved_cause: str | None = None) -> str | None:
+    from runtime.platform.session_backend import TerminalReason
+    from runtime.workflows.sequential_definition import SequentialContractError, parse_generic_callback
     terminal, _ = _proof(conn, run['id'], visit['id'], 'terminal', budget)
     reason = terminal['receipt']['terminal_reason']
-    _require(reason in tuple(item.value for item in TerminalReason) + ('failed', 'error'), 'hold_cause_unavailable')
     if reason == TerminalReason.TIMEOUT.value:
-        return 'task_timed_out_after_result', proof
+        return 'task_timed_out_without_result' if proof['result_id'] is None else 'task_timed_out_after_result'
+    if reason in tuple(item.value for item in TerminalReason if item != TerminalReason.SUCCESS) + ('failed', 'error'):
+        return 'task_failed_without_result' if proof['result_id'] is None else 'task_failed_after_result'
     if reason != TerminalReason.SUCCESS.value:
-        return 'task_failed_after_result', proof
+        return None
+    if proof['result_id'] is None:
+        return 'missing_callback'
+    status = conn.execute('SELECT status FROM task_results WHERE id=?', (proof['result_id'],)).fetchone()[0]
+    # Pre-U1 saved output refusals did not prioritize negative callback status.
+    # Replay must recheck their original output predicates after the same native
+    # closure authentication. New events retain the current status precedence.
+    legacy_output = saved_cause in ('result_bad_shape', 'result_too_large',
+                                    'unknown_outcome', 'revision_limit_exhausted')
+    if status in ('blocked', 'failed') and not legacy_output:
+        return 'task_' + status + '_after_clean_exit'
     payload = generic_callback_bytes(conn, proof['result_id'], budget)
     if payload is None:
-        return 'result_too_large', proof
+        return 'result_too_large'
     if not payload[0]:
-        return 'result_bad_shape', proof
+        return 'result_bad_shape'
     node = next(item for item in compiled.definition.nodes if item.id == visit['node_id'])
     try:
         callback = parse_generic_callback(payload[0], contract=node.output_contract.type)
     except SequentialContractError as exc:
         return ('result_too_large' if str(exc) in ('encoded_bounds', 'generic_output_bounds', 'callback_metadata_bounds')
-                else 'result_bad_shape'), proof
+                else 'result_bad_shape')
     edge = dict(node.outcomes).get(callback.outcome)
     if edge is None:
-        return 'unknown_outcome', proof
+        return 'unknown_outcome'
     if getattr(edge, 'consume_counter', None) is not None:
         from runtime.workflows.sequential_contracts import GenericLimits
         from runtime.workflows.sequential_definition import generic_limits, parse_generic_start
@@ -377,8 +398,8 @@ def generic_hold_cause(conn: sqlite3.Connection, *, run: dict, visit: dict, comp
         count = conn.execute('SELECT revisions FROM workflow_seq_node_counters WHERE run_id=? AND node_id=?',
                              (run['id'], edge.node)).fetchone()
         if (0 if count is None else count[0]) >= dict(limits.node_revisions)[edge.node]:
-            return 'revision_limit_exhausted', proof
-    _require(False, 'hold_cause_unavailable')
+            return 'revision_limit_exhausted'
+    return None
 
 
 def hold_generic_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug: str, run_id: str,
