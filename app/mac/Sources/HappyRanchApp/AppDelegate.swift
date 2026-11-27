@@ -1294,9 +1294,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
 
     /// The label for role-switch menu item — dynamic based on current role.
     var switchRoleMenuLabel: String {
-        switch connectionRole {
-        case .home: return "Connect to another computer…"
-        case .client: return "Run HappyRanch on this Mac…"
+        Self.switchRoleMenuLabel(for: connectionRole, locale: .shared)
+    }
+
+    static func switchRoleMenuLabel(for role: ConnectionRole, locale: AppLocalePreference) -> String {
+        switch role {
+        case .home: return locale.nativeChinese ? "连接到另一台电脑…" : "Connect to another computer…"
+        case .client: return locale.nativeChinese ? "在此 Mac 上运行 HappyRanch…" : "Run HappyRanch on this Mac…"
         }
     }
 

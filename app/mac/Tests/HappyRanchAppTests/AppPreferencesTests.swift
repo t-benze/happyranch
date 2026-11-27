@@ -102,6 +102,37 @@ final class AppPreferencesTests: XCTestCase {
     }
 
     @MainActor
+    func testRoleSwitchMenuLabelsUseImmutableLaunchLocale() throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = AppPreferenceFile(directory: root, name: "locale")
+        let cases: [(String, String, String)] = [
+            ("en", "Connect to another computer…", "Run HappyRanch on this Mac…"),
+            ("zh-CN", "连接到另一台电脑…", "在此 Mac 上运行 HappyRanch…")
+        ]
+        for (launchLocale, homeLabel, clientLabel) in cases {
+            try file.write(launchLocale)
+            let preference = AppLocalePreference(directory: root)
+            XCTAssertEqual(AppDelegate.switchRoleMenuLabel(for: .home, locale: preference), homeLabel)
+            XCTAssertEqual(AppDelegate.switchRoleMenuLabel(for: .client, locale: preference), clientLabel)
+
+            let nextLocale = launchLocale == "en" ? "zh-CN" : "en"
+            preference.call("{\"schema\":2,\"locale\":\"\(nextLocale)\"}", current: { true }, reply: { _, error in
+                XCTAssertNil(error)
+            }, publish: { complete in complete() })
+            XCTAssertEqual(preference.snapshot, .init(current: nextLocale, persisted: true))
+            XCTAssertEqual(AppDelegate.switchRoleMenuLabel(for: .home, locale: preference), homeLabel,
+                           "live language changes leave the running process's native menu fixed")
+            XCTAssertEqual(AppDelegate.switchRoleMenuLabel(for: .client, locale: preference), clientLabel)
+
+            let nextLaunch = AppLocalePreference(directory: root)
+            let (_, nextHomeLabel, nextClientLabel) = try XCTUnwrap(cases.first { $0.0 == nextLocale })
+            XCTAssertEqual(AppDelegate.switchRoleMenuLabel(for: .home, locale: nextLaunch), nextHomeLabel)
+            XCTAssertEqual(AppDelegate.switchRoleMenuLabel(for: .client, locale: nextLaunch), nextClientLabel)
+        }
+    }
+
+    @MainActor
     func testLocaleWriteFailureKeepsSessionChoiceAndPublishesFalse() throws {
         let root = try directory()
         defer { try? FileManager.default.removeItem(at: root) }
