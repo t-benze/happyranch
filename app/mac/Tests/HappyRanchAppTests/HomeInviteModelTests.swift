@@ -1574,3 +1574,42 @@ extension HomeInviteModelTests {
         #expect(await model.waitForCleanup(id: active))
     }
 }
+
+extension HomeInviteModelTests {
+    @Test("A failed cold restore cannot auto-commit a later explicit reconnect")
+    func startupFailedRestoreDoesNotAutoCommitExplicitRetry() async throws {
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let startup = AppStartupSelection(directory: root), id = UUID()
+        startup.commit(.saved(id))
+        let store = HomeStoreFixture(), session = HomeSessionFixture()
+        let trust = try RemoteInvite.parse(invite()).trust
+        let binding = try SavedDeviceBinding(homeID: trust.homeID, controlPlaneID: trust.controlPlaneID, stableNodeID: "synthetic-node")
+        try await store.save(SavedDeviceCredential(binding: binding, trust: trust, deliveredBearer: Data("SYNTHETIC".utf8), networkProfileID: id))
+        await store.configure(read: .unavailable)
+        let model = HomeInviteModel(store: store, makeSession: { session })
+        model.mainDocumentAdmitted()
+        let delegate = AppDelegate(startupSelection: startup, homeInvite: model)
+        let (assets, scheme, view, _) = try AppSchemeSwitchTests().fixture()
+        defer {
+            scheme.close(); view.stopLoading()
+            try? FileManager.default.removeItem(at: assets)
+            try? FileManager.default.removeItem(at: assets.appendingPathExtension("json"))
+        }
+        delegate.bindMainScheme(scheme)
+        try scheme.receiveOwnerSummary(#"{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0}}"#)
+        delegate.beginStartupSelection(home: root.path)
+        #expect(await startupWait { model.phase == .keychain(.unavailable) && !model.busy })
+        delegate.resumeStartupSelection()
+        let generation = scheme.generation
+        await store.configure()
+        model.retry()
+        #expect(await startupWait { model.phase == .readyToSwitch && !model.busy })
+        delegate.resumeStartupSelection()
+        #expect(!model.hasActiveSession, "explicit reconnect still needs its own commit action")
+        #expect(scheme.generation == generation)
+        model.cancel()
+        await model.bridgeSettle()
+    }
+}
