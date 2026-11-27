@@ -32,7 +32,12 @@ matching CAS; selected queued/null-SID visit with a cancelled, uncompleted nativ
 task; no historical session_start, executor admission/policy binding, job in any
 state, preparation/launch-boundary audit, visit evidence, callback/result/output
 or result event; readable root journal without any positive launch fact across
-matching entries. Complete history, pins and authority remain mandatory. Source
+matching entries. Full affected run/source history, sibling wait members,
+historical proofs/receipts, pins and selected settings chains remain mandatory
+under [THR-404 group 4](../specs/2026-11-09-sequential-history-reader-d2.md#direct-controlcancel-and-never-launched-close--thr-404-group-4).
+The same scope is revalidated before returning an original receipt and after
+finish/wake/canonical audit insertion. Disconnected payload corruption is
+excluded. Authority and original budgets/deadlines remain unchanged. Source
 outer proof is separate. Unknown/producer_settled alone proves no cleanup.
 
 The [spec predicate table](../specs/2026-11-25-seq-never-launched-cancel-close.md#transactional-predicates-and-refusal-codes)

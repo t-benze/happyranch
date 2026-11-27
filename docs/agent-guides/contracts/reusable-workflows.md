@@ -425,6 +425,7 @@ lock set/order and rollback-only snapshot, existing bounded readers/ledgers and
 one original five-second deadline. No cap is raised. THR-404 group 2 separately
 scopes start/admission and continuation preflight; group 3 scopes initiator
 dependencies/delivery/consumption and non-cancel generic dispatch/hold below.
+Group 4 scopes direct control/cancel/never-launched close below.
 Other writers, settings, source outer settlement, bootstrap/schema load,
 historical @1 GET and v2 run list/detail keep complete
 `read_sequential_history` validation.
@@ -497,8 +498,13 @@ replacement or launch crosses the fence. A precommitted exact step callback may
 replay unchanged; changed bytes refuse. Original positive native terminal and
 outer closure precede the existing finish writer, with cancellation-only digest
 validation even for empty/malformed business output. Member finish and its
-addressed inbox obligation commit together; full resulting-history validation
-uses the original complete-reader budgets and operation deadline.
+addressed inbox obligation commit together; full affected run/source validation
+uses the original reader budgets and operation deadline. THR-404 group 4 scopes
+the direct fence/finish and human close checks only; the enclosing mixed
+cancellation owner and its legacy/tail retained-family readers remain complete.
+Human close validates the affected source at immutable receipt replay, before
+finish and after finish/wake/canonical audit insertion. Original never-launched
+proofs and `native_cleanup=unresolved_unchanged` remain unchanged.
 
 Existing source settlement, continuation rediscovery and native member tails
 observe failed/cancelled/superseded sources and use that same mixed writer.
@@ -782,23 +788,23 @@ copies without reserving business-content parsing copies it never creates. A
 callback refused by Held is not accepted or parsed as business content by
 cancellation. Non-cancel writers additionally reserve cancellation space after
 validation. Admission and group-3 initiator/generic dispatch/hold use full
-affected history as below; control/replacement writers retain complete combined
-history, including retained families and other runs. Each unfinished @2 run
+affected history as below; direct control/replacement writers now select the
+actual run/source and full affected history under THR-404 group 4. Each unfinished @2 run
 reserves 16MiB plus 128 copies of its known source/current-visit identity bytes inside
 the unchanged 64MiB allowance, plus 32 row acquisitions, 4096 traversal steps
 and 65536 SQL steps inside the original finite ledgers. This covers worst-case fence, finish, bounded
 original proofs and a maximum 1MiB document callback (including its base64 carrier),
 independently of prior document sizes and committed visit/recovery counts.
 THR-404 group 1 adds the shared narrow H selector; group 2 wires admission and
-continuation preflight, and group 3 wires initiator writes and non-cancel
-generic dispatch/hold to it.
+continuation preflight, group 3 wires initiator writes and non-cancel
+generic dispatch/hold, and group 4 wires replacement controls to it.
 It reads scalar identities for every unfinished @2 run, including Held and
 cancelling, and validates the active visit's run/selected relation. It acquires
 no unrelated history payloads and reserves nothing itself: callers
 combine prospective additions and apply the unchanged reservation once on the
 original charged C ledger. The per-value, byte, row, work, SQL and absolute
 deadline caps stay unchanged. Excluding disconnected payloads from a group-2
-or group-3 scoped write's ledger changes whole-org capacity coupling; it grants
+through group-4 scoped write's ledger changes whole-org capacity coupling; it grants
 neither a fourth unfinished run nor a guaranteed fit for three with long identities or
 prior ledger consumption. Later writer groups still validate combined history.
 A candidate that cannot preserve that headroom refuses with
@@ -815,12 +821,14 @@ This cancellation-headroom guarantee is preserved across all @2 writers only.
 Unchanged @1 writers on the same org, such as
 `SequentialDispatcher._record_business_hold`, are not budget-aware and can
 consume that headroom against the shared 64MiB complete-read cap. This is a
-pre-existing cross-family limitation: @1 growth can equally exhaust the complete
-reader for all families. Consequently an @2 cancellation fence may commit while
-finish refuses `read_bytes_exhausted`, leaving the run running/cancelling with
-one outstanding visit until budget relief. Family-scoped read budgets or @1
-retirement must resolve this in follow-up work; that resolution is outside S4a.
-The TASK-17807 Round-5 decision specifically overrides R4-F1 on this basis.
+pre-existing cross-family limitation of complete-history consumers: @1 growth
+can exhaust those readers for all families. THR-404 group 4's direct fence/finish
+checks exclude disconnected payloads, while affected source growth and enclosing
+mixed complete reads remain bounded and can still refuse `read_bytes_exhausted`,
+retaining Running/cancelling with an outstanding visit. No budget relief or
+cross-family global certificate is granted. The TASK-17807 Round-5 decision
+overrode R4-F1 on the original whole-org reader basis; G4 changes only the
+addressed checks described below.
 The native digest, INTEGER result/task/principal/SID/status and original positive
 terminal/outer proofs remain mandatory. Start grammar/limits are unchanged.
 Admission now runs full selected source/run history and the selected definition
@@ -836,8 +844,14 @@ run/source; full affected sibling replay and all-unfinished scalar H remain.
 Consumption still requires actual SID delivery; held/returned wakes and original
 receipt/result replay remain unchanged. The native start callback now stays on
 scoped validation through its initiator tail. Earlier phase timings do not
-certify full callback latency. Control/cancellation-finish and source outer
-settlement keep the complete reader; cancellation omits only future headroom.
+certify full callback latency. THR-404 group 4 scopes direct controls, native
+cancel fence, positive-closure finish and never-launched close to their actual
+run/source, including all sibling members, historical proofs and settings chains.
+Exact original control replay now authenticates affected history before returning
+its original receipt; actor/result/key/body and CAS/Held-event checks remain.
+Replacement controls retain all-unfinished H; cancellation and inert receipt
+replay omit future headroom. Source outer settlement and the enclosing mixed
+cancellation/legacy tail retain complete validation until their owning group.
 Shared plumbing defaults remain complete unless a caller explicitly supplies
 roots. No lock/order, transaction, budget/deadline or TLA+ transition changes follow.
 No-result holds create

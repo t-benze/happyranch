@@ -59,8 +59,9 @@ Fresh authority bookends, rollback-only snapshot, lock set/order, original D2
 budgets and five-second absolute deadline remain. This task-projection exception
 grants no write-validation change; THR-404 group 2 below separately scopes
 start/admission and continuation preflight, and group 3 below scopes initiator
-and non-cancel generic dispatch/hold. Settings, control/cancel, source outer
-settlement, bootstrap/schema-load and run list/detail retain their complete reader.
+and non-cancel generic dispatch/hold. Group 4 scopes direct control/cancel/close
+below. Settings, source outer settlement, bootstrap/schema-load and run list/detail
+retain their complete reader.
 See the current S7a/U7a/U6a contract.
 
 
@@ -115,7 +116,8 @@ Original operation-key/body/INTEGER result/task/principal/SID replay and
 constraint-backed uniqueness, authority/assignment and rollback checks remain.
 The shared control validator accepts these roots only when admission supplies
 them; group 3 adds explicit roots at the initiator and non-cancel generic
-hold/dispatch sites. Default control/cancel/source-settlement callers remain complete.
+hold/dispatch sites, and group 4 adds direct control/cancel/close roots below.
+Default source-settlement and mixed callers remain complete.
 Original @1 admission also authenticates its selected closure/settings chain.
 
 Preflight resolves the actual selected definition/settings IDs and validates
@@ -156,7 +158,35 @@ scoped phases. No allowance or deadline is raised.
 The native start callback now uses scoped validation through first delivery,
 dependency observation and consumption. Source outer settlement is a distinct
 lifecycle phase and retains its complete-reader default, including its mixed
-cancellation fence. Cancel/control/close, return/rediscovery, settings/builtin,
+cancellation fence. Group 4 below scopes direct cancel/control/close. Return/rediscovery, settings/builtin,
 retained adapters, mixed and historical Final consumers remain for later groups;
 STOP-1 whole-org certifications remain complete. Lock set/order and transactions
 are unchanged; WorkflowContinuation/SequentialSettlement need no model edit.
+
+## Direct control/cancel and never-launched close — THR-404 group 4
+
+Direct control, native cancel fence and positive-closure finish pass their actual
+run and source roots to `validate_control_write`. Full selected replay includes
+all sibling wait members, earlier batches, historical proofs/receipts and the
+selected settings chains. Original direct-control receipt replay authenticates
+that same affected history before returning immutable receipt bytes; original
+actor task/principal/SID/INTEGER result and changed-command checks retain precedence.
+Replacement controls reserve scalar H for ALL unfinished runs on the original
+resulting-reader ledger. Cancellation and inert receipt replay omit future H;
+current event capacity, CAS and expected Held-event proofs remain unchanged.
+
+Never-launched close uses the same roots at original receipt replay, before
+finish and after finish/wake/canonical audit insertion. Each read authenticates
+its current snapshot independently. The queued/null-SID visit, cancelled native
+task and every original no-admission/no-launch/journal predicate remain mandatory.
+Missing terminal/outer closure still refuses ordinary finish. A business close
+retains native uncertainty and grants no cleanup clearance.
+
+Disconnected payload corruption no longer vetoes these addressed checks; selected
+event, sibling or native-proof corruption still refuses and rolls back. The
+native fence's enclosing mixed owner and legacy/tail retained-family readers stay
+complete until group 7b; `drain_source_cancellations` reaches the scoped finish
+through its unchanged wrapper. Source outer settlement and STOP-1 global
+certification remain complete. No lock set/order, transaction, audit shape,
+budget, deadline or represented NeverLaunchedCancelClose/SequentialSettlement
+transition changes; no TLA+ edit or TLC execution follows from this wiring.

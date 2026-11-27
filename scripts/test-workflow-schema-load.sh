@@ -68,7 +68,7 @@ EXPECTED_REGISTERED_DEFINITIONS = (
      '7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2',
      'f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65'),
 )
-DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 35)) + ('caller_ledger', 'U1_policy')
+DRAFT_REVIEW_CASES = tuple('C%02d' % n for n in range(1, 36)) + ('caller_ledger', 'U1_policy')
 draft_review_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--draft-review='):
     draft_review_case = sys.argv[1].split('=', 1)[1]
@@ -102,7 +102,8 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--s8a='):
 S7A_CASES = ('plural_links', 'held_cause', 'history_label', 'unavailable',
     'task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent',
     'write_settings_chain', 'write_headroom', 'start_admission', 'start_preflight', 'start_legacy',
-    'initiator_scope', 'dispatch_scope', 'hold_scope', 'start_callback_scope')
+    'initiator_scope', 'dispatch_scope', 'hold_scope', 'start_callback_scope',
+    'control_scope', 'cancel_fence_scope', 'cancel_finish_scope')
 s7a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s7a='):
     s7a_case = sys.argv[1].split('=', 1)[1]
@@ -2761,6 +2762,16 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         # refusal. Full-history document cases never use this cursor fixture.
         f.cursor_patches.enter_context(patch(
             'runtime.workflows.sequential_history.read_sequential_history', incomplete_cursor_history))
+        # Same missing-prefix isolation after scoped writer wiring. This is
+        # still only a persisted-capacity boundary, never full-history proof.
+        from runtime.workflows.sequential_control import validate_control_write
+        def incomplete_selected_history(conn, **kwargs):
+            try:
+                return validate_control_write(conn, **kwargs)
+            except ValueError as exc:
+                assert str(exc) == 'workflow_seq_generic_history_order', (case, str(exc))
+        f.cursor_patches.enter_context(patch(
+            'runtime.workflows.sequential_control.validate_control_write', incomplete_selected_history))
 
     def s4stored_event(f, event_id, sequence, kind):
         row = s4row(f, 'workflow_seq_events', event_id)
@@ -8191,7 +8202,8 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         path = '/workflows/sequential/views/v2/runs'
         if case in ('task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent',
                     'write_settings_chain', 'write_headroom', 'start_admission', 'start_preflight', 'start_legacy',
-                    'initiator_scope', 'dispatch_scope', 'hold_scope', 'start_callback_scope'):
+                    'initiator_scope', 'dispatch_scope', 'hold_scope', 'start_callback_scope',
+                    'control_scope', 'cancel_fence_scope', 'cancel_finish_scope'):
             from runtime.workflows import sequential_history, sequential_views
             from runtime.workflows.sequential_control import validate_control_write
             from runtime.workflows.sequential_task_history import read_write_history, read_cancellation_headroom
@@ -8282,28 +8294,100 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     selected = scoped(f, run_ids=frozenset((f.ids.run_id,)))
                     assert selected.history.run_ids == (f.ids.run_id,), 'disconnected corrupt run entered write scope'
                     scoped_refuses(f, 'digest', run_ids=frozenset((old.run_id,)))
-                    # G2 start now excludes this different source; full views
-                    # and cancel/control retain their complete-history contract.
+                    # Scoped writers exclude this different source; full views
+                    # and the unspecialized validator retain complete history.
                     admitted = f.admit(dict(f.command, operation_key='task-unrelated-start'), task_suffix='unrelated')
                     assert s4row(f, 'workflow_seq_runs', admitted.run_id)['source_task_id'] == f.source.id
                     for url in (path, path + '/' + f.ids.run_id):
                         refused = asyncio.run(s7read(f, url, expected=409))
                         assert refused['detail']['code'] == 'history_unverified'
-                    for operation in (
-                            lambda: s4apply(f, s4command(f, 'cancel')),
-                            lambda: validate_control_write(f.conn, org_slug='scratch', deadline=time.monotonic()+5)):
+                    receipt = s4apply(f, s4command(f, 'cancel'))
+                    assert json.loads(receipt)['run_id'] == f.ids.run_id
+                    assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['terminal_outcome'] == 'cancelled'
+                    for operation in (lambda: validate_control_write(f.conn, org_slug='scratch', deadline=time.monotonic()+5),):
                         try:
                             operation()
                         except (ValueError, RuntimeError) as exc:
                             assert 'digest' in str(exc), ('wrong full-reader refusal', str(exc))
                         else:
-                            raise AssertionError('write/admission accepted unrelated corrupt history')
+                            raise AssertionError('complete default accepted unrelated corrupt history')
                 else:
                     # Each independent fixture below avoids one defect masking
                     # another and observes a route error, never empty success.
                     pass
             if case == 'start_callback_scope':
                 asyncio.run(start2_public('scope'))
+            if case in ('control_scope', 'cancel_fence_scope', 'cancel_finish_scope'):
+                from runtime.workflows.sequential_control import native_cancel_fence_uncommitted
+                for action in (('cancel', 'retry', 'rebrief', 'reassign') if case == 'control_scope' else
+                               ('cancel', 'launched') if case == 'cancel_fence_scope' else ('cancel',)):
+                    for defect in ('unrelated', 'valid', 'selected_event', 'sibling_event'):
+                        with s5fixture(recoveries=2) as f:
+                            s5release(f)
+                            f.source = s6sid(f, f.source.current_session_id)
+                            f.actor = RetryClaim.from_task(f.source, result_row_id=f.actor.result_row_id)
+                            if case == 'control_scope' and action != 'cancel':
+                                s5hold(f)
+                            elif case == 'cancel_fence_scope' and action == 'launched':
+                                s4closed(f, f.ids.visit_id, positive=False)
+                            elif case == 'cancel_finish_scope':
+                                s4closed(f, f.ids.visit_id, positive=False)
+                                s4apply(f, s4command(f, 'cancel'))
+                                # Missing positive outer closure cannot finish.
+                                s4refuses(f, lambda: s4finish(f), 'business_hold_proof_invalid')
+                                s4outer(f, f.ids.visit_id)
+                            if defect == 'unrelated':
+                                old = s7legacy(f)
+                                damaged = old.run_id
+                            else:
+                                damaged = f.batch_ids[1].run_id if defect == 'sibling_event' else f.ids.run_id
+                            if defect != 'valid':
+                                damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                                    ('0'*64, damaged))
+                            before = s5snap(f)
+                            source = f.db.get_task(f.source.id)
+                            sibling = s4row(f, 'workflow_seq_runs', f.batch_ids[1].run_id)
+                            value = s4command(f, 'cancel' if action == 'launched' else action)
+                            def act():
+                                if case == 'control_scope':
+                                    return s4apply(f, value)
+                                if case == 'cancel_finish_scope':
+                                    from runtime.workflows.sequential_initiator import finish_cancel_and_wake_uncommitted
+                                    capture = f.org.workflow_authority.capture_admission()
+                                    run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                                    with f.org.workflow_authority.admission_writer(capture) as conn:
+                                        return finish_cancel_and_wake_uncommitted(conn, f.db, org_slug='scratch',
+                                            run=run, compiled=f.compiled, authority=f.org.workflow_authority, capture=capture)
+                                capture = f.org.workflow_authority.capture_admission()
+                                with f.org.workflow_authority.admission_writer(capture) as conn:
+                                    return native_cancel_fence_uncommitted(conn, f.db, org_slug='scratch',
+                                        run_id=f.ids.run_id, compiled=f.compiled, authority=f.org.workflow_authority,
+                                        capture=capture, origin='founder_cancel', deadline=time.monotonic()+5)
+                            try:
+                                receipt = act()
+                            except (ValueError, RuntimeError) as exc:
+                                assert defect in ('selected_event', 'sibling_event') and 'digest' in str(exc), (case, action, defect, str(exc))
+                                assert s5snap(f) == before, (case, 'refusal leaked rows')
+                            else:
+                                assert defect in ('valid', 'unrelated'), (case, 'accepted selected damage')
+                                run = s4row(f, 'workflow_seq_runs', f.ids.run_id)
+                                assert run['cas'] == value['expected_cas']+1
+                                assert run['state'] == ('running' if action != 'cancel' else 'finished')
+                                if action == 'launched':
+                                    assert run['progress'] == 'cancelling'
+                                    saved = s5snap(f)
+                                    assert act() is None and s5snap(f) == saved, 'native fence replay changed rows'
+                                assert f.db.get_task(f.source.id) == source
+                                assert s4row(f, 'workflow_seq_runs', f.batch_ids[1].run_id) == sibling
+                                if case == 'control_scope':
+                                    saved = s5snap(f)
+                                    assert act() == receipt and s5snap(f) == saved, 'control replay changed original rows/bytes'
+                                    s4refuses(f, lambda: s4apply(f, dict(value, reason='changed body')), 'control_operation_conflict')
+                                    # Original key replay must authenticate historical affected data too.
+                                    damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE id=?',
+                                        ('0'*64, f.ids.event_id))
+                                    s4refuses(f, act, 'digest_invalid')
+                            print('PASS S7a', case, action, defect, flush=True)
             if case == 'initiator_scope':
                 from runtime.workflows.sequential_initiator import observe_dependencies
                 for stage in ('dependencies', 'delivery', 'consumption'):
@@ -10578,6 +10662,9 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 elif case == 'C34':
                     from scripts.workflow_cancel_close_cases import run_cases
                     asyncio.run(run_cases(dr_fixture, dr_start, dr_inventory))
+                elif case == 'C35':
+                    from scripts.workflow_cancel_close_cases import run_scope_cases
+                    asyncio.run(run_scope_cases(dr_fixture, dr_start, dr_inventory, s7legacy))
                 elif case == 'C33':
                     asyncio.run(dr_refused_launches())
                 elif case == 'C32':

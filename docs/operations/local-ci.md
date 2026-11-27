@@ -4776,7 +4776,7 @@ The existing private schema venue supports
 (and Python3.12). Focused selectors task_scoped_data, task_empty, task_corruption,
 task_unrelated and task_absent cover real route data, no org-wide reader on
 empty tasks, selected hash/orphan/pin/ownership refusal, unrelated corruption
-isolation with scoped start success and unchanged cancel/full-view refusal,
+isolation with scoped start/cancel success and unchanged complete-default/full-view refusal,
 and 404 precedence.
 These are private SQLite/authority fixtures, not E2E or a new required CI gate.
 
@@ -4802,7 +4802,8 @@ result/principal/SID and one-run-per-source refusals, and three unfinished runs
 including hypothetical batch members versus four-run capacity refusal, including
 an unfinished member on a different source. The
 existing `task_unrelated` case now expects scoped admission success while
-cancel/control/full views still refuse the same damage. Original S5
+the complete default/full views still refuse the same damage (group 4 adds cancel
+success). Original S5
 `batch_all_or_none`, assignment `independence`, Start2 `admission`/`capacity`,
 and setup `pins` remain adjacent keepers for invalid assignments, authority,
 partial allocation/replay, capacity and retained settings pins. Group 2 alone
@@ -4823,3 +4824,23 @@ SID delivery, replay, authority and ordinary-join guards. Prior G1/G2 selectors
 remain regression keepers. All suites/local_ci all run as persistent jobs on
 the clean committed head; attributable temporary RED variants restore exact
 production bytes before GREEN. No new required CI check or Product E2E.
+
+THR-404 group 4 adds `--s7a=control_scope`, `--s7a=cancel_fence_scope` and
+`--s7a=cancel_finish_scope`, plus `--draft-review=C35`, on Python3.12/3.14.
+They drive original control/cancel/finish and human-close writers: queued
+immediate close, launched fence then positive terminal/outer finish, replacement
+controls, immutable replay and canonical audit bytes. Selected old event or
+sibling damage refuses with rollback; disconnected corruption permits the
+addressed write and replay. Damaged affected history also refuses replay;
+changed command and missing positive closure retain their original refusal.
+`task_unrelated` now observes scoped direct cancel success while run views and
+the complete default still refuse. C34 retains its full no-launch/journal,
+human authority, CAS, concurrency, audit and transaction-fault table. Its
+post-write fault observer now targets the scoped validator at the same boundary.
+S4a capacity cursor fixtures retain their explicit missing-prefix isolation
+against that validator; they still prove storage capacity only, never a full
+4094-event history. Keepers include cancel_never_held, cancel_resumed_running,
+cancel_replay_finished, stale_hold_event, control_state_action_matrix and the
+capacity_running_cancel/held_cancel/running_refusal boundaries. Prior G1-G3
+selectors and real result/authority keepers remain. Full schema suites stay
+deferred to the final serial head. No required CI check or E2E trigger is added.
