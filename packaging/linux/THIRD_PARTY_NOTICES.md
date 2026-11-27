@@ -23,6 +23,14 @@ Font OFL originals remain beside the fonts in `web/dist/fonts`.
 target's actual module selection. `go-runtime/` retains the selected Go
 toolchain's originals and vendor notices.
 
+`client-go/` and `client-go-modules.json` separately retain the actual client
+bridge graph and its original notices. Its single approved local replacement,
+Tailscale v1.78.0, records the pristine module h1, exact replacement path and
+committed PeerAPI patch SHA-256. Both collectors verify the full generated tree
+and original notice bytes against the pinned upstream zip. Other third-party
+replacements refuse; the Host graph stays separate. See
+`app/mac/tsnet-bridge/third_party/README.md` in the source distribution.
+
 Headscale v0.25.1 is shipped inert at `libexec/headscale/headscale`, outside
 `bin/`. Its BSD-3-Clause copyright, conditions and disclaimer are preserved
 byte-for-byte in `headscale-LICENSE` from the pinned tag:

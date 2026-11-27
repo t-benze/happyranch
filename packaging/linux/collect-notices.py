@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -108,6 +109,37 @@ def copy_go_runtime(goroot: Path, destination: Path) -> None:
                 shutil.copy2(path, target)
     if not (destination / "LICENSE").is_file():
         raise RuntimeError("Go toolchain original license missing")
+
+
+def collect_client_go(source: Path, notices: Path) -> None:
+    """The client bridge is a separate graph from the unchanged host sidecar."""
+    bridge = source / "app/mac/tsnet-bridge"
+    helper = runpy.run_path(str(Path(__file__).resolve().parents[2] / "app/mac/tsnet-bridge/third_party/prepare_tailscale.py"))
+    main = json.loads(subprocess.check_output(["go", "list", "-m", "-json"], cwd=bridge, text=True))
+    raw = subprocess.check_output(
+        ["go", "list", "-buildvcs=false", "-mod=readonly", "-deps", "-json", "."],
+        cwd=bridge, text=True, env=dict(os.environ, CGO_ENABLED="1"))
+    decoder, modules = json.JSONDecoder(), {}
+    while raw.strip():
+        package, end = decoder.raw_decode(raw.lstrip())
+        raw = raw.lstrip()[end:]
+        module = package.get("Module", {})
+        if module and not module.get("Main") and not first_party_go(module, source):
+            modules[module["Path"]] = module
+    inventory = []
+    for name, module in sorted(modules.items()):
+        association = helper["association"](module, source, main)
+        if module.get("Replace") and not association:
+            raise RuntimeError("Go replacement requires explicit original association: " + name)
+        target = notices / "client-go" / (name + "@" + module["Version"])
+        copy_notices(Path(module["Dir"]), target)
+        if not target.is_dir():
+            raise RuntimeError("Go client module original notice missing: " + name)
+        row = {k: module[k] for k in ("Path", "Version", "Sum") if k in module}
+        if association:
+            row["OriginalAssociation"] = association
+        inventory.append(row)
+    (notices / "client-go-modules.json").write_text(json.dumps(inventory, indent=2) + "\n")
 
 
 def collect_headscale(source: Path, payload: Path) -> None:
@@ -244,6 +276,7 @@ def main() -> None:
     (notices / "go-modules.json").write_text(json.dumps([
         {k: m[k] for k in ("Path", "Version", "Sum") if k in m}
         for _, m in sorted(modules.items())], indent=2) + "\n")
+    collect_client_go(source, notices)
     collect_headscale(source, payload)
 
 
