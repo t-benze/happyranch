@@ -4417,7 +4417,7 @@ The complete reader still refuses malformed/duplicate journals, wrong native
 storage, per-value overflow and an orphan Coding owner. Ordinary history streams
 within unchanged per-value gates; Coding/source candidates retain the original
 cumulative allowance, SQL/deadline guards and semantic checks. The selector is
-included in Start@2/full aggregates; it adds no CI/E2E trigger or live run.
+included in the Start@2 aggregate; it adds no CI/E2E trigger or live run.
 
 ## MAC-1 app-scheme focused checks
 
