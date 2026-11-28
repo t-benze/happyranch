@@ -23,7 +23,11 @@ both hashes and appends exactly one system message and `thread_guest_ended`
 audit. Manual and automatic archive share this transaction; resume never revives
 a seat. Retained ended seats resolve historical labels in transcripts and CLI
 show/forward. GET detail exposes only id/label/app/state/expires_at/last_seen_at/
-last_read_seq, alongside the unchanged agent participants.
+last_read_seq, plus detail-only `read_from_seq` (0 = whole thread, else first
+readable seq) and `listening` (true while the joined seat has an open
+`wait_for_messages` call, read from the in-process `app.state.guest_waiters`
+set; THR-362 slice 4), alongside the unchanged agent participants. Invite and
+new-code responses keep the original projection.
 
 Slice-1 audits `thread_guest_invited`, `thread_guest_code_replaced` and
 `thread_guest_ended` use `task_id=<thread ID>`, existing audit-row shape and

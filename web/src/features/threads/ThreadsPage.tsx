@@ -69,11 +69,13 @@ import { GuestInviteDialog } from './GuestInviteDialog';
 import { GuestSeats } from './GuestSeats';
 import {
   guestEndCauseLabel,
-  guestErrorMessage,
+  guestErrorKey,
+  guestErrorText,
   guestLabelMap,
   guestSpeakerLabel,
   guestTime,
   isGuestSpeaker,
+  type GuestErrorKey,
 } from './guestSeats';
 import { useRemoteHost } from '@/lib/remotePolicy';
 import { RemoveParticipantDialog } from './RemoveParticipantDialog';
@@ -1301,9 +1303,25 @@ function DetailColumn({
   const remoteHost = useRemoteHost();
   const revokeGuest = useRevokeGuest(threadId ?? '');
   const replaceGuestCode = useReplaceGuestCode(threadId ?? '');
-  const [guestDialog, setGuestDialog] = useState<{ result: ThreadGuestInviteResponse | null } | null>(null);
-  const [guestPendingId, setGuestPendingId] = useState<string | null>(null);
-  const [guestError, setGuestError] = useState<string | null>(null);
+  // Guest dialog, pending seat and error belong to the org/thread they were
+  // started on. DetailColumn is reused across thread routes, so each value
+  // carries its scope: a value from another thread is never shown, is cleared
+  // on navigation, and a late New code result for a departed thread is
+  // dropped (it would invite the app into the wrong thread). Errors are kept
+  // as catalog keys and translated at render, so a locale switch re-translates.
+  const guestScope = `${slug ?? ''}/${threadId ?? ''}`;
+  const guestScopeRef = useRef(guestScope);
+  const [guestDialogState, setGuestDialog] = useState<{ scope: string; result: ThreadGuestInviteResponse | null } | null>(null);
+  const [guestPendingState, setGuestPending] = useState<{ scope: string; id: string } | null>(null);
+  const [guestErrorState, setGuestError] = useState<{ scope: string; error: GuestErrorKey } | null>(null);
+  useEffect(() => {
+    guestScopeRef.current = guestScope;
+    setGuestDialog(null);
+    setGuestError(null);
+  }, [guestScope]);
+  const guestDialog = guestDialogState?.scope === guestScope ? guestDialogState : null;
+  const guestPendingId = guestPendingState?.scope === guestScope ? guestPendingState.id : null;
+  const guestError = guestErrorState?.scope === guestScope ? guestErrorState.error : null;
   const maxSeq = useMemo(() => messages.reduce((max, m) => Math.max(max, m.seq), 0), [messages]);
   // Back affordance — the list column is collapsed in this view, so the link
   // back to the single-column thread list must stay reachable in every state.
@@ -1374,22 +1392,23 @@ function DetailColumn({
   const replyDelivery = thread.reply_delivery ?? [];
   const guests = thread.guests ?? [];
   const manageGuests = remoteHost === null;
-  const runGuestAction = async (guest: ThreadGuest, op: () => Promise<void>) => {
+  const runGuestAction = async (guest: ThreadGuest, op: (scope: string) => Promise<void>) => {
     if (guestPendingId !== null) return;
-    setGuestPendingId(guest.id);
+    const scope = guestScope;
+    setGuestPending({ scope, id: guest.id });
     setGuestError(null);
     try {
-      await op();
+      await op(scope);
     } catch (err) {
-      setGuestError(guestErrorMessage(err, t));
+      if (guestScopeRef.current === scope) setGuestError({ scope, error: guestErrorKey(err) });
     } finally {
-      setGuestPendingId(null);
+      setGuestPending((cur) => (cur?.scope === scope && cur.id === guest.id ? null : cur));
     }
   };
   const onGuestNewCode = (guest: ThreadGuest) => {
-    void runGuestAction(guest, async () => {
+    void runGuestAction(guest, async (scope) => {
       const result = await replaceGuestCode.mutateAsync({ guestId: guest.id });
-      setGuestDialog({ result });
+      if (guestScopeRef.current === scope) setGuestDialog({ scope, result });
     });
   };
   const onGuestRevoke = (guest: ThreadGuest) => {
@@ -1563,7 +1582,7 @@ function DetailColumn({
             {open && manageGuests && (
               <button
                 type="button"
-                onClick={() => setGuestDialog({ result: null })}
+                onClick={() => setGuestDialog({ scope: guestScope, result: null })}
                 title={t('threads.page.rail.inviteGuestTitle')}
                 className="border-border-strong text-caption text-text-secondary hover:border-accent-default hover:bg-accent-soft hover:text-accent-text focus-visible:ring-ring mt-1.5 flex w-full items-center justify-start gap-1.75 rounded-sm border border-dashed px-2.5 py-1.75 font-semibold transition-colors focus-visible:ring-2 focus-visible:outline-none"
               >
@@ -1593,7 +1612,7 @@ function DetailColumn({
                 onRevoke={onGuestRevoke}
               />
               {guestError && (
-                <p className="text-caption text-feedback-danger mt-1.5" role="alert">{guestError}</p>
+                <p className="text-caption text-feedback-danger mt-1.5" role="alert">{guestErrorText(guestError, t)}</p>
               )}
               {!manageGuests && open && (
                 <p className="text-caption text-text-secondary mt-1.5">{t('threads.page.guest.remoteNote')}</p>
@@ -1745,6 +1764,7 @@ function DetailColumn({
       </div>
       {threadId && manageGuests && (
         <GuestInviteDialog
+          key={guestScope}
           threadId={threadId}
           open={guestDialog !== null}
           initialResult={guestDialog?.result ?? null}

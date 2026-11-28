@@ -281,12 +281,24 @@ function useThreadsInfiniteList(status?: 'open' | 'archived'): ThreadListQueryLi
   };
 }
 
+/**
+ * Guest seat refresh (THR-362 §7 item 2, §13.2). A guest's read_thread /
+ * wait_for_messages calls move its cursor, last-active time and listening
+ * state without publishing a thread event, so while the open thread has a
+ * seat that has not ended the detail refetches on this bounded interval.
+ * React Query pauses it while the document is hidden (default
+ * refetchIntervalInBackground=false) and stops it once every seat has ended.
+ */
+const GUEST_SEAT_REFRESH_MS = 10_000;
+
 function useThread(threadId: string | undefined) {
   const slug = useRealOrgSlug();
   return useQuery({
     queryKey: ['thread', slug, threadId],
     queryFn: () => threadsApi.getThread(slug, threadId as string),
     enabled: !!slug && !!threadId,
+    refetchInterval: (query) =>
+      query.state.data?.guests?.some((g) => g.state !== 'ended') ? GUEST_SEAT_REFRESH_MS : false,
   });
 }
 

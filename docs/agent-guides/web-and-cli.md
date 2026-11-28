@@ -34,12 +34,21 @@ No guest Web UI or upload/fetch tools ship in slice 2.
 
 The thread detail rail adds **Invite desktop app** beside Invite participant,
 and a **Guests** group under the agents. Each seat shows the daemon's label, its
-state (invited / joined / ended), its expiry, "read to #n · m new" (m counts
-loaded messages above `last_read_seq`) and when it was last active. **Copy
+state (invited / joined / listening / ended), its expiry, "read to #n · m new"
+(m counts loaded messages above the larger of `last_read_seq` and the seat's
+read floor `read_from_seq - 1`, so a from-now seat never counts history from
+before its invite) and when it was last active. "listening" shows while the
+seat has an open `wait_for_messages` call (detail field `listening`). Guest
+reads and waits publish no thread event, so while the open thread has a seat
+that has not ended, the thread detail refetches every 10 seconds (paused while
+the page is hidden) to refresh cursor, count, last active and listening. **Copy
 nudge** (joined seats) copies the fixed English prompt `Check HappyRanch thread
 THR-n for new messages and respond.`. **New code** (invited seats) and
 **Revoke** (any seat that has not ended) call the existing seat routes. The
-seat projection has no "listening" field, so the web does not show that state.
+invite dialog, a pending seat action and its error belong to the org/thread
+they started on: navigating to another thread closes the dialog, clears the
+error and drops a late New code result. Errors are held as catalog keys and
+translated at render, so a locale switch re-translates them.
 
 The invite dialog (`GuestInviteDialog`) asks for the app (Claude desktop
 labelled untested), the lifetime (1 hour / 24 hours default / 7 days) and the

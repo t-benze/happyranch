@@ -639,10 +639,11 @@ TypeScript client mirror in `web/src/lib/api/threads.ts`); add nothing to
 
 ### 13.2 Web
 
-**Implemented in TASK-19745 (slice 4).** One deviation: the "listening" state is
-not shown. The seat projection has no field for an open `wait_for_messages`
-call, so seats show joined plus "last active". Showing listening needs a
-backend projection field, which is follow-up work. Strings live in the typed
+**Implemented in TASK-19745 / TASK-19766 (slice 4).** Thread detail adds
+detail-only `listening` (an open `wait_for_messages` call, from the daemon's
+in-process waiter set) and `read_from_seq` to each seat, and the web refetches
+the detail every 10 seconds while a seat has not ended, so read position,
+new count, last active and listening update without a post. Strings live in the typed
 locale catalogs (`web/src/lib/i18n/locales/en.ts`, `zh-CN.ts`);
 `features/threads/strings.ts` only re-exports error helpers.
 

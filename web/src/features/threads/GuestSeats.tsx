@@ -1,7 +1,8 @@
 /**
  * Participants rail ▸ Guests (THR-362 spec §13.2): desktop-app guest seats,
  * listed under the agents in their own group. Each seat shows its label,
- * state, expiry, read position ("read to #n · m new") and last activity, with
+ * state (invited / joined / listening while a wait_for_messages call is open /
+ * ended), expiry, read position ("read to #n · m new") and last activity, with
  * Copy nudge (joined), New code (invited) and Revoke (not ended).
  *
  * `manageable` is false when the UI is reached through remote access (spec
@@ -14,11 +15,12 @@ import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import type { Tone } from '@/design-system/patterns/semanticTone';
 import { useTranslation } from '@/hooks/i18n';
 import type { ThreadGuest } from '@/hooks/threads';
-import { guestNewCount, guestNudgeText, guestStateLabel } from './guestSeats';
+import { guestDisplayState, guestNewCount, guestNudgeText, guestStateLabel } from './guestSeats';
 
 const STATE_TONE: Record<string, Tone> = {
   invited: 'attention',
   joined: 'positive',
+  listening: 'positive',
   ended: 'neutral',
 };
 
@@ -62,6 +64,7 @@ export function GuestSeats({
         const ended = g.state === 'ended';
         const busy = pendingGuestId === g.id;
         const newCount = guestNewCount(g, maxSeq);
+        const shownState = guestDisplayState(g);
         return (
           <li key={g.id} className="text-body-sm flex min-w-0 flex-col gap-0.75 py-0.5">
             <div className="flex min-w-0 items-center gap-2">
@@ -70,7 +73,7 @@ export function GuestSeats({
                 {g.label}
               </span>
               <span className="ml-auto shrink-0">
-                <StatusBadge tone={STATE_TONE[g.state] ?? 'neutral'} label={guestStateLabel(g.state, t)} />
+                <StatusBadge tone={STATE_TONE[shownState] ?? 'neutral'} label={guestStateLabel(shownState, t)} />
               </span>
             </div>
             {!ended && (

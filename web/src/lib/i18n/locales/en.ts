@@ -1690,6 +1690,7 @@ export const en = {
   'threads.page.guest.badge': 'guest',
   'threads.page.guest.state.invited': 'invited',
   'threads.page.guest.state.joined': 'joined',
+  'threads.page.guest.state.listening': 'listening',
   'threads.page.guest.state.ended': 'ended',
   'threads.page.guest.until': 'until {time}',
   'threads.page.guest.readTo': 'read to #{seq} · {count} new',

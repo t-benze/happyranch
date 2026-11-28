@@ -47,19 +47,31 @@ export function guestTime(locale: Locale, iso: string): string {
   return d.toLocaleString(locale, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-/** Messages newer than the seat's read position, from the loaded transcript. */
+/**
+ * Messages newer than the seat's read position, from the loaded transcript.
+ * Only the seat's read scope counts: a from-now seat's floor is
+ * `read_from_seq - 1` (the daemon's own read floor), so history before the
+ * invite is never "new" even before the guest's first read.
+ */
 export function guestNewCount(guest: ThreadGuest, maxSeq: number): number {
-  return Math.max(0, maxSeq - guest.last_read_seq);
+  const floor = Math.max(0, (guest.read_from_seq ?? 0) - 1);
+  return Math.max(0, maxSeq - Math.max(guest.last_read_seq, floor));
 }
 
-const STATE_KEY: Record<ThreadGuest['state'], MessageKey> = {
+/** Displayed seat state: a joined seat with an open wait shows "listening". */
+export function guestDisplayState(guest: ThreadGuest): string {
+  return guest.state === 'joined' && guest.listening === true ? 'listening' : guest.state;
+}
+
+const STATE_KEY: Record<string, MessageKey> = {
   invited: 'threads.page.guest.state.invited',
   joined: 'threads.page.guest.state.joined',
+  listening: 'threads.page.guest.state.listening',
   ended: 'threads.page.guest.state.ended',
 };
 
 export function guestStateLabel(state: string, t: Translate): string {
-  const key = STATE_KEY[state as ThreadGuest['state']];
+  const key = STATE_KEY[state];
   // An unknown future state renders verbatim (never a guessed translation).
   return key ? t(key) : state;
 }
@@ -85,12 +97,26 @@ const ERROR_KEY: Record<string, MessageKey> = {
   guest_not_found: 'threads.page.guest.error.notFound',
 };
 
-/** Founder-facing message for a failed invite / new-code / revoke call. */
-export function guestErrorMessage(err: unknown, t: Translate): string {
+/**
+ * Locale-neutral identity of a failed invite / new-code / revoke call: a
+ * catalog key, or the generic key plus the verbatim machine detail. State
+ * holds this, never translated text, so a locale switch re-translates it.
+ */
+export interface GuestErrorKey {
+  key: MessageKey;
+  detail?: string;
+}
+
+export function guestErrorKey(err: unknown): GuestErrorKey {
   if (err instanceof ApiError) {
     const key = err.code ? ERROR_KEY[err.code] : undefined;
-    if (key) return t(key);
-    return t('threads.page.guest.error.generic', { detail: err.code ?? `HTTP ${err.status}` });
+    if (key) return { key };
+    return { key: 'threads.page.guest.error.generic', detail: err.code ?? `HTTP ${err.status}` };
   }
-  return t('threads.page.guest.error.generic', { detail: err instanceof Error ? err.message : String(err) });
+  return { key: 'threads.page.guest.error.generic', detail: err instanceof Error ? err.message : String(err) };
+}
+
+/** Founder-facing message for a stored error identity, in the current locale. */
+export function guestErrorText(error: GuestErrorKey, t: Translate): string {
+  return error.detail === undefined ? t(error.key) : t(error.key, { detail: error.detail });
 }

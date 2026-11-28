@@ -1615,6 +1615,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'threads.page.guest.badge': '访客',
   'threads.page.guest.state.invited': '已邀请',
   'threads.page.guest.state.joined': '已加入',
+  'threads.page.guest.state.listening': '监听中',
   'threads.page.guest.state.ended': '已结束',
   'threads.page.guest.until': '有效至 {time}',
   'threads.page.guest.readTo': '已读到 #{seq} · {count} 条新消息',

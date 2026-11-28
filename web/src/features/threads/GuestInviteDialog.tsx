@@ -24,7 +24,7 @@ import { Button } from '@/design-system/primitives/Button';
 import { SegmentedControl } from '@/design-system/primitives/SegmentedControl';
 import { useInviteGuest, useReplaceGuestCode, type ThreadGuestInviteResponse } from '@/hooks/threads';
 import { useTranslation } from '@/hooks/i18n';
-import { guestErrorMessage } from './guestSeats';
+import { guestErrorKey, guestErrorText, type GuestErrorKey } from './guestSeats';
 
 type AppId = 'codex_desktop' | 'claude_desktop';
 type Expires = '1h' | '24h' | '7d';
@@ -46,7 +46,8 @@ export function GuestInviteDialog({ threadId, open, onClose, initialResult = nul
   const [expires, setExpires] = useState<Expires>('24h');
   const [scope, setScope] = useState<Scope>('whole');
   const [result, setResult] = useState<ThreadGuestInviteResponse | null>(initialResult);
-  const [error, setError] = useState<string | null>(null);
+  // A catalog key, translated at render so a locale switch re-translates it.
+  const [error, setError] = useState<GuestErrorKey | null>(null);
   const [pending, setPending] = useState(false);
   const [copied, setCopied] = useState(false);
   const latch = useRef(false);
@@ -75,7 +76,7 @@ export function GuestInviteDialog({ threadId, open, onClose, initialResult = nul
       setResult(await op());
       setCopied(false);
     } catch (err) {
-      setError(guestErrorMessage(err, t));
+      setError(guestErrorKey(err));
     } finally {
       latch.current = false;
       setPending(false);
@@ -133,7 +134,7 @@ export function GuestInviteDialog({ threadId, open, onClose, initialResult = nul
               {t('threads.dialog.guest.shownOnce')}
             </p>
             <p className="text-caption text-text-secondary">{t('threads.dialog.guest.onlyActs')}</p>
-            {error && <p className="text-caption text-feedback-danger" role="alert">{error}</p>}
+            {error && <p className="text-caption text-feedback-danger" role="alert">{guestErrorText(error, t)}</p>}
             <DialogFooter>
               {result.guest.state === 'invited' && (
                 <Button type="button" variant="ghost" onClick={newCode} disabled={pending}>
@@ -182,7 +183,7 @@ export function GuestInviteDialog({ threadId, open, onClose, initialResult = nul
             <p className="text-caption text-attention-text bg-attention-soft rounded-sm px-2.5 py-2">
               {t('threads.dialog.guest.warning')}
             </p>
-            {error && <p className="text-caption text-feedback-danger" role="alert">{error}</p>}
+            {error && <p className="text-caption text-feedback-danger" role="alert">{guestErrorText(error, t)}</p>}
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
               <Button type="submit" disabled={pending}>
