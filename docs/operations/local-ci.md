@@ -100,6 +100,17 @@ E2E, retired units, integration, required-check or dependency change follows.
 
 ## Focused thread guest seats (THR-362 slices 1–2)
 
+Participant-removal route regressions use the same synthetic ASGI/SQLite
+fixture: `uv run --frozen pytest scripts/test_thread_participant_removal.py -v --tb=short`.
+They cover active, terminated, missing-definition and missing-workspace members,
+including delivery/invocation cleanup, system/audit/event payloads and pair
+isolation, plus unknown (404) and known (409) nonparticipants without effects.
+The same selection drives the real CLI parser and command through the existing
+ASGI transport bridge: terminated permanent ID/current-name removal, clear
+unknown-address refusal before mutation, and nonzero daemon-error handling.
+This standalone selection starts no lifespan, listener, provider or live org;
+it does not collect the retired Python suite or skipped integration suite.
+
 ```bash
 uv run --frozen python -B -m unittest scripts.test_thread_guests -v
 ```
