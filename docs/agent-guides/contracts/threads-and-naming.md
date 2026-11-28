@@ -1,5 +1,16 @@
 # Threads, routing and naming contracts
 
+## Participant removal
+
+Founder removal from an open thread checks membership under `db_lock`, using
+the permanent agent ID stored in `thread_participants.agent_name`. A current
+participant can be removed even after its definition or workspace is archived
+or missing. Removal keeps the existing reply-delivery discard, pending-invocation
+decline, `participant_removed` system message, audit row and thread events.
+For nonparticipants, a missing active definition or workspace still returns
+404 `unknown_agent`; an otherwise known agent returns 409 `not_participant`.
+Route authority and the open-thread requirement are unchanged.
+
 ## Guest seats (THR-362, slice 1)
 
 Founder-approved decisions 1–16 (msg56) add `thread_guests`, installed on fresh
