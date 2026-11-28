@@ -1,9 +1,9 @@
 # A desktop app joins a thread as a guest (THR-362)
 
-Status: **Approved by the founder (THR-362 msg56, decisions 1–16); slice 1 merged
-in PR #1867; Slice 2 merged in PR #1878; guest read fix merged in #1891. Slice 3 implemented
-in TASK-19744; independent exact-head review/QA and merge remain delivery gates.**
-Slice 4 remains separate. Founder join/read/post/revoke passed on 2026-11-28
+Status: **Approved by the founder (THR-362 msg56, decisions 1–16); slices 1–3
+merged (slice 1 PR #1867; slice 2 PR #1878; guest read fix #1891; slice 3 PR #1933).
+Slice 4 (web) is PR #1931 (TASK-19745); independent exact-head review/QA and merge
+remain delivery gates.** Founder join/read/post/revoke passed on 2026-11-28
 through an SSH tunnel from another machine; same-machine product seat-folder
 behaviour remains unproven. Other-machine guests remain deferred (decision 20).
 
@@ -650,6 +650,14 @@ TypeScript client mirror in `web/src/lib/api/threads.ts`); add nothing to
 `runtime/remote_access/route_policy.json`.
 
 ### 13.2 Web
+
+**Implemented in TASK-19745 / TASK-19766 (slice 4).** Thread detail adds
+detail-only `listening` (an open `wait_for_messages` call, from the daemon's
+in-process waiter set) and `read_from_seq` to each seat, and the web refetches
+the detail every 10 seconds while a seat has not ended, so read position,
+new count, last active and listening update without a post. Strings live in the typed
+locale catalogs (`web/src/lib/i18n/locales/en.ts`, `zh-CN.ts`);
+`features/threads/strings.ts` only re-exports error helpers.
 
 - Participants rail: **Invite desktop app** button; guest seats listed under the
   agents in their own "Guests" group, each with label, state (invited / joined /

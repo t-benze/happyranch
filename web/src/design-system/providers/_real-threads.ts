@@ -33,6 +33,10 @@ import type {
   ArchiveArgs,
   ComposeArgs,
   InviteArgs,
+  InviteGuestArgs,
+  GuestInviteResult,
+  GuestSeatArgs,
+  RevokeGuestResult,
   MutationLike,
   QueryLike,
   RemoveParticipantArgs,
@@ -277,12 +281,24 @@ function useThreadsInfiniteList(status?: 'open' | 'archived'): ThreadListQueryLi
   };
 }
 
+/**
+ * Guest seat refresh (THR-362 §7 item 2, §13.2). A guest's read_thread /
+ * wait_for_messages calls move its cursor, last-active time and listening
+ * state without publishing a thread event, so while the open thread has a
+ * seat that has not ended the detail refetches on this bounded interval.
+ * React Query pauses it while the document is hidden (default
+ * refetchIntervalInBackground=false) and stops it once every seat has ended.
+ */
+const GUEST_SEAT_REFRESH_MS = 10_000;
+
 function useThread(threadId: string | undefined) {
   const slug = useRealOrgSlug();
   return useQuery({
     queryKey: ['thread', slug, threadId],
     queryFn: () => threadsApi.getThread(slug, threadId as string),
     enabled: !!slug && !!threadId,
+    refetchInterval: (query) =>
+      query.state.data?.guests?.some((g) => g.state !== 'ended') ? GUEST_SEAT_REFRESH_MS : false,
   });
 }
 
@@ -352,12 +368,17 @@ function useThreadsInboxSSE(): void {
  *   The live "agent working on a reply" indicator depends on THIS branch
  *   firing for invocation events — keep seq-bearing non-message events routed
  *   here if you refactor the consumer.
- * - 'ignore'     — no seq (e.g. `decline_status` events published with seq=null)
+ * - 'refresh'    — a `kind: "system"` event with no seq. The guest invite and
+ *   revoke routes publish this shape after appending their system message
+ *   (THR-362 §4.6): refetch the canonical messages and the detail, but do not
+ *   move the since_seq cursor.
+ * - 'ignore'     — any other event with no seq (e.g. `decline_status` events
+ *   published with seq=null)
  */
 export function classifyTailEvent(
-  ev: { seq?: number | null; body_markdown?: unknown },
-): 'append' | 'invalidate' | 'ignore' {
-  if (ev.seq == null) return 'ignore';
+  ev: { seq?: number | null; body_markdown?: unknown; kind?: unknown },
+): 'append' | 'invalidate' | 'refresh' | 'ignore' {
+  if (ev.seq == null) return ev.kind === 'system' ? 'refresh' : 'ignore';
   if ('body_markdown' in ev) return 'append';
   return 'invalidate';
 }
@@ -384,6 +405,11 @@ function useThreadTailSSE(threadId: string | undefined): void {
         // invocation-lifecycle events. See classifyTailEvent.
         const action = classifyTailEvent(ev);
         if (action === 'ignore') return;
+        if (action === 'refresh') {
+          qc.invalidateQueries({ queryKey: ['thread-messages', slug, threadId] });
+          qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+          return;
+        }
         sinceSeqRef.current = Math.max(sinceSeqRef.current, ev.seq as number);
 
         if (action === 'append') {
@@ -538,6 +564,56 @@ function useRemoveParticipant(threadId: string): MutationLike<
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
       qc.invalidateQueries({ queryKey: ['threads', slug] });
     },
+  });
+}
+
+/** Guest seat routes take the bare seat id (`G-n`); reads project `guest:G-n`. */
+function guestSeatId(guestId: string): string {
+  return guestId.startsWith('guest:') ? guestId.slice('guest:'.length) : guestId;
+}
+
+function useInviteGuest(threadId: string): MutationLike<InviteGuestArgs, GuestInviteResult> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: InviteGuestArgs) => threadsApi.inviteThreadGuest(slug, threadId, body),
+    onSuccess: () => {
+      // The invite appends a thread_guest_invited system message.
+      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+      qc.invalidateQueries({ queryKey: ['thread-messages', slug, threadId] });
+    },
+    retry: false,
+  });
+}
+
+function useReplaceGuestCode(threadId: string): MutationLike<GuestSeatArgs, GuestInviteResult> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ guestId }: GuestSeatArgs) =>
+      threadsApi.replaceThreadGuestCode(slug, threadId, guestSeatId(guestId)),
+    onSettled: () => {
+      // A lapsed seat is ended by this call (409 guest_seat_ended), which
+      // appends a thread_guest_ended system message: refresh either way.
+      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+      qc.invalidateQueries({ queryKey: ['thread-messages', slug, threadId] });
+    },
+    retry: false,
+  });
+}
+
+function useRevokeGuest(threadId: string): MutationLike<GuestSeatArgs, RevokeGuestResult> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ guestId }: GuestSeatArgs) =>
+      threadsApi.revokeThreadGuest(slug, threadId, guestSeatId(guestId)),
+    onSettled: () => {
+      // Revoke appends a thread_guest_ended system message.
+      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+      qc.invalidateQueries({ queryKey: ['thread-messages', slug, threadId] });
+    },
+    retry: false,
   });
 }
 
@@ -727,6 +803,9 @@ export const realThreadsApi: ThreadsApi = {
   useSendFollowUp,
   useInviteAgent,
   useRemoveParticipant,
+  useInviteGuest,
+  useReplaceGuestCode,
+  useRevokeGuest,
   useArchiveThread,
   useResumeThread,
   useAbortReplies,

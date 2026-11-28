@@ -151,7 +151,12 @@ class GuestRouteTests(unittest.IsolatedAsyncioTestCase):
         detail = (await self.client.get(f"{PREFIX}/threads/{THREAD}")).json()
         self.assertEqual([g["label"] for g in detail["guests"]],
                          ["Codex desktop (guest)", "Codex desktop (guest) 2", "Codex desktop (guest) 3"])
-        self.assertEqual(set(detail["guests"][0]), {"id", "label", "app", "state", "expires_at", "last_seen_at", "last_read_seq"})
+        self.assertEqual(set(detail["guests"][0]), {"id", "label", "app", "state", "expires_at", "last_seen_at",
+                                                    "last_read_seq", "listening", "read_from_seq"})
+        self.assertEqual([g["listening"] for g in detail["guests"]], [False, False, False])
+        self.assertEqual([g["read_from_seq"] for g in detail["guests"]],
+                         [self.seat(f"G-{n}")["read_from_seq"] for n in (1, 2, 3)])
+        self.assertEqual([g["read_from_seq"] for g in detail["guests"]], [seq + 1, 0, 0])
         self.assertNotIn(first["invite_code"], json.dumps(detail))
         self.assertNotIn(self.seat()["invite_sha256"], json.dumps(detail))
         self.assertEqual(detail["participants"], [])
@@ -1170,7 +1175,8 @@ The guest acts only while the founder uses the app or a requested wait is open.
         spec = Path("docs/specs/2026-11-24-thread-guest-desktop-app.md").read_text()
         self.assertIn('guest_id "G-3"', spec)
         self.assertIn("approval-prompt", spec)
-        self.assertIn("Slice 2", spec)
+        status = next(part for part in spec.split("\n\n") if part.startswith("Status:"))
+        self.assertIn("slice 2 PR #1878", status)
 
 
 if __name__ == "__main__":

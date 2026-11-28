@@ -337,6 +337,8 @@ export function SettingsPane({ section }: { section: SettingsSection }): JSX.Ele
 // ----------------------------------------------------------------
 
 import { OrganizationSection } from './sections/OrganizationSection';
+import { GuestAppsSection } from './sections/GuestAppsSection';
+import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { ExecutorsSection } from './sections/ExecutorsSection';
 import { DaemonCapacitySection } from './sections/DaemonCapacitySection';
 import { PreferencesSection } from './sections/PreferencesSection';
@@ -350,6 +352,9 @@ function DaemonCapacityPanel(): JSX.Element {
 
 function OrganizationPanel({ org }: { org: OrgSettings }): JSX.Element {
   const { t } = useTranslation();
+  const scopedSlug = useOrgSlugOptional();
+  const { slug: routeSlug } = useParams<{ slug: string }>();
+  const slug = scopedSlug ?? routeSlug ?? null;
   return (
     <div className="max-w-2xl p-4 sm:p-8">
       <h2 className="font-display mb-4 text-lg font-semibold">{t('settings.panel.organization.title')}</h2>
@@ -357,6 +362,8 @@ function OrganizationPanel({ org }: { org: OrgSettings }): JSX.Element {
         {t('settings.panel.organization.description')}
       </p>
       <OrganizationSection org={org} />
+      {/* THR-362: read-only desktop-app guest setup text; calls no route. */}
+      {slug && <GuestAppsSection slug={slug} />}
     </div>
   );
 }

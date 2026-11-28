@@ -44,7 +44,11 @@ both hashes and appends exactly one system message and `thread_guest_ended`
 audit. Manual and automatic archive share this transaction; resume never revives
 a seat. Retained ended seats resolve historical labels in transcripts and CLI
 show/forward. GET detail exposes only id/label/app/state/expires_at/last_seen_at/
-last_read_seq, alongside the unchanged agent participants.
+last_read_seq, plus detail-only `read_from_seq` (0 = whole thread, else first
+readable seq) and `listening` (true while the joined seat has an open
+`wait_for_messages` call, read from the in-process `app.state.guest_waiters`
+set; THR-362 slice 4), alongside the unchanged agent participants. Invite and
+new-code responses keep the original projection.
 
 Slice-1 audits `thread_guest_invited`, `thread_guest_code_replaced` and
 `thread_guest_ended` use `task_id=<thread ID>`, existing audit-row shape and
@@ -100,8 +104,9 @@ availability/retention checks; artifact-name fetch and guest Shared Artifacts
 publication are forbidden. Read/wait/fetch have no guest audit and stamp read
 position/last seen. All file allowances are unmeasured starting values. Ended
 seat folders and unattached uploads are cleaned; posted bytes remain.
-MCP/setup stay remotely denied. Web UI, Claude and scheduled/remote pickup remain
-separate/deferred. The founder's first product join/read/post/revoke passed via
+MCP/setup stay remotely denied. The Web UI is slice 4 (see
+[web-and-cli](../web-and-cli.md#thread-guest-web-ui-slice-4)); Claude and
+scheduled/remote pickup remain deferred. The founder's first product join/read/post/revoke passed via
 SSH tunnel; same-machine desktop file behaviour is still unproven.
 
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep

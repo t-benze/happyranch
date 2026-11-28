@@ -1492,6 +1492,7 @@ async def get_thread_endpoint(
     slug: str,
     thread_id: str,
     org: OrgDep,
+    request: Request,
 ) -> dict:
     """Return thread detail including authoritative ``reply_delivery``.
 
@@ -1508,7 +1509,7 @@ async def get_thread_endpoint(
     responders_by_seq = org.db.list_invocations_for_thread_grouped_by_seq(thread_id)
     d = _thread_row_to_dict(t)
     d["participants"] = participants
-    d["guests"] = org.db.list_thread_guests(thread_id)
+    d["guests"] = _guests_with_activity(org, request, thread_id)
     # Pass responders unconditionally: the grouped query returns reply and
     # task_followup invocations keyed by their OWN triggering_seq (every
     # invocation carries its authoritative purpose on the wire — TASK-5553 —
@@ -1524,6 +1525,32 @@ async def get_thread_endpoint(
         for p in org.db.list_reply_delivery_projections(thread_id)
     ]
     return d
+
+
+def _guests_with_activity(org: Any, request: Request, thread_id: str) -> list[dict]:
+    """Detail-only seat activity (THR-362 spec §7 item 2, §13.2).
+
+    ``listening`` is True while the seat has an open ``wait_for_messages``
+    call: the guest MCP route keeps ``(id(org), guest_id)`` in the in-process
+    ``app.state.guest_waiters`` set for exactly that call. ``read_from_seq`` is
+    the seat's read floor (0 = whole thread, else the first readable seq), so
+    the web counts new messages only inside the guest's read scope. Neither
+    field is a credential; invite/new-code responses keep their projection.
+    """
+    guests = org.db.list_thread_guests(thread_id)
+    if not guests:
+        return guests
+    waiters = getattr(request.app.state, "guest_waiters", None) or set()
+    with org.db._lock:
+        floors = {row["guest_id"]: row["read_from_seq"] for row in org.db._conn.execute(
+            "SELECT guest_id, read_from_seq FROM thread_guests WHERE thread_id=?", (thread_id,),
+        )}
+    out = []
+    for guest in guests:
+        seat_id = guest["id"].removeprefix("guest:")
+        out.append({**guest, "read_from_seq": floors.get(seat_id, 0),
+                    "listening": guest["state"] == "joined" and (id(org), seat_id) in waiters})
+    return out
 
 
 class ThreadGuestView(BaseModel):

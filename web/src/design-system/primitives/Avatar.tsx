@@ -22,6 +22,8 @@
  *            worker:  `--color-agent-worker` (alias of `--color-accent-default`).
  *            soft:    `--accent-soft` fill + `--accent-text` (role unknown).
  *            neutral: `--surface-2` fill + `--ink-2` (retired agents).
+ *            guest:   `--attention-soft` fill + `--attention-text` (thread
+ *                     guests from a desktop app, THR-362: never an agent).
  *   label  — `--color-text-inverse` on the solid/gradient tones (ds.css uses
  *            #fff; the token is white in light and dark ink in dark mode,
  *            which is what these chips already used).
@@ -30,7 +32,7 @@
  */
 import { cn } from '@/lib/utils';
 
-export type AvatarTone = 'founder' | 'manager' | 'worker' | 'soft' | 'neutral';
+export type AvatarTone = 'founder' | 'manager' | 'worker' | 'soft' | 'neutral' | 'guest';
 export type AvatarSize = 'sm' | 'md' | 'lg';
 
 interface AvatarProps {
@@ -57,6 +59,7 @@ const TONE_CLASS: Record<AvatarTone, string> = {
   worker: 'bg-agent-worker text-text-inverse',
   soft: 'bg-accent-soft text-accent-text',
   neutral: 'bg-surface-sunken text-text-secondary',
+  guest: 'bg-attention-soft text-attention-text',
 };
 
 export function Avatar({ initials, tone = 'worker', size = 'md', className }: AvatarProps): JSX.Element {

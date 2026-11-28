@@ -37,7 +37,60 @@ within the seat's read scope; it writes a unique local in/ copy. Upload is cappe
 at 10 MiB; unmeasured starting allowances are 10 unattached files/50 MiB and
 100 MiB in/ with oldest eviction. Seat end cleans transit/unattached files.
 Guests never publish Shared Artifacts or fetch them by name. Other-machine app
-files, Claude Desktop and scheduled pickup remain deferred; Web is slice 4.
+files, Claude Desktop and scheduled pickup remain deferred; the Web UI
+(slice 4) is described below.
+
+### Thread guest Web UI (slice 4)
+
+The thread detail rail adds **Invite desktop app** beside Invite participant,
+and a **Guests** group under the agents. Each seat shows the daemon's label, its
+state (invited / joined / listening / ended), its expiry, "read to #n · m new"
+(m counts loaded messages above the larger of `last_read_seq` and the seat's
+read floor `read_from_seq - 1`, so a from-now seat never counts history from
+before its invite) and when it was last active. "listening" shows while the
+seat has an open `wait_for_messages` call (detail field `listening`). Guest
+reads and waits publish no thread event, so while the open thread has a seat
+that has not ended, the thread detail refetches every 10 seconds (paused while
+the page is hidden) to refresh cursor, count, last active and listening. **Copy
+nudge** (joined seats) copies the fixed English prompt `Check HappyRanch thread
+THR-n for new messages and respond.`. **New code** (invited seats) and
+**Revoke** (any seat that has not ended) call the existing seat routes. The
+invite dialog, a pending seat action and its error belong to the org/thread
+they started on: navigating to another thread closes the dialog, clears the
+error and drops a late New code result. Errors are held as catalog keys and
+translated at render, so a locale switch re-translates them.
+
+The invite dialog (`GuestInviteDialog`) asks for the app (Claude desktop
+labelled untested), the lifetime (1 hour / 24 hours default / 7 days) and the
+read scope (whole thread default / from now on). It shows the §7.5 warning
+about what the guest will read. After Create invite or New code, it shows the
+daemon's one-time prompt with Copy prompt, the shown-once / 10-minute note and
+New code while the seat is still invited. The prompt is kept only in dialog
+state.
+
+When the app's active target is a remote Host (`useRemoteHost`), Invite desktop
+app, New code and Revoke are not rendered. The seat list, Copy nudge and a short
+"only on this computer" note stay.
+
+Messages with a `guest:G-n` speaker show the seat label, a `guest` badge and
+the Avatar `guest` tone (attention-soft). Inbox rows show `Guest G-n` for a
+guest last speaker. The `thread_guest_invited`, `thread_guest_joined` and
+`thread_guest_ended` system rows (`system_payload` `{kind_tag, guest_id,
+label[, cause]}`) render as translated event chips with the label and cause.
+Before this slice, they showed the raw tag.
+These sentences appear in an open transcript without reload: Invite, New code
+and Revoke refetch the thread messages when they settle, and the tail consumer
+treats a `kind: "system"` event with `seq: null` (what the invite and revoke
+routes publish) as a refresh of the messages and detail that leaves the
+since_seq cursor alone. Other null-seq events, such as `decline_status`, are
+still ignored. Join and expiry publish a seq-bearing system event, which the
+existing invalidate path already refetches.
+
+Settings ▸ Organization ▸ Desktop app guests shows read-only text for Codex
+desktop: the `guests setup` command, `<runtime>/orgs/SLUG/guests/codex_desktop/`
+and the config stanza. The stanza uses the page's own loopback port when the
+daemon serves the page, else 8765. It calls no route. All strings ship in `en`
+and `zh-CN`.
 
 Start@2 B2+B3 uses genuine atomic first/later completion admission, original source
 settlement, initiator-owned hold recovery and source-never-auto-completes semantics;

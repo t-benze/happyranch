@@ -3102,7 +3102,7 @@ artifact generations). Limits are unmeasured starting values: 10 unattached file
 folders and unattached uploads, preserving posted bytes. Guests never publish
 Shared Artifacts; read/wait/fetch are not guest-audited. Bundled thread instructions
 explain asking the founder for an invite and finishing the originating task so
-the answer continues through a thread wake. Web UI remains a separate slice. Founder loopback invite,
+the answer continues through a thread wake. Web UI is slice 4 (web-and-cli.md, Thread guest Web UI). Founder loopback invite,
 new-code and revoke return no persistent secret; detail reads expose safe guest
 metadata. SHA-256-only invite codes expire after ten minutes; seats last
 1h/24h(default)/7d. The existing five-second thread-breaker tick sweeps expiry
