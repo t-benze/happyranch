@@ -251,8 +251,9 @@ def read_mixed_write_history_uncommitted(conn: sqlite3.Connection, *, org_slug: 
         if not (layout.sequential and layout.schema_version == 2 and layout.ownership == 2
                 and layout.document == 'J' and layout.coding):
             raise UseComplete()
+        with _sql_budget(conn, observed):
+            _native_contract(conn, observed)
         with _sql_budget(conn, budget):
-            _native_contract(conn, budget)
             # Preserve the retained reader's native structural prerequisites;
             # an empty retained family is not permission to accept new shapes.
             from runtime.infrastructure.workflow_coding_schema import _validate_coding_dependencies
@@ -273,7 +274,7 @@ def read_mixed_write_history_uncommitted(conn: sqlite3.Connection, *, org_slug: 
             _settings_chain(conn, metadata, data, org_slug=org_slug, definition_ids=frozenset(),
                             settings_ids=frozenset(), budget=budget)
             definitions = _replay(conn, metadata, data, expected_org_slug=org_slug, budget=budget,
-                                  full_settings=True, retained_budget=retained_budget)
+                                  schema_budget=observed, full_settings=True, retained_budget=retained_budget)
         opening = retained_budget.consumed, retained_budget.accepted_rows, retained_budget.traversed
         try:
             with _sql_budget(conn, legacy):
