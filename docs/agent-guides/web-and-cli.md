@@ -16,19 +16,28 @@ transcripts render guest labels; the old TUI is removed. Thread detail gains a
 safe `guests` list and the three seat routes have TS mirrors. No UI, setup or
 MCP tools ship in slice 1. Invite codes never appear on ordinary reads.
 
-### Codex guest setup (slice 2)
+### Codex guest setup (slices 2–3)
 
 Founder command `happyranch guests setup codex_desktop --org SLUG` calls the
 loopback founder setup route and prints `<runtime>/orgs/SLUG/guests/codex_desktop`.
 Open that project in Codex. Its `.codex/config.toml` contains exactly the
 happyranch URL at the actual daemon port, default_tools_approval_mode="approve"
 and tool_timeout_sec=60; AGENTS.md explains token retention, untrusted thread
-content, text-only scope and reporting seat-ended answers. Neither file holds
+content, out/ upload and in/ fetch rules and reporting seat-ended answers. Neither file holds
 secrets. Re-run after port changes; symlink/nonregular/edited project files are
 refused, and ~/.codex is never touched. Invite and New code prompts include
 thread_id, guest_id and invite_code. MCP is external-app-only, setup CLI-only;
 both routes are excluded from the browser contract and remain remotely denied.
-No guest Web UI or upload/fetch tools ship in slice 2.
+Setup upgrades only the exact prior daemon-owned AGENTS template and creates
+files/; join returns private files/G-n/out and in paths on the daemon machine.
+Write a direct regular out/ file and pass only its file_name to upload_attachment;
+post_message accepts up to five of that seat's own unattached upload IDs.
+fetch_attachment accepts only a read_thread message ref from another speaker
+within the seat's read scope; it writes a unique local in/ copy. Upload is capped
+at 10 MiB; unmeasured starting allowances are 10 unattached files/50 MiB and
+100 MiB in/ with oldest eviction. Seat end cleans transit/unattached files.
+Guests never publish Shared Artifacts or fetch them by name. Other-machine app
+files, Claude Desktop and scheduled pickup remain deferred; Web is slice 4.
 
 Start@2 B2+B3 uses genuine atomic first/later completion admission, original source
 settlement, initiator-owned hold recovery and source-never-auto-completes semantics;

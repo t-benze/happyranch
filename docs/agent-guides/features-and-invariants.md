@@ -3094,7 +3094,15 @@ its invite-time expiry. Reads enforce per-seat floor/cursor and byte bound;
 posts use agent-only recipients, 32 KiB and 30/hour limits; waits are 1..50s,
 one per seat, checking end/expiry every one-second poll. Full/resumed/delta
 prompts and bundled thread instructions mark guest content untrusted and keep
-the active guest roster separate. Files and Web UI remain deferred. Founder loopback invite,
+the active guest roster separate. Slice 3 adds daemon-local seat out/in folders,
+10 MiB regular no-follow uploads, atomic own/unattached attachment admission and
+message-scoped fetch of other speakers' attachments (including available shared
+artifact generations). Limits are unmeasured starting values: 10 unattached files/
+50 MiB and 100 MiB incoming copies with oldest eviction. Seat end removes transit
+folders and unattached uploads, preserving posted bytes. Guests never publish
+Shared Artifacts; read/wait/fetch are not guest-audited. Bundled thread instructions
+explain asking the founder for an invite and finishing the originating task so
+the answer continues through a thread wake. Web UI remains a separate slice. Founder loopback invite,
 new-code and revoke return no persistent secret; detail reads expose safe guest
 metadata. SHA-256-only invite codes expire after ten minutes; seats last
 1h/24h(default)/7d. The existing five-second thread-breaker tick sweeps expiry

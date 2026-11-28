@@ -98,7 +98,7 @@ production test seam to obtain it. Long checks use durable jobs. No Product
 E2E, retired units, integration, required-check or dependency change follows.
 
 
-## Focused thread guest seats (THR-362 slices 1–2)
+## Focused thread guest seats (THR-362 slices 1–3)
 
 Participant-removal route regressions use the same synthetic ASGI/SQLite
 fixture: `uv run --frozen pytest scripts/test_thread_participant_removal.py -v --tb=short`.
@@ -125,6 +125,12 @@ Slice-2 tests bind C01–C17 to actual MCP admission/redemption/read/post/wait,
 private-state reconstruction, owned setup/CLI and full/resumed/delta prompt
 boundaries. Waits exercise actual 1s timeout and bounded arrival/revoke, with
 observed pending ownership before the trigger; all state/config is synthetic.
+Slice-3 F01–F05 exercise the actual MCP/SQLite/filesystem boundary: private local
+folders, direct regular no-follow upload, atomic own/unattached post checks and
+audit, message-scoped fetch, shared-artifact availability, both byte/count
+allowances, oldest incoming eviction, and revoke/expiry/archive cleanup preserving
+posted bytes and other seats. This is maker verification, not a real desktop app
+file-use result or independent QA.
 
 ## Focused job receipt diagnostics
 

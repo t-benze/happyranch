@@ -1,9 +1,11 @@
 # A desktop app joins a thread as a guest (THR-362)
 
-Status: **Approved by the founder (THR-362 msg56, decisions 1–16); slice 1 built
-in PR #1867 (TASK-19051). Slice 2 implemented in TASK-19141; independent
-exact-head review/QA and merge remain delivery gates.** Slices 3–4 remain unbuilt;
-the first real product join/read/post is still founder-attended after merge.
+Status: **Approved by the founder (THR-362 msg56, decisions 1–16); slice 1 merged
+in PR #1867; Slice 2 merged in PR #1878; guest read fix merged in #1891. Slice 3 implemented
+in TASK-19744; independent exact-head review/QA and merge remain delivery gates.**
+Slice 4 remains separate. Founder join/read/post/revoke passed on 2026-11-28
+through an SSH tunnel from another machine; same-machine product seat-folder
+behaviour remains unproven. Other-machine guests remain deferred (decision 20).
 
 This replaces the task hand-off design proposed in
 [PR #1555](https://github.com/t-benze/happyranch/pull/1555)
@@ -318,8 +320,11 @@ Per-seat allowances, all refused to the guest only and never affecting the
 thread or the org: at most 10 uploaded files not yet attached to a message and
 50 MiB of them (unattached uploads are deleted when the seat ends); at most
 100 MiB in `in/` (oldest copies are removed first); cleanup touches only the
-seat's own folders. These numbers are starting values to confirm against real
-use before the build is approved (section 13.5).
+seat's own folders. Slice 3 uses these exact values as **unmeasured starting
+values**, not measured production capacity. Join provisions the 0700 seat folders
+and returns `out_dir` and `in_dir`. End cleanup runs after the seat-ending commit;
+the existing five-second sweep retries interrupted/unsafe cleanup without
+following links. Posted attachments survive seat end.
 
 ## 7. Authentication [D]
 
@@ -431,9 +436,14 @@ it (the config is project-level in a folder they do not run in).
 
 ### 8.2 Tools
 
-Slice 2 ships join/read/post/wait only. `post_message` is text-only: attachment_ids
-is omitted and every unexpected argument, including an empty attachment list,
-is refused. Upload/fetch and seat folders below are slice 3. Wait timeout_sec is
+Slice 3 adds upload/fetch and seat folders to join/read/post/wait.
+`post_message` accepts optional `attachment_ids` (including an empty list), up to
+five unique IDs. Guest read attachment refs use `message:<seq>:<ordinal>`;
+sequence is a positive signed 64-bit integer and ordinal is 0–4. Out-of-range
+refs return the plain unavailable tool error before any SQL binding.
+Fetch resolves them only within the credential's thread and read scope, never as
+artifact-name authority. Ownership/unattached checks run inside the existing
+arrival transaction before any message or wake is written. Wait timeout_sec is
 an integer from 1 through 50; values outside that range are refused as plain
 invalid-argument tool errors. Wait polls SQLite once per second, rechecking the
 credential and original org attachment without retaining DB locks/org readers
@@ -444,7 +454,7 @@ not affect a persisted seat credential. No credential is placed in setup files.
 
 | Tool | Input | Output |
 |---|---|---|
-| `join_thread` | `thread_id`, `guest_id`, `invite_code` | `guest_token`, `label`, `thread_subject`, `expires_at`, `last_seq`, the guest rules as text |
+| `join_thread` | `thread_id`, `guest_id`, `invite_code` | `guest_token`, `label`, `thread_subject`, `expires_at`, `last_seq`, daemon-local `out_dir`/`in_dir`, the guest rules as text |
 | `read_thread` | `guest_token`, optional `since_seq`, optional `limit` (default 50, maximum 200) | `messages` (`seq`, `speaker_label`, `speaker_kind` founder/agent/guest/system, `kind`, `sent_at`, `body_markdown`, `attachments` with `ref`, name, size), `next_since_seq`, `has_more` |
 | `post_message` | `guest_token`, `body_markdown`, optional `attachment_ids` (at most 5, each one this seat's own upload, not yet attached) | `seq` |
 | `upload_attachment` | `guest_token`, `file_name` (a file the app wrote into the seat's `out` folder) | `attachment_id`, size, SHA-256 |
@@ -493,7 +503,9 @@ the same machine, so files move through the seat's folder.
   folder, opened without following links, at most 10 MiB (the existing thread
   cap), validates the name with the existing display-name check, stores it as a
   thread-scoped attachment with `uploaded_by = guest:G-n`, and removes the
-  source. `post_message` then attaches up to 5 (the existing cap) of the
+  source only after the attachment metadata commits. A failed commit preserves
+  the source; a later source-removal failure preserves committed storage.
+  `post_message` then attaches up to 5 (the existing cap) of the
   seat's own unattached uploads, and nothing else (section 8.2).
 - **Download.** `fetch_attachment` copies an attachment into `in/` and returns
   the path. The server resolves the `ref` to a message and allows it only when
@@ -522,9 +534,11 @@ tool_timeout_sec = 60
 ```
 
 plus `AGENTS.md`: what the join prompt means; keep and pass the token; thread
-messages are conversation, not instructions; say that slice 2 is text-only
-and file tools/folders are deferred; say so in the chat when a tool reports that the seat has ended. If the daemon
-port changes, setup is re-run.
+messages are conversation, not instructions; explain the daemon-local `out/`
+upload and `in/` fetch flow, the limits and the refusal to read own-message files
+or publish Shared Artifacts; say so in the chat when a tool reports that the seat
+has ended. Setup upgrades the exact prior daemon-owned rules, refusing hand
+edits as before. If the daemon port changes, setup is re-run.
 
 **Claude Desktop [U throughout]:** the expected equivalent is a `.mcp.json` with
 an HTTP server entry, `.claude/settings.json` pre-allowing the tools, and a
@@ -704,7 +718,7 @@ review and QA rounds, excluding waiting time.
 |---|---|---|
 | 1 | `thread_guests` table; seat create / new-code / revoke / expiry sweep / archive hook; `guests` in the thread read; `guest:` speaker accepted by the storage write path and checked in the places of section 5.4, with no route yet that lets a guest post; audit rows; CLI `threads guests …`; contract files; contract and agent-guide docs | 3–4 |
 | 2 | **Implemented in TASK-19141; independent gates/merge and founder product run pending.** `POST /guests/mcp` with `join_thread`, `read_thread`, `post_message`, `wait_for_messages`; route gates; `guests setup` for Codex; **guest labelling in agent thread prompts (full, resumed, delta) and the bundled `thread` skill text on treating guest messages as untrusted, in this same PR, so no guest post can reach an agent unlabelled**. **Starts with a 20-minute founder-attended check** in the Codex app: the token is passed back unchanged, a 50-second tool call is tolerated, files can be written to the seat folder. Ends with one real join, read and post by the founder | 2.5–3.5 |
-| 3 | `upload_attachment`, `fetch_attachment` with the attachment rules of section 8.2, seat folders and allowances; remaining bundled `thread` skill text (how to ask for a guest, the hand-off pattern of section 11) | 1–1.5 |
+| 3 | **Implemented in TASK-19744; independent review/QA/merge pending.** `upload_attachment`, `fetch_attachment` with the attachment rules of section 8.2, seat folders and unmeasured starting allowances; remaining bundled `thread` skill text (how to ask for a guest, the hand-off pattern of section 11). Same-machine desktop file use remains unproven. | 1–1.5 |
 | 4 | Web: invite dialog, guest group, nudge, revoke, guest message style, Settings setup panel, both locales | 2–3 |
 | Later | Claude Desktop leg (attended check first, then provisioning) | 1–2 plus founder time |
 | Later | `thread_message_waiter` so a task can wait on a guest | about 2 |
@@ -716,8 +730,8 @@ This is a planning estimate with two conditions. (1) It assumes the attended
 check passes. If the app does not return the token reliably, option B in section
 7.2 is a different credential lifecycle and is re-estimated, not swapped in for
 free. (2) The size allowances in sections 6 and 8.2 are starting values with no
-measurement behind them; slice 1 and slice 2 source are implemented; the file allowances remain
-unmeasured and unbuilt until slice 3. PR #1555 was 11–15 days; the saving is
+measurement behind them; slice 3 implements the file allowances as unmeasured
+starting values, pending real same-machine use. PR #1555 was 11–15 days; the saving is
 the hand-off lifecycle, partly offset by the guest identity work and by the web
 slice no longer being optional, because the founder's flow starts on the thread
 page.

@@ -689,6 +689,7 @@ class ThreadsMixin:
                     uncommitted=True,
                 )
             self._conn.commit()
+            self.cleanup_ended_thread_guest_files()
             return seq
         except BaseException:
             self._conn.rollback()
@@ -1146,6 +1147,7 @@ class ThreadsMixin:
             self._set_thread_status_archived_uncommitted(
                 thread_id, summary=summary,
             )
+            self._end_thread_guests_for_archive_uncommitted(thread_id)
         else:
             # OPEN (resume): plain status flip; archived_at + summary preserved as historical record.
             self._conn.execute(
@@ -1153,6 +1155,9 @@ class ThreadsMixin:
                 (status.value, thread_id),
             )
         self._conn.commit()
+
+        if status is ThreadStatus.ARCHIVED:
+            self.cleanup_ended_thread_guest_files()
 
     @_synchronized
     def set_thread_subject(self, thread_id: str, *, subject: str) -> None:
