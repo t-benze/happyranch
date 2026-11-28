@@ -126,7 +126,9 @@ requires that the last build was a successful export into this directory's
 `out/`: one static HTML page per `.next/server/pages-manifest.json` page (the
 `getStaticProps` routes must all be the Nextra `_meta` 404s), each carrying
 the build's `.next/BUILD_ID` and no other, plus every `.next/static` file
-under a single build ID. `index.html`, `404.html` (without it Pages serves `/`
+under a single build ID. Next also copies the bundled brand fonts and licences
+to `static/fonts/`; these must match their emitted `.next/static/media/` build
+assets exactly. `index.html`, `404.html` (without it Pages serves `/`
 for unknown paths) and the search index
 `_next/static/chunks/nextra-data-en-US.json` are required. `out/` must match
 that inventory and those bytes exactly, so a stale page from another build, a
@@ -155,8 +157,9 @@ fonts and their SIL Open Font License files live in `static/fonts/`, sourced
 from [`google/fonts` at `5026800714d07231937d92eb4cceabf06e05d74e`](https://github.com/google/fonts/tree/5026800714d07231937d92eb4cceabf06e05d74e/ofl)
 (`newsreader/`, `instrumentsans/`, `ibmplexmono/`; licence whitespace normalized).
 CSS asset URLs and `_app.jsx` licence links emit them into `.next/static/media/`
-(and `out/_next/static/media/` for the static export), so the existing packaging
-steps include them. No third-party font connection is made by visitors.
+(and `out/_next/static/media/` for the static export). The static assembler also
+includes Next's `out/static/fonts/` copies, checked against those build assets.
+No third-party font connection is made by visitors.
 The navbar "Website" link targets `https://happyranch.ai`,
 which serves the website only after its cutover.
 

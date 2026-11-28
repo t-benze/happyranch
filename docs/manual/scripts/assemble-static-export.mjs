@@ -69,7 +69,8 @@ async function walk(dir, rel = '') {
 // The expected export is derived from the selected build in .next, never from
 // out/ itself: its page manifest (static HTML pages), its prerender manifest
 // (getStaticProps routes, which must all be the Nextra _meta 404s) and every
-// .next/static asset. The manual has no public/ directory; one is refused.
+// .next/static asset, including the legacy static/fonts copies of the emitted
+// brand fonts and licences. The manual has no public/ directory; one is refused.
 async function expectedExport(root, next, buildId) {
   const expected = new Map()
   const expect = (name, from) => {
@@ -111,7 +112,14 @@ async function expectedExport(root, next, buildId) {
   for (const name of ['_buildManifest.js', '_ssgManifest.js']) {
     if ((await regularFile(path.join(statics, buildId, name), `.next/static/${buildId}/${name}`)).length === 0) throw new Error(`Empty build manifest: ${name}`)
   }
-  for (const file of await walk(statics)) expect(`_next/static/${file.name}`, file.full)
+  for (const file of await walk(statics)) {
+    expect(`_next/static/${file.name}`, file.full)
+    // Next also copies static/fonts into out/static/fonts. Derive those
+    // entries from emitted build assets so missing, stale or changed copies
+    // still fail the exact inventory/byte checks below.
+    const font = file.name.match(/^media\/((?:Newsreader|InstrumentSans|IBMPlexMono)[^/]+)\.[0-9a-f]{8}\.(ttf|txt)$/)
+    if (font) expect(`static/fonts/${font[1]}.${font[2]}`, file.full)
+  }
   if (!expected.has('_next/static/chunks/nextra-data-en-US.json')) throw new Error('Required search index missing from build: _next/static/chunks/nextra-data-en-US.json')
   return expected
 }
