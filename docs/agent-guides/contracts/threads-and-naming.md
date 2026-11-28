@@ -11,6 +11,16 @@ For nonparticipants, a missing active definition or workspace still returns
 404 `unknown_agent`; an otherwise known agent returns 409 `not_participant`.
 Route authority and the open-thread requirement are unchanged.
 
+Founder CLI: `happyranch threads remove-participant --org SLUG --thread-id THR-NNN --agent ADDRESS`.
+`ADDRESS` accepts an active or terminated agent's permanent ID or current ASCII
+name and resolves to the permanent ID before posting `{"agent_name": ID}` to
+`/api/v1/orgs/SLUG/threads/THR-NNN/remove-participant`, using the same founder
+bearer path as `threads invite`. Pending agents are ineligible. An unknown
+address exits 1 with the CLI's `unknown_identity` diagnostic before removal;
+former names do not forward. Daemon errors also exit nonzero through the existing
+CLI error handler; success prints the JSON response. This adds no termination
+auto-removal behavior.
+
 ## Guest seats (THR-362, slice 1)
 
 Founder-approved decisions 1–16 (msg56) add `thread_guests`, installed on fresh

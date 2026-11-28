@@ -1,18 +1,98 @@
 """Focused removal-route regressions in the existing synthetic ASGI/SQLite venue."""
 from __future__ import annotations
 
+import asyncio
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 import json
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
 import pytest
 
+from cli import main as cli_main
+from cli.commands import threads as cli_threads
 from runtime.daemon.event_bus import thread_inbox_topic, thread_topic
 from runtime.models import ThreadInvocationPurpose, ThreadMessageKind, ThreadRecord
 from scripts.test_agent_retirement import PREFIX, fixture
 
 
 THREAD = "THR-901"
+
+
+async def invoke_remove_cli(client: httpx.AsyncClient, address: str) -> tuple:
+    """Use the existing retirement CLI bridge against the real scratch ASGI app."""
+    loop = asyncio.get_running_loop()
+    requests: list[tuple] = []
+
+    def request(method: str, path: str, **kwargs) -> httpx.Response:
+        response = asyncio.run_coroutine_threadsafe(client.request(method, path, **kwargs), loop).result()
+        requests.append((method, path, kwargs.get("json"), response))
+        return response
+
+    def invoke() -> tuple:
+        stdout, stderr = StringIO(), StringIO()
+        code = 0
+        transport = SimpleNamespace(get=lambda path, **kw: request("GET", path, **kw),
+                                    post=lambda path, **kw: request("POST", path, **kw))
+        argv = ["happyranch", "threads", "remove-participant", "--org", "alpha",
+                "--thread-id", THREAD, "--agent", address]
+        with patch.object(cli_threads.OpcClient, "from_env", return_value=transport), \
+                patch.object(sys, "argv", argv), redirect_stdout(stdout), redirect_stderr(stderr):
+            try:
+                cli_main.main()
+            except SystemExit as exc:
+                code = exc.code
+        return code, stdout.getvalue(), stderr.getvalue(), requests
+
+    return await asyncio.to_thread(invoke)
+
+
+@pytest.mark.parametrize("address", ["worker", "Retired-Consultant"])
+async def test_cli_removes_terminated_participant(tmp_path: Path, address: str) -> None:
+    async with fixture(tmp_path / "org") as (org, client):
+        identities = (await client.get(f"{PREFIX}/identities")).json()["identities"]
+        worker = next(row for row in identities if row["canonical_id"] == "worker")
+        renamed = await client.put(f"{PREFIX}/agents/worker/addressable-name", json={
+            "addressable_name": "Retired-Consultant", "expected_name_revision": worker["name_revision"],
+        })
+        assert renamed.status_code == 200, renamed.text
+        org.db.insert_thread(ThreadRecord(id=THREAD, subject="CLI removal"))
+        for agent in ("worker", "keeper"):
+            org.db.add_thread_participant(THREAD, agent, added_by="founder")
+        retired = await client.post(f"{PREFIX}/agents/worker/retire")
+        assert retired.status_code == 200, retired.text
+        assert not (org.root / "org/agents/worker.md").exists()
+        assert org.db.is_thread_participant(THREAD, "worker")
+
+        code, stdout, stderr, requests = await invoke_remove_cli(client, address)
+        assert code == 0, (stdout, stderr)
+        assert json.loads(stdout) == {"thread_id": THREAD, "agent_name": "worker", "system_message_seq": 1}
+        assert stderr == ""
+        removal = [(body, response.status_code) for method, path, body, response in requests
+                   if method == "POST" and path.endswith("/remove-participant")]
+        assert removal == [({"agent_name": "worker"}, 200)]
+        assert [p.agent_name for p in org.db.list_thread_participants(THREAD)] == ["keeper"]
+
+
+@pytest.mark.parametrize(("address", "error", "posts"), [
+    ("unknown_agent", "unknown_identity", 0),
+    ("worker", "not_participant", 1),
+])
+async def test_cli_removal_refuses_without_effects(tmp_path: Path, address: str, error: str, posts: int) -> None:
+    async with fixture(tmp_path / "org") as (org, client):
+        org.db.insert_thread(ThreadRecord(id=THREAD, subject="CLI refusal"))
+        org.db.add_thread_participant(THREAD, "keeper", added_by="founder")
+        tables = ("thread_participants", "thread_messages", "thread_invocations", "audit_log")
+        before = {table: [tuple(row) for row in org.db.execute(f"SELECT * FROM {table}")] for table in tables}
+        code, stdout, stderr, requests = await invoke_remove_cli(client, address)
+        assert code == 1, (stdout, stderr)
+        assert error in stdout + stderr
+        assert sum(path.endswith("/remove-participant") for _, path, _, _ in requests) == posts
+        assert {table: [tuple(row) for row in org.db.execute(f"SELECT * FROM {table}")] for table in tables} == before
 
 
 @pytest.mark.parametrize("lifecycle", ["active", "terminated", "missing_definition", "missing_workspace"])
