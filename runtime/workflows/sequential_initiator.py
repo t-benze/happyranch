@@ -194,7 +194,7 @@ def snapshot_delivery(conn: sqlite3.Connection, initiator_task_id: str, principa
 
 def _validate_write(conn: sqlite3.Connection, org_slug: str, budget: _ReadBudget,
                     *, source_id: str | None = None) -> None:
-    """Opt in delivery/consumption; source outer settlement keeps complete replay."""
+    """Replay the full source closure for delivery, consumption and outer settlement."""
     from runtime.workflows.sequential_control import validate_control_write
     validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline, reserve_cancellation=True,
         run_ids=None if source_id is None else frozenset(),
@@ -520,7 +520,7 @@ def settle_source_runs(dispatcher: Any, invocation: Any, *, failed: bool, cleanu
                 visit = _rows(conn, 'workflow_seq_visits', budget, 'id=?', (run['active_visit_id'],))[0]
                 _require(visit['state'] == 'queued' and visit['session_id'] is None, 'initiator_source_outer_conflict')
                 ready.append(visit['task_id'])
-        _validate_write(conn, org.slug, budget)
+        _validate_write(conn, org.slug, budget, source_id=invocation.task.id)
     # Every proof commits before publication. Recovery replays the durable outbox;
     # queue insertion never acknowledges the source's inbox.
     for task_id in ready:

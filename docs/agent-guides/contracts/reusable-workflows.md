@@ -438,7 +438,7 @@ dependencies/delivery/consumption and non-cancel generic dispatch/hold below.
 Group 4 scopes direct control/cancel/never-launched close below.
 Group 5 scopes selected return authorization/notification; all-run returned
 rediscovery retains complete validation below.
-Other writers, settings, source outer settlement, bootstrap/schema load,
+Group A below scopes original @2 source outer settlement. Bootstrap/schema load,
 historical @1 GET and v2 run list/detail keep complete
 `read_sequential_history` validation.
 Group 1 of the THR-404 write work adds the explicit-root primitive
@@ -597,6 +597,18 @@ the invocation's SID. A SID with no admitted batch returns without writes or que
 publication, including a later ordinary `done` whose native source is already
 completed. Positive release of an actual batch still requires its current,
 in-progress, uncancelled source with no completion timestamp.
+
+THR-404 Group A supplies that actual source ID to the existing scoped write
+validator after writing the matching-SID proofs. Validation replays every
+same-source run and the entire wait set, including earlier SIDs/batches and
+original consumption receipts, then reserves all-unfinished scalar cancellation
+headroom H on the resulting reader's original ledger and absolute deadline.
+Affected sibling/receipt damage or capacity exhaustion refuses and rolls back
+the new proofs before any queue publication. Disconnected run payload damage
+does not veto this settlement. The original positive/negative proof semantics,
+no-member SID return, exact replay, locks/order and transaction remain unchanged.
+Historical @1 source settlement and STOP-1 global certificates keep their
+existing validation paths.
 
 S5's member hold wrapper and generic terminal/result writer persist one immutable
 `workflow-sequential-initiator-wake@2` inbox obligation in the same transaction as
@@ -864,7 +876,8 @@ run/source, including all sibling members, historical proofs and settings chains
 Exact original control replay now authenticates affected history before returning
 its original receipt; actor/result/key/body and CAS/Held-event checks remain.
 Replacement controls retain all-unfinished H; cancellation and inert receipt
-replay omit future headroom. Source outer settlement retains complete validation.
+replay omit future headroom. Group A scopes original @2 source outer settlement
+as described above, retaining its all-unfinished H reservation.
 Group 7b wires the mixed cancellation/legacy tail to ABSENCE-OR-COMPLETE below.
 Group 5 scopes selected return/source authorization and notification to full
 addressed source closure. All-run return rediscovery retains complete validation,

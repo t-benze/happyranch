@@ -61,8 +61,9 @@ grants no write-validation change; THR-404 group 2 below separately scopes
 start/admission and continuation preflight, and group 3 below scopes initiator
 and non-cancel generic dispatch/hold. Group 4 scopes direct control/cancel/close
 and group 5 scopes selected returns below, keeping complete all-run rediscovery.
-Settings, source outer settlement, bootstrap/schema-load and run list/detail
-retain their complete reader.
+Group 6 scopes settings below; Group A scopes original @2 source outer
+settlement below. Bootstrap/schema-load and run list/detail retain their
+complete reader.
 See the current S7a/U7a/U6a contract.
 
 
@@ -118,7 +119,8 @@ constraint-backed uniqueness, authority/assignment and rollback checks remain.
 The shared control validator accepts these roots only when admission supplies
 them; group 3 adds explicit roots at the initiator and non-cancel generic
 hold/dispatch sites, and group 4 adds direct control/cancel/close roots below.
-Default source-settlement callers remain complete; group 7b mixed callers use the
+Default callers remain complete; Group A supplies the original @2 source
+settlement root below. Group 7b mixed callers use the
 separate ABSENCE-OR-COMPLETE composition below.
 Original @1 admission also authenticates its selected closure/settings chain.
 
@@ -159,7 +161,7 @@ scoped phases. No allowance or deadline is raised.
 
 The native start callback now uses scoped validation through first delivery,
 dependency observation and consumption. Source outer settlement is a distinct
-lifecycle phase and retains its complete-reader default; its mixed
+lifecycle phase scoped by Group A below; its mixed
 cancellation fence uses the separate group-7b certificate. Group 4 below scopes direct cancel/control/close; group 5
 scopes selected returns and retains complete rediscovery. Settings/builtin,
 retained adapters and mixed consumers are described in groups 7R/7b below;
@@ -191,8 +193,8 @@ event, sibling or native-proof corruption still refuses and rolls back. The
 native fence's enclosing mixed owner and legacy/tail retained-family readers stay
 on the ABSENCE-OR-COMPLETE certificate in group 7b;
 `drain_source_cancellations` reaches the scoped finish
-through its unchanged wrapper. Source outer settlement and STOP-1 global
-certification remain complete. No lock set/order, transaction, audit shape,
+through its unchanged wrapper. Group A scopes original @2 source outer
+settlement below; STOP-1 global certification remains complete. No lock set/order, transaction, audit shape,
 budget, deadline or represented NeverLaunchedCancelClose/SequentialSettlement
 transition changes; no TLA+ edit or TLC execution follows from this wiring.
 
@@ -292,6 +294,25 @@ Preservation inventory does not authenticate unrelated payload semantics.
 Retained references/uncertain native control-result encodings retain COMPLETE
 refusals. Original invocation, dependency and positive-closure guards supply no
 clearance from missing handles/negative cleanup. Historical @1 Final consumers
-(7c), source outer settlement, STOP-1 global certification, all-run returned IDs
+(7c), STOP-1 global certification, all-run returned IDs
 and full run views remain complete. Locks/order, schema, deadlines/caps, transactions, audit/replay and
 permissions remain unchanged, so no TLA+ transition/model change is introduced.
+
+## Original source outer settlement — THR-404 Group A
+
+Only `sequential_initiator.settle_source_runs`'s final validation call now
+supplies the actual source ID. The existing explicit-source graph replays all
+same-source members and the full wait set, including earlier SIDs/batches,
+settings chains, original native links and consumption receipts. After replay,
+the existing validator reserves scalar H for ALL unfinished @2 runs on the
+resulting reader's original ledger and deadline. It does not select only the
+matching-SID members whose outer proofs were just written.
+
+Sibling or prior-receipt corruption and capacity exhaustion refuse with the
+original errors and roll back before publication; disconnected run payload
+corruption no longer vetoes this write. Positive/negative original outer
+qualification, stale/no-member SID early return, original proof bytes and exact
+replay remain unchanged. The mixed terminal-source fence still uses group 7b;
+historical @1 source settlement, all-run discovery, full views and STOP-1 global
+certifications retain their existing paths. No lock/order, budget, transaction,
+authority, audit or modeled lifecycle transition changes follow.

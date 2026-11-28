@@ -103,6 +103,10 @@ S7A_CASES = ('plural_links', 'held_cause', 'history_label', 'unavailable',
     'task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent',
     'write_settings_chain', 'write_headroom', 'start_admission', 'start_preflight', 'start_legacy',
     'initiator_scope', 'dispatch_scope', 'hold_scope', 'start_callback_scope',
+    'source_outer_positive', 'source_outer_negative', 'source_outer_stale',
+    'source_outer_sibling', 'source_outer_earlier', 'source_outer_receipt',
+    'source_outer_unrelated_positive', 'source_outer_unrelated_negative',
+    'source_outer_capacity', 'source_outer_replay', 'source_outer_rollback',
     'control_scope', 'cancel_fence_scope', 'cancel_finish_scope',
     'settings_scope', 'settings_corruption', 'builtin_scope',
     'mixed_empty', 'mixed_corruption', 'mixed_unrelated', 'mixed_fallback', 'mixed_budget', 'mixed_default', 'mixed_native')
@@ -8636,7 +8640,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
             continue
         import asyncio
         path = '/workflows/sequential/views/v2/runs'
-        if case in ('task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent',
+        if case.startswith('source_outer_') or case in ('task_scoped_data', 'task_empty', 'task_corruption', 'task_unrelated', 'task_absent',
                     'write_settings_chain', 'write_headroom', 'start_admission', 'start_preflight', 'start_legacy',
                     'initiator_scope', 'dispatch_scope', 'hold_scope', 'start_callback_scope',
                     'control_scope', 'cancel_fence_scope', 'cancel_finish_scope',
@@ -8674,6 +8678,119 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     f.conn.execute(ddl)
                 f.conn.commit()
                 f.conn.execute('PRAGMA foreign_keys=ON')
+
+            if case.startswith('source_outer_'):
+                from runtime.workflows import sequential_initiator
+                from runtime.workflows.sequential_dispatch import _evidence
+                with s5fixture() as f:
+                    failed = case.endswith('negative')
+                    if case in ('source_outer_earlier', 'source_outer_receipt', 'source_outer_capacity'):
+                        s5release(f)
+                        if case == 'source_outer_capacity':
+                            other = TaskRecord(id='group-a-other-source', assigned_agent='s3_manager', team='engineering',
+                                task_type='task', status='in_progress', current_session_id='group-a-other-sid', brief='Other source')
+                            f.db.insert_task(other)
+                            result = f.conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,created_at) VALUES (?,?,?,?,?)',
+                                (other.id, other.assigned_agent, other.current_session_id, 'completed', '2026-11-20T00:00:00+00:00')).lastrowid
+                            f.conn.commit()
+                            actor = RetryClaim.from_task(other, result_row_id=result)
+                            raw = s4bytes(dict(f.command, operation_key='group-a-other-start'))
+                            capture = prepare_generic_start(f.org, start=raw, source=actor)
+                            with f.org.workflow_authority.admission_writer(capture.authority) as writer:
+                                admit_uncommitted(writer, f.db, org_slug='scratch', compiled=f.compiled,
+                                    settings_row=s4row(f, 'workflow_seq_settings', 's3-settings'), start=raw, source=actor,
+                                    carrier_task=TaskRecord(id='group-a-other-carrier', parent_task_id=other.id, assigned_agent=other.assigned_agent,
+                                        team='engineering', task_type='subtask', brief='Other carrier'),
+                                    visit_task=TaskRecord(id='group-a-other-visit', parent_task_id='group-a-other-carrier', assigned_agent='s3_author',
+                                        team='engineering', task_type='subtask', brief='Other visit'),
+                                    original_limits=f.compiled.definition.limits, authority=f.org.workflow_authority, capture=capture)
+                        if case == 'source_outer_receipt':
+                            s5hold(f)
+                            sid = 'group-a-original-receipt'
+                            s5newsession(f, sid)
+                            s5page(f, sid, write=True)
+                            s5consume(f, sid, dict(action='workflow_wait', consume_notifications=[]), lambda: dict(wait=True))
+                        # Admit a later genuine SID/batch before its original
+                        # outer settlement. Prior proofs/receipts stay original.
+                        sid = 'group-a-later-batch'
+                        f.source = s6sid(f, sid)
+                        commands = [dict(deepcopy(f.command), operation_key='group-a-later')]
+                        f.value = dict(action='workflow_start', workflows=commands)
+                        f.decision = s4bytes(f.value)
+                        result = f.conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,decision_json,created_at) VALUES (?,?,?,?,?,?)',
+                            (f.source.id, f.source.assigned_agent, sid, 'completed', f.decision.decode(), '2026-11-20T00:00:00+00:00')).lastrowid
+                        f.conn.commit()
+                        f.actor = RetryClaim.from_task(f.source, result_row_id=result)
+                        f.remaining = GenericLimits(max_visits=24, max_events=64, max_recoveries=0, node_revisions={})
+                        f.captures = prepare_generic_batch(f.org, decision=f.decision, source=f.actor)
+                        if case == 'source_outer_capacity':
+                            # Construct four unfinished runs in private storage;
+                            # restore reservation before the observed settlement.
+                            with patch.object(sequential_history, '_reserve_generic_cancellation'):
+                                later = f.batch()
+                        else:
+                            later = f.batch()
+                        f.batch_ids = (*f.batch_ids, *later)
+                        if case == 'source_outer_earlier':
+                            damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                                ('0'*64, f.batch_ids[0].run_id))
+                        elif case == 'source_outer_receipt':
+                            damage(f, 'workflow_seq_consumption_receipts',
+                                'UPDATE workflow_seq_consumption_receipts SET receipt_digest=?', ('0'*64,))
+                    elif case == 'source_outer_sibling':
+                        damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                            ('0'*64, f.batch_ids[1].run_id))
+                    elif case == 'source_outer_stale':
+                        f.source = s6sid(f, 'group-a-ordinary-no-batch')
+                        damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                            ('0'*64, f.batch_ids[0].run_id))
+                    elif case.startswith('source_outer_unrelated_'):
+                        old = s7legacy(f)
+                        damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
+                            ('0'*64, old.run_id))
+                        try:
+                            read_sequential_history(f.conn, expected_org_slug='scratch')
+                        except ValueError as exc:
+                            assert 'digest' in str(exc), (case, str(exc))
+                        else:
+                            raise AssertionError('Group A unrelated fixture did not damage complete history')
+                    before, queued = s5snap(f), f.queue._queue.qsize()
+                    expected = dict(source_outer_sibling='digest', source_outer_earlier='digest',
+                        source_outer_receipt='digest', source_outer_capacity='read_bytes_exhausted',
+                        source_outer_rollback='group-a-after-proof-fault')
+                    real_validate = sequential_initiator._validate_write
+                    def after_proof(*args, **kwargs):
+                        assert f.conn.execute("SELECT count(*) FROM workflow_seq_evidence WHERE visit_id IS NULL AND kind='outer'").fetchone()[0] == 2
+                        real_validate(*args, **kwargs)
+                        raise RuntimeError('group-a-after-proof-fault')
+                    try:
+                        with ExitStack() as stack:
+                            if case == 'source_outer_rollback':
+                                stack.enter_context(patch.object(sequential_initiator, '_validate_write', after_proof))
+                            s5release(f, failed=failed)
+                    except (ValueError, RuntimeError) as exc:
+                        assert case in expected and expected[case] in str(exc), ('Group A wrong refusal', case, str(exc))
+                        assert s5snap(f) == before and f.queue._queue.qsize() == queued, 'Group A refusal leaked proofs/native rows/publication'
+                    else:
+                        assert case not in expected, 'Group A accepted '+case
+                        if case == 'source_outer_stale':
+                            assert s5snap(f) == before and f.queue._queue.qsize() == queued, 'Group A no-member SID changed state'
+                        else:
+                            proofs = [_evidence(f.conn, ids.run_id, None, 'outer') for ids in f.batch_ids]
+                            assert all(body['positive'] is (not failed) for body in proofs), 'Group A changed original outer polarity'
+                            assert all(body['session_id'] == f.source.current_session_id and body['result_id'] == f.actor.result_row_id
+                                for body in proofs), 'Group A changed original outer identity'
+                            assert f.queue._queue.qsize() == (0 if failed else 2), 'Group A wrong first-visit publication'
+                            assert all(f.dispatcher.queue_admission_allowed(ids.visit_task_id) is (not failed) for ids in f.batch_ids)
+                            if case == 'source_outer_replay':
+                                saved, queued = s5snap(f), f.queue._queue.qsize()
+                                s5release(f)
+                                assert s5snap(f) == saved and f.queue._queue.qsize() == queued, 'Group A exact outer replay changed bytes/effects'
+                    with s5reopen(f) as reopened:
+                        assert tuple(reopened.execute('SELECT run_id,evidence_bytes,evidence_digest FROM workflow_seq_evidence WHERE visit_id IS NULL')) == tuple(
+                            f.conn.execute('SELECT run_id,evidence_bytes,evidence_digest FROM workflow_seq_evidence WHERE visit_id IS NULL'))
+                    print('PASS S7a', case, 'original source outer writer/proofs/publication/rollback', flush=True)
+                continue
 
             with s4fixture() as f:
                 task_path = '/tasks/' + f.source.id + '/sequential-workflows'

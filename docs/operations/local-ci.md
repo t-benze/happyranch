@@ -4841,6 +4841,23 @@ remain regression keepers. All suites/local_ci all run as persistent jobs on
 the clean committed head; attributable temporary RED variants restore exact
 production bytes before GREEN. No new required CI check or Product E2E.
 
+THR-404 Group A adds `--s7a=source_outer_positive`, `source_outer_negative`,
+`source_outer_stale`, `source_outer_sibling`, `source_outer_earlier`,
+`source_outer_receipt`, `source_outer_unrelated_positive`,
+`source_outer_unrelated_negative`, `source_outer_capacity`,
+`source_outer_replay` and `source_outer_rollback` (each name uses the
+`--s7a=` prefix), on Python3.12/3.14. They drive the original @2 source outer
+writer, persisted proof polarity/identity and first-visit queue eligibility;
+same-source earlier-SID/batch/receipt refusal, unrelated-run isolation,
+all-unfinished H exhaustion, byte-exact replay and post-proof rollback before
+publication. The capacity fixture suppresses reservation only while constructing
+four private unfinished runs, then restores it before the actual settlement.
+Native containment/close/release observations are simulated by the existing S5
+fixture; these are not live provider or contended-lock acceptance. S5
+`source_outer_all_runs` and `later_sid_no_batch_settle`, G1–G7b keepers, local CI
+and OpenAPI remain; no required check or E2E trigger is added. Long verification
+runs as a persistent job at the exact clean committed head.
+
 THR-404 group 4 adds `--s7a=control_scope`, `--s7a=cancel_fence_scope` and
 `--s7a=cancel_finish_scope`, plus `--draft-review=C35`, on Python3.12/3.14.
 They drive original control/cancel/finish and human-close writers: queued
