@@ -171,7 +171,7 @@ function DreamCard({
           SUMMARY_PREVIEW_PROSE,
           SUMMARY_CODE_TOKENS,
         )}>
-          <Markdown body={dream.summary} mermaidLoadingLabel={t('common.mermaidLoading')} />
+          <Markdown body={dream.summary} mermaidLoadingLabel={t('common.mermaidLoading')} remoteImageLabel={t('common.remoteImageBlocked')} />
         </div>
       )}
 

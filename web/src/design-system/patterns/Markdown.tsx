@@ -9,6 +9,7 @@ import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import rehypeHighlight from 'rehype-highlight';
 import { Suspense, lazy, createContext, useContext, type ComponentProps } from 'react';
+import { ImageOff } from 'lucide-react';
 
 const Mermaid = lazy(() => import('./Mermaid'));
 // Only this Markdown instance's optional chrome copy crosses the stable renderer.
@@ -30,6 +31,60 @@ function CodeOrMermaid(props: ComponentProps<'code'>): JSX.Element {
     <code className={className} {...rest}>
       {children}
     </code>
+  );
+}
+
+// Only this Markdown instance's optional placeholder copy crosses the stable renderer.
+const RemoteImageLabel = createContext('Remote image not loaded');
+// True while rendering inside an authored link, so a placeholder never nests an <a> in an <a>.
+const InsideLink = createContext(false);
+
+/**
+ * Privacy: an image loads only from this page's own origin (relative or
+ * same scheme+host). Anything else (another host, protocol-relative
+ * `//host/x`, unparsable) would make the visitor's browser contact a third
+ * party, so it is not rendered as <img>. react-markdown's default
+ * urlTransform already empties data:, blob: and other non-http(s) sources
+ * before this runs, so they arrive as src="" (an <img> that fetches nothing);
+ * the data:/blob: branch below is therefore not reached today.
+ */
+function isLoadableImageSrc(src: string, base: { href: string; protocol: string; host: string }): boolean {
+  let url: URL;
+  try {
+    url = new URL(src, base.href);
+  } catch {
+    return false;
+  }
+  if (url.protocol === 'data:' || url.protocol === 'blob:') return true;
+  return url.protocol === base.protocol && url.host === base.host;
+}
+
+function MarkdownLink(props: ComponentProps<'a'> & { node?: unknown }): JSX.Element {
+  const { node: _node, children, ...rest } = props;
+  return (
+    <InsideLink.Provider value>
+      <a {...rest}>{children}</a>
+    </InsideLink.Provider>
+  );
+}
+
+/** Phrasing content only: Markdown images render inside a <p> (and maybe an <a>). */
+function MarkdownImage(props: ComponentProps<'img'> & { node?: unknown }): JSX.Element {
+  const label = useContext(RemoteImageLabel);
+  const insideLink = useContext(InsideLink);
+  const { node: _node, ...rest } = props;
+  const src = typeof rest.src === 'string' ? rest.src : '';
+  if (!src || isLoadableImageSrc(src, window.location)) return <img {...rest} />;
+  const alt = typeof rest.alt === 'string' ? rest.alt.trim() : '';
+  return (
+    <span className="gl-prose-remote-image" data-remote-image="blocked" title={rest.title}>
+      <ImageOff aria-hidden="true" className="gl-prose-remote-image-icon" />
+      <span className="gl-prose-remote-image-label">{label}</span>
+      {alt && <span className="gl-prose-remote-image-alt">{alt}</span>}
+      {insideLink
+        ? <span className="gl-prose-remote-image-url">{src}</span>
+        : <a className="gl-prose-remote-image-url" href={src} rel="noopener noreferrer">{src}</a>}
+    </span>
   );
 }
 
@@ -97,22 +152,26 @@ function sourceMentions(body: string) {
   };
 }
 
-export function Markdown({ body, threadMentions = false, mermaidLoadingLabel = 'Rendering diagram…' }: {
+export function Markdown({ body, threadMentions = false, mermaidLoadingLabel = 'Rendering diagram…', remoteImageLabel = 'Remote image not loaded' }: {
   body: string;
   threadMentions?: boolean;
   /** App-owned loading chrome only; authored Markdown stays verbatim. */
   mermaidLoadingLabel?: string;
+  /** App-owned placeholder label for a blocked third-party image. */
+  remoteImageLabel?: string;
 }): JSX.Element {
   return (
     <div className="gl-prose">
       <MermaidLoadingLabel.Provider value={mermaidLoadingLabel}>
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkBreaks, remarkOpeningLineMarkup]}
-          rehypePlugins={[...(threadMentions ? [sourceMentions(body)] : []), [rehypeHighlight, { ignoreMissing: true, detect: true }]]}
-          components={{ code: CodeOrMermaid }}
-        >
-          {body}
-        </ReactMarkdown>
+        <RemoteImageLabel.Provider value={remoteImageLabel}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkBreaks, remarkOpeningLineMarkup]}
+            rehypePlugins={[...(threadMentions ? [sourceMentions(body)] : []), [rehypeHighlight, { ignoreMissing: true, detect: true }]]}
+            components={{ code: CodeOrMermaid, a: MarkdownLink, img: MarkdownImage }}
+          >
+            {body}
+          </ReactMarkdown>
+        </RemoteImageLabel.Provider>
       </MermaidLoadingLabel.Provider>
     </div>
   );
