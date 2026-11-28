@@ -153,13 +153,13 @@ def install_task_ownership(db: Any, *, org_slug: str) -> None:
 def initialize_fresh_sequential_ownership(conn: sqlite3.Connection) -> None:
     """Empty fresh-owner transaction only; never adopt or rebuild old marks."""
     from runtime.infrastructure.workflow_sequential_ownership import (
-        SEQUENTIAL_OWNERSHIP_DDL, sequential_binding_view_ddl,
+        sequential_ownership_ddl, sequential_binding_view_ddl,
     )
     if (not conn.in_transaction or ownership_storage_present(conn)
             or conn.execute('SELECT 1 FROM tasks LIMIT 1').fetchone() is not None):
         raise ValueError('workflow_fresh_ownership_requires_empty_creation')
-    conn.execute(SEQUENTIAL_OWNERSHIP_DDL)
-    conn.execute(sequential_binding_view_ddl('J', coding_extension=True))
+    conn.execute(sequential_ownership_ddl(2))
+    conn.execute(sequential_binding_view_ddl('J', coding_extension=True, schema_version=2))
 
 
 def insert_owner_uncommitted(db: Any, task_id: str, *, ownership: tuple[str, str] | None = None) -> None:

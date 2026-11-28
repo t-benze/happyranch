@@ -228,6 +228,8 @@ _sql_budgets: ContextVar[tuple[tuple[sqlite3.Connection, _ReadBudget], ...]] = C
 def _sql_budget(conn: sqlite3.Connection, budget: _ReadBudget) -> Iterator[None]:
     budget.check()
     enclosing = next((owner for connection, owner in reversed(_sql_budgets.get()) if connection is conn), None)
+    if enclosing is not None:
+        budget.deadline = min(budget.deadline, enclosing.deadline)
     conn.set_progress_handler(budget.progress, 1000)
     token = _sql_budgets.set((*_sql_budgets.get(), (conn, budget)))
     try:
@@ -360,9 +362,14 @@ def _parse(raw: bytes, parser: Callable[..., _Parsed], budget: _ReadBudget,
     return value
 
 
-def read_sequential_layout(conn: sqlite3.Connection) -> SequentialLayout:
+def read_sequential_layout(conn: sqlite3.Connection, *, deadline: float | None = None) -> SequentialLayout:
     """Read complete dimensions with separate finite allowances in one snapshot."""
     observed = _ReadBudget()
+    if deadline is not None:
+        observed.deadline = min(observed.deadline, deadline)
+    enclosing = next((owner for connection, owner in reversed(_sql_budgets.get()) if connection is conn), None)
+    if enclosing is not None:
+        observed.deadline = min(observed.deadline, enclosing.deadline)
     reference = _ReadBudget(deadline=observed.deadline)
     data = _ReadBudget(deadline=observed.deadline)
     with _schema_snapshot(conn):

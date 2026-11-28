@@ -1063,8 +1063,9 @@ installation, Allow/role change or genuine Coding pilot follows from delivery.
 
 A2 (2026-11-17) adds positively fresh POST `/orgs` storage creation and qualified,
 definition-only registration of the literal reviewed Coding v2 catalog. The
-fresh owner exclusively creates the DB file, initializes J + Coding + sequential
-and ownership-2, and validates the independent combined reference. The current
+fresh owner exclusively creates the DB file, initializes J + Coding + schema2
+and ownership-2 with its schema2 binding view, and validates the independent
+combined reference. The current
 Default team remains human-managed with zero agents and reviewer configuration
 `none`. Historical initializer defaults and the constructor seed stay unchanged.
 Fresh-J's emptiness guard now additionally recognizes the constructor-created
@@ -1087,6 +1088,16 @@ requires the original O_EXCL/inode proof; existing DBs never use it. Global
 load/install/bootstrap and Founder cutover retain COMPLETE certification (STOP-1).
 See the [A2 contract](../../specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
 Existing-org storage bootstrap remains A4; source delivery grants no live setup.
+
+P01 advisory `workflow-setup-status@1` observes complete current final layout,
+marker 2 and the exact Coding@2/@3 plus Draft→Review@1 catalog pins in one
+read-only snapshot under the org fence and identity/close bookends. Settings
+need not exist. Historical upgrade evidence is untouched and does not determine
+readiness; `attempt_time`/`backup_path` remain null without projected proof.
+The route's original one-second deadline reaches reference/preset/identity work;
+ordinary layout callers keep five seconds and the original 32768/65536 caps.
+Nested SQL hooks restore their enclosing scope. Status scans no run history,
+registers nothing and grants no admission; I1b remains separately advisory.
 
 Database-owned native trace registrations compose only through
 `Database.observe_trace`; the load observer and outer instrumentation never
@@ -1470,8 +1481,9 @@ full review and scoped QA precede manager guarded merge.
 
 THR-336 / TASK-17139 adds a separately selected schema2 reference. The existing
 installer accepts `--schema-version 2`; omission still selects schema1 for
-compatibility. A2 fresh-org and A4 automatic setup retain their original schema1
-behavior until S2b. This source change grants no live installation, migration,
+compatibility. P01 fresh-org creation directly selects schema2/ownership2;
+A4/S2b startup paths remain mounted until later cleanup units. This source
+change grants no live installation, migration,
 restart, @2 admission, controls or inbox processing.
 
 Schema2 removes singleton source-task/result uniqueness for engine version2 and

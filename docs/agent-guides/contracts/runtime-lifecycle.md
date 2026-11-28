@@ -5,6 +5,23 @@ settlement, initiator-owned hold recovery and source-never-auto-completes semant
 [the current contract](reusable-workflows.md#r2-unit-b-start2-admission-and-continuation) owns details.
 Discovery/composition remain read-only; no UI or thread/wake/dream authority is added.
 
+### P01 current readiness and fresh storage
+
+Positively fresh org creation retains O_EXCL/no-follow file ownership, pristine
+native-state proof (including the exact shared-artifact singleton), transaction
+rollback/original close and full target integrity. It now selects schema2 and
+its ownership2 binding view directly. Registration remains definition-only for
+Coding@2/@3 and Draft→Review@1; it creates no settings, Allow or runs.
+
+Advisory setup status observes current complete final layout, marker and exact
+reviewed preset pins under an org fence and one read-only snapshot. Settings
+are optional. The original one-second route deadline covers reference/preset
+and identity/close work; normal readers keep five seconds and all existing
+caps. Nested SQL hooks restore their enclosing scope. No history, backup or
+upgrade evidence scan determines readiness; attempt/backup fields are null.
+Unavailable/busy/drifting storage fails closed. Daily integrity remains separate.
+This unit leaves the A4/S2b startup paths below intact until later cleanup units.
+
 ### A4 startup attachment custody
 
 `__main__._build_state` mounts `BootstrapStartup` before writable ordinary org
@@ -34,7 +51,9 @@ or `installed_unverified` for schema1: discovery is absent/held and the worker i
 absent or positively closed without a COMMIT permit.
 Positive original discovery/descriptor closure permits ordinary current-layout
 loading under a fresh SH fence, without entering `broken_orgs`. The existing
-workflow-setup status and daemon log report the refusal reason. A validated prior
+startup evidence and daemon log report the refusal reason. P01 advisory
+workflow-setup status instead observes current final layout and reviewed presets.
+A validated prior
 no-effect hold or `not_upgraded` refusal selects held and falls back without
 retrying or rewriting the latch. Unknown effects/close, in-flight workers, permit
 sent and registration mismatch remain broken. Pre-intent holds may publish private
@@ -102,7 +121,8 @@ custody. Each newly opened child is retained before the fallible parent close. A
 FIRST error and original EX, visibly holds the org and refuses repeated shutdown
 without retrying the failed close. A committed installation and its registration
 remain intact; this fault grants no restore, undo or new attempt. The advisory
-status route keeps its independent traversal.
+status route now uses an independent current-layout/preset observation; the
+startup parser and its custody remain in place for later cleanup units.
 
 The one-time pre-serving upgrade window remains 120s/org, 180s total, 20s reserve,
 >=60s before another attempt, 0.5s cumulative admission and 100s pre-COMMIT.

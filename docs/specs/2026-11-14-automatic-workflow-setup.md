@@ -56,18 +56,20 @@ operations/evidence retain their exact SQL, typed cells and rowids. Any @1 run,
 including finished history, refuses upgrade visibly and stays on its original
 reader; no historical run is adopted, repaired or completed. Already-schema2
 selection performs no installation, backup, setup audit or registration DML.
-The separate positively fresh POST `/orgs` A2 schema1 initializer and historical
-offline default are unchanged by S2b.
+P01 now makes positively fresh POST `/orgs` create schema2 directly; the
+historical offline default and existing A4/S2b paths remain until later cleanup units.
 
 New `workflow-setup-event@2` records target version 2. When a registered schema1
 attempt exists, every new phase pins that attempt ID and final-record SHA-256
 in `predecessor`; both backup/phase chains remain intact. Only that one linked
 1→2 transition is selectable, never a timestamp-selected retry. Schema1-only
-registered evidence projects `installed_unverified` for the current target.
+registered evidence remains startup provenance. Advisory status
+now observes the current layout as described below.
 A pre-intent schema1 refusal uses `workflow-setup-hold@2`, linked to the original
 registered attempt when present. Only positively proven no-effect holds report
 `installed_unverified`; uncertain original closure persists and serves `unknown`,
-with or without that predecessor, and later selection refuses fallback.
+with or without that predecessor, and later startup selection refuses fallback.
+These are startup/evidence outcomes; advisory status independently observes storage.
 A positively proven unchanged writer refusal uses terminal `not_upgraded`,
 also `installed_unverified`. Unknown/unfinished attempts stay unknown and are
 never replayed. Legacy absent-storage holds keep
@@ -405,21 +407,35 @@ runtime switch cannot consume another runtime's same-day attempt.
 
 ## Independent workflow setup status (A3)
 
-Founder-bearer GET `/api/v1/runtime/workflow-setup/orgs/{slug}` reads private
-setup evidence and the bounded I1b latest report independently of OrgDep,
-OrgState attachment and org database availability. Unknown slugs return a
-closed 404 without an org inventory. Unexpected query/body is 422; idle is 409;
-success uses no-store. Missing, malformed, unsafe or ambiguous attempt evidence
-is `unknown/evidence_unavailable`, never inferred installation success.
-The read-only setup event namespace is bounded to 64 attempts, 16 records each,
-64 KiB per record, 4 MiB and one second per acquisition. A4 owns publication
-and automatic setup; this slice performs neither.
+Founder-bearer GET `/api/v1/runtime/workflow-setup/orgs/{slug}` independently
+observes current storage and reads the bounded I1b latest report. P01 preserves
+`workflow-setup-status@1`, its states and nullable fields. `installed_verified`
+means the complete final schema2/ownership2 layout, marker 2 and exact reviewed
+Coding@2, Coding@3 and Draft→Review@1 catalog rows were observed in one read-only
+snapshot. Both F+coding live storage and fresh J+coding are accepted. Settings
+are optional: empty/Disabled defaults do not prevent readiness. Missing catalog
+rows or supported schema1 storage remain unverified; bad current markers/pins,
+unsafe paths, unavailable fences, busy storage, identity drift and exhausted
+budgets fail closed. No history scan or status-driven install/registration runs.
+
+The route passes its original one-second absolute monotonic deadline through
+reference construction, preset selection, SQL acquisition and identity/close
+bookends. `read_sequential_layout` intersects a supplied deadline with its normal
+five-second default. Nested SQL scopes restore their enclosing hooks/deadlines;
+existing 32768/65536 traversal and SQL/byte limits stay unchanged. The original
+org fence, no-follow file identity and one `mode=ro`, `query_only` snapshot remain
+held through close. Historical attempt directories are untouched and do not
+determine current readiness. No upgrade proof is projected: `attempt_time` and
+`backup_path` are null. The A4 parser and startup evidence remain for later units.
+Daily integrity reporting remains independent and grants no admission authority.
+Unknown slugs return a closed 404, unexpected query/body is 422, idle is 409,
+and success uses no-store. Existing authentication and DTO fields are unchanged.
 
 The existing Workflows surface shows status independently of failed
 definition/settings reads. The task banner returns empty only after a real
 task, current authority and complete history prove sequential absence.
 Corrupt, partial, denied or exhausted reads retain their original errors,
-including when installation evidence reports success. A3 changes no integrity
+including when current structural readiness reports success. A3 changes no integrity
 reader, FK check, logical/SQL cap or five-second policy; I2 separately removes
 load-time physical checks.
 
@@ -430,7 +446,8 @@ success. No raw integrity diagnostics cross the route. Setup/report evidence
 grants no workflow permission. English and Simplified Chinese share this
 behavior. No page, Audit UI, notification or required check is added.
 
-The reader recognizes `workflow-setup-event@1` records named `00.json` onward
+The retained A4 startup evidence reader recognizes `workflow-setup-event@1`
+records named `00.json` onward
 under the private runtime-key/org/attempt backup namespace. The closed record
 contains runtime_key, org_slug, attempt_id, sequence, previous_digest (SHA-256
 of the previous exact record bytes, null initially), phase, state, reason,
@@ -442,7 +459,9 @@ before any COMMIT attempt; a last pre_commit alone remains unknown. A4 must publ
 corresponding original-owned evidence; A3 never manufactures it. Multiple
 attempts or unrecognized phase/reason evidence remain unknown pending explicit
 owner reconciliation, and safe path metadata is not independent backup-content
-verification. The status reader opens neither the backup nor the org database.
+verification. The retained parser opens neither the backup nor the org database.
+The advisory
+status reader instead opens the current database read-only as described above.
 
 ## I2 load and revalidation policy
 
@@ -510,8 +529,9 @@ The existing schema shell adds focused `--org-access-fence`, `--org-access-opene
 checkpoint. POST `/orgs` retains A1's pre-open fence and exclusively creates its
 skeleton. The distinct `initialize_fresh_org_database` uses native O_EXCL file
 creation, the historical J initializer with the constructor metadata exception
-below, sequential literals and an empty-only ownership-2 owner. Exact structure
-validation recognizes the independent J + Coding + sequential/ownership-2 reference.
+below, direct schema2 literals/marker and an empty-only ownership-2 owner
+with the schema2 binding view (including source wait sets). Exact structure
+validation recognizes the independent J + Coding + sequential schema2/ownership-2 reference.
 Bounded positive emptiness of each owned data table, exact version/cutover seeds
 and their original validator, native identity and full FK checks precede the
 unchanged target full physical integrity check before publication. The route
