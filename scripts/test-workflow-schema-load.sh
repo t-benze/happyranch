@@ -4273,22 +4273,19 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         elif case == 'read_budget_rollback':
             with s4fixture() as f:
                 s4closed(f, f.ids.visit_id, summary=s4bsummary(), terminal='success')
-                original_read = seq_history.read_sequential_history
+                from runtime.workflows import sequential_task_history
+                original_read = sequential_task_history.read_write_history
                 def limited_read(conn, **kwargs):
-                    # The existing reader's real byte ledger must refuse the
-                    # resulting complete history, rolling back tentative rows.
+                    # The resulting scoped history's actual data ledger must
+                    # refuse, rolling back the tentative rows.
                     assert conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 1
-                    original_budget = seq_history._ReadBudget
-                    ledgers = []
-                    def nearly_spent(**values):
-                        ledger = original_budget(**values)
-                        ledgers.append(ledger)
-                        if len(ledgers) == 3:  # Real complete reader's data ledger C.
-                            ledger.consumed = 64 * 1048576 - 1
-                        return ledger
-                    with patch.object(seq_history, '_ReadBudget', side_effect=nearly_spent):
+                    original_layout = sequential_task_history._read_layout
+                    def nearly_spent(conn, observed, reference, data):
+                        data.consumed = 64 * 1048576 - 1
+                        return original_layout(conn, observed, reference, data)
+                    with patch.object(sequential_task_history, '_read_layout', side_effect=nearly_spent):
                         return original_read(conn, **kwargs)
-                with patch.object(seq_history, 'read_sequential_history', side_effect=limited_read):
+                with patch.object(sequential_task_history, 'read_write_history', side_effect=limited_read):
                     s4refuses(f, lambda: s4baccept(f), 'workflow_seq_read_bytes_exhausted')
                 assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0
                 assert s4baccept(f)
