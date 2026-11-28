@@ -30,13 +30,15 @@ def _in(column: str, values: set[str] | set[int]) -> tuple[str, tuple[str | int,
     return column + ' IN (' + ','.join('?' for _ in values) + ')', tuple(sorted(values))
 
 
-def _foreign_keys(conn: sqlite3.Connection, table: str, rows: list[dict], budget: _ReadBudget) -> None:
+def _foreign_keys(conn: sqlite3.Connection, table: str, rows: list[dict], budget: _ReadBudget, *,
+                  schema_budget: _ReadBudget) -> None:
     """Apply the declared FK predicates to selected rows (SQLite MATCH SIMPLE)."""
     keys: dict[int, list[tuple]] = {}
-    for key in _structure_cells(conn, 'SELECT * FROM pragma_foreign_key_list(?)',
-            ('id', 'seq', 'table', 'from', 'to', 'on_update', 'on_delete', 'match'),
-            ('id', 'seq'), budget, (table,)):
-        keys.setdefault(key[0], []).append(key)
+    with _sql_budget(conn, schema_budget):
+        for key in _structure_cells(conn, 'SELECT * FROM pragma_foreign_key_list(?)',
+                ('id', 'seq', 'table', 'from', 'to', 'on_update', 'on_delete', 'match'),
+                ('id', 'seq'), schema_budget, (table,)):
+            keys.setdefault(key[0], []).append(key)
     for row in rows:
         for parts in keys.values():
             budget.step()
@@ -151,6 +153,7 @@ def _graph(conn: sqlite3.Connection, metadata: dict, task_id: str | None, budget
 
 
 def _native_metadata(conn: sqlite3.Connection, data: dict[str, list[dict]], budget: _ReadBudget, *,
+                     schema_budget: _ReadBudget,
                      retained_budget: _Budget | None = None) -> None:
     """Retain old Coding discrimination on the native rows in this graph.
 
@@ -186,8 +189,9 @@ def _native_metadata(conn: sqlite3.Connection, data: dict[str, list[dict]], budg
                 results.add(reference['result_id'])
     try:
         for table, identities in (('tasks', tasks), ('task_results', results)):
-            columns = [row[1] for row in _structure_cells(conn, 'SELECT * FROM pragma_table_xinfo(?)',
-                ('cid', 'name', 'type', 'notnull', 'dflt_value', 'pk', 'hidden'), ('cid',), budget, (table,))]
+            with _sql_budget(conn, schema_budget):
+                columns = [row[1] for row in _structure_cells(conn, 'SELECT * FROM pragma_table_xinfo(?)',
+                    ('cid', 'name', 'type', 'notnull', 'dflt_value', 'pk', 'hidden'), ('cid',), schema_budget, (table,))]
             scalar = [column for column in columns if column in CODING_PREFIXES
                       or column in CODING_VALUES or column in CODING_NAMESPACE_COLUMNS]
             structured = [column for column in columns
@@ -219,12 +223,13 @@ def _native_metadata(conn: sqlite3.Connection, data: dict[str, list[dict]], budg
 
 
 def _replay(conn: sqlite3.Connection, metadata: dict, data: dict[str, list[dict]], *,
-            expected_org_slug: str, budget: _ReadBudget, full_settings: bool = False,
+            expected_org_slug: str, budget: _ReadBudget, schema_budget: _ReadBudget,
+            full_settings: bool = False,
             retained_budget: _Budget | None = None) -> dict:
     """Full selected replay shared with the original task projection."""
     _data_types(data, budget)
     for table, rows in data.items():
-        _foreign_keys(conn, table, rows, budget)
+        _foreign_keys(conn, table, rows, budget, schema_budget=schema_budget)
     definitions = _definitions(data, budget)
     settings, snapshots = (_settings if full_settings else _selected_settings)(
         data, definitions, expected_org_slug, budget)
@@ -270,7 +275,7 @@ def _replay(conn: sqlite3.Connection, metadata: dict, data: dict[str, list[dict]
     validate_sequential_ownership(conn, org_slug=expected_org_slug, budget=budget,
         runs={key: row for key, row in runs.items() if row.get('engine_version', 1) == 1},
         visits={key: row for key, row in visits.items() if row.get('engine_version', 1) == 1})
-    _native_metadata(conn, data, budget, retained_budget=retained_budget)
+    _native_metadata(conn, data, budget, schema_budget=schema_budget, retained_budget=retained_budget)
     return definitions
 
 
@@ -290,8 +295,9 @@ def read_task_history(conn: sqlite3.Connection, *, expected_org_slug: str,
     layout, metadata = _read_layout(conn, observed, reference, budget)
     if not layout.sequential:
         return SequentialHistory(layout, 'new-engine unavailable', (), ())
+    with _sql_budget(conn, observed):
+        _native_contract(conn, observed)
     with _sql_budget(conn, budget):
-        _native_contract(conn, budget)
         _require(layout.ownership == 2, 'companion_ownership_required')
         # Even an orphan selected mark must refuse rather than become empty.
         read_sequential_owner(conn, task_id=task_id, org_slug=expected_org_slug)
@@ -302,7 +308,8 @@ def read_task_history(conn: sqlite3.Connection, *, expected_org_slug: str,
             _require(not data.get('workflow_seq_source_wait_sets'), 'initiator_membership_missing')
             budget.check()
             return SequentialHistory(layout, 'storage readable', (), ())
-        definitions = _replay(conn, metadata, data, expected_org_slug=expected_org_slug, budget=budget)
+        definitions = _replay(conn, metadata, data, expected_org_slug=expected_org_slug,
+                              budget=budget, schema_budget=observed)
         runs = {row['id']: row for row in data['workflow_seq_runs']}
         budget.check()
         return SequentialHistory(layout, 'storage readable', tuple(sorted(definitions)), tuple(sorted(runs)))
@@ -374,8 +381,11 @@ def read_write_history(conn: sqlite3.Connection, *, expected_org_slug: str, dead
     observed, reference = _ReadBudget(deadline=deadline), _ReadBudget(deadline=deadline)
     layout, metadata = _read_layout(conn, observed, reference, budget)
     _require(layout.sequential and layout.ownership == 2, 'companion_ownership_required')
+    # As in the complete reader, native ABI/FK metadata consumes the existing
+    # observed-schema ledger A, leaving native data/replay and H on C.
+    with _sql_budget(conn, observed):
+        _native_contract(conn, observed)
     with _sql_budget(conn, budget):
-        _native_contract(conn, budget)
         for source in source_ids:
             read_sequential_owner(conn, task_id=source, org_slug=expected_org_slug)
         data = _graph(conn, metadata, None, budget, run_roots=run_ids, source_roots=source_ids)
@@ -386,7 +396,8 @@ def read_write_history(conn: sqlite3.Connection, *, expected_org_slug: str, dead
         _settings_chain(conn, metadata, data, org_slug=expected_org_slug,
                         definition_ids=definition_ids, settings_ids=settings_ids, budget=budget)
         definitions = _replay(conn, metadata, data, expected_org_slug=expected_org_slug,
-                             budget=budget, full_settings=True, retained_budget=retained_budget)
+                             budget=budget, schema_budget=observed,
+                             full_settings=True, retained_budget=retained_budget)
     budget.check()
     history = SequentialHistory(layout, 'storage readable', tuple(sorted(definitions)),
                                 tuple(sorted(row['id'] for row in data['workflow_seq_runs'])))

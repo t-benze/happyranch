@@ -87,6 +87,13 @@ selected sequential certificate supplies no retained-family inventory or current
 authority; mixed-family consumers still need their original family validators.
 No snapshot, transaction, lock or cross-mutation cache is added.
 
+Scoped task, write and mixed replay charge native ABI inspection and acquired
+FK/native-column schema metadata to their existing observed ledger A, just as
+the complete reader does. Nested metadata reads restore C's progress handler;
+selected FK target probes, native payload discrimination, replay and H still
+consume the original C ledger. Both ledgers retain their original limits and
+absolute deadline; schema work cannot consume the data cancellation reservation.
+
 For S4a H, `read_cancellation_headroom` selects only scalar identities of **all**
 unfinished @2 runs (`running` or `held`), including `progress=cancelling`, and
 validates their selected active-visit relation. It does not replay unrelated
