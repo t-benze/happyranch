@@ -58,6 +58,7 @@ import {
   type DesktopSettingsSection,
 } from './dialogModel';
 import { isDesktopShell } from './desktopShell';
+import { OpenConnectionProvider, type OpenConnection } from '@/shared/connection/openConnection';
 import { features } from '@/config/features';
 import { orgOfPath, useOwnerGate, type OwnerGateEffect } from '@/shared/owners';
 import type { OwnerRecord } from '@/lib/owners/ownerRegistry';
@@ -291,9 +292,16 @@ export function DesktopDialogsProvider({
     [openDesktopDialog, requestDesktopDialogClose, takeLinkInvoker],
   );
 
+  // THR-402 v1.1: Create agent's drawer-owned Connection menu hands off to
+  // this same open request (desktop only; null in browser mode).
+  const openConnection = useMemo<OpenConnection | null>(
+    () => (isDesktopShell() ? (invoker) => openDesktopDialog({ dialog: 'connection' }, invoker) : null),
+    [openDesktopDialog],
+  );
+
   return (
     <DesktopDialogsContext.Provider value={value}>
-      {children}
+      <OpenConnectionProvider value={openConnection}>{children}</OpenConnectionProvider>
       <DesktopDialogHost
         state={state}
         returnTarget={returnTarget}

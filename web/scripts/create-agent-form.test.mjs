@@ -312,3 +312,47 @@ test('F2 success readback: in-flight first loads are retired and re-read after t
   assert.deepEqual(qc.getQueryData(['teams', 'acme']), { teams: ['POST'] });
   teams.unsubscribe();
 });
+
+// ---- THR-402 v1.1 rework (Founder THR-402 seq33): N1, R1, N3, S5d ----
+
+test('N1/R1 field refusal: value change drops it, hidden branch parks it, return re-shows it', () => {
+  const values = { name: 'Insights-Lead', team: '', newTeam: 'research', executor: 'codex', description: 'd', systemPrompt: 'p' };
+  const refused = { field: 'newTeam', value: 'research' };
+  assert.equal(form.refusalStatus(refused, 'manager', values), 'active', 'shown next to the refused key');
+  // N1: Use suggestion (or a name-driven suggestion update) changes the value.
+  assert.equal(form.refusalStatus(refused, 'manager', { ...values, newTeam: 'insights' }), 'stale');
+  // R1: on Worker the manager-only refusal is parked, never blocking.
+  assert.equal(form.refusalStatus(refused, 'worker', { ...values, team: 'research' }), 'parked');
+  // A refusal of the shared name field stays active on both branches.
+  const name = { field: 'name', value: 'Insights-Lead' };
+  assert.equal(form.refusalStatus(name, 'worker', values), 'active');
+  assert.equal(form.refusalStatus(name, 'manager', values), 'active');
+  assert.equal(form.refusalStatus(name, 'manager', { ...values, name: 'Insights-Lead2' }), 'stale');
+  // Each branch submits only its own team field.
+  assert.deepEqual(form.BRANCH_FIELDS.worker.filter((f) => f === 'team' || f === 'newTeam'), ['team']);
+  assert.deepEqual(form.BRANCH_FIELDS.manager.filter((f) => f === 'team' || f === 'newTeam'), ['newTeam']);
+});
+
+test('N3 executor blocker: loading, read failure and confirmed none block Create; ready never does', () => {
+  assert.equal(form.executorBlocker('loading'), 'executorsLoading');
+  assert.equal(form.executorBlocker('error'), 'executorsError');
+  assert.equal(form.executorBlocker('empty'), 'executorsNone');
+  assert.equal(form.executorBlocker('ready'), null);
+});
+
+test('S5d not sent: every existing typed pre-forward reason has a named cause and next step (no invented cause)', async () => {
+  const { en } = await import('../src/lib/i18n/locales/en.ts');
+  const { zhCN } = await import('../src/lib/i18n/locales/zh-CN.ts');
+  const reasons = ['target_changed', 'too_many_requests', 'busy', 'no_target', 'target_starting', 'target_unreachable', 'incompatible'];
+  for (const reason of reasons) {
+    const copy = form.notSentCopy(reason);
+    for (const key of [`agents.create.notSent.${copy.cause}`, `agents.create.notSent.${copy.next}`]) {
+      assert.equal(typeof en[key], 'string', `${reason}: en ${key}`);
+      assert.equal(typeof zhCN[key], 'string', `${reason}: zh-CN ${key}`);
+    }
+  }
+  // The typed classifier yields exactly these reasons for the transport's pre-forward errors.
+  const recovery = new client.NativeRecoveryError({ code: 'target_unreachable' }, { detail: { code: 'target_unreachable' } });
+  assert.deepEqual(form.classifyCreateError(recovery), { kind: 'notSent', reason: 'target_unreachable' });
+  assert.ok(!Object.keys(en).some((k) => k.startsWith('agents.create.notSent.') && /stopping/i.test(en[k])), 'no "runtime stopping" cause');
+});

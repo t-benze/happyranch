@@ -35,7 +35,7 @@
  * THR-390 PR8 list attribute filters + export (local dist, task_attributes_ui=true):
  *   node scripts/w4a-browser-evidence.mjs --slice task-attr-list --dist <tmp>/dist-local --out <dir> --head <sha> [--tal-case F05,EXP,...]
  * THR-402 Create team / Create agent vs. first-roster auto-selection (ordinary dist):
- *   node scripts/w4a-browser-evidence.mjs --slice agents-create --dist <dist> --out <dir> --head <sha> [--ac-case AC-W,AC-T,AC-AUTO,AC-CLOSE]
+ *   node scripts/w4a-browser-evidence.mjs --slice agents-create --dist <dist> --out <dir> --head <sha> [--ac-case AC-W,AC-T,AC-AUTO,AC-CLOSE,AC-MGR,AC-TEAMS,AC-LOC]
  * Coding setup cases reuse this runner with --slice workflow-setup
  * --workflow-fixture <schema-load first_save export> [--workflow-case W01,...].
  */
@@ -1541,7 +1541,7 @@ async function main() {
     } else if (selectedSlice === 'task-attr-definitions') {
       await runTaskAttributeDefinitionCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, fixture: tadFixture }, { org: ORG, only: arg('tad-case', ''), context: arg('tad-context', ''), outcome: arg('tad-outcome', '') });
     } else if (selectedSlice === 'agents-create') {
-      await runAgentsCreateCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, seedLocale, fixture: acFixture }, { org: ORG, only: arg('ac-case', '') });
+      await runAgentsCreateCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, fixture: acFixture }, { org: ORG, only: arg('ac-case', '') });
     } else if (selectedSlice === 'feature-flags') {
       await runFeatureFlagsCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, fixture: ffFixture, currentCase: () => current }, { org: ORG, expectProfile, buildLog, distIndexSha256: fingerprint.indexHtmlSha256 });
     } else if (selectedSlice === 'work-hours-reachability') {

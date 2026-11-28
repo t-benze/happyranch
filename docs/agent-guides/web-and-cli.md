@@ -1963,11 +1963,25 @@ See the [current naming contract](../specs/2026-10-09-identity-names-core.md).
 ## Founder Create team / Create agent dialog
 
 Agents (header and empty roster) offers **Create team** and **Create agent**,
-which open ONE shared form (`features/agents/AddAgentDialog.tsx`; rules in
-`createAgentForm.ts`, checked by `web/scripts/create-agent-form.test.mjs`).
-Create team fixes Role to Manager and sends `new_team`; Create agent defaults to
-Worker with an explicit existing-team chooser (no implicit selection) and sends
-`team`; choosing Manager there switches to `new_team`. Exactly one is sent.
+which open ONE shared surface (`features/agents/AddAgentDialog.tsx`, presentation
+in `createParts.tsx`; rules in `createAgentForm.ts`, checked by
+`web/scripts/create-agent-form.test.mjs`). Layout follows Claude Design v1.1
+(Founder THR-402 seq33): a right-anchored drawer (desktop) / full-height sheet
+(phone) with Computer and Organization chips, groups Team and role → Agent
+responsibilities → Runtime, a live review rail whose rows each have Edit (focus
+only; a closed disclosure is opened first), and a footer status line + Cancel +
+the outcome-named action. Create team shows the fixed relationship and sends
+`new_team`; Create agent asks "What will this agent do?" (Worker default) with
+team cards naming each team's manager (no implicit selection, except the
+team-success follow-on, which preselects its confirmed team) and sends `team`;
+choosing Manager there switches to `new_team`. Exactly one is sent.
+Disclosure state (executor list, example, review instructions, submitted details,
+Finish setup) is React state, so a locale change keeps it, focus and caret.
+Format/required errors show after input or a Create attempt; an attempt focuses
+the first problem and the footer counts them. Create is `aria-disabled` with a
+footer reason while executors are loading, failed to read or are confirmed none,
+on a remote Host, or while the desktop target is `no_target`,
+`target_starting`, `unreachable` or `incompatible`; Retry/Recheck are reads.
 The form asks for a readable Name (1–64 ASCII letters, digits, underscores or
 hyphens, starting with a letter) and sends only `display_name`. A new team name
 must match `^[a-z][a-z0-9_]{0,63}$`, and `default` (any case) is reserved;
@@ -1976,25 +1990,45 @@ suggested from the manager name until edited; role changes never overwrite an
 edited team name, and a user-picked executor is never silently replaced.
 Server codes map to their field (`invalid_team_name`, `team_reserved`,
 `team_exists`, `unknown_team`, naming codes, `invalid_executor`) with other
-input kept. The create is a config owner (`agents.create`): single-flight, the
-request never re-sent on a 401 (`replayOnUnauthorized: false`), close/navigation/
-org switches held while pending or unknown. `agent_setup_incomplete` (500) shows
-"Agent created; setup incomplete" with `happyranch init-agent`; other lost or
-unrecognised answers (network loss, forwarded 499 cancellations, other 5xx, a
-raw 409 `target_changed`) show "Result unknown" and Check result. A change the
+input kept. A field refusal is remembered with the refused value: any change of
+that value (typing, Use suggestion, a name-driven suggestion update) drops it and
+its banner; a refusal for the branch that is not shown is parked (info note, not
+blocking) and returns with that branch. The create is a config owner (`agents.create`): single-flight, the
+request never re-sent on a 401 (`replayOnUnauthorized: false`), navigation/org
+switches held while pending or unknown. Closing then only hides the surface; the
+Agents top bar shows a held-action chip (a presentation of that org's existing
+`agents.create` owner record while pending/unknown) that reopens the same result.
+`agent_setup_incomplete` (500) shows a result panel (what exists / what remains,
+View agent, Finish setup with `happyranch init-agent --org <original org> <id>`);
+without a returned ID it offers Check result on the original org plus support
+details, no command and no View agent. Other lost or unrecognised answers
+(network loss, forwarded 499 cancellations, other 5xx, a raw 409
+`target_changed`) show the "Creation result unknown" panel and Check result. A change the
 transport proves native never forwarded (typed `NotSentError`,
 `ThrottledError`, or a 503 `NativeRecoveryError` such as busy/no_target) is
-"Not sent" instead: the draft stays, no unknown owner is registered, and only
-an explicit resubmit sends it. Check result first cancels in-flight roster and
+"Not sent" instead, naming the cause and next step for that typed reason
+(`notSentCopy`; no other cause is invented): the draft stays, no unknown owner is
+registered, and only an explicit resubmit sends it. In the desktop app only,
+Open Connection in a target/remote/not-sent notice opens a drawer-owned menu
+(This computer and the current remote). The current computer closes it and
+returns focus to its trigger; another asks the owner gate (`openConnection`)
+and then opens the existing Connection dialog
+(`shared/connection/openConnection.tsx`, provided by the desktop dialog host),
+which owns every target change. Check result first cancels in-flight roster and
 identity reads of the original org, then accepts only successful reads issued
 after that (`lib/freshReads.ts`), never an earlier first load or its
 completion time. Only a full match of the submitted fields resolves it; a name
 match alone stays unknown. Absence allows a new create only when naming
 observations are complete (`naming_diagnostic` explicitly null and every agent
 row `naming_status: ready`); unavailable or missing naming metadata keeps the
-result unknown. On success navigation uses returned `canonical_id`; the
-readback retires in-flight agents/enrollments/teams/identities reads before
-refetching, and a failed readback says "Created; refresh unavailable". The API's legacy `name` field still means
+result unknown. On success the surface closes, navigation uses returned
+`canonical_id`, and the detail shows a completion panel for what was actually
+created (a manager from either action → Team created → Create agent in that
+team; a worker → Agent created); the readback retires in-flight agents/
+enrollments/teams/identities reads before refetching, and a failed roster or
+team-list readback says the creation is confirmed, names the failed read and
+offers Refresh (GET of the roster and team list; never a Create). Submitted
+computer labels are stored as a locale-neutral identity and translated at render. The API's legacy `name` field still means
 an explicit ID; send exactly one name source.
 The Agents page's once-per-org auto-selection of the first agent never navigates
 while the form is open: a roster that settles after the form opened consumes
