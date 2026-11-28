@@ -2,7 +2,7 @@
 
 V1 inventory baseline: origin/main 01a1ad74f889ebc2a87cba7cee51c5b658b3a8c2 (includes Linux C19 #1720, Mac 3b-2a #1668 and 5c #1716); PR #1719 baseline af71d235651e52d8f4c522e041e3e857532b7e5c plus the 3b-2b retention repair, 2026-11-19. S5 v2 has two source epochs: historical main 921f126e14d6dd5befc869ae77278134b20985ab, then PR #1769 (S5-L1 including the round-2 recovery fix), 2026-11-21.
 
-This is the maintained source inventory for the [web/native bridge spec](2026-11-17-web-native-bridge.md), not native or cross-device acceptance. Current Linux source baseline: main `59e29630cad9f2a79fe3a23e27794e5b855dcd75` (#1811/#1812/#1813). **Linux Main: 18/19 v1 commands (8 Host + 10 Client), plus v2 `client.commitSwitch`; Mac: 11/19 v1 commands.** V1 events are counted separately: Linux Main 1/2 (`host.stateChanged`), Mac 1/2. `bridge.hello` and `client.stateChanged` retired with the Linux shell; v2 `app.status`/`app.stateChanged` replace their Main state role. A parsed/allowlisted name or an unavailable reply does not count as an implementation.
+This is the maintained source inventory for the [web/native bridge spec](2026-11-17-web-native-bridge.md), not native or cross-device acceptance. Current Linux source baseline: main `59e29630cad9f2a79fe3a23e27794e5b855dcd75` (#1811/#1812/#1813). **Linux Main: 18/19 v1 commands (8 Host + 10 Client), plus v2 `client.commitSwitch`; Mac: 11/19 v1 commands.** V1 events are counted separately: Linux Main 2/3 (`host.stateChanged`, `host.enableFinished`), Mac 1/3. `bridge.hello` and `client.stateChanged` retired with the Linux shell; v2 `app.status`/`app.stateChanged` replace their Main state role. A parsed/allowlisted name or an unavailable reply does not count as an implementation.
 
 Linux transport inventory (S2b/S4b foundation; S7-L1 default cutover #1813):
 
@@ -86,7 +86,7 @@ window.happyranchConnection.on(eventName: string, handler: (data: string) => voi
 
 `data` and resolved results are JSON strings; failures reject with a closed JSON error string. `on` delivers event JSON strings and returns unsubscribe. The facade exists only in the admitted packaged control document.
 
-The tables follow the **19 keys of `commands` and 2 keys of `events`** in [`protocol/native-connection-bridge.v1.json`](../../protocol/native-connection-bridge.v1.json); the request command enum agrees. Reproduce the closed lists from the repository root without executing a native action:
+The tables follow the **19 keys of `commands` and 3 keys of `events`** in [`protocol/native-connection-bridge.v1.json`](../../protocol/native-connection-bridge.v1.json); the request command enum agrees. Reproduce the closed lists from the repository root without executing a native action:
 
 ```sh
 python -c 'import json; s=json.load(open("protocol/native-connection-bridge.v1.json")); print("commands:", len(s["commands"]), *s["commands"], sep="\n"); print("events:", len(s["events"]), *s["events"], sep="\n")'
@@ -131,8 +131,9 @@ CLI entries include Linux 5a/5b and Mac foreground client 5c ([platform dispatch
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `host.stateChanged` | host | read (event subscription) | No | implemented on admitted Main through AppScheme.bridge_message and host_bridge.HostBridge; Linux shell retired S7-L1 | deferred (founder option B); no native emission ([MW:189](../../app/mac/Sources/HappyRanchApp/ConnectionWindow.swift#L189), [MS:38](../../app/mac/Sources/HappyRanchApp/ConnectionScripts.swift#L38)) | none | Mac shell: `src/main.ts:81` → `src/host.ts` (Host snapshot); Linux: web/src/features/connection on Main | Linux #1696; schema #1647; host web #1694 |
 | `client.stateChanged` | client | read (event subscription) | No | retired with the Linux shell; Main uses app.stateChanged v2 | implemented, bounded full snapshots/document fencing ([MW](../../app/mac/Sources/HappyRanchApp/ConnectionWindow.swift#L370)) | none | Mac shell: `src/main.ts:81` → `src/client.ts` (Client snapshot); Linux: web/src/features/connection on Main | Linux #1675; schema #1647; client web #1691; Mac #1668 |
+| `host.enableFinished` | host | read (event subscription) | No | implemented on admitted Main, Enable completion/preparation-failure result ([AppScheme](../../packaging/linux/desktop/app_scheme_webkit.py#L1024), [LC](../../packaging/linux/desktop/connection_contract.py#L243)) | deferred (founder option B); no native emission ([AppScheme](../../app/mac/Sources/HappyRanchApp/AppScheme.swift#L868), [MS](../../app/mac/Sources/HappyRanchApp/ConnectionScripts.swift#L16)) | none | Linux Main: [HostSection](../../web/src/features/connection/HostSection.tsx#L79) → [subscribeEnableFinished](../../web/src/lib/native/connection.ts#L360); no Mac shell listener | Linux/schema/web #1876 (`4761aba3`) |
 
-**Platform totals:** Linux Main **18/19 v1** commands (bridge 0/1, host 8/8, client 10/10), **1/2 v1** events (`host.stateChanged`). Main additionally admits v2 `client.commitSwitch` and uses `app.status`/`app.stateChanged`; those v2 names do not increase v1 totals. Mac **11/19** commands (bridge 1/1, host 0/8, client 10/10), **1/2** events. CLI delivery does not increase bridge totals.
+**Platform totals:** Linux Main **18/19 v1** commands (bridge 0/1, host 8/8, client 10/10), **2/3 v1** events (`host.stateChanged`, `host.enableFinished`). Main additionally admits v2 `client.commitSwitch` and uses `app.status`/`app.stateChanged`; those v2 names do not increase v1 totals. Mac **11/19** commands (bridge 1/1, host 0/8, client 10/10), **1/3** events. CLI delivery does not increase bridge totals.
 
 ### Prompt, CLI and provenance notes
 
