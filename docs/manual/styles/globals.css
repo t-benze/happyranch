@@ -9,6 +9,55 @@
  * html.dark variant.
  */
 
+/* Local variable fonts retain Newsreader's optical-size axis (6–72). */
+@font-face {
+  font-family: 'Newsreader';
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url('../static/fonts/Newsreader-opsz-wght.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Newsreader';
+  font-style: italic;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url('../static/fonts/Newsreader-Italic-opsz-wght.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('../static/fonts/InstrumentSans-wdth-wght.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../static/fonts/InstrumentSans-Italic-wdth-wght.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../static/fonts/IBMPlexMono-Regular.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../static/fonts/IBMPlexMono-Medium.ttf') format('truetype');
+}
+
 :root {
   --hr-bg: #f7f5ef;
   --hr-bg-2: #efece2;
