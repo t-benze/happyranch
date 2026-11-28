@@ -1454,12 +1454,48 @@ The app constructs an updater with `startingUpdater: false` and starts it only
 when the bundle has a canonical base64 `SUPublicEDKey` of exactly 32 bytes.
 Optional `--sparkle-public-key PUBLIC_KEY` is validated before building. With
 a key the build writes `SUEnableAutomaticChecks=true` and
-`SUAutomaticallyUpdate=true` for silent checks/downloads; without one the key
-is omitted and both settings stay false. The fixed feed is
+`SUAutomaticallyUpdate=true` as the defaults for automatic checks/downloads;
+without one the key is omitted and both settings stay false. The fixed feed is
 `https://app.happyranch.ai/mac/appcast.xml`. A missing/invalid key leaves
 Check for Updates disabled and records the reason in Diagnostics → Updates.
 No private key is generated or handled. The notice manifest includes
 `swift:Sparkle` and the release's complete LICENSE with all four external licences.
+
+**Update disclosure and opt-out:** open **HappyRanch → Update Settings…**
+(Chinese: **更新设置…**), beside **Check for Updates…** in the app menu.
+This uses the existing native menu/dialog pattern and remains available before
+a local or remote runtime connects. The English and Chinese dialog explains
+the feed request and provides **Automatically check for updates** with Save
+and Cancel. Turning it off sets Sparkle's `automaticallyDownloadsUpdates=false`
+before `automaticallyChecksForUpdates=false`; Sparkle persists both in the app's
+user defaults. It affects future automatic checks/downloads; an in-progress
+or already downloaded update may still complete. Turning it back on enables
+checks and downloads. Saving an unchanged checkbox or cancelling preserves
+existing preferences, including an independently disabled download preference.
+Startup does not overwrite the user's check/download choices. Manual
+**Check for Updates…** remains available when the updater is configured and ready.
+Builds without a valid update public key show the disclosure with the checkbox
+disabled and an explanation.
+
+With our pinned **Sparkle 2.10.1** configuration, the HTTPS feed request exposes
+the client's public IP address to `app.happyranch.ai`. Its default `User-Agent`
+is `HappyRanch/<CFBundleShortVersionString> Sparkle/2.10.1` (the name comes from
+the app bundle). It also sets `Accept: application/rss+xml,*/*;q=0.1`.
+Contrary to the initial audit assumption, Sparkle does **not** explicitly add
+the macOS version to this request. Optional system-profile sending is off by
+default and is explicitly kept off through `sendsSystemProfile=false` before
+starting our updater. No custom feed parameters, HTTP headers or User-Agent
+are configured. The feed URL has no profiling query parameters; macOS version,
+hardware details and preferred language are not added as a Sparkle system profile.
+This describes Sparkle's application-level request, not a packet capture or
+a claim about additional platform HTTP/TLS metadata.
+
+Confirmed against the 2.10.1 source:
+[User-Agent construction](https://github.com/sparkle-project/Sparkle/blob/2.10.1/Sparkle/SPUUserAgent%2BPrivate.m),
+[feed parameters](https://github.com/sparkle-project/Sparkle/blob/2.10.1/Sparkle/SPUUpdater.m),
+[request headers](https://github.com/sparkle-project/Sparkle/blob/2.10.1/Sparkle/SUAppcastDriver.m),
+[profile/defaults and preference setter behavior](https://github.com/sparkle-project/Sparkle/blob/2.10.1/Sparkle/SPUUpdaterSettings.m),
+and [supported persisted updater properties](https://github.com/sparkle-project/Sparkle/blob/2.10.1/Sparkle/SPUUpdater.h).
 
 Every Sparkle relaunch request, including its scheduled/impatient prompt,
 is postponed through `SPUUpdaterDelegate`. The pure `UpdateGate` policy lives
