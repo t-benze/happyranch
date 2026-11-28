@@ -68,7 +68,9 @@ nothing. Nothing is sent until you choose the action.
 Create stays unavailable, with the reason shown next to it, while the executor
 list is loading, could not be read, or is empty; **Retry** only reads the list
 again. After a successful create the panel closes and the new agent opens with a
-short confirmation; for a new team it offers **Create agent in** that team. If
+short confirmation; for a new team (from either button) it offers **Create
+agent in** that team. If the roster or team list cannot be read afterwards, the
+confirmation says so and offers **Refresh**, which only reads again. If
 the server refuses one field (for example, the team already exists), that field
 explains it and the rest is kept; changing the value clears the refusal, and a
 refusal about the new team name does not block adding a worker instead. If the

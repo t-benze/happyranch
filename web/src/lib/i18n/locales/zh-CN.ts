@@ -3254,6 +3254,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "agents.create.done.teamBody": "已创建团队 {team} 及其经理 {name}，暂无工作者。",
   "agents.create.done.refreshTitle": "已创建，但暂时无法刷新名单。",
   "agents.create.done.refreshBody": "本次创建已确认。“刷新”只会重新读取名单，不会再次创建。",
+  "agents.create.done.teamsUnavailableTeam": "无法读取团队列表，暂时无法在 {team} 中创建智能体。“刷新”只会重新读取，不会再次创建。",
+  "agents.create.done.teamsUnavailable": "无法读取团队列表。“刷新”只会重新读取，不会再次创建。",
   "agents.create.held.creating": "正在创建 {name}…",
   "agents.create.held.unknown": "结果未知 · {name}",
   "agents.create.held.open": "打开",

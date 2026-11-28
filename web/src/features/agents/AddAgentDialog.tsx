@@ -116,7 +116,8 @@ import {
 
 /** A confirmed create, reported to the Agents page for its completion panel. */
 export interface CreatedInfo {
-  mode: CreateMode;
+  /** The created outcome: `team` = a new team and its manager; `agent` = a worker. */
+  outcome: CreateMode;
   canonicalId: string;
   name: string;
   team: string;
@@ -150,10 +151,14 @@ interface Sent {
   body: CreateBody;
   slug: string;
   mode: CreateMode;
-  /** Localized computer label at send time (the original custody). */
-  computer: string;
+  /** The computer at send time (the original custody), kept locale-neutral:
+   * its label is rendered in the current locale. */
+  computer: ComputerRef;
   time: string;
 }
+
+/** Which computer a create addresses; owned labels are translated at render. */
+type ComputerRef = { kind: 'this' } | { kind: 'none' } | { kind: 'named'; name: string };
 
 type TargetBlock = 'remote' | 'no_target' | 'target_starting' | 'unreachable' | 'incompatible';
 
@@ -322,10 +327,21 @@ export function AddAgentDialog({ open, mode: requestedMode, preselectTeam = '', 
 
   // ---- context: computer · org (the submitted custody once sent) ----
   const thisComputer = t('owners.computer.thisComputer');
-  const liveComputer =
-    remoteHost ?? (app === null ? thisComputer : app.target === null ? t('agents.create.ctx.noComputer') : app.target.kind === 'remote' ? app.target.name : thisComputer);
+  const liveComputerRef: ComputerRef =
+    remoteHost !== null
+      ? { kind: 'named', name: remoteHost }
+      : app === null
+        ? { kind: 'this' }
+        : app.target === null
+          ? { kind: 'none' }
+          : app.target.kind === 'remote' ? { kind: 'named', name: app.target.name } : { kind: 'this' };
+  const computerLabel = (ref: ComputerRef): string =>
+    ref.kind === 'named' ? ref.name : ref.kind === 'none' ? t('agents.create.ctx.noComputer') : thisComputer;
+  const liveComputer = computerLabel(liveComputerRef);
+  // The submitted computer, labelled in the CURRENT locale (never frozen copy).
+  const sentComputer = sent.current ? computerLabel(sent.current.computer) : null;
   const ownerParams = owner.record ? ownerContextParams(owner.record, t) : null;
-  const shownComputer = frozen ? (sent.current?.computer ?? String(ownerParams?.computer ?? liveComputer)) : liveComputer;
+  const shownComputer = frozen ? (sentComputer ?? String(ownerParams?.computer ?? liveComputer)) : liveComputer;
   const shownOrg = frozen ? (sent.current?.slug ?? slug ?? '') : (slug ?? '');
   const targetBlock: TargetBlock | null =
     remoteHost !== null
@@ -485,7 +501,7 @@ export function AddAgentDialog({ open, mode: requestedMode, preselectTeam = '', 
       body,
       slug,
       mode,
-      computer: liveComputer,
+      computer: liveComputerRef,
       time: new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(new Date()),
     };
     refusal.clear();
@@ -506,8 +522,10 @@ export function AddAgentDialog({ open, mode: requestedMode, preselectTeam = '', 
     latch.current = false;
     if (result.ok) {
       const created = result.value;
+      // What was actually created, not the entry action: a manager (from
+      // either Create team or Create agent) created a new team.
       const info: CreatedInfo = {
-        mode,
+        outcome: body.role === 'manager' ? 'team' : 'agent',
         canonicalId: created.canonical_id,
         name: created.addressable_name || body.display_name,
         team: created.team,
@@ -829,7 +847,7 @@ export function AddAgentDialog({ open, mode: requestedMode, preselectTeam = '', 
         <ReviewRow label={t('agents.create.review.role')} value={t(sent.current.body.role === 'manager' ? 'agents.role.manager' : 'agents.role.worker')} />
         <ReviewRow label={t('agents.create.review.team')} value={<span className="font-mono">{sent.current.body.team ?? sent.current.body.new_team}</span>} />
         <ReviewRow label={t('agents.create.review.name')} value={sent.current.body.display_name} />
-        <ReviewRow label={t('agents.create.result.sentTo')} value={`${sent.current.computer} · ${sent.current.slug}`} />
+        <ReviewRow label={t('agents.create.result.sentTo')} value={`${sentComputer} · ${sent.current.slug}`} />
         <ReviewRow label={t('agents.create.review.executor')} value={<span className="font-mono">{sent.current.body.executor}</span>} />
         <ReviewRow label={t('agents.create.review.description')} value={sent.current.body.description} />
         <ReviewRow label={t('agents.create.review.instructions')} value={<span className="whitespace-pre-wrap">{sent.current.body.system_prompt}</span>} />
@@ -845,7 +863,7 @@ export function AddAgentDialog({ open, mode: requestedMode, preselectTeam = '', 
     >
       <summary className="text-accent-text cursor-pointer text-sm font-semibold">{t('agents.create.result.finishSetup')}</summary>
       <div className="border-border-subtle bg-surface-raised mt-2 rounded-md border p-3.5 text-sm">
-        <p className="text-text-secondary">{t('agents.create.result.finishBody', { computer: sent.current?.computer ?? shownComputer })}</p>
+        <p className="text-text-secondary">{t('agents.create.result.finishBody', { computer: sentComputer ?? shownComputer })}</p>
         <div className="bg-surface-sunken mt-2.5 flex flex-wrap items-center gap-2 rounded-sm p-2.5">
           <code className="min-w-0 flex-1 font-mono text-xs break-all">{setupCommand(id)}</code>
           <Button type="button" size="sm" variant="outline" onClick={() => copyCommand(setupCommand(id))}>
@@ -871,7 +889,7 @@ export function AddAgentDialog({ open, mode: requestedMode, preselectTeam = '', 
 
   const resultPanel = (): ReactNode => {
     const s = sent.current;
-    const computer = s?.computer ?? shownComputer;
+    const computer = sentComputer ?? shownComputer;
     const org = s?.slug ?? shownOrg;
     const heading = (text: string) => (
       <h3 className="font-display text-text-primary mt-3 text-2xl leading-tight break-words">{text}</h3>
@@ -1033,7 +1051,7 @@ export function AddAgentDialog({ open, mode: requestedMode, preselectTeam = '', 
     }
     if (notSent) {
       const copy = notSentCopy(notSent);
-      const computer = sent.current?.computer ?? liveComputer;
+      const computer = sentComputer ?? liveComputer;
       banners.push(
         <Note
           key="notsent"
@@ -1067,7 +1085,7 @@ export function AddAgentDialog({ open, mode: requestedMode, preselectTeam = '', 
     if (finding?.kind === 'absent') {
       banners.push(
         <Note key="absent" kind="info" role="alert" testId="create-absent" title={t('agents.create.absent.title')}>
-          {t('agents.create.absent.body', { computer: sent.current?.computer ?? liveComputer, org: sent.current?.slug ?? slug ?? '' })}
+          {t('agents.create.absent.body', { computer: sentComputer ?? liveComputer, org: sent.current?.slug ?? slug ?? '' })}
         </Note>,
       );
     }

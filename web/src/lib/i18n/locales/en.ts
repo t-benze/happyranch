@@ -3393,6 +3393,8 @@ export const en = {
   "agents.create.done.teamBody": "Created team {team} and its manager {name}. No workers yet.",
   "agents.create.done.refreshTitle": "Created. The roster could not be refreshed.",
   "agents.create.done.refreshBody": "This creation is confirmed. Refresh only reads the roster again; it never creates again.",
+  "agents.create.done.teamsUnavailableTeam": "The team list could not be read, so Create agent in {team} is unavailable for now. Refresh only reads again; it never creates again.",
+  "agents.create.done.teamsUnavailable": "The team list could not be read. Refresh only reads again; it never creates again.",
   "agents.create.held.creating": "Creating {name}…",
   "agents.create.held.unknown": "Result unknown · {name}",
   "agents.create.held.open": "Open",

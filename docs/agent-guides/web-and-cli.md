@@ -2022,10 +2022,13 @@ match alone stays unknown. Absence allows a new create only when naming
 observations are complete (`naming_diagnostic` explicitly null and every agent
 row `naming_status: ready`); unavailable or missing naming metadata keeps the
 result unknown. On success the surface closes, navigation uses returned
-`canonical_id`, and the detail shows a completion panel (Team created → Create
-agent in that team); the readback retires in-flight agents/enrollments/teams/
-identities reads before refetching, and a failed roster readback says the
-creation is confirmed and offers Refresh (a read). The API's legacy `name` field still means
+`canonical_id`, and the detail shows a completion panel for what was actually
+created (a manager from either action → Team created → Create agent in that
+team; a worker → Agent created); the readback retires in-flight agents/
+enrollments/teams/identities reads before refetching, and a failed roster or
+team-list readback says the creation is confirmed, names the failed read and
+offers Refresh (GET of the roster and team list; never a Create). Submitted
+computer labels are stored as a locale-neutral identity and translated at render. The API's legacy `name` field still means
 an explicit ID; send exactly one name source.
 The Agents page's once-per-org auto-selection of the first agent never navigates
 while the form is open: a roster that settles after the form opened consumes

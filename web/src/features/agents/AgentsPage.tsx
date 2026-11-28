@@ -71,8 +71,9 @@ export function AgentsPage(): JSX.Element {
   };
   // THR-402 v1.1: a confirmed create closes the surface onto the returned
   // detail, which shows this completion panel (Team created → Create agent in
-  // that team). A failed roster readback keeps the creation confirmed and
-  // offers Refresh, a read that never creates again.
+  // that team). A failed roster or team-list readback keeps the creation
+  // confirmed, says which read failed and offers Refresh: it re-reads the
+  // roster and the team list and never creates again.
   const teamsQuery = useTeamsList();
   const [completion, setCompletion] = useState<CreatedInfo | null>(null);
   const completionHeading = useRef<HTMLHeadingElement>(null);
@@ -342,24 +343,40 @@ export function AgentsPage(): JSX.Element {
                 <CircleCheck aria-hidden="true" className="text-tier-green mt-0.5 h-5 w-5 shrink-0" />
                 <div className="min-w-0 flex-1 text-sm break-words [&_b]:font-semibold">
                   <h2 id="create-completion-heading" ref={completionHeading} tabIndex={-1} className="text-text-primary font-semibold focus:outline-none">
-                    {t(agentsQuery.isError ? 'agents.create.done.refreshTitle' : completion.mode === 'team' ? 'agents.create.done.teamTitle' : 'agents.create.done.agentTitle')}
+                    {t(agentsQuery.isError ? 'agents.create.done.refreshTitle' : completion.outcome === 'team' ? 'agents.create.done.teamTitle' : 'agents.create.done.agentTitle')}
                   </h2>
                   <p className="text-text-primary mt-1">
                     {agentsQuery.isError
                       ? t('agents.create.done.refreshBody')
-                      : completion.mode === 'team'
+                      : completion.outcome === 'team'
                         ? render('agents.create.done.teamBody', { team: <b>{completion.team}</b>, name: <b>{completion.name}</b> })
                         : render('agents.create.done.agentBody', { team: <b>{completion.team}</b>, name: <b>{completion.name}</b> })}
                   </p>
+                  {teamsQuery.isError && (
+                    <p id="create-completion-teams" data-testid="create-completion-teams" className="text-text-primary mt-1">
+                      {t(completion.outcome === 'team' ? 'agents.create.done.teamsUnavailableTeam' : 'agents.create.done.teamsUnavailable', { team: completion.team })}
+                    </p>
+                  )}
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {agentsQuery.isError && (
-                      <Button size="sm" variant="outline" onClick={() => void agentsQuery.refetch()}>
+                    {(agentsQuery.isError || teamsQuery.isError) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        data-testid="create-completion-refresh"
+                        onClick={() => {
+                          // Reads only: the affected creation readbacks, never a Create.
+                          void agentsQuery.refetch();
+                          void teamsQuery.refetch();
+                        }}
+                      >
                         {t('agents.create.success.refresh')}
                       </Button>
                     )}
-                    {completion.mode === 'team' && (
+                    {completion.outcome === 'team' && (
                       <Button
                         size="sm"
+                        data-testid="create-completion-follow-on"
+                        aria-describedby={teamsQuery.isError ? 'create-completion-teams' : undefined}
                         disabled={!(teamsQuery.data?.teams ?? []).some((entry) => entry.name === completion.team)}
                         onClick={() => {
                           const team = completion.team;
