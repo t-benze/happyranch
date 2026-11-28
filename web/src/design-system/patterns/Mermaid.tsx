@@ -16,8 +16,35 @@ let initialized = false;
 function ensureInitialized(): void {
   if (initialized) return;
   initialized = true;
-  mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    securityLevel: 'strict',
+    // Privacy: label HTML may not embed anything the browser would fetch
+    // (mermaid measures labels in the live document). The `style` tag stays
+    // forbidden as in mermaid's default; a `style` attribute could carry url().
+    dompurifyConfig: {
+      FORBID_TAGS: ['style', 'img', 'image', 'picture', 'source', 'video', 'audio', 'track', 'iframe', 'object', 'embed', 'input', 'link'],
+      FORBID_ATTR: ['style', 'background', 'poster', 'srcset'],
+    },
+  });
 }
+
+/**
+ * Privacy: some diagram sources make the browser fetch a URL before or
+ * outside the label sanitizer: a flowchart image shape (`A@{ img: "…" }`,
+ * loaded by mermaid via `new Image()`), and authored CSS (`themeCSS`,
+ * `style`/`classDef` values) using a fetching CSS function, `@import` or a
+ * CSS escape that could spell one. Such a diagram is not rendered; the
+ * raw-source fallback is shown instead.
+ */
+const EXTERNAL_RESOURCE = [
+  /@\{[\s\S]*?\bimg\b["']?\s*:/i,
+  /\bthemeCSS\b/i,
+  /(?:url|image-set|image|cross-fade|src)\(/i,
+  /@import|@font-face/i,
+  /\\[0-9a-f]/i,
+];
 
 export default function Mermaid({ source }: { source: string }): JSX.Element {
   const [svg, setSvg] = useState<string | null>(null);
@@ -25,6 +52,10 @@ export default function Mermaid({ source }: { source: string }): JSX.Element {
   const rawId = useId();
   const id = `m_${rawId.replace(/:/g, '_')}`;
   useEffect(() => {
+    if (EXTERNAL_RESOURCE.some((pattern) => pattern.test(source))) {
+      setErrored(true);
+      return;
+    }
     ensureInitialized();
     let cancelled = false;
     mermaid

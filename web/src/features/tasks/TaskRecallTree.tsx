@@ -39,7 +39,7 @@ function CollapsibleBody({
     : body;
   return (
     <div className={muted ? 'text-text-secondary text-xs' : 'text-text-primary text-sm'}>
-      <Markdown body={shown} mermaidLoadingLabel={t('common.mermaidLoading')} />
+      <Markdown body={shown} mermaidLoadingLabel={t('common.mermaidLoading')} remoteImageLabel={t('common.remoteImageBlocked')} />
       {shouldCollapse && (
         <button
           type="button"
