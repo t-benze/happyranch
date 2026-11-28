@@ -323,6 +323,14 @@ if len(sys.argv) == 2 and sys.argv[1].startswith('--retained-corruption-phase=')
 assert sys.argv[1:] in ([], ['--s8a'], ['--assignments'], ['--automatic-schema2'], ['--schema2'], ['--generic-abi'], ['--start-compose'], ['--start-context'], ['--bundled-catalog'], ['--returned-storage'], ['--bootstrap-startup'], ['--bootstrap-worker'], ['--bootstrap-owners'], ['--bootstrap-discovery'], ['--bootstrap-selection'], ['--bootstrap-install'], ['--bootstrap-rehearsal'], ['--bootstrap-backup'], ['--bootstrap-journal'], ['--bootstrap-precommit'], ['--startup-isolation'], ['--fresh-catalog'], ['--org-access-fence'], ['--org-access-openers'], ['--org-access-native'], ['--org-access-guardian'], ['--org-access-profile'], ['--setup-status'], ['--daily-integrity'], ['--install-integrity'], ['--bounded-acquisition'], ['--trace-custody'], ['--sequential-reuse'], ['--sequential-load'], ['--sequential-freshness'], ['--sequential-faults'], ['--sequential-sql-exhaustion'], ['--sequential-corruption'], ['--retained-corruption'], ['--document-coding-corruption'], ['--coding-authority-corruption'], ['--document-native-corruption'], ['--author-handoff-corruption'], ['--document-revision-corruption'], ['--coding-history-corruption'], ['--physical-corruption'], ['--sequential-uncommitted'], ['--i2-cutover'], ['--i2-native']), 'unknown schema-load selection'
 
 
+def retained_attempt_status(home, runtime, slug):
+    """A4 parser keeper; advisory readiness now has separate current-layout tests."""
+    from runtime.daemon.workflow_setup_status import _attempt_record, WorkflowSetupStatus
+    from runtime.daemon.org_integrity_monitor import runtime_key
+    record = _attempt_record(home, runtime, runtime_key(runtime), slug, time.monotonic()+1)
+    return WorkflowSetupStatus(org_slug=slug, **{key: record[key] for key in
+        ('state', 'reason', 'attempt_time', 'backup_path')})
+
 print('SCHEMA_RUNTIME', json.dumps(dict(python=sys.version, executable=sys.executable, sqlite=sqlite3.sqlite_version,
     source=sys.modules[Database.__module__].__file__)), flush=True)
 
@@ -748,13 +756,12 @@ def sequential_fixture(*, schema_version=1, trace=True):
             db.close()
 
 def schema2_routing_fixture(db, *, slug='scratch'):
-    """Existing A4 routing keepers now start from the installed schema2 target."""
-    from runtime.infrastructure import workflow_schema as schema
-    with schema._schema_snapshot(db._conn):
-        identity = schema._coding_org_identity(db._conn, expected_org_slug=slug, expected_path=str(db.db_path))
-        inventory = schema.sequential_storage_inventory(db._conn)
-    assert schema.install_sequential_schema(db._conn, expected_org_slug=slug, expected_path=str(db.db_path),
-        source_identity=identity, source_inventory=inventory, offline_check=lambda: None, schema_version=2) == 'upgraded'
+    """A4 routing fixtures observe the real direct-v2 fresh target, no upgrade."""
+    before, changes = tuple(db._conn.iterdump()), db._conn.total_changes
+    history = read_sequential_history(db._conn, expected_org_slug=slug)
+    assert history.layout.schema_version == 2 and history.layout.ownership == 2
+    assert db._conn.execute('SELECT version FROM workflow_seq_schema_versions').fetchall()[0][0] == 2
+    assert tuple(db._conn.iterdump()) == before and db._conn.total_changes == changes
 
 # Synthetic storage only: compiler/parser and the unmodified public reader
 # validate the nonempty graph. These rows confer no execution authority.
@@ -5250,6 +5257,13 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['state'] == 'held'
                 assert s4row(f, 'workflow_seq_runs', f.batch_ids[1].run_id) == sibling, case + ': sibling run changed'
                 assert f.dispatcher.queue_admission_allowed(f.batch_ids[1].visit_task_id), case + ': sibling blocked'
+                if case == 'hold_A_run_B':
+                    from runtime.daemon.workflow_setup_status import read_setup_status
+                    before, changes = tuple(f.conn.iterdump()), f.conn.total_changes
+                    status = read_setup_status(f.root.parents[2], f.root.parents[1], f.org.slug)
+                    assert status.state == 'installed_verified', status
+                    assert tuple(f.conn.iterdump()) == before and f.conn.total_changes == changes
+                    print('PASS P01 current readiness preserves real populated @2 two-run pilot-shaped history; zero writes', flush=True)
                 assert f.conn.execute('SELECT count(*) FROM workflow_seq_inbox').fetchone()[0] == 1, case + ': missing or duplicate durable wake'
                 assert f.conn.execute('SELECT count(*) FROM workflow_seq_consumed_notifications').fetchone()[0] == 0, case + ': queue insertion acknowledged wake'
                 if case == 'duplicate_wake':
@@ -12084,7 +12098,7 @@ if sys.argv[1:] in ([], ['--bootstrap-startup']):
                     assert {p: p.read_bytes() for p in namespace.rglob('*') if p.is_file()} == committed['evidence'], 'A4-M registered read fault changed committed evidence/backup'
                     events = [json.loads(raw) for p, raw in committed['evidence'].items() if p.suffix == '.json']
                     assert sorted(event['phase'] for event in events) == sorted(('intent', 'backup_verified', 'pre_commit', 'committed', 'verified', 'registered')), 'A4-M missing committed registration phases'
-                    assert read_setup_status(home, runtime.root, root.name).state == 'installed_verified', 'A4-M committed registration was undone'
+                    assert retained_attempt_status(home, runtime.root, root.name).state == 'installed_verified', 'A4-M committed registration was undone'
                 else:
                     assert not owner.workers, 'A4-M pre-worker failure spawned an installer'
                     assert path.read_bytes() == original_bytes, 'A4-M discovery refusal changed original DB'
@@ -12388,7 +12402,7 @@ OrgState.close = uncertain_close
                                 assert state._workflow_bootstrap.hold_states['happyranch'] == 'not_installed'
                                 assert not state.orgs['happyranch'].db._conn.execute("SELECT 1 FROM sqlite_schema WHERE name GLOB 'workflow_seq_*'").fetchone()
                                 assert not state.orgs['happyranch'].db._org_access_fence.exclusive
-                            status = read_setup_status(home, runtime.root, 'happyranch')
+                            status = retained_attempt_status(home, runtime.root, 'happyranch')
                             expected_status = ('unknown', 'commit_uncertain') if fault in ('commit_uncertain', 'kill') else ('installed_unverified', 'installation_unverified') if fault == 'close' else None
                             if expected_status:
                                 assert (status.state, status.reason) == expected_status, ('A4-M wrong retained uncertainty', fault, status)
@@ -12441,7 +12455,7 @@ OrgState.close = uncertain_close
                             assert org.db._conn.execute('SELECT count(*) FROM workflow_seq_settings').fetchone()[0] == 0, 'A4-M setup allocated settings or Allow'
                             assert org.db._conn.execute('SELECT count(*) FROM workflow_seq_runs').fetchone()[0] == 0, 'A4-M setup allocated a workflow run'
                             assert [tuple(row) for row in org.db._conn.execute('SELECT id,status FROM tasks')] == [('TASK-mounted','completed')], 'A4-M setup changed native tasks'
-                            status = read_setup_status(home, runtime.root, slug)
+                            status = retained_attempt_status(home, runtime.root, slug)
                             assert (status.state, status.reason) == ('installed_verified', 'registered'), ('A4-M missing registered evidence', status)
                             backup = Path(status.backup_path)
                             assert backup.is_file(), 'A4-M missing retained backup'
@@ -13914,7 +13928,7 @@ if sys.argv[1:] in ([], ['--automatic-schema2']):
                 hold = json.loads((home/'backups/workflow-sequential'/key/slug/'hold.json').read_text())
                 assert (hold['format'], hold['state']) == ('workflow-setup-hold@2', 'unknown'), f'F1 {case}: durable unknown hold became fallbackable: {hold}'
                 assert (hold['predecessor'] is not None) == with_prior
-                status = read_setup_status(home, runtime, slug)
+                status = retained_attempt_status(home, runtime, slug)
                 assert (status.state, status.reason) == ('unknown', 'history_check_failed'), f'F1 {case}: served unknown hold lost its state/cause: {status}'
                 assert automatic_inventory(root/'happyranch.db') == original[slug]
                 assert (root/'happyranch.db').read_bytes() == original_bytes[slug]
@@ -13939,18 +13953,18 @@ if sys.argv[1:] in ([], ['--automatic-schema2']):
                     raise AssertionError(f'F1 {case}: uncertain original attached under fresh SH')
                 assert {file: file.read_bytes() for file in (home/'backups').rglob('*') if file.is_file()} == latched
                 assert (root/'happyranch.db').read_bytes() == original_bytes[slug]
-                status = read_setup_status(home, runtime, slug)
+                status = retained_attempt_status(home, runtime, slug)
                 assert (status.state, status.reason) == ('unknown', 'history_check_failed'), status
                 print('PASS S2b F1', case, 'durable=unknown status=unknown later_fallback=refused', 'prior_schema1_journal='+str(with_prior), flush=True)
                 continue
             for slug, root in roots:
                 path = root/'happyranch.db'
                 after = automatic_inventory(path)
-                status = read_setup_status(home, runtime, slug)
+                status = retained_attempt_status(home, runtime, slug)
                 if case in ('installed_history', 'qualification_failure'):
                     assert slug in setup.holds, f'S2b {case}: missing visible refusal'
                     assert after == original[slug] and path.read_bytes() == original_bytes[slug], f'S2b {case}: changed source on refusal'
-                    assert status.state == 'installed_unverified', f'S2b {case}: schema1 falsely reported schema2 verified: {status}'
+                    assert read_setup_status(home, runtime, slug).state == 'installed_unverified', f'S2b {case}: schema1 falsely reported schema2 verified: {status}'
                     if case == 'qualification_failure':
                         worker = setup.workers[0]
                         assert not worker.permit_sent and worker.closed and worker.reaped
@@ -14037,7 +14051,7 @@ if sys.argv[1:] in ([], ['--automatic-schema2']):
             if case == 'installed_empty' and with_prior:
                 # A syntactically valid complete chain cannot repoint the old
                 # backup/attempt. Rehashing is test input corruption only.
-                backup = Path(read_setup_status(home, runtime, 'scratch').backup_path)
+                backup = Path(retained_attempt_status(home, runtime, 'scratch').backup_path)
                 records = {file: file.read_bytes() for file in backup.parent.glob('*.json')}
                 previous = None
                 for file in sorted(records):
@@ -14048,13 +14062,18 @@ if sys.argv[1:] in ([], ['--automatic-schema2']):
                     file.write_bytes(raw)
                     previous = hashlib.sha256(raw).hexdigest()
                 try:
-                    status = read_setup_status(home, runtime, 'scratch')
-                    assert status.state == 'unknown' and status.backup_path is None, 'S2b installed_empty: accepted repointed predecessor'
+                    try:
+                        retained_attempt_status(home, runtime, 'scratch')
+                    except ValueError:
+                        pass
+                    else:
+                        raise AssertionError('S2b installed_empty: accepted repointed predecessor')
+                    assert read_setup_status(home, runtime, 'scratch').state == 'installed_verified'
                 finally:
                     for file, raw in records.items():
                         file.write_bytes(raw)
                         assert file.read_bytes() == raw
-                assert read_setup_status(home, runtime, 'scratch').state == 'installed_verified'
+                assert retained_attempt_status(home, runtime, 'scratch').state == 'installed_verified'
             print('PASS S2b', case, 'prior_schema1_journal='+str(with_prior), flush=True)
     if sys.argv[1:] == ['--automatic-schema2']:
         raise SystemExit(0)
@@ -14197,8 +14216,8 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
                         org = state.orgs['scratch']
                         db, conn = org.db, org.db._conn
                         history = read_sequential_history(conn, expected_org_slug='scratch')
-                        assert history.layout.document == 'J' and history.layout.sequential and history.layout.ownership == 2, 'A2 route must initialize fresh combined J+Coding+sequential+ownership2'
-                        assert _layout(conn) == _canonical_sequential_layout('J', coding_extension=True, owner_indexed=True, ownership=2), 'A2 route differs from independent combined reference'
+                        assert history.layout.document == 'J' and history.layout.sequential and history.layout.ownership == 2 and history.layout.schema_version == 2, 'A2 route must initialize fresh combined J+Coding+sequential+ownership2'
+                        assert _layout(conn) == _canonical_sequential_layout('J', coding_extension=True, owner_indexed=True, ownership=2, schema_version=2), 'A2 route differs from independent combined reference'
                         assert list(org.teams.teams()) == ['default']
                         manager = org.teams.manager_for_team('default')
                         assert manager.kind == 'human' and manager.principal == 'founder' and manager.workers == ()
@@ -14208,6 +14227,23 @@ if sys.argv[1:] in ([], ['--fresh-catalog']):
                         assert resolve_reviewer_configuration(db, known_agents=set()).state == 'none'
                         for table in ('workflow_seq_settings', 'workflow_seq_settings_operations', 'workflow_seq_runs', 'workflow_seq_visits', 'tasks', 'workflow_coding_mappings'):
                             assert conn.execute('SELECT count(*) FROM ' + table).fetchone()[0] == 0, 'A2 fresh route allocated ' + table
+                        expected_pins = [
+                            ('release/happyranch/coding', 2,
+                             '5039e9eb60a03f8de110b40123a123d25962fbff48c39af5271a0666d679d065',
+                             'a3b012d117c5905a1bac3c67a3158a8b1afa5a571acdba73c876ac7de24f790c',
+                             'workflow-sequential-compiler@1', 'workflow-sequential-validator@1',
+                             'workflow-sequential-interpreter@1', 'workflow-sequential-capabilities@1'),
+                            ('release/happyranch/coding', 3,
+                             'ee1e8f6d3d8117c8c0f9b1b551c166e58944ae3ef137e89b68b30f6fd08f7c36',
+                             '65b1045adf4f204f918a70a281b5a3c8cae7eaa7d9b603a3e7f3bd6242581dae',
+                             'workflow-sequential-compiler@2', 'workflow-sequential-validator@2',
+                             'workflow-sequential-interpreter@2', 'workflow-sequential-capabilities@2'),
+                            ('release/happyranch/draft-review', 1,
+                             '7e89d8ce22c1b7a8e462911fabce17845f67b298a7288b81c94b02831c7afcf2',
+                             'f56b57b3ef688a2e1130cf970c98757033bcb2230dc2885e633f1e43ac7c1a65',
+                             'workflow-sequential-compiler@2', 'workflow-sequential-validator@2',
+                             'workflow-sequential-interpreter@2', 'workflow-sequential-capabilities@2')]
+                        assert [tuple(row) for row in conn.execute('SELECT identity,version,source_digest,definition_digest,compiler_pin,validator_pin,interpreter_pin,capability_pin FROM workflow_seq_definitions ORDER BY identity,version')] == expected_pins
                         compiled = read_coding_release()
                         expected_catalog = (('release/happyranch/coding', 2,
                             '5039e9eb60a03f8de110b40123a123d25962fbff48c39af5271a0666d679d065',
@@ -14670,6 +14706,12 @@ if sys.argv[1:] in ([], ['--setup-status']):
         sequential_storage_inventory, _coding_org_identity, _schema_snapshot,
     )
 
+    from runtime.daemon.workflow_setup_status import _attempt_record, WorkflowSetupStatus
+
+    def attempt_status(home, runtime, slug):
+        record = _attempt_record(home, runtime, monitor.runtime_key(runtime), slug, time.monotonic()+1)
+        return {field: record[field] for field in ('state', 'reason', 'attempt_time', 'backup_path')}
+
     async def setup_route_cases():
         with tempfile.TemporaryDirectory(prefix='workflow-setup-routes-') as scratch:
             home = Path(scratch)
@@ -14791,6 +14833,7 @@ if sys.argv[1:] in ([], ['--setup-status']):
                         prior = hashlib.sha256(raw).hexdigest()
                     status = await client.get(path + 'scratch', headers=auth)
                     assert (status.json()['state'], status.json()['reason']) == ('installed_unverified', 'installation_unverified'), status.text
+                    assert attempt_status(home, runtime.root, 'scratch')['state'] == 'installed_verified'
                     print('PASS A3 complete schema1 chain: preserved evidence, schema2 unverified', flush=True)
                     original_records = {item.name: item.read_bytes() for item in attempt.glob('*.json')}
                     for length in (1, 2, 3):
@@ -14801,13 +14844,15 @@ if sys.argv[1:] in ([], ['--setup-status']):
                                 target = attempt / filename
                                 target.write_bytes(body); target.chmod(0o600)
                         prefix_status = (await client.get(path + 'scratch', headers=auth)).json()
-                        assert prefix_status['state'] == 'unknown', prefix_status
+                        assert prefix_status['state'] == 'installed_unverified', prefix_status
+                        assert attempt_status(home, runtime.root, 'scratch')['state'] == 'unknown'
                         terminal = dict(json.loads(original_records['00.json']), sequence=length,
                             previous_digest=hashlib.sha256(original_records[f'{length-1:02}.json']).hexdigest(),
                             phase='not_installed', state='not_installed', reason='not_installed')
                         target = attempt / f'{length:02}.json'
                         target.write_text(json.dumps(terminal)); target.chmod(0o600)
-                        assert (await client.get(path + 'scratch', headers=auth)).json()['state'] == 'not_installed'
+                        assert attempt_status(home, runtime.root, 'scratch')['state'] == 'not_installed'
+                        assert (await client.get(path + 'scratch', headers=auth)).json()['state'] == 'installed_unverified'
                         print('PASS A3 recorded pre-COMMIT refusal:', states[length-1][0], 'positive terminal only', flush=True)
                     for item in attempt.glob('*.json'):
                         item.unlink()
@@ -14823,12 +14868,184 @@ if sys.argv[1:] in ([], ['--setup-status']):
                         ('raw reason', json.dumps(dict(parsed_event, reason='PRIVATE RAW ERROR')).encode()),
                         ('record cap', b'x'*65537)):
                         record.write_bytes(damaged)
+                        try:
+                            attempt_status(home, runtime.root, 'scratch')
+                        except (OSError, ValueError):
+                            pass
+                        else:
+                            raise AssertionError('A3 retained parser accepted ' + case)
                         value = (await client.get(path + 'scratch', headers=auth)).json()
-                        assert value['state'] == 'unknown' and value['backup_path'] is None and 'PRIVATE' not in json.dumps(value), (case, value)
+                        assert value['state'] == 'installed_unverified' and value['backup_path'] is None and 'PRIVATE' not in json.dumps(value), (case, value)
                         record.write_bytes(saved_event)
                         assert record.read_bytes() == saved_event
-                        print('PASS A3 attempt refusal:', case, 'unknown; exact fixture restore', flush=True)
+                        print('PASS A3 retained attempt refusal:', case, 'current schema1 unverified; exact fixture restore', flush=True)
                     assert (await client.get(path + 'scratch', headers=auth)).json()['state'] == 'installed_unverified'
+                    # Real direct-v2 route, no settings row and no upgrade proof.
+                    response = await client.post('/api/v1/orgs', headers=auth, json={'slug': 'current'})
+                    assert response.status_code == 200, response.text
+                    current = state.orgs['current']
+                    c = current.db._conn
+                    from runtime.workflows.sequential_history import _ReadBudget, _sql_budget, read_sequential_layout
+                    from runtime.daemon import workflow_setup_status as status_module
+                    from runtime.infrastructure.org_access_fence import OrgAccessFence
+                    current_path = path + 'current'
+                    def inventory():
+                        return tuple(c.iterdump())
+                    async def current_status(expected):
+                        before, changes = inventory(), c.total_changes
+                        value = (await client.get(current_path, headers=auth)).json()
+                        assert value['state'] == expected, value
+                        assert value['attempt_time'] is None and value['backup_path'] is None
+                        assert c.total_changes == changes and inventory() == before, 'P01 status wrote DB'
+                        return value
+                    assert c.execute('SELECT count(*) FROM workflow_seq_settings').fetchone()[0] == 0
+                    original_connect = sqlite3.connect
+                    read_connections = []
+                    class StatusReader(sqlite3.Connection):
+                        def close(self):
+                            assert self.total_changes == 0, 'P01 status connection wrote'
+                            assert self.execute('PRAGMA query_only').fetchone() == (1,)
+                            super().close()
+                    def observe_status_connect(filename, *args, **kwargs):
+                        if str(filename).endswith('?mode=ro'):
+                            read_connections.append(str(filename))
+                            kwargs['factory'] = StatusReader
+                        return original_connect(filename, *args, **kwargs)
+                    with patch.object(sqlite3, 'connect', observe_status_connect):
+                        await current_status('installed_verified')
+                    assert read_connections == [current.db.db_path.as_uri()+'?mode=ro']
+                    old_dir = home / 'backups/workflow-sequential' / key / 'current'
+                    old_dir.mkdir(parents=True)
+                    old_record = old_dir / 'malformed'
+                    old_record.write_text('PRIVATE OLD EVIDENCE')
+                    old_bytes = old_record.read_bytes()
+                    await current_status('installed_verified')
+                    assert old_record.read_bytes() == old_bytes
+                    print('PASS P01 final schema2/preset readiness without settings or upgrade evidence; malformed old evidence untouched; zero writes', flush=True)
+                    # Valid live F+coding variants, with separate owned canonical
+                    # structures rather than a mocked layout success.
+                    from runtime.infrastructure.workflow_schema import _install_foundation, _execute_ddl
+                    from runtime.infrastructure.workflow_coding_schema import CANONICAL_WORKFLOW_CODING_DDL
+                    from runtime.infrastructure.workflow_sequential_schema import sequential_ddl
+                    from runtime.infrastructure.workflow_sequential_ownership import sequential_ownership_ddl, sequential_binding_view_ddl
+                    for slug in ('live-happyranch', 'live-danze', 'live-family'):
+                        variant = runtime.orgs_dir / slug
+                        _seed_skeleton(variant, from_example=None)
+                        variant_db = Database(variant / 'happyranch.db')
+                        with variant_db.workflow_schema_transaction() as vc:
+                            _install_foundation(vc, expected_org_slug=slug)
+                            _execute_ddl(vc, CANONICAL_WORKFLOW_CODING_DDL)
+                            _execute_ddl(vc, sequential_ddl(2))
+                            vc.execute('INSERT INTO workflow_seq_schema_versions VALUES (2)')
+                            vc.execute(sequential_ownership_ddl(2))
+                            vc.execute(sequential_binding_view_ddl('F', coding_extension=True, schema_version=2))
+                            columns = ','.join(row[1] for row in c.execute('PRAGMA table_info(workflow_seq_definitions)'))
+                            for row in c.execute('SELECT * FROM workflow_seq_definitions'):
+                                vc.execute('INSERT INTO workflow_seq_definitions ('+columns+') VALUES ('+','.join('?' for _ in row)+')', tuple(row))
+                        variant_before = tuple(variant_db._conn.iterdump())
+                        response = await client.get(path + slug, headers=auth)
+                        assert response.json()['state'] == 'installed_verified', response.text
+                        assert tuple(variant_db._conn.iterdump()) == variant_before
+                        variant_db.close()
+                    print('PASS P01 three sanitized live F+coding/schema2 variants; zero writes', flush=True)
+                    with sequential_fixture(schema_version=2) as (history_db, history_root, _):
+                        populate_returned(history_db)
+                        retained = read_sequential_history(history_db._conn, expected_org_slug='scratch')
+                        assert retained.run_ids
+                        hc = history_db._conn
+                        columns = ','.join(row[1] for row in c.execute('PRAGMA table_info(workflow_seq_definitions)'))
+                        for row in c.execute('SELECT * FROM workflow_seq_definitions'):
+                            hc.execute('INSERT INTO workflow_seq_definitions ('+columns+') VALUES ('+','.join('?' for _ in row)+')', tuple(row))
+                        hc.commit()
+                        before = tuple(hc.iterdump())
+                        value = status_module.read_setup_status(home, history_root.parents[1], 'scratch')
+                        assert value.state == 'installed_verified', value
+                        assert tuple(hc.iterdump()) == before
+                    print('PASS P01 current readiness preserves real populated @1 history in schema2', flush=True)
+                    # Bad marker/pins refuse without repair; remove and restore
+                    # triggers only to construct corrupt private inputs.
+                    triggers = list(c.execute("SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND tbl_name='workflow_seq_definitions'"))
+                    for name, _ in triggers:
+                        c.execute('DROP TRIGGER "'+name+'"')
+                    c.execute("UPDATE workflow_seq_definitions SET compiler_pin='bad' WHERE version=3")
+                    for _, ddl in triggers:
+                        c.execute(ddl)
+                    c.commit()
+                    await current_status('unknown')
+                    for name, _ in triggers:
+                        c.execute('DROP TRIGGER "'+name+'"')
+                    c.execute("UPDATE workflow_seq_definitions SET compiler_pin='workflow-sequential-compiler@2' WHERE version=3")
+                    for _, ddl in triggers:
+                        c.execute(ddl)
+                    c.commit()
+                    definition = tuple(c.execute("SELECT * FROM workflow_seq_definitions WHERE identity='release/happyranch/draft-review'").fetchone())
+                    for name, _ in triggers:
+                        c.execute('DROP TRIGGER "'+name+'"')
+                    c.execute("DELETE FROM workflow_seq_definitions WHERE identity='release/happyranch/draft-review'")
+                    for _, ddl in triggers:
+                        c.execute(ddl)
+                    c.commit()
+                    await current_status('installed_unverified')
+                    c.execute('INSERT INTO workflow_seq_definitions VALUES ('+','.join('?' for _ in definition)+')', definition)
+                    c.commit()
+                    c.execute('DELETE FROM workflow_seq_schema_versions'); c.commit()
+                    await current_status('unknown')
+                    c.execute('INSERT INTO workflow_seq_schema_versions VALUES (2)'); c.commit()
+                    await current_status('installed_verified')
+                    print('PASS P01 current bad marker/pin fail closed; exact current restore; zero status writes', flush=True)
+                    # The route's original deadline must reach reference and
+                    # preset work. Each injection delays actual work, never
+                    # supplies successful layout/catalog output.
+                    import runtime.workflows.sequential_history as history_module
+                    import runtime.workflows.sequential_builtin as builtin_module
+                    real_canonical, real_catalog = history_module._canonical_connection, builtin_module.preset_catalog
+                    @contextmanager
+                    def expired_reference(*args, **kwargs):
+                        time.sleep(1.02)
+                        with real_canonical(*args, **kwargs) as reference:
+                            yield reference
+                    def expired_catalog():
+                        time.sleep(1.02)
+                        return real_catalog()
+                    for module, symbol, delayed in ((history_module, '_canonical_connection', expired_reference), (builtin_module, 'preset_catalog', expired_catalog)):
+                        with patch.object(module, symbol, delayed):
+                            await current_status('unknown')
+                    # Nested layout scope restores the original meter and never
+                    # extends its deadline; ordinary defaults retain 5 seconds.
+                    budget = _ReadBudget(deadline=time.monotonic()+.5)
+                    with _sql_budget(c, budget):
+                        assert read_sequential_layout(c).schema_version == 2
+                        try:
+                            c.execute('WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<99999999) SELECT sum(x) FROM n').fetchone()
+                        except sqlite3.OperationalError:
+                            assert budget._sql_exhaustion is not None
+                        else:
+                            raise AssertionError('P01 nested layout erased original SQL hook')
+                    normal = _ReadBudget()
+                    assert 4 < normal.deadline-time.monotonic() <= 5 and normal.traversal_limit == 65536
+                    print('PASS P01 route original deadline through real reference/preset work; nested hook restored; normal default allowance unchanged', flush=True)
+                    from runtime.daemon import org_integrity_monitor
+                    identity_reader = org_integrity_monitor._db_identity
+                    observations = []
+                    def identity_drift(*args):
+                        value = identity_reader(*args)
+                        observations.append(value)
+                        return value if len(observations) == 1 else ('changed',)
+                    with patch.object(org_integrity_monitor, '_db_identity', identity_drift):
+                        await current_status('unknown')
+                    assert len(observations) == 2
+                    # An actual exclusive SQLite writer exhausts the same route
+                    # deadline; no initializer or repair follows.
+                    locker = sqlite3.connect(runtime.orgs_dir / 'live-family' / 'happyranch.db')
+                    locker.execute('PRAGMA journal_mode=DELETE')
+                    locker.execute('BEGIN EXCLUSIVE')
+                    started = time.monotonic()
+                    response = await client.get(path + 'live-family', headers=auth)
+                    elapsed = time.monotonic()-started
+                    assert response.json()['state'] == 'unknown' and elapsed < 1.5, (response.text, elapsed)
+                    locker.rollback(); locker.close()
+                    await current_status('installed_verified')
+                    print('PASS P01 identity drift and real busy snapshot refuse; deadline bounded; restored verified; zero writes', flush=True)
                     # Native corrupt history, not a mocked reader or setup permission.
                     org.db._conn.execute('DELETE FROM workflow_task_ownership WHERE task_id=?', ('TASK-A3',))
                     org.db._conn.commit()
@@ -15999,7 +16216,7 @@ if sys.argv[1:] in ([], ['--bootstrap-selection']):
                     assert all(timeout == 0 for timeout in timeouts), 'A4-S nonzero busy timeout'
                     if fault == 'registered':
                         try:
-                            public = setup_status.read_setup_status(home, runtime, 'scratch').model_dump(mode='json')
+                            public = retained_attempt_status(home, runtime, 'scratch').model_dump(mode='json')
                         except Exception as exc:
                             raise AssertionError('A4-S independent status projection changed') from exc
                         assert set(public) == {'format', 'org_slug', 'state', 'reason', 'attempt_time', 'backup_path',
@@ -16881,7 +17098,7 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
                             raise AssertionError('A4-B backup durability order missing') from exc
                         assert events[-1] == 'backup-directory-fsync', 'A4-B backup_verified directory not fsynced'
                         assert (attempt.root/'01.json').is_file(), 'A4-B verified phase missing'
-                        status = read_setup_status(daemon_home(), path.parents[2], 'scratch')
+                        status = retained_attempt_status(daemon_home(), path.parents[2], 'scratch')
                         assert status.state == 'unknown' and status.reason == 'install_incomplete', 'A4-B backup claimed installation'
                     else:
                         if fault in ('shared_space', 'shared_minimum', 'database_space', 'temp_space',
@@ -17097,7 +17314,7 @@ if sys.argv[1:] in ([], ['--install-integrity'], ['--bootstrap-backup'], ['--boo
                                     assert value['sequence'] == seq and value['previous_digest'] == previous
                                     assert value['phase'] == phase and value['source_inventory_digest'] == owner.source_inventory_digest
                                     previous = hashlib.sha256(raw).hexdigest()
-                                status = read_setup_status(daemon_home(), path.parents[2], 'scratch')
+                                status = retained_attempt_status(daemon_home(), path.parents[2], 'scratch')
                                 assert (status.state, status.reason, status.backup_path) == ('installed_verified', 'registered', str(owner.backup_path)), status
                                 assert {p.name for p in owner.root.iterdir()} == {'before.db', *(f'{seq:02}.json' for seq in range(6))}
                         if owner.failed:

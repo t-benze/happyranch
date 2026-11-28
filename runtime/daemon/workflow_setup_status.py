@@ -1,4 +1,4 @@
-"""Independent, read-only setup evidence. Never workflow admission authority."""
+"""Independent, read-only current setup observation. Never workflow admission authority."""
 from __future__ import annotations
 
 import hashlib
@@ -6,6 +6,7 @@ import json
 import os
 import re
 import stat
+import sqlite3
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -15,8 +16,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from runtime.daemon._disk_sweep_fs import Expired, check, directory, signature
-from runtime.daemon.org_integrity_monitor import latest_report, runtime_key
-from runtime.daemon.job_fence_observation import JobFenceObservation, observe_job_fences
+from runtime.daemon.org_integrity_monitor import latest_report
+from runtime.daemon.job_fence_observation import JobFenceObservation
 
 SetupState = Literal['not_installed', 'installed_unverified', 'installed_verified', 'unknown']
 SetupReason = Literal['evidence_unavailable', 'registered', 'not_installed', 'install_incomplete',
@@ -110,8 +111,8 @@ def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadlin
 
     A4 owns publication. Unrecognized or unfinished evidence stays unknown.
     No backup or org database is opened, and no selected prefix is accepted.
-    Startup supplies its original-custody directory reader; advisory status
-    retains its independent traversal.
+    Startup supplies its original-custody directory reader. Advisory status
+    independently observes current storage below.
     """
     open_directory = directory if directory_reader is None else directory_reader
     root = home / 'backups' / 'workflow-sequential' / key / slug
@@ -243,24 +244,79 @@ def _attempt_record(home: Path, runtime_root: Path, key: str, slug: str, deadlin
     return current
 
 
-def _attempt(home: Path, runtime_root: Path, key: str, slug: str, deadline: float) -> dict:
-    value = _attempt_record(home, runtime_root, key, slug, deadline)
-    projected = {field: value[field] for field in ('state', 'reason', 'attempt_time', 'backup_path')}
-    if value.get('target_version') == 1 and value['phase'] == 'registered':
-        projected.update(state='installed_unverified', reason='installation_unverified')
-    return projected
+def _current_layout(runtime_root: Path, slug: str, deadline: float) -> dict:
+    """Observe final storage and reviewed presets, never history or old attempts."""
+    from runtime.daemon.org_integrity_monitor import _db_identity
+    from runtime.infrastructure.org_access_fence import OrgAccessFence
+    from runtime.infrastructure.workflow_schema import _coding_org_identity, _schema_snapshot
+    from runtime.workflows.coding_authority_history import _bounded_rows
+    from runtime.workflows.sequential_builtin import inspect_definition, preset_catalog
+    from runtime.workflows.sequential_history import _ReadBudget, _sql_budget, read_sequential_layout
+
+    if not re.fullmatch(r'[a-z0-9-]{1,40}', slug):
+        raise ValueError('org_identity_invalid')
+    root = runtime_root / 'orgs' / slug
+    budget = _ReadBudget(deadline=deadline)
+    budget.check()
+    conn = None
+    fence = OrgAccessFence.acquire(root, deadline=deadline)
+    try:
+        before = _db_identity(root, deadline)
+        catalog = preset_catalog()
+        if len(catalog) != 3 or {(entry.pin.identity, entry.pin.version) for entry in catalog} != {
+                ('release/happyranch/coding', 2), ('release/happyranch/coding', 3),
+                ('release/happyranch/draft-review', 1)}:
+            raise ValueError('preset_catalog_invalid')
+        budget.check()
+        conn = sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro',
+                               uri=True, timeout=max(0, deadline - time.monotonic()))
+        conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 1024 * 1024)
+        conn.execute('PRAGMA query_only=ON')
+        conn.execute('PRAGMA busy_timeout=' + str(max(0, int((deadline - time.monotonic()) * 1000))))
+        with _schema_snapshot(conn), _sql_budget(conn, budget):
+            identity = _coding_org_identity(conn, expected_org_slug=slug, expected_path=str(root / 'happyranch.db'))
+            layout = read_sequential_layout(conn, deadline=deadline)
+            if not layout.sequential:
+                result = dict(state='not_installed', reason='not_installed')
+            elif layout.schema_version != 2 or layout.ownership != 2:
+                result = dict(state='installed_unverified', reason='installation_unverified')
+            else:
+                marker = list(_bounded_rows(conn, 'workflow_seq_schema_versions', ('version',),
+                    (('integer',),), budget, maximum=1))
+                if marker != [(2, 'integer')]:
+                    raise ValueError('schema_marker_invalid')
+                present = [inspect_definition(conn, compiled, budget)[1] for compiled in catalog]
+                result = (dict(state='installed_verified', reason='registered') if all(present) else
+                          dict(state='installed_unverified', reason='installation_unverified'))
+            if _coding_org_identity(conn, expected_org_slug=slug, expected_path=str(root / 'happyranch.db')) != identity:
+                raise ValueError('org_identity_changed')
+            budget.check()
+        conn.close()
+        conn = None
+        fence.assert_held()
+        if _db_identity(root, deadline) != before:
+            raise ValueError('org_identity_changed')
+        budget.check()
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        finally:
+            fence.close()
+    budget.check()
+    return result
 
 
 def read_setup_status(home: Path, runtime_root: Path, slug: str,
-                      *, job_ids: list[str] | None = None) -> WorkflowSetupStatus:
-    deadline = time.monotonic() + 1
-    key = runtime_key(runtime_root)
+                      *, job_ids: list[str] | None = None,
+                      deadline: float | None = None) -> WorkflowSetupStatus:
+    end = time.monotonic() + 1
+    if deadline is not None:
+        end = min(end, deadline)
     try:
-        attempt = _attempt(home, runtime_root, key, slug, deadline)
-    except (OSError, ValueError, TimeoutError, Expired, TypeError, KeyError, RecursionError):
-        attempt = {}
-    # Independent acquisition: bad/slow attempt evidence cannot hide daily data.
+        observed = _current_layout(runtime_root, slug, end)
+    except (OSError, ValueError, sqlite3.Error, TimeoutError, Expired, TypeError, KeyError, RecursionError):
+        observed = {}
+    # Independent acquisition: unavailable storage cannot hide daily data.
     daily = latest_report(home, runtime_root, slug)
-    blockers = (observe_job_fences(home, runtime_root / 'orgs' / slug, job_ids)
-                if attempt.get('reason') == 'writer_exclusion_unproven' else None)
-    return WorkflowSetupStatus(org_slug=slug, **attempt, integrity_report=daily, writer_blockers=blockers)
+    return WorkflowSetupStatus(org_slug=slug, **observed, integrity_report=daily)

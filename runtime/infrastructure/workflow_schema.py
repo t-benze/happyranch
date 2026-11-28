@@ -1525,7 +1525,7 @@ def initialize_fresh_org_database(path: Path, *, expected_org_slug: str) -> Data
     The caller owns the returned Database and its original close.
     """
     from runtime.infrastructure.database import Database
-    from runtime.infrastructure.workflow_sequential_schema import CANONICAL_WORKFLOW_SEQUENTIAL_DDL
+    from runtime.infrastructure.workflow_sequential_schema import sequential_ddl
     from runtime.infrastructure.workflow_task_ownership import initialize_fresh_sequential_ownership
     from runtime.workflows.sequential_history import (
         SequentialLayout, _ReadBudget, _native_contract, _read_layout, _sql_budget,
@@ -1543,14 +1543,14 @@ def initialize_fresh_org_database(path: Path, *, expected_org_slug: str) -> Data
             raise ValueError('workflow_fresh_creation_database_changed')
         initialize_complete_org_schema(database, expected_org_slug=expected_org_slug, layout='J')
         with database.workflow_schema_transaction() as conn:
-            _execute_ddl(conn, CANONICAL_WORKFLOW_SEQUENTIAL_DDL)
-            conn.execute('INSERT INTO workflow_seq_schema_versions VALUES (1)')
+            _execute_ddl(conn, sequential_ddl(2))
+            conn.execute('INSERT INTO workflow_seq_schema_versions VALUES (2)')
             initialize_fresh_sequential_ownership(conn)
             observed = _ReadBudget()
             reference = _ReadBudget(deadline=observed.deadline)
             data = _ReadBudget(deadline=observed.deadline)
             layout, metadata = _read_layout(conn, observed, reference, data)
-            if layout != SequentialLayout('J', True, True, 2, True):
+            if layout != SequentialLayout('J', True, True, 2, True, 2):
                 raise ValueError('workflow_fresh_creation_target_mismatch')
             with _sql_budget(conn, data):
                 _native_contract(conn, data)
@@ -1560,7 +1560,8 @@ def initialize_fresh_org_database(path: Path, *, expected_org_slug: str) -> Data
                     data.step()
                     quoted = '"' + table.replace('"', '""') + '"'
                     if table in markers:
-                        if [tuple(row) for row in conn.execute('SELECT version FROM ' + quoted + ' LIMIT 2')] != [(1,)]:
+                        expected = [(2,)] if table == 'workflow_seq_schema_versions' else [(1,)]
+                        if [tuple(row) for row in conn.execute('SELECT version FROM ' + quoted + ' LIMIT 2')] != expected:
                             raise ValueError('workflow_fresh_creation_target_mismatch')
                     elif table in ('workflow_cutover_state', 'workflow_cutover_events'):
                         columns = 'singleton,generation' if table == 'workflow_cutover_state' else 'event_seq'

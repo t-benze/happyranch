@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from starlette.concurrency import run_in_threadpool
@@ -47,11 +48,11 @@ async def setup_status(slug: str, request: Request, response: Response) -> Workf
     runtime = state.runtime
     if runtime is None:
         raise HTTPException(409, detail={'code': 'no_active_runtime'})
+    deadline = time.monotonic() + 1
     root = await run_in_threadpool(state.workflow_setup_root, slug)
     if root is None:
         raise HTTPException(404, detail={'code': 'unknown_org'})
-    job_ids = await run_in_threadpool(_running_job_ids, state.orgs_snapshot().get(slug))
-    value = await run_in_threadpool(read_setup_status, daemon_home(), runtime.root, slug, job_ids=job_ids)
+    value = await run_in_threadpool(read_setup_status, daemon_home(), runtime.root, slug, deadline=deadline)
     if state.runtime is not runtime:
         raise HTTPException(409, detail={'code': 'workflow_setup_runtime_changed'})
     return value
