@@ -37,7 +37,8 @@ within the seat's read scope; it writes a unique local in/ copy. Upload is cappe
 at 10 MiB; unmeasured starting allowances are 10 unattached files/50 MiB and
 100 MiB in/ with oldest eviction. Seat end cleans transit/unattached files.
 Guests never publish Shared Artifacts or fetch them by name. Other-machine app
-files, Claude Desktop and scheduled pickup remain deferred; Web is slice 4.
+files, Claude Desktop and scheduled pickup remain deferred; the Web UI
+(slice 4) is described below.
 
 ### Thread guest Web UI (slice 4)
 
@@ -77,6 +78,13 @@ guest last speaker. The `thread_guest_invited`, `thread_guest_joined` and
 `thread_guest_ended` system rows (`system_payload` `{kind_tag, guest_id,
 label[, cause]}`) render as translated event chips with the label and cause.
 Before this slice, they showed the raw tag.
+These sentences appear in an open transcript without reload: Invite, New code
+and Revoke refetch the thread messages when they settle, and the tail consumer
+treats a `kind: "system"` event with `seq: null` (what the invite and revoke
+routes publish) as a refresh of the messages and detail that leaves the
+since_seq cursor alone. Other null-seq events, such as `decline_status`, are
+still ignored. Join and expiry publish a seq-bearing system event, which the
+existing invalidate path already refetches.
 
 Settings ▸ Organization ▸ Desktop app guests shows read-only text for Codex
 desktop: the `guests setup` command, `<runtime>/orgs/SLUG/guests/codex_desktop/`

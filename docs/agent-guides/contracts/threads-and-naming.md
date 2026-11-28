@@ -104,8 +104,9 @@ availability/retention checks; artifact-name fetch and guest Shared Artifacts
 publication are forbidden. Read/wait/fetch have no guest audit and stamp read
 position/last seen. All file allowances are unmeasured starting values. Ended
 seat folders and unattached uploads are cleaned; posted bytes remain.
-MCP/setup stay remotely denied. Web UI, Claude and scheduled/remote pickup remain
-separate/deferred. The founder's first product join/read/post/revoke passed via
+MCP/setup stay remotely denied. The Web UI is slice 4 (see
+[web-and-cli](../web-and-cli.md#thread-guest-web-ui-slice-4)); Claude and
+scheduled/remote pickup remain deferred. The founder's first product join/read/post/revoke passed via
 SSH tunnel; same-machine desktop file behaviour is still unproven.
 
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
