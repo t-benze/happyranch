@@ -16,7 +16,7 @@ from runtime.org_secrets.names import SecretError
 from runtime.org_secrets.store import store_for
 
 _NO_STORE = {'Cache-Control': 'no-store'}
-_MESSAGES = {'reserved_name': 'Name is reserved for runtime, launcher, interpreter, shell, loader or locale controls. Choose an application credential name.',
+_MESSAGES = {'reserved_name': 'Name is reserved for runtime/credentials (PATH, HOME, HAPPYRANCH_*, executor/session vars), GIT_*, LC_*/LANG/LANGUAGE, PYTHON*, NODE_*/NPM_CONFIG_*, LD_*/DYLD_*, BASH*/ZSH*/ENV/PS1/PS2/PS4/IFS/SHELLOPTS, CURL_*/OPENSSL_*, GCONV_*/GLIBC_*/MALLOC_*/NSS_*, RUST_*/CARGO_*/RUSTUP_*/RUSTC_*, BUN_*/V8_*, GH_*/GITHUB_*, SSH_*/GPG_*/GNUPG*/GNUTLS_*, LESS*, GO*/PERL*, GITPERLLIB, DEBUG, SSLKEYLOGFILE, editor/pager and other launcher controls. Choose an application credential name.',
              'secret_exists': 'Secret already exists. Use Replace value.',
              'key_locked': 'Secrets locked. Log in to unlock, then check key status.'}
 _MAX_REQUEST_BYTES = 400000  # 64 KiB UTF-8 value, including JSON escaping

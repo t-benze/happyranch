@@ -392,7 +392,12 @@ class ThreadPreparation:
             self.safe_selflaunch_defer = self.attempt_open
             raise
         if self.prompt_reader is not None:
-            self.prompt_reader()
+            from runtime.platform.session_backend import PrelaunchRefused
+            try:
+                self.prompt_reader()
+            except PrelaunchRefused:
+                self.defer_selflaunch()
+                raise
         if not self.attempt_open and not self.commit():
             raise DeferredTeamMove("team_move_thread_selflaunch_cancelled")
 

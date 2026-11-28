@@ -184,7 +184,14 @@ class SecretsCases(unittest.IsolatedAsyncioTestCase):
             'PYTHONSTARTUP', 'PYTHONPATH', 'PYTHON_FUTURE_CONTROL', 'PYTHONHOME',
             'NODE_OPTIONS', 'NODE_EXTRA_CA_CERTS', 'NODE_FUTURE_CONTROL',
             'BASH_ENV', 'ENV', 'SHELLOPTS', 'BASHOPTS', 'PS4', 'IFS',
-            'LD_DEBUG', 'LD_AUDIT', 'DYLD_PRINT_LIBRARIES', 'TZ', 'TMPDIR'}
+            'LD_DEBUG', 'LD_AUDIT', 'DYLD_PRINT_LIBRARIES', 'TZ', 'TMPDIR',
+            'GIT_TRACE', 'GIT_FUTURE_CONTROL', 'NPM_CONFIG_FUTURE_CONTROL',
+            'CURL_TRACE', 'OPENSSL_CONF', 'GCONV_PATH', 'GLIBC_TUNABLES',
+            'MALLOC_TRACE', 'NSS_WRAPPER_DEBUGLEVEL', 'PS1', 'PS2', 'PROMPT', 'RPROMPT',
+            'RUST_LOG', 'CARGO_FUTURE_CONTROL', 'BUN_OPTIONS', 'V8_OPTIONS',
+            'GH_DEBUG', 'GITHUB_TOKEN', 'GOTOOLCHAIN', 'GODEBUG', 'SSH_ASKPASS',
+            'GNUPGHOME', 'GNUTLS_DEBUG_LEVEL', 'LESSOPEN', 'PAGER', 'SSLKEYLOGFILE', 'DEBUG',
+            'GO_FUTURE_CONTROL', 'GITPERLLIB', 'PERL5OPT'}
         for name in sorted(names):
             with self.subTest(reserved=name):
                 self.assertTrue(reserved(name), 'launcher control must be reserved')
@@ -237,7 +244,7 @@ class SecretsCases(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 422)
                 self.assertFalse(self.sentinels[0] in response.text)
                 self.assertEqual(response.headers['cache-control'], 'no-store')
-            for control in ('LC_ALL', 'PYTHONWARNINGS', 'NODE_EXTRA_CA_CERTS'):
+            for control in ('LC_ALL', 'PYTHONWARNINGS', 'NODE_EXTRA_CA_CERTS', 'GIT_TRACE', 'NPM_CONFIG_LOGLEVEL'):
                 response = await client.post(path, json={'name': control, 'value': self.sentinels[0]},
                     headers={'X-Secret-Operation': operation()})
                 self.assertEqual(response.status_code, 422)
@@ -413,13 +420,14 @@ print(json.dumps({'success':True,'returncode':0,'duration_seconds':0,'session_id
             'success': True, 'returncode': 0, 'duration_seconds': 0, 'session_id': 'synthetic',
             'stdout_tail': '', 'stderr_tail': '', 'adapter_metadata': {
                 'adapter': 'diagnostic-adapter', 'adapter_version': '1', 'contract_version': 1}}) + '))\n')
-        adapter.write_text('#!/bin/bash\nexec ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(child)) + '\n')
+        subprocess.run(['/usr/bin/git', 'init', '-q', str(workspace)], check=True, capture_output=True)
+        adapter.write_text('#!/bin/bash\n/usr/bin/git status --porcelain >/dev/null\nexec ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(child)) + '\n')
         adapter.chmod(0o700)
         executor = ex.CustomAdapterExecutor(profile_name='synthetic', adapter_entry_id='diagnostic-adapter',
             adapter_executable=str(adapter), adapter_hash=hashlib.sha256(adapter.read_bytes()).hexdigest(),
             adapter_version='1', adapter_contract_version=1, provider='synthetic',
             invocation_context={'agent':'worker', 'org':'alpha', 'invocation_kind':'task'})
-        for name in ('LC_ALL', 'PYTHONWARNINGS'):
+        for name in ('LC_ALL', 'PYTHONWARNINGS', 'GIT_TRACE'):
             with self.subTest(control=name):
                 # Emulate an encrypted record accepted by the predecessor policy.
                 with patch('runtime.org_secrets.store.validate_name', side_effect=lambda name: name):
@@ -446,6 +454,189 @@ print(json.dumps({'success':True,'returncode':0,'duration_seconds':0,'session_id
                         ex._callee_env(org_slug='alpha', workspace=workspace)
                     self.assertEqual(caught.exception.code, 'reserved_name')
                     store.mutate('delete', name, None, operation())
+
+        # Unanticipated application name: actual stderr and JSON error fields
+        # cross the real executor and persisted no-callback failure-note boundary.
+        store.mutate('create', 'SYNTH_UNRESERVED', value, operation())
+        child.write_text('import os,sys,json\nv=os.environ["SYNTH_UNRESERVED"]\n'
+            'sys.stderr.write(v)\nprint(json.dumps({'
+            '"success":False,"returncode":1,"duration_seconds":0,"session_id":"synthetic",'
+            '"stdout_tail":v,"stderr_tail":v,"error":v,"adapter_metadata":{'
+            '"adapter":"diagnostic-adapter","adapter_version":"1","contract_version":1}}))\n')
+        with self.subTest(path='custom-diagnostic'):
+            result = executor.run(workspace=workspace, prompt='Synthetic', session_id='synthetic',
+                org_slug='alpha', timeout_seconds=5)
+            self.assertFalse(result.success)
+            observations = [value in text for text in (result.stdout_tail, result.stderr_tail,
+                result.error or '', _session_failed_note(result, None))]
+            self.assertEqual(observations, [False] * 4, 'session diagnostic disclosure')
+            self.assertTrue('[REDACTED]' in result.stderr_tail, 'stderr was not exercised')
+            note = self.root / 'saved-failure-note.txt'
+            note.write_text(_session_failed_note(result, None))
+        # The built-in command path has a different parser/error envelope.
+        with self.subTest(path='builtin-diagnostic'):
+            builtin = ex._run_command([sys.executable, '-c',
+                'import os,sys; sys.stderr.write(os.environ["SYNTH_UNRESERVED"]); sys.exit(1)'],
+                workspace, 'synthetic', 5, provider='synthetic', org_slug='alpha', throttle_backoff_seconds=())
+            self.assertFalse(builtin.success)
+            self.assertEqual([value in builtin.stderr_tail, value in (builtin.error or ''),
+                value in _session_failed_note(builtin, None)], [False] * 3, 'built-in diagnostic disclosure')
+
+        # Host-launched processes get the precise final spec's values, even
+        # when the store changes before communicate/error persistence.
+        from dataclasses import replace
+        from runtime.orchestrator.host_supervisor import AdmissionRequest, HostSessionSupervisor, LaunchResult, canary_policy
+        from runtime.platform.passthrough_backend import PassthroughBackend
+        class SyntheticBackend(PassthroughBackend):
+            def launch(self, pending, spec):
+                process = subprocess.Popen(spec.argv, cwd=spec.cwd, env=spec.env,
+                    stdin=spec.stdin, stdout=spec.stdout, stderr=spec.stderr, text=spec.text)
+                return replace(super().launch(pending, spec), backend='synthetic-contained',
+                    process=process, root_pid=process.pid)
+        from scripts.test_agent_retirement import fixture
+        with self.subTest(path='contained-diagnostic'):
+            async with fixture(self.root / 'contained-diagnostic') as (org, _client):
+                store = store_for(org.root)
+                workspace = org.root / 'workspaces/worker'
+                store.mutate('create', 'SYNTH_UNRESERVED', value, operation())
+                spec = ex.build_command_launch_spec(cmd=[sys.executable, '-c',
+                    'import os,sys; sys.stderr.write(os.environ["SYNTH_UNRESERVED"]); sys.exit(1)'],
+                    workspace=workspace, input_text='', org_slug='alpha', session_id='synthetic')
+                def communicate(running):
+                    store.mutate('replace', 'SYNTH_UNRESERVED', 'synthetic-replacement', operation())
+                    result = ex._run_command(list(spec.argv), workspace, 'synthetic', 5,
+                        org_slug='alpha', provider='synthetic', running=running)
+                    return LaunchResult(success=result.success, duration_seconds=0, error=value, payload=result)
+                def publish(receipt):
+                    raise RuntimeError(value)  # Real contained publisher diagnostic.
+                with self.assertLogs('runtime.orchestrator.host_supervisor', level='WARNING') as logs:
+                    outcome = HostSessionSupervisor(backend=SyntheticBackend(),
+                        policy=canary_policy(sample_interval_seconds=0), publisher=publish).run(
+                            AdmissionRequest(org='alpha', invocation_kind='task', logical_id='synthetic', executor_profile='synthetic'),
+                            launch_spec=spec, launch_body=communicate)
+                self.assertEqual([value in (outcome.error or ''), value in outcome.payload.payload.stderr_tail,
+                    value in _session_failed_note(outcome.payload.payload, None), value in (outcome.payload.error or ''),
+                    value in '\n'.join(logs.output)], [False] * 5, 'contained diagnostic disclosure')
+        # A subsequent invocation may display an old value it was never given:
+        # custody is per invocation, not a machine/org-wide masking registry.
+        unrelated = ex._run_command([sys.executable, '-c', 'import sys; sys.stderr.write(sys.argv[1]); sys.exit(1)', value],
+            workspace, 'unrelated', 5, provider='synthetic', org_slug=None, throttle_backoff_seconds=())
+        self.assertTrue(value in unrelated.stderr_tail)
+
+    async def test_d03_supervisor_refusal_settles_and_recovers_later_reply(self) -> None:
+        import time
+        from dataclasses import replace
+        from scripts.test_agent_retirement import fixture
+        from runtime.models import ThreadRecord, ThreadMessageKind, ThreadInvocationStatus
+        from runtime.orchestrator import executors as ex
+        from runtime.orchestrator.thread_move import bind_thread_preparation
+        from runtime.orchestrator.host_supervisor import AdmissionController, AdmissionRequest, HostSessionSupervisor, canary_policy
+        from runtime.platform.passthrough_backend import PassthroughBackend
+        from runtime.daemon.thread_runner import _bound_thread_prompt, THREAD_PROMPT_MAX_BYTES, _settle_or_fail_reply
+
+        for case in ('capacity_prompt', 'capacity_budget', 'passthrough_prompt', 'old_unknown', 'abandon_failed'):
+            with self.subTest(case=case):
+                async with fixture(self.root / case) as (org, _client):
+                    workspace = org.root / 'workspaces/worker'
+                    store, db = store_for(org.root), org.db
+                    db.insert_thread(ThreadRecord(id='THR-refused', subject='Synthetic'))
+                    db.add_thread_participant('THR-refused', 'worker', added_by='founder')
+                    db.record_conversational_arrival(thread_id='THR-refused', speaker='founder',
+                        kind=ThreadMessageKind.MESSAGE, body_markdown='Synthetic', recipients=['worker'])
+                    token = db.get_reply_delivery_state('THR-refused', 'worker').queued_invocation_token
+                    owner = db._team_move_coordinator.threads.reserve(token)
+                    owner.claim = db.peek_conversational_reply(token)
+                    body = 'p' * (THREAD_PROMPT_MAX_BYTES - len(ex._SESSION_LIFETIME_PREAMBLE.encode()))
+                    def prompt_reader():
+                        bounded = _bound_thread_prompt(body, messages=[], mandatory_from_seq=1,
+                            rebuild=None, preamble=ex._session_preamble(org.slug, workspace))
+                        if bounded is None:
+                            raise ex.PromptTransportTooLargeError('prompt_too_large')
+                        return bounded[0]
+                    owner.prompt_reader = prompt_reader
+                    self.assertTrue(prompt_reader() == body)
+                    owner.last_spec = ex.build_command_launch_spec(cmd=['/bin/true'], workspace=workspace,
+                        input_text=body, org_slug=org.slug, session_id=owner.session_id)
+                    controller, backend = AdmissionController(cap=1), PassthroughBackend()
+                    # A contained preparation must be abandoned before its launch.
+                    prepare = backend.prepare
+                    if case != 'passthrough_prompt':
+                        backend.prepare = lambda request, policy: replace(prepare(request, policy), backend='synthetic-contained')
+                    supervisor = HostSessionSupervisor(backend=backend, policy=canary_policy(sample_interval_seconds=0),
+                        publisher=lambda receipt: None, admission=controller)
+                    held = controller.acquire(AdmissionRequest(org='alpha', invocation_kind='thread',
+                        logical_id='holder', executor_profile='synthetic'), timeout=3)
+                    def launch_body(running):
+                        self.assertEqual(case, 'passthrough_prompt')
+                        # Host committed; the actual direct executor still has not
+                        # called isolation.launch_executor/Popen. Change at that seam.
+                        store.mutate('create', 'SYNTH_NAME', 'synthetic-value', operation())
+                        return ex._run_command(['/bin/true'], workspace, owner.session_id, 5,
+                            input_text=body, session_prompt=body, org_slug=org.slug, provider='synthetic',
+                            throttle_backoff_seconds=())
+                    def launch():
+                        with bind_thread_preparation(owner):
+                            return supervisor.run(AdmissionRequest(org='alpha', invocation_kind='thread',
+                                logical_id='THR-refused', executor_profile='synthetic', agent_id=owner.identity.agent_id,
+                                move_reservation=owner), launch_spec=owner.last_spec,
+                                final_prelaunch_validator=owner, launch_body=launch_body)
+                    with patch.object(backend, 'launch', wraps=backend.launch) as launched, \
+                         patch('runtime.platform.isolation._PosixSameOwnerIsolation.launch_executor') as popen, \
+                         patch.object(backend, 'abandon', side_effect=RuntimeError('synthetic abandon failure') if case == 'abandon_failed' else None), \
+                         patch('runtime.org_secrets.session.os.sysconf', wraps=os.sysconf) as argmax:
+                        with ThreadPoolExecutor(max_workers=1) as pool:
+                            future = pool.submit(launch)
+                            try:
+                                deadline = time.monotonic() + 2
+                                while controller.queue_depth() == 0 and time.monotonic() < deadline:
+                                    time.sleep(.005)
+                                self.assertEqual(controller.queue_depth(), 1, 'no real capacity wait')
+                                self.assertFalse(future.done())
+                                if case == 'capacity_budget':
+                                    argmax.side_effect = lambda name: 1024
+                                elif case != 'passthrough_prompt':
+                                    store.mutate('create', 'SYNTH_NAME', 'synthetic-value', operation())
+                                if case == 'old_unknown':
+                                    owner.failed_cleanup()  # Existing history must remain sticky.
+                            finally:
+                                held.release()
+                            try:
+                                outcome = future.result(timeout=8)
+                            except Exception as exc:
+                                if case == 'old_unknown':
+                                    from runtime.orchestrator.team_move import DeferredTeamMove
+                                    self.assertIsInstance(exc, DeferredTeamMove)
+                                    outcome = None
+                                else:
+                                    # Preserve the RED assertion at the actual bad state.
+                                    self.assertFalse(owner.state.failed_cleanup, 'refusal invented failed cleanup')
+                                    raise
+                        self.assertEqual(launched.call_count, int(case == 'passthrough_prompt'))
+                        self.assertEqual(popen.call_count, 0)
+                    if case == 'old_unknown':
+                        self.assertTrue(owner.state.failed_cleanup)
+                    else:
+                        self.assertEqual(outcome.error, 'environment_budget_exceeded' if case == 'capacity_budget' else 'prompt_too_large')
+                    settled = _settle_or_fail_reply(org, invocation_token=token, claim=owner.claim,
+                        status=ThreadInvocationStatus.FAILED, decline_reason='prelaunch_refused')
+                    self.assertTrue(settled)
+                    owner.finish(deferred=False, failed=False)
+                    uncertain = case in ('old_unknown', 'abandon_failed')
+                    self.assertEqual(owner.state.failed_cleanup, uncertain)
+                    self.assertEqual(owner.state.unknown, uncertain)
+                    self.assertFalse(owner.attempt_open)
+                    self.assertEqual(len(owner.state.attempts), int(case == 'passthrough_prompt'))
+                    if owner.state.attempts:
+                        self.assertTrue(all(a.settled and a.quiescent and not a.launched for a in owner.state.attempts))
+                    self.assertTrue(owner.state.producer_settled)
+                    self.assertEqual(owner.admission.live.get(owner.inv.id) is owner, uncertain)
+                    db.record_conversational_arrival(thread_id='THR-refused', speaker='founder',
+                        kind=ThreadMessageKind.MESSAGE, body_markdown='Later founder reply', recipients=['worker'])
+                    next_token = db.get_reply_delivery_state('THR-refused', 'worker').queued_invocation_token
+                    self.assertIsNotNone(next_token)
+                    recovered = db.recover_reply_delivery_state()
+                    self.assertEqual(len(recovered), 0 if uncertain else 1, 'later queued reply stranded')
+                    self.assertEqual(owner.admission.preserve_pair_uncommitted('THR-refused', 'worker'), uncertain)
 
     async def test_d03_capacity_wait_refreshes_native_snapshots(self) -> None:
         from datetime import datetime, timezone

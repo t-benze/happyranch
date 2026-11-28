@@ -1063,7 +1063,11 @@ historical repair, daemon restart or deployment authority.
 A root Pause holds future task execution, not your already running callback. Complete truthful progress/completion for your original task/session and preserve real job evidence. A held-root deferred invocation is not an execution failure, and Resume grants no new session, step, budget or permission. Only the server-captured ordinary-purpose actual running session (including a normal v2-admitted manager session) may auto-run its already-authorized unreviewed jobs while held; recovery sessions retain their existing purpose restrictions.
 
 Org secret names reserve runtime/launcher controls, including LC_*, LANG,
-LANGUAGE, PYTHON*, NODE_*, BASH*, ZSH*, ENV, SHELLOPTS, PS4, IFS, LD_*, DYLD_*,
+LANGUAGE, PYTHON*, NODE_*, NPM_CONFIG_*, GIT_*/GITPERLLIB, BASH*, ZSH*, ENV,
+SHELLOPTS, PS1/PS2/PS4, IFS, LD_*, DYLD_*, CURL_*, OPENSSL_*, GCONV_*,
+GLIBC_*, MALLOC_*, NSS_*, RUST_*/CARGO_*/RUSTUP_*/RUSTC_*, BUN_*/V8_*,
+GH_*/GITHUB_*, SSH_*/GPG_*/GNUPG*/GNUTLS_*, LESS*, GO*/PERL*,
+DEBUG, SSLKEYLOGFILE, EDITOR/VISUAL/PAGER and PROMPT/RPROMPT,
 TZ and TMPDIR/TMP/TEMP; choose application credential names instead. New native
 sessions select values and names together at final launch admission after
 capacity waiting. Never print, echo, log or commit their values. The complete

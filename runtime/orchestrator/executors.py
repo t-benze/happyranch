@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Final, Literal
 
 from runtime.config import Settings
 from runtime.models import TokenUsage
+from runtime.org_secrets.diagnostics import SessionEnvironment, activate_environment, mask_text, session_diagnostics
+from runtime.platform.session_backend import PrelaunchRefused
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.task_scratch import apply_task_scratch_environment
 from runtime.platform.isolation import (
@@ -93,6 +95,12 @@ class ExecutorResult:
     provider_launched: bool = False
     # Bounded observation input only; never used for outcome or token accounting.
     skill_use_capture: SkillUseCapture | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        for name in ('stdout_tail', 'stderr_tail', 'error', 'terminal_error', 'human_error', 'terminal_error_notice'):
+            value = getattr(self, name)
+            if isinstance(value, str):
+                setattr(self, name, mask_text(value))
 
 
 _TAIL_BYTES = 2000
@@ -467,7 +475,9 @@ def _callee_env(
     if session_id is not None:
         env["HAPPYRANCH_RUNTIME_SESSION_ID"] = session_id
     check_environment_budget(env)
-    return env
+    result = SessionEnvironment(env, values.values())
+    activate_environment(result)
+    return result
 
 
 def _claude_canonical_model(obj: dict) -> str | None:
@@ -1059,6 +1069,7 @@ def _selected_human_error(text: str) -> str:
     return next((line.strip() for line in meaningful.splitlines() if line.strip()), "")
 
 
+@session_diagnostics()
 def _run_command(
     cmd: list[str],
     workspace: Path,
@@ -1302,8 +1313,8 @@ def _run_command(
                 thread_owner.direct_terminal()
         full_stdout = stdout or ""
         full_stderr = stderr or ""
-        stdout_tail = full_stdout[-_TAIL_BYTES:]
-        stderr_tail = full_stderr[-_TAIL_BYTES:]
+        stdout_tail = mask_text(full_stdout)[-_TAIL_BYTES:]
+        stderr_tail = mask_text(full_stderr)[-_TAIL_BYTES:]
         # Normalize the rate-limit signal centrally so every provider sets the
         # same field (issue #85). Sniff both streams — providers vary on whether
         # the limit message lands on stdout (Claude, rc=0) or stderr.
@@ -1323,13 +1334,13 @@ def _run_command(
                 try:
                     terminal_error = error_parser(full_stdout, full_stderr)
                 except Exception as exc:
-                    logger.warning("error parser raised: %s", exc)
+                    logger.warning("error parser raised: %s", mask_text(str(exc)))
                     terminal_error = None
             if terminal_error_notice_parser is not None:
                 try:
                     terminal_error_notice = terminal_error_notice_parser(full_stdout, full_stderr)
                 except Exception as exc:
-                    logger.warning("terminal notice parser raised: %s", exc)
+                    logger.warning("terminal notice parser raised: %s", mask_text(str(exc)))
                     terminal_error_notice = None
             return ExecutorResult(
                 success=False,
@@ -1352,7 +1363,7 @@ def _run_command(
             try:
                 token_usage = usage_parser(full_stdout)
             except Exception as exc:  # parser must never break the task
-                logger.warning("usage parser raised: %s", exc)
+                logger.warning("usage parser raised: %s", mask_text(str(exc)))
                 token_usage = None
         # Fix A: Codex `exec --json` and some Pi runs emit no model field on
         # usage events. Record the executor/provider name (e.g. 'codex', 'pi')
@@ -1366,7 +1377,7 @@ def _run_command(
             try:
                 agent_session_id = session_id_parser(full_stdout)
             except Exception as exc:  # parser must never break the task
-                logger.warning("session-id parser raised: %s", exc)
+                logger.warning("session-id parser raised: %s", mask_text(str(exc)))
                 agent_session_id = None
 
         # ── D7A strict envelope enforcement (post-parse gate) ─────────
@@ -1377,7 +1388,7 @@ def _run_command(
             try:
                 violation = strict_envelope_validator(full_stdout)
             except Exception as exc:
-                logger.warning("strict-envelope validator raised: %s", exc)
+                logger.warning("strict-envelope validator raised: %s", mask_text(str(exc)))
                 violation = f"Strict envelope validation error: {exc}"
             if violation is not None:
                 # Envelope violation — fail closed with preserved tails
@@ -1404,7 +1415,7 @@ def _run_command(
             try:
                 exit_zero_notice = exit_zero_error_notice_parser(full_stdout, full_stderr)
             except Exception as exc:
-                logger.warning("exit-zero notice parser raised: %s", exc)
+                logger.warning("exit-zero notice parser raised: %s", mask_text(str(exc)))
                 exit_zero_notice = None
 
         from runtime.skills.usage import capture_skill_use
@@ -1418,7 +1429,7 @@ def _run_command(
             stderr_tail=stderr_tail,
             token_usage=token_usage,
             agent_session_id=agent_session_id,
-            skill_use_capture=capture_skill_use(provider, workspace, input_text, full_stdout),
+            skill_use_capture=capture_skill_use(provider, workspace, input_text, mask_text(full_stdout)),
             rate_limited=rate_limited,
             terminal_error_notice=exit_zero_notice,
             provider_launched=True,
@@ -1471,13 +1482,15 @@ def build_command_launch_spec(
     )
 
 
-class PromptTransportTooLargeError(RuntimeError):
+class PromptTransportTooLargeError(PrelaunchRefused):
     """The executor's argv cannot be delivered safely (E2BIG at execve).
 
     Raised by :func:`build_command_launch_spec` when the prompt travels via
     argv (``input_text`` is None); the contained caller maps it to the same
     normalized failure category as the uncontained path.
     """
+
+    code = 'prompt_too_large'
 
 
 # Prepended to every executor prompt, regardless of session type. A
@@ -2305,6 +2318,7 @@ class CustomAdapterExecutor:
             text=True,
         )
 
+    @session_diagnostics()
     def run(
         self,
         workspace: Path,
@@ -2578,8 +2592,8 @@ class CustomAdapterExecutor:
                     thread_owner.direct_terminal()
             full_stdout = stdout or ""
             full_stderr = stderr or ""
-            stdout_tail = full_stdout[-_TAIL_BYTES:]
-            stderr_tail = full_stderr[-_TAIL_BYTES:]
+            stdout_tail = mask_text(full_stdout)[-_TAIL_BYTES:]
+            stderr_tail = mask_text(full_stderr)[-_TAIL_BYTES:]
 
             if proc.returncode != 0:
                 return ExecutorResult(

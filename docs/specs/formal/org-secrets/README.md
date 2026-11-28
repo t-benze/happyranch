@@ -37,3 +37,15 @@ checks this admission rule. `stale.cfg` deliberately delivers the queued
 revision and must violate it (exit 12). Native cancellation/otherHold and
 one-launch invariants remain. The version abstraction does not prove Python
 snapshot plumbing or prompt byte sizing; focused child tests own those seams.
+
+F4 uses `AdmissionRefusal.tla` with `refusal.cfg` in the same TLC venue. Capacity
+wait → preparation → final refusal and host-passthrough commitment → pre-Popen
+refusal both retain zero native launches. Original clean owners settle and a
+later queued arrival recovers; preexisting unknown stays sticky. `refusal-poison.cfg`
+reintroduces the generic-catch poisoning defect (NoInventedUnknown, exit 12).
+`refusal-erase.cfg` incorrectly clears old uncertainty (PriorUnknownPreserved,
+exit 12). The model assumes successful abandonment and original settlement;
+failed abandonment remains an explicit unknown hold in the Python keeper.
+It does not prove Python refinement, containment, persistence, prompt sizes or
+real startup execution. The real supervisor/native-owner keeper owns those
+observable settlement/recovery assertions in the supported synthetic venue.

@@ -676,7 +676,11 @@ and records an attributable could-not-stop audit. Neither an abort response nor
 an audit proves process cleanup. New arrivals retain their own native identities.
 
 Org secret names reserve runtime/launcher controls, including LC_*, LANG,
-LANGUAGE, PYTHON*, NODE_*, BASH*, ZSH*, ENV, SHELLOPTS, PS4, IFS, LD_*, DYLD_*,
+LANGUAGE, PYTHON*, NODE_*, NPM_CONFIG_*, GIT_*/GITPERLLIB, BASH*, ZSH*, ENV,
+SHELLOPTS, PS1/PS2/PS4, IFS, LD_*, DYLD_*, CURL_*, OPENSSL_*, GCONV_*,
+GLIBC_*, MALLOC_*, NSS_*, RUST_*/CARGO_*/RUSTUP_*/RUSTC_*, BUN_*/V8_*,
+GH_*/GITHUB_*, SSH_*/GPG_*/GNUPG*/GNUTLS_*, LESS*, GO*/PERL*,
+DEBUG, SSLKEYLOGFILE, EDITOR/VISUAL/PAGER and PROMPT/RPROMPT,
 TZ and TMPDIR/TMP/TEMP; choose application credential names instead. New native
 sessions select values and names together at final launch admission after
 capacity waiting. Never print, echo, log or commit their values. The complete

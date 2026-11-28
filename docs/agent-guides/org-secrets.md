@@ -3,7 +3,10 @@
 Founder THR-400 seq35/38: each org stores encrypted values on this machine.
 Names and update times stay visible while locked, and Delete still works.
 New/Replace require the OS key. The later slices own the Settings page,
-post guards, best-effort saved-output masking and login-start packaging.
+post guards, broader saved-output masking and login-start packaging. Slice A
+already masks session diagnostic tails, saved failure notes and errors using only
+the exact values delivered to that invocation; this is best effort, not a guarantee
+against transformed, partial or deliberately disclosed values.
 
 The shared OS account is the trust boundary. Agents, dependencies and commands
 under that account can read injected values. This provides no team/org process
@@ -114,7 +117,10 @@ Excess refuses before provider spawn with a closed environment-budget code.
 Reserved prefixes (case-insensitive): `HAPPYRANCH_`, `ANTHROPIC_`, `OPENAI_`,
 `CLAUDE_`, `CODEX_`, `OPENCODE_`, `PI_`, `UV_`, `PIP_`, `DYLD_`, `BEDROCK_`,
 `VERTEX_`, `GOOGLE_CLOUD_`, `AZURE_OPENAI_`, `LC_`, `PYTHON` (all names starting
-with PYTHON), `NODE_`, `LD_`, `BASH` and `ZSH`.
+with PYTHON), `NODE_`, `LD_`, `BASH`, `ZSH`, `GIT_`, `NPM_CONFIG_`,
+`CURL_`, `OPENSSL_`, `GCONV_`, `GLIBC_`, `MALLOC_`, `NSS_`, `RUST_`,
+`CARGO_`, `RUSTUP_`, `RUSTC_`, `BUN_`, `V8_`, `GH_`, `GITHUB_`, `SSH_`,
+`GPG_`, `GNUPG`, `GNUTLS_`, `LESS`, `GO` and `PERL`.
 
 Reserved exact names: PATH, HOME, SHELL, USER, LOGNAME, PWD, OLDPWD, SHLVL, _,
 TMPDIR, TMP, TEMP, PYTHONDONTWRITEBYTECODE, PYTHONPATH, PYTHONHOME,
@@ -126,7 +132,10 @@ MISTRAL_API_KEY, DEEPSEEK_API_KEY, AZURE_API_KEY, AWS_ACCESS_KEY_ID,
 AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_PROFILE, AWS_REGION,
 AWS_DEFAULT_REGION, LANG, LANGUAGE, TZ, ENV, SHELLOPTS, PS4, IFS, CDPATH,
 GLOBIGNORE, PROMPT_COMMAND, ZDOTDIR, FPATH, SSL_CERT_FILE, SSL_CERT_DIR,
-REQUESTS_CA_BUNDLE and CURL_CA_BUNDLE. The reserve owner is
+REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE, PS1, PS2, PROMPT, RPROMPT, EDITOR, VISUAL,
+PAGER, RUSTFLAGS, RUSTDOCFLAGS, GODEBUG, GOTRACEBACK, GOTOOLCHAIN, GOENV,
+GOFLAGS, GOPROXY, GOSUMDB, GOWORK, GOMODCACHE, GOROOT, GOPATH, SSLKEYLOGFILE,
+DEBUG and GITPERLLIB. The reserve owner is
 `runtime/org_secrets/names.py`. This intentionally includes whole interpreter,
 loader and shell families: startup diagnostics can emit an invalid control value
 before any agent code runs. API `reserved_name` copy identifies these control
@@ -141,7 +150,21 @@ in `runtime/adapters/`; and Linux desktop `child_environment` plus
 `packaging/linux/build-payload.sh` launcher generation. These own PATH, HOME,
 LANG/LC_*, HAPPYRANCH_*, PYTHON*, UV_*, VIRTUAL_ENV, cache and scratch names.
 The reserved-name keeper checks runtime assignment shapes and independent
-interpreter/locale/loader controls, including PYTHONWARNINGS and LC_ALL.
+interpreter/locale/loader controls, including PYTHONWARNINGS and LC_ALL. Git's
+entire GIT_* namespace (including trace destinations), npm configuration,
+curl/OpenSSL diagnostics/configuration, glibc conversion/tunables/allocation
+controls and NSS controls are reserved as families. This is a launcher/tool
+inventory, not a list of known offending examples. Rust-based CLIs, opencode's
+Bun runtime, V8, GitHub CLI, Go tools, SSH/GPG/TLS helpers and pager/editor
+controls also have reserved diagnostics/configuration families or exact controls.
+
+Final launch environments carry only their own in-memory masking custody; no
+org-wide value scan or value log is used. Full diagnostic streams are masked
+before tail truncation, and parsed executor diagnostic fields, parser warnings,
+exceptions and supervisor error text are masked before runtime persistence.
+Contained launches use the final spec's values, even after a store replacement.
+The active scope is dropped at invocation exit; original attempt cleanup callbacks
+retain only that attempt's bounded custody. Later sessions do not inherit it.
 
 ## Session coverage and holds
 
@@ -162,7 +185,13 @@ prompt bound use that same snapshot. New/Replace/Delete committed during a wait
 therefore affect the admitted child; existing children retain their copies.
 Every thread phase re-bounds the actual shared preamble plus body, trimming only
 optional history and refusing oversized mandatory context. Direct launch attempts
-also select after provider waiting. Authoritative runtime/cache/scratch settings
+also select after provider waiting. Expected prompt/environment admission
+refusals before backend launch abandon preparation and settle as ordinary closed
+failures; they create no native attempt or cleanup uncertainty. On passthrough,
+the exact owner can settle an already-committed attempt only with proof that
+Popen/on_started never happened. Failed abandonment and preexisting uncertainty
+remain sticky; a clean refusal permits startup recovery of a later queued reply.
+Authoritative runtime/cache/scratch settings
 are applied afterward. Stored reserved names fail
 closed. Context lookup uses the canonical org workspace, not a global slug
 lookup across runtime installations. Orgs with zero configured secrets never

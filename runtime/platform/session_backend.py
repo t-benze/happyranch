@@ -343,6 +343,12 @@ class RecoveryResult:
 # ── Backend errors ───────────────────────────────────────────────────
 
 
+class PrelaunchRefused(RuntimeError):
+    """Expected admission refusal, valid only at a proven no-launch boundary."""
+
+    code = 'prelaunch_refused'
+
+
 class BackendError(Exception):
     """Base class for backend operation failures."""
 

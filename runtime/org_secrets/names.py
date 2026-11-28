@@ -21,6 +21,10 @@ RESERVED_NAMES = frozenset({
     'AWS_PROFILE', 'AWS_REGION', 'AWS_DEFAULT_REGION',
     'LANG', 'LANGUAGE', 'TZ', 'ENV', 'SHELLOPTS', 'PS4', 'IFS', 'CDPATH',
     'GLOBIGNORE', 'PROMPT_COMMAND', 'ZDOTDIR', 'FPATH',
+    'PS1', 'PS2', 'PROMPT', 'RPROMPT', 'EDITOR', 'VISUAL', 'PAGER',
+    'RUSTFLAGS', 'RUSTDOCFLAGS', 'GODEBUG', 'GOTRACEBACK', 'GOTOOLCHAIN',
+    'GOENV', 'GOFLAGS', 'GOPROXY', 'GOSUMDB', 'GOWORK', 'GOMODCACHE',
+    'GOROOT', 'GOPATH', 'SSLKEYLOGFILE', 'DEBUG', 'GITPERLLIB',
     'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE',
 })
 RESERVED_PREFIXES = (
@@ -30,6 +34,10 @@ RESERVED_PREFIXES = (
     # Interpreters/loaders consume these before application code and may echo
     # invalid values in automatic startup diagnostics. Reserve whole families.
     'LC_', 'PYTHON', 'NODE_', 'LD_', 'BASH', 'ZSH',
+    'GIT_', 'NPM_CONFIG_', 'CURL_', 'OPENSSL_', 'GCONV_', 'GLIBC_',
+    'MALLOC_', 'NSS_', 'RUST_', 'CARGO_', 'RUSTUP_', 'RUSTC_', 'BUN_',
+    'V8_', 'GH_', 'GITHUB_', 'SSH_', 'GPG_', 'GNUPG', 'GNUTLS_', 'LESS',
+    'GO', 'PERL',
 )
 
 

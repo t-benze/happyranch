@@ -6,6 +6,11 @@ from pathlib import Path
 
 from runtime.org_secrets.names import SecretError, validate_name
 from runtime.org_secrets.store import store_for
+from runtime.platform.session_backend import PrelaunchRefused
+
+
+class EnvironmentBudgetRefused(SecretError, PrelaunchRefused):
+    """Closed final environment admission, before any process launch."""
 
 
 def session_owner():
@@ -45,7 +50,7 @@ def check_environment_budget(env: dict[str, str]) -> None:
     limit = min(int(os.sysconf('SC_ARG_MAX')) // 2, 1024 * 1024)
     size = sum(len(os.fsencode(k)) + len(os.fsencode(v)) + 2 + 8 for k, v in env.items())
     if size > limit:
-        raise SecretError('environment_budget_exceeded', 413)
+        raise EnvironmentBudgetRefused('environment_budget_exceeded', 413)
 
 
 def admit_session_values(org_slug: str | None, workspace: Path | None, owner=None, *, selflaunch: bool = False) -> dict[str, str]:
