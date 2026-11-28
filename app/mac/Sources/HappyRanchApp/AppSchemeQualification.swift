@@ -598,9 +598,10 @@ final class AppSchemeQualification: NSObject, WKScriptMessageHandler, WKScriptMe
             guard let plan = value as? [[String: Any]], plan.count <= 8 else { throw AppAPIError.unavailable }
             var covered = [String: Bool]()
             @MainActor func captureRecovery(_ name: String, scroll: [String: Any]) async throws {
+                let reset = scroll.isEmpty
                 let value = try await dialogStep("mac-recovery-visibility", fields: ["name": name, "textPercent": scale]) {
                     try await view.callAsyncJavaScript(Self.recoveryVisibility,
-                        arguments: ["scale": scale, "reset": scroll.isEmpty, "recheck": locale == "zh" ? "重新检查" : "Recheck",
+                        arguments: ["scale": scale, "reset": reset, "recheck": locale == "zh" ? "重新检查" : "Recheck",
                             "reopen": locale == "zh" ? "更新后，请退出 HappyRanch 并重新打开。"
                                 : "After updating, quit HappyRanch and open it again."], in: nil, contentWorld: .page)
                 }
