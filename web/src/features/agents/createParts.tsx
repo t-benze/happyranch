@@ -9,9 +9,9 @@ import type { ReactNode } from 'react';
 export type NoteKind = 'info' | 'warn' | 'bad' | 'plain';
 
 const NOTE_CLASS: Record<NoteKind, string> = {
-  info: 'bg-info-soft border-transparent',
-  warn: 'bg-attention-soft border-transparent',
-  bad: 'bg-danger-soft border-transparent',
+  info: 'bg-info-soft border-info-soft',
+  warn: 'bg-attention-soft border-attention-soft',
+  bad: 'bg-danger-soft border-danger-soft',
   plain: 'bg-surface-raised border-border-subtle',
 };
 const NOTE_TITLE: Record<NoteKind, string> = {

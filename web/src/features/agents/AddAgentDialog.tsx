@@ -695,8 +695,10 @@ export function AddAgentDialog({ open, mode: requestedMode, preselectTeam = '', 
   };
   useEffect(() => {
     if (!menuOpen) return;
-    requestAnimationFrame(() => q<HTMLButtonElement>('[data-create-menu] [aria-checked="true"]')?.focus() ??
-      q<HTMLButtonElement>('[data-create-menu] [role="menuitemradio"]')?.focus());
+    // Focus starts on the current computer (the checked item), else the first.
+    requestAnimationFrame(() =>
+      (q<HTMLButtonElement>('[data-create-menu] [aria-checked="true"]') ??
+        q<HTMLButtonElement>('[data-create-menu] [role="menuitemradio"]'))?.focus());
   }, [menuOpen]);
   const connectionButton = (key: string) =>
     openConnection ? (
@@ -1118,8 +1120,8 @@ export function AddAgentDialog({ open, mode: requestedMode, preselectTeam = '', 
       <FieldLabel as="legend" required={required}>{t('agents.create.teamLabel')}</FieldLabel>
       {teamsQuery.isLoading ? (
         <div role="status" className="border-border-subtle bg-surface-raised rounded-md border p-3.5">
-          <div className="bg-surface-hover mb-2.5 h-3 w-2/3 animate-pulse rounded motion-reduce:animate-none" />
-          <div className="bg-surface-hover mb-2.5 h-3 w-1/2 animate-pulse rounded motion-reduce:animate-none" />
+          <div className="bg-surface-hover mb-2.5 h-3 w-2/3 animate-pulse rounded-sm motion-reduce:animate-none" />
+          <div className="bg-surface-hover mb-2.5 h-3 w-1/2 animate-pulse rounded-sm motion-reduce:animate-none" />
           <span className="text-text-muted text-xs">{t('agents.create.teamsLoading')}</span>
         </div>
       ) : teamsQuery.isError ? (
@@ -1249,7 +1251,7 @@ export function AddAgentDialog({ open, mode: requestedMode, preselectTeam = '', 
       <FieldLabel as="legend" required={required}>{t('agents.executor.label')}</FieldLabel>
       {executorOptions.state === 'loading' ? (
         <div role="status" className="border-border-subtle bg-surface-raised rounded-md border p-3.5" data-create-state="executors-loading">
-          <div className="bg-surface-hover mb-2.5 h-3 w-2/5 animate-pulse rounded motion-reduce:animate-none" />
+          <div className="bg-surface-hover mb-2.5 h-3 w-2/5 animate-pulse rounded-sm motion-reduce:animate-none" />
           <span className="text-text-muted text-xs">{t('agents.create.executorsLoading')}</span>
         </div>
       ) : executorOptions.state === 'error' ? (
@@ -1533,7 +1535,7 @@ export function AddAgentDialog({ open, mode: requestedMode, preselectTeam = '', 
             {t(mode === 'team' ? 'agents.create.titleTeam' : 'agents.create.titleAgent')}
           </DialogTitle>
           <div className="mt-2.5 flex flex-wrap gap-2 text-xs" data-testid="create-context">
-            <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 ${targetBlock === 'remote' ? 'bg-info-soft border-transparent' : targetBlock !== null ? 'bg-attention-soft text-attention-text border-transparent' : 'border-border-subtle bg-surface-raised text-text-secondary'}`}>
+            <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 ${targetBlock === 'remote' ? 'bg-info-soft border-info-soft' : targetBlock !== null ? 'bg-attention-soft text-attention-text border-attention-soft' : 'border-border-subtle bg-surface-raised text-text-secondary'}`}>
               {t('agents.create.ctx.computer')} <b className="text-text-primary font-semibold">{shownComputer}</b>
               {targetBlock === 'remote' && <span>· {t('agents.create.ctx.remote')}</span>}
             </span>
