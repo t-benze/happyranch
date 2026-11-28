@@ -9,6 +9,8 @@ require (
 
 replace happyranch/tsnethealth => ../../shared/tsnethealth
 
+replace tailscale.com v1.78.0 => ./third_party/tailscale.com
+
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/akutz/memconn v0.1.0 // indirect

@@ -17,6 +17,9 @@ _spec = importlib.util.spec_from_file_location("client_model", Path(__file__).wi
 model = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(model)
 native, custody = model._native, model._store
+_spec = importlib.util.spec_from_file_location("_happyranch_app_locale", Path(__file__).with_name("app_locale.py"))
+_locale = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_locale)
 ACTIONS = ("status", "accept-invite", "saved-computers", "connect-saved", "remove-saved",
            "disconnect", "cancel-attempt", "retry", "retry-save", "health")
 ERRORS = frozenset(("invalidInvite", "expiredInvite", "joinUnavailable", "runtimeUnavailable",
@@ -242,9 +245,11 @@ class Client:
             self.save()
 
     def foreground(self) -> dict:
-        url = self.work(self.session.open_runtime)  # authenticated health, never a UI-load claim
-        self.terminal.say("Runtime reachable: " + url)
-        self.terminal.say("Foreground connection; Ctrl-C or SIGTERM disconnects. Loaded RELEASE UI is unverified.")
+        self.work(self.session.health)  # authenticated reachability, no runtime listener
+        chinese = _locale.load()["current"] == "zh-CN"
+        self.terminal.say("运行时可连接。" if chinese else "Runtime reachable.")
+        self.terminal.say("正在检查访问权限；按 Ctrl-C 断开连接。" if chinese else
+                          "Observing access; Ctrl-C disconnects.")
         print(json.dumps(dict(state="runtimeReachable", effect="confirmed", savedAccess=self.saved,
                               code=self.code)), flush=True)
         next_health = time.monotonic() + 1.0

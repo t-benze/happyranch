@@ -206,8 +206,7 @@ the UI shows; daemon behavior and saved settings are unchanged. See
 (The previous Textual TUI under `src/tui/` was removed in favor of the
 web UI; `happyranch threads` with no subcommand now points you at `happyranch web`.)
 
-**Founder CLI commands** (unchanged — scripts and automations depend on
-them):
+**Founder CLI commands**:
 
 ```bash
 happyranch threads compose --org <slug> --subject "..." --recipients alice,bob --body "..."
@@ -215,6 +214,7 @@ happyranch threads list --org <slug>
 happyranch threads show --org <slug> THR-001
 happyranch threads send --org <slug> --thread-id THR-001 --from-file /tmp/send.json
 happyranch threads invite --org <slug> --thread-id THR-001 --agent qa
+happyranch threads remove-participant --org <slug> --thread-id THR-001 --agent consultant_head
 happyranch threads forward --org <slug> --source THR-008 --recipients alice,bob
 happyranch threads archive --org <slug> --thread-id THR-001 --from-file /tmp/arch.json
 happyranch threads resume --org <slug> --thread-id THR-001
@@ -222,6 +222,12 @@ happyranch threads extend --org <slug> --thread-id THR-001 --new-cap 1000
 happyranch threads abort-replies --org <slug> --thread-id THR-001
 happyranch threads attest-abort-predecessor --org <slug> --thread-id THR-001 --invocation-id 123 --reason "..."
 ```
+
+`remove-participant` accepts the permanent ID or current ASCII name of an active
+or terminated participant in an open thread and prints the JSON response.
+Pending agents are ineligible; unknown addresses refuse locally with
+`unknown_identity` and exit 1. Former names do not forward, and daemon errors
+also exit nonzero.
 
 Archive is synchronous: the daemon writes the transcript file and flips the
 thread to `archived` inside the POST handler. The founder can later reopen

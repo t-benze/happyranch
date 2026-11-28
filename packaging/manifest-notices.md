@@ -29,13 +29,18 @@ The existing collector `app/mac/scripts/manifest_notices.py` owns direct inputs:
   Python distribution are conservatively included. Unselected marker/platform,
   build-only npm and Go modules without target dependencies have explicit reasons.
   No supplied component subset controls inventory membership.
-  The sole Go replacement exemption is first-party `happyranch/tsnethealth`
+  The first-party Go replacement exemption is `happyranch/tsnethealth`
   replaced by unversioned `../../shared/tsnethealth`, with both go-list Dir
   values resolving exactly to the exported `app/shared/tsnethealth` directory
   under the source root. It produces no third-party owner row. Versioned or
-  near-miss replacements, symlink escapes and every other cache-escaping module
-  remain refused. The inventory retains the source root for independent owner
-  rederivation; no third-party notice obligation changes.
+  near-miss replacements and symlink escapes remain refused. The only
+  third-party association is the client bridge's exact `tailscale.com v1.78.0`
+  replacement at `./third_party/tailscale.com`, bound to the pristine module h1,
+  committed patch SHA-256 and verified prepared tree. It retains the upstream
+  owner and original notice bytes. See the
+  [pin and preparation procedure](../app/mac/tsnet-bridge/third_party/README.md).
+  Every other replacement or cache-escaping module remains refused. The
+  inventory retains the source root for independent owner rederivation.
 - The Swift owner family reads the exact Sparkle binary-target URL/version and
   checksum from `app/mac/Package.swift`. SwiftPM authenticates the official ZIP;
   the collector includes `swift:Sparkle` and the complete 2.10.1 release LICENSE
@@ -87,6 +92,7 @@ retired records are honestly unavailable.
 Run finite portable checks outside CI:
 
 ```sh
+python3 -I app/mac/tsnet-bridge/third_party/prepare_tailscale.py --go /absolute/path/to/go
 python packaging/verify_manifest_notices.py --scratch /absolute/new/task-scratch
 python packaging/verify_mac_run_layout.py --scratch /absolute/new/layout-scratch
 ```

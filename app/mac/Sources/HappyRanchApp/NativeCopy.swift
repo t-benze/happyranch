@@ -3,6 +3,8 @@ import Foundation
 /// App-owned presentation only. Protocol codes, log output and protected
 /// records stay with their existing owners and are never rewritten here.
 enum NativeCopy: String {
+    case runtimeReachable = "Runtime reachable."
+    case observingAccess = "Observing access; Ctrl-C disconnects."
     case diagnostics = "Diagnostics"
     case exportBundle = "Export Bundle"
     case app = "App"
@@ -165,6 +167,8 @@ enum NativeCopy: String {
     @MainActor func text(locale: AppLocalePreference) -> String {
         guard locale.nativeChinese else { return rawValue }
         switch self {
+        case .runtimeReachable: return "运行时可连接。"
+        case .observingAccess: return "正在检查访问权限；按 Ctrl-C 断开连接。"
         case .diagnostics: return "诊断"
         case .exportBundle: return "导出诊断包"
         case .app: return "应用"

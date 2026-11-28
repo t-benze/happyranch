@@ -23,6 +23,8 @@ final class NativeCopyTests: XCTestCase {
         let file = AppPreferenceFile(directory: root, name: "locale")
         // Independent literal expectations for every newly localized native key.
         let cases: [(NativeCopy, String, String)] = [
+            (.runtimeReachable, "Runtime reachable.", "运行时可连接。"),
+            (.observingAccess, "Observing access; Ctrl-C disconnects.", "正在检查访问权限；按 Ctrl-C 断开连接。"),
             (.diagnostics, "Diagnostics", "诊断"),
             (.exportBundle, "Export Bundle", "导出诊断包"),
             (.app, "App", "应用"),

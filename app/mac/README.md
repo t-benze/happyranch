@@ -72,8 +72,11 @@ selector. Candidate readiness and ordinary Disconnect do not choose the next
 startup target. Missing and invalid records are distinct; a saved, unsaved or
 unavailable remote choice must not silently start or select this computer.
 Confirmed removal or revocation clears the matching startup reference.
-MAC-4b owns subsequent close/Quit/Relaunch and updater gates; MAC-4a preserves
-the MAC-3 app-owned child and its Quit teardown, with no keep-running migration.
+MAC-4b option A gates close, Quit and updater exits through current Main owners
+and preserves the app-owned child teardown. Mac recovery offers guidance +
+Recheck and tells the user to quit and reopen. Mac recovery Relaunch is deferred
+to a separate piece requiring founder approval (THR-387 seq178), with no
+keep-running migration.
 
 `AppPreferences.swift` stores bounded nonsecret records in
 `~/Library/Application Support/HappyRanchApp/locale` and `startup-selection`.
@@ -193,8 +196,45 @@ warning. Confirmed removal also forgets only that binding's failed-save outcome,
 including revoked unsaved B while saved computer A remains selected. Failed or
 unknown removal retains the warning; saving another computer does not settle it.
 MAC-3 removes the legacy phase strip without reserving height or adding fallback
-copy. Settings owns local controls. MAC-4b close/Quit/Relaunch
-policy remains outside this cutover.
+copy. Settings owns local controls. MAC-4b option A adds close/Quit/updater
+gates; Mac recovery Relaunch remains deferred to a separately founder-approved
+piece, with quit-and-reopen guidance + Recheck available now.
+Recovery evidence is required in both locales at 100% and 200% text. The
+dark-theme captures retain `mac-recovery-no-relaunch-en.png` and
+`mac-recovery-no-relaunch-zh.png` for 200%, and add
+`mac-recovery-no-relaunch-en-100.png` and `mac-recovery-no-relaunch-zh-100.png`.
+These four PNGs are additional to every existing top/scroll capture below;
+the closed archive requires their matching locale/theme/scale receipts.
+At 200%, recovery also uses the maintained overlapping scroll plan, retaining
+`mac-recovery-no-relaunch-{en,zh}-scroll-N.png` through every visible pane's
+bottom (at most 16 companions per locale). The original EN 60 / ZH 52 capture
+sets remain required; exact counts increase by each locale's recovery
+`capture_complete` page count. Its seventh completion receipt uses
+`dialog: recovery`, dark theme and 200% text.
+At **each** scale, the qualifier additionally scrolls guidance, quit-and-reopen
+copy and Recheck into view with `scrollIntoView(block: start)`. It retains
+`mac-recovery-no-relaunch-{locale}-{scale}-{guidance,reopen,recheck}-N.png`;
+tall elements get overlapping slices (1–8 per element). Two additional
+`recovery_capture_complete` receipts declare each scale's three exact page
+counts. The collector requires every declared PNG and matching receipt,
+without replacing or lowering any original top/scroll count.
+
+Every recovery screenshot records strict whole-rectangle `recoveryVisible`
+booleans and per-element `recoveryDiagnostics`: identity/text prefix, actual
+computed root font size, bounding rectangle, effective ancestor client clip,
+style eligibility, hit-test point/target/result, visible interval and rejection
+reason. These remain in the collector's process events and recovery diagnostics,
+including failures. A fitting element must still be wholly visible in one
+capture. If its rectangle is taller than the effective viewport, the union of
+its visibly captured vertical intervals must cover its **entire** height.
+Each eligible segment must have the requested font size, visible styles,
+positive size, full horizontal containment and a successful hit test inside
+that segment; gaps, clipping in the horizontal direction, occlusion and wrong
+scale cannot pass. Stable identity/text/size/scale are required across intervals.
+This preserves the full-content requirement when one-frame containment is
+physically impossible. Boolean-only historical receipts retain the old strict
+requirement and cannot be upgraded into interval coverage. QA still inspects
+the actual PNGs; all companions preserve the 760×560 viewport and full copy.
 
 After independent exact-head review, the existing Jenkins `SUITE=app-scheme`
 still runs the full unfiltered XCTest + Swift Testing workload and transport
@@ -428,7 +468,8 @@ The page bootstrap returns only `hr_native_session`. Local calls read the
 existing daemon credential natively at the already verified port. Remote calls
 reuse ClientBridge's selected managed peer or DIY dial and in-memory credential
 from existing native/Keychain custody. The GUI no longer starts a proxy listener;
-the foreground CLI's `open`/loopback behavior remains. Redirects, cookies,
+the foreground CLI no longer starts one either; it checks access natively and
+observes it until Ctrl-C or denial. Redirects, cookies,
 page authorization and identity headers are not forwarded. The packaged
 `remote-client-config-policy.v1.json` supplies the same native config-write
 refusals as Linux; the daemon/home connector remote allowlist is unchanged.
@@ -740,9 +781,16 @@ unavailable observation. Separate `disconnect`, `cancel-attempt`, `retry`,
 Ctrl-C/SIGTERM in the owning invocation cancels/disconnects, preserves observed
 save/deletion settlement and performs independently bounded session teardown.
 Unconfirmed cleanup is `cleanupIncomplete`/unknown. Retry uses a new invocation
-and fresh consent. Authenticated runtime health/open is `runtimeReachable`, never
-Connected or a claim that the RELEASE page loaded. The loopback URL is shown only
-on the terminal and lasts only while the process lives. JSON stdout contains
+and fresh consent. Native `checkAccess(credential)` binds the existing device
+authority and checks authenticated health without starting ClientBridge's listener;
+subsequent checks run every five seconds until cancellation or denial. This is
+`runtimeReachable`, never Connected or a claim that the RELEASE page loaded.
+The terminal says “Runtime reachable.” / “运行时可连接。” and “Observing access;
+Ctrl-C disconnects.” / “正在检查访问权限；按 Ctrl-C 断开连接。”, using NativeCopy
+and the existing app language preference. No client runtime port/URL is created,
+printed, saved or retained; this command does not open a browser runtime. GUI
+native transport/join/health/cleanup still need ClientBridge, so the class and
+its tests remain. JSON stdout contains
 closed states/effects and generic saved-computer labels/opaque refs; no target,
 invite, phrase, URL, bearer, fingerprint or diagnostics. Exit 0 means completed
 read/action or cancellation, 1 a closed error, 2 invalid grammar without argument
@@ -1184,6 +1232,11 @@ GOTOOLCHAIN=go1.23.12 CGO_ENABLED=1 GOFLAGS=-mod=readonly GOWORK=off go test -co
 GOTOOLCHAIN=go1.23.12 CGO_ENABLED=1 GOFLAGS=-mod=readonly GOWORK=off go vet ./...
 ```
 
+Before full-module bridge checks, prepare its client-only Tailscale replacement
+with `python3 -I third_party/prepare_tailscale.py` from the bridge directory.
+The shipping Mac and Linux build scripts do this automatically. See the
+[pin, provenance and qualification procedure](tsnet-bridge/third_party/README.md).
+
 The module declares Go 1.23.1; the existing documented verification pin is
 Go 1.23.12. `CGO_ENABLED=0 go test ./...` cannot compile this module because
 existing `bridge.go` C exports supply symbols used by `health.go` and the
@@ -1401,12 +1454,48 @@ The app constructs an updater with `startingUpdater: false` and starts it only
 when the bundle has a canonical base64 `SUPublicEDKey` of exactly 32 bytes.
 Optional `--sparkle-public-key PUBLIC_KEY` is validated before building. With
 a key the build writes `SUEnableAutomaticChecks=true` and
-`SUAutomaticallyUpdate=true` for silent checks/downloads; without one the key
-is omitted and both settings stay false. The fixed feed is
+`SUAutomaticallyUpdate=true` as the defaults for automatic checks/downloads;
+without one the key is omitted and both settings stay false. The fixed feed is
 `https://app.happyranch.ai/mac/appcast.xml`. A missing/invalid key leaves
 Check for Updates disabled and records the reason in Diagnostics → Updates.
 No private key is generated or handled. The notice manifest includes
 `swift:Sparkle` and the release's complete LICENSE with all four external licences.
+
+**Update disclosure and opt-out:** open **HappyRanch → Update Settings…**
+(Chinese: **更新设置…**), beside **Check for Updates…** in the app menu.
+This uses the existing native menu/dialog pattern and remains available before
+a local or remote runtime connects. The English and Chinese dialog explains
+the feed request and provides **Automatically check for updates** with Save
+and Cancel. Turning it off sets Sparkle's `automaticallyDownloadsUpdates=false`
+before `automaticallyChecksForUpdates=false`; Sparkle persists both in the app's
+user defaults. It affects future automatic checks/downloads; an in-progress
+or already downloaded update may still complete. Turning it back on enables
+checks and downloads. Saving an unchanged checkbox or cancelling preserves
+existing preferences, including an independently disabled download preference.
+Startup does not overwrite the user's check/download choices. Manual
+**Check for Updates…** remains available when the updater is configured and ready.
+Builds without a valid update public key show the disclosure with the checkbox
+disabled and an explanation.
+
+With our pinned **Sparkle 2.10.1** configuration, the HTTPS feed request exposes
+the client's public IP address to `app.happyranch.ai`. Its default `User-Agent`
+is `HappyRanch/<CFBundleShortVersionString> Sparkle/2.10.1` (the name comes from
+the app bundle). It also sets `Accept: application/rss+xml,*/*;q=0.1`.
+Contrary to the initial audit assumption, Sparkle does **not** explicitly add
+the macOS version to this request. Optional system-profile sending is off by
+default and is explicitly kept off through `sendsSystemProfile=false` before
+starting our updater. No custom feed parameters, HTTP headers or User-Agent
+are configured. The feed URL has no profiling query parameters; macOS version,
+hardware details and preferred language are not added as a Sparkle system profile.
+This describes Sparkle's application-level request, not a packet capture or
+a claim about additional platform HTTP/TLS metadata.
+
+Confirmed against the 2.10.1 source:
+[User-Agent construction](https://github.com/sparkle-project/Sparkle/blob/2.10.1/Sparkle/SPUUserAgent%2BPrivate.m),
+[feed parameters](https://github.com/sparkle-project/Sparkle/blob/2.10.1/Sparkle/SPUUpdater.m),
+[request headers](https://github.com/sparkle-project/Sparkle/blob/2.10.1/Sparkle/SUAppcastDriver.m),
+[profile/defaults and preference setter behavior](https://github.com/sparkle-project/Sparkle/blob/2.10.1/Sparkle/SPUUpdaterSettings.m),
+and [supported persisted updater properties](https://github.com/sparkle-project/Sparkle/blob/2.10.1/Sparkle/SPUUpdater.h).
 
 Every Sparkle relaunch request, including its scheduled/impatient prompt,
 is postponed through `SPUUpdaterDelegate`. The pure `UpdateGate` policy lives
@@ -1424,29 +1513,32 @@ Requests stay on loopback; redirects are refused.
 
 | Condition or choice | Result |
 | --- | --- |
-| Owned daemon, idle snapshot | Ask “Restart HappyRanch to install the update?” with Restart now / Later; never stop automatically |
-| Owned daemon, busy | Update when they finish / Update now and stop them / Later |
+| Owned daemon, idle snapshot | Ask “Restart HappyRanch to install the update?” with Cancel (Return default) / Restart now; never stop automatically |
+| Owned daemon, busy | Cancel (Return default) / Update when they finish / Update now and stop them |
 | Update when they finish | Re-read every five seconds; when idle, show the restart confirmation and wait for a new click |
 | Restart now | Fresh re-read immediately before stop; busy/unknown returns to the busy prompt |
 | Update now and stop them | Fresh known status; explicit consent permits stopping busy work |
 | Unknown work status | Hold; immediate update disabled; wait/retry or Later only |
-| Either authorized stop | Existing TERM/KILL stop; confirm the same child exited, then release Sparkle's block once |
+| Either authorized stop | After native consent, request the web all-owner gate; synchronously recheck its matching receipt, ACK, then TERM/KILL and confirm same-child exit before one Sparkle release |
 | Later | Hold without polling; Install Downloaded Update in the app menu resumes the gate |
-| Stop incomplete | Never release; retain old app and existing Stop incomplete state; manual resume may retry |
-| External daemon or CLIENT | Release directly; no signal sent to the daemon |
+| Stop incomplete | Never release; retain old app and app-lifetime outcome custody. A later exit, empty summary or resume is not permission to replay installation |
+| Truly unowned/external daemon | No signals; release only after the matching web lifecycle gate and final recheck. Selection/CLIENT role does not negate ownership of a local child |
 | Plain Quit | Existing owned-daemon stop/exit path; Sparkle installs after app exit, without a relaunch-block call |
 
 The confirmation explicitly warns that work starting before the stop will be
 interrupted. The read-only observation is not an admission lock: a residual
 click-to-TERM window remains, covered by that explicit consent. No drain or
-admission-close route is added. Plain Quit still exits if its bounded stop
-fails; Sparkle may then install while the old daemon survives. On next launch
-existing discovery treats that daemon as external.
+admission-close route is added. Controlled Quit/Main close now stay open if bounded owned-child teardown is incomplete; Sparkle is not released. `applicationWillTerminate` retains the synchronous bounded retry for forced platform termination. A forced OS/process exit is outside the controlled gate guarantee.
 
 Check for Updates is user-initiated. Pending relaunches disable that action;
 Install Downloaded Update lets the user revisit Later. Updater startup/abort and
 download errors are retained in a bounded, redacted Diagnostics → Updates log
-and its JSON export. Background errors produce no app-owned alert. The first
+and its JSON export. A released update grants only one platform termination
+callback; updater abort/installer error revokes any unused grant. A later Quit
+requires fresh native consent and the current Main owner gate, including new
+dirty drafts and pending/unknown saves. Ordinary Quit grants admission only
+during its synchronous platform delivery; a returned delivery retains no grant.
+Background errors produce no app-owned alert. The first
 launch from Downloads, `/Volumes`, a read-only volume or AppTranslocation shows
 one notice asking the user to move the app to Applications and reopen it.
 
@@ -2649,3 +2741,60 @@ explicit string `unavailable`. Export never waits for a network probe. The cache
 can be older than the current connection; use its `at` timestamp. Native
 archive/app linkage remains a Mac build check. Focused macOS tests:
 `swift test --package-path app/mac --filter TsnetHealthRecordTests`.
+
+
+## MAC-4b: app-owned close, Quit and updater gate
+
+Founder THR-387 seq178 option A; TASK-19576 R1/R2. `MacAppLifetime` owns one
+reservation across actual Main-window close, AppKit Quit and Sparkle. Main close
+maps to ordinary Quit: stop the same owned local child synchronously, observe
+exit/settle the supervisor, close Main and its shared dialogs/revoke AppScheme,
+then complete AppKit termination. Remote selection does not change local child
+ownership. External daemons and remote Host services/grants/saved access are not
+stopped/revoked/removed. Connection presentation close retains its operation;
+active candidate, protected-save/cleanup custody and local mutations hold exit.
+
+Native actual-effects confirmation comes first, with Cancel as Return default,
+frozen launch-locale EN/zh-CN copy and a single token-bound response ingress.
+Missing Main/conflicting sheet, abort, timeout or Cancel ends an unstarted
+attempt. Only then does native send `app.lifecycleRequested` to the current
+admitted subscribed Main; the shared web Keep editing / Discard gate owns all
+Main/Settings/detached unsent draft generations. Pending/unknown saves cannot be
+discarded. No summary/subscriber means no queued event or automatic replay.
+
+The matching gate-bearing `app.ownersChanged` reply is synchronous: final
+current-document/target/generation/process/custody recheck, then either a string
+`effect:none` refusal (ordinary saving can resume) or success ACK followed by
+effects. No human prompt, await or I/O occupies the unchanged 5000 ms shared
+receipt deadline. Lost/unreadable receipts keep the existing save hold; ACK is
+not exit success. Consumed/incomplete effects retain native ownership across
+retirement/reload and cannot replay. When idle requires fresh observation,
+reservation, native consent and the current web gate.
+Native child tests wait for the consumed lifetime reservation to finish before
+checking final exit/close/release effects: the ACK may resume JavaScript during
+the stop's nested run loop. Replacement-document tests with retired unknown
+saves synchronize relay/subscription admission without waiting for a lifetime
+anchor; that anchor intentionally remains unavailable. This changes no exit
+policy or receipt deadline.
+
+Wire mapping: Main close = `close`; ordinary Quit and install-on-Quit = `quit`;
+Sparkle install-and-restart = `relaunch` because Sparkle performs that launch.
+Install-on-Quit never calls the relaunch-install callback. This wire action does
+not enable Mac recovery Relaunch: `app.relaunch` has no handler and Mac status,
+state changes and locale publication omit `app_relaunch` consistently. App-side
+version mismatch keeps guidance + Recheck and says to update, quit and reopen.
+Linux's supported Relaunch behavior is unchanged.
+
+Mac recovery Relaunch, post-exit handoff, packaged C/K declaration and its
+reader/validator are **deferred by founder THR-387 seq178**, requiring separate
+later approval. No LaunchAgent/keep-running, daemon/security, dependency,
+packaging or CI/build-trigger change is included. The finite model is in
+[mac-app-lifetime](../../docs/specs/formal/mac-app-lifetime/README.md).
+
+Focused Linux transport/render keepers (after `cd web; npm ci`, then repo root):
+`node --experimental-transform-types --test web/scripts/mac-local-relay.test.mjs web/scripts/local-service-page.test.mjs web/scripts/native-owners.test.mjs web/scripts/owner-registry.test.mjs web/scripts/native-recovery.test.mjs`.
+Native `MacAppLifetimeTests` and the existing serialized `UpdateGateTests` run
+in the unchanged unfiltered app-scheme XCTest and Swift Testing venues. Native
+compile/execution, real sheets/focus/VoiceOver, built-SPA EN/ZH/200% screenshots
+and exact-head Mac build/QA are NOT RUN on the Linux maker. No Mac/Jenkins build
+is triggered before independent review APPROVE at the exact head.

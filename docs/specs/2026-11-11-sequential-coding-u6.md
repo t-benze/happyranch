@@ -266,7 +266,7 @@ native overlay already owned by the mixed writer. Standalone defaults preserve
 the original transaction/order/refusals and event bytes. Plain live historical
 document roots without an existing dispatch cancellation owner still refuse;
 terminal historical documents remain immutable. No new history family/column
-or interpretation is added. The full post-oracle and exact derived native-row
+or interpretation is added. The mixed post-certificate and exact derived native-row
 comparison must succeed before COMMIT; any unsupported closure/drift rolls back.
 Opaque Stop follows COMMIT outside all locks. Point stops of family-dependent
 ordinary ancestors and hidden fresh work under terminal dependencies refuse.
@@ -278,7 +278,7 @@ ordinary ancestors and hidden fresh work under terminal dependencies refuse.
 | Draft/review `cancel` / `_cancel_uncommitted` | Existing standalone owner unchanged in behavior; mixed supplies its already-selected intent and sole native overlay. Existing document events/readers remain owners. |
 | `CancelOwners.capture` / `attach` / `seal` | Bounded ephemeral handoff of actual original objects/journals and original transition captures; rolled-back attachment is removed. No invocation reconstruction, journal/tracker/reservation clearance or durable receipt. |
 | `task_pause.settle_live` → `observe_cancel_owners` | After original close/release AND existing family outer callbacks. Original exceptions remain primary. Every captured original sequential source/visit uses U6b2a, even after another owner has made the batch incomplete. |
-| U6b2a `cancelled_owner_disposition_uncommitted` | **Byte-identical selector and predicate**, sequential source/visit only. Missing original TaskInvocation (journal-only included) is UNSETTLED. |
+| U6b2a `cancelled_owner_disposition_uncommitted` | **Original predicates**, sequential source/visit only; group 7b changes only the mixed certificate selection. Missing original TaskInvocation (journal-only included) is UNSETTLED. |
 | Old Coding `outer_settled` → original complete native reconstruction | Positive qualification comes only from that original invocation's committed family settlement. Missing original/native/family proof is UNSETTLED; no reimplementation of its predicate. |
 | Ordinary/document captured invocations | No existing family callback exposes a positive cancellation-outer qualification. Option B's explicit fallback therefore keeps these **UNSETTLED**, even when a control returns. This limitation is retained rather than inventing a new proof owner. |
 | Existing `_root_worktree_batch` | Original captures wait for every possible original response. All owners positive is necessary for safe disposition; one positive of many is incomplete. Any impossible/negative owner delivers one incomplete batch. Original one-shot/attempted and native protection semantics remain; no retry or restarted cleanup. |
@@ -312,8 +312,8 @@ this prevents a late native drain from invalidating Coding's original overlay.
 ## Authenticated legacy cancellation scope (TASK-15380)
 
 The mounted document intent lookup runs inside
-`sequential_legacy_cancel._mixed_lookup_scope`, pinning the initial complete mixed
-read on the SAME connection and existing BEGIN IMMEDIATE transaction. Read-only
+`sequential_legacy_cancel._mixed_lookup_scope`, pinning the initial ABSENCE-OR-COMPLETE mixed
+certificate (THR-404 group 7b) on the SAME connection and existing BEGIN IMMEDIATE transaction. Read-only
 planning uses query_only, a savepoint, monotonic total_changes and schema cookies
 plus exact sequential-row comparison; the scope closes before the first DML.
 This removes redundant scope entry/exit complete reads without trusting changed
@@ -322,15 +322,18 @@ writers, plus Coding aggregate observation, enter `legacy_cancellation_scope` on
 cancelled native task. Standalone `_intent`, `_entry`, schema validation and their
 default writers retain their original refusal of sequential storage.
 
-The scope enrolls bounded sequential rows only after complete authentication, checks
-that legacy consumers leave those rows unchanged, resets the scope on success or
-failure, and validates the complete changed target before COMMIT. R-M3-2 gives
-the mounted writer's two mandatory complete reads their OWN unchanged D2 allowances
+The scope retains the bounded whole ten-core-table preservation inventory, checks
+that legacy consumers leave every enrolled row unchanged, resets the scope on
+success or failure, and validates the changed mixed target before COMMIT. Group 7b
+wires 7R ABSENCE-OR-COMPLETE; preservation of omitted rows does not authenticate
+their payloads. Any retained reference/uncertain encoding still selects the
+original complete reader/refusal. R-M3-2 gives
+the mounted writer's two mandatory reads their OWN unchanged D2 allowances
 and ONE original operation deadline; planning, copies and writes share the existing
 single additional finite operation budget. There is no incremental target oracle
 or allowance reset/retry on refusal. Original terminal/outer consumers retain
 `legacy_cancellation_scope` and its standalone validation, with a separate unchanged
-D2 allowance per complete read on their original deadline; native consumer work
+D2 allowance per mixed certificate on their original deadline; native consumer work
 keeps its original enclosing allowance. Mounted selection
 restores its operation SQL hook before original-owner capture
 and native comparison. Original event builders, semantic/settlement rules, Pause

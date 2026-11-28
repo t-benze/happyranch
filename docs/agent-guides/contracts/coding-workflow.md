@@ -28,6 +28,20 @@ owns routes, closed formats, refusal codes, recovery and fixture commands. Exist
 fresh admission. Source delivery performs
 no live setup/Allow, deployment/restart or pilot.
 
+## Ordinary native journal growth
+
+The complete reader streams all `task_pause_controls` rows through the same
+native storage/value gates and strict journal decoder. Each ordinary row has a
+fresh bounded observation; it does not consume the cumulative Coding allowance.
+A journal containing a Coding owner or an original Coding source invocation is
+reacquired on that unchanged cumulative allowance and compared in full before
+all existing source/owner/SID/settlement checks. Invalid ordinary journals still
+refuse. No row is exempted from validation by its owner label. The enclosing
+complete-read SQL/deadline guards and all per-value caps remain in force.
+This prevents accumulated ordinary journal history from exhausting Coding's
+16 MiB/32768-step allowance on routine generic controls and callbacks; it changes
+no admitted run limits, retries, authority, refusal categories or live state.
+
 ## S9 retained Coding reader boundary
 
 S9 defers the shared-reader naming extraction: common bounded primitives still
@@ -225,6 +239,18 @@ Source/static delivery is not deployment, loaded identity, settings persistence
 or scratch acceptance. Those and ordinary coding admission remain root-owned.
 
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
+
+THR-404 group 6 scopes sequential Setup Save/Allow/Disable and immutable operation
+lookup to the selected definition identity's full settings/operation/receipt chain,
+with zero run roots and fresh post-INSERT validation. Catalog registration uses
+catalog definition/settings roots and retains native census/safety, its single
+nondurable reservation, pointer/cache checks and exact INSERT/readback. Disconnected
+run corruption no longer vetoes these writes; latest CAS, eligibility/independence,
+admitted pins and authority/transaction/budget rules remain. Exclusively fresh
+org creation proves exact structure and bounded empty owned data with original
+native/version/cutover seeds and FK/physical checks. Existing storage owners and
+global load/install/bootstrap/Founder cutover remain COMPLETE. See the
+[group-6 reader contract](../../specs/2026-11-09-sequential-history-reader-d2.md#settings-builtin-registration-and-fresh-creation--thr-404-group-6).
 
 Normal `OrgState.load` installs the unchanged four coding tables beside each
 normally admitted org's supported document foundation. Fresh F plus coding is

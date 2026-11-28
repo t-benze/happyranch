@@ -16,6 +16,7 @@ struct HappyRanchApp: App {
             CommandGroup(replacing: .newItem) {}
 
             CommandGroup(after: .appInfo) {
+                Button(AppLocalePreference.shared.nativeChinese ? "更新设置…" : "Update Settings…") { appDelegate.showUpdateSettings() }
                 Button(AppLocalePreference.shared.nativeChinese ? "检查更新…" : "Check for Updates…") { appDelegate.checkForUpdates() }
                     .disabled(!appDelegate.canCheckForUpdates || appDelegate.hasPendingUpdate)
                 if appDelegate.hasPendingUpdate {

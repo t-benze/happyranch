@@ -73,7 +73,7 @@ export function copySites(path, text) {
       const value = n.initializer && ts.isJsxExpression(n.initializer) ? n.initializer.expression : n.initializer;
       for (const site of literalBranches(value)) record(site.node, n.name.getText(source), site.literal);
     }
-    if (ts.isBindingElement(n) && n.initializer && ['closeLabel', 'mermaidLoadingLabel'].includes(n.name.getText(source))) {
+    if (ts.isBindingElement(n) && n.initializer && ['closeLabel', 'mermaidLoadingLabel', 'remoteImageLabel'].includes(n.name.getText(source))) {
       for (const site of literalBranches(n.initializer)) record(site.node, `default:${n.name.getText(source)}`, site.literal);
     }
   });
@@ -88,6 +88,7 @@ export const COPY_EXCEPTIONS = [
   raw('design-system/layouts/AppShell/Sidebar.tsx', 'Sidebar', 'children', 'Ranch', 'Brand wordmark bytes'),
   raw('design-system/primitives/Dialog.tsx', 'DialogContent', 'default:closeLabel', 'Close', 'Standalone default compatibility; direct mounted callers supply closeLabel'),
   raw('design-system/patterns/Markdown.tsx', 'Markdown', 'default:mermaidLoadingLabel', 'Rendering diagram…', 'Standalone default compatibility; mounted callers supply mermaidLoadingLabel'),
+  raw('design-system/patterns/Markdown.tsx', 'Markdown', 'default:remoteImageLabel', 'Remote image not loaded', 'Standalone default compatibility; mounted callers supply remoteImageLabel'),
   raw('design-system/patterns/TaskCard.tsx', 'TaskCard', 'children', 'supersedes', 'Standalone default compatibility; mounted caller supplies labels'),
   raw('design-system/patterns/TaskCard.tsx', 'TaskCard', 'children', 'superseded by', 'Standalone default compatibility; mounted caller supplies labels'),
   raw('design-system/patterns/MessageBubble.tsx', 'MessageBubble', 'aria-label', 'system event', 'Standalone prop fallback; mounted owner supplies labels.systemEvent'),
@@ -438,7 +439,7 @@ export const ownedCopyPlugin = {
           }
           // Known default-bearing shared components. Preserve their standalone
           // bytes while refusing direct production mounts without presentation.
-          const required = { DialogContent: ['closeLabel'], Markdown: ['mermaidLoadingLabel'], TaskCard: ['labels'], MessageBubble: ['labels'], InboxRow: ['labels'] };
+          const required = { DialogContent: ['closeLabel'], Markdown: ['mermaidLoadingLabel', 'remoteImageLabel'], TaskCard: ['labels'], MessageBubble: ['labels'], InboxRow: ['labels'] };
           const sites = diskMatches ? inventory.mounts : [];
           if (!diskMatches) {
             const ast = parse(path, text), aliases = new Map();

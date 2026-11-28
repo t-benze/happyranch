@@ -33,6 +33,7 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
     private var reads = 0
     private var mutations = 0
     private var cancellations = 0
+    var lifecycleBusy: Bool { mutations > 0 || cancellations > 0 || !pendingMutations.isEmpty || activeSheet != nil }
     private let catalog = ConnectionComputerCatalog()
     private var ledger = ConnectionMutationLedger()
     private var mutationLifetime: HomeInviteModel.Lifetime?
@@ -328,6 +329,9 @@ final class ConnectionWindow: NSWindowController, NSWindowDelegate, WKNavigation
                          replyHandler: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
         let token = generation
         if let outcome = ledger.recorded(request) { replyHandler(outcome.reply(id: request.id), nil); return }
+        if request.isMutation, app?.appLifetime.busy == true {
+            replyHandler(ConnectionRequest.reply(id: request.id, error: .init(.busy)), nil); return
+        }
         let cancelling = request.command == "client.cancelAttempt"
         guard request.isMutation ? (cancelling || mutations < 1) : reads < 8 else {
             replyHandler(ConnectionRequest.reply(id: request.id, error: .init(.busy)), nil); return

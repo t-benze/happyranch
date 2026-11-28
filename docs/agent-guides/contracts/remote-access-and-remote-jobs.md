@@ -19,6 +19,9 @@ never codes/tokens/hashes. Founder decision 13 denies even remote Revoke.
 Slice 2 also keeps POST `/guests/mcp` and `/guests/setup/{app_id}` absent from
 the remote policy and denied. MCP accepts only local tool-argument credentials
 and rejects non-loopback peer/Host, wrong port, every Origin and HTTP credentials.
+Slice 3's upload/fetch tools share that same local MCP gate. Seat out/in paths
+refer only to the daemon filesystem; SSH tunnels do not provide supported
+other-machine guest file access (decision 20 remains deferred).
 Setup requires the existing founder bearer/human gate and loopback peer. Neither
 route is browser-consumed. No remote authority or policy entry is added.
 
@@ -4860,10 +4863,22 @@ ready-restart-failed-turn-off; it never mints or replays activation, nor rewrite
 the ready receipt or transaction.
 
 
-THR-327 foreground Linux client observation (TASK-19228): after the initial
-runtimeReachable frame, the existing foreground owner performs authenticated
-health reads at one-second intervals (no overlapping reads or transport retries).
-A later error terminates through the existing named CLI error and bounded local
+THR-327 foreground client CLI (seq739; TASK-19592): both platforms connect/recover
+and observe access only. Linux uses `ClientSession.health`; Mac's credential-taking
+`checkAccess` binds the existing native device authority and calls the same
+health path as the GUI. Neither calls the legacy `open_runtime` / `open` listener
+path, nor creates, prints, persists or retains a usable client runtime port/URL.
+No CLI route opens a browser runtime; `runtimeReachable` does not mean the RELEASE
+UI loaded. Existing native language copy is “Runtime reachable.” / “运行时可连接。”
+and “Observing access; Ctrl-C disconnects.” / “正在检查访问权限；按 Ctrl-C 断开连接。”.
+After the initial runtimeReachable frame, the owning invocation performs bounded
+authenticated health reads (Linux one-second, Mac five-second intervals; no
+overlapping reads or transport retries) until Ctrl-C/SIGTERM or denial. Consent,
+pairing, custody, save/readback and bounded cleanup remain unchanged. Removing
+local saved access never claims Host revocation. ClientBridge remains needed for
+Mac GUI native transport/join/health/retired-session cleanup, but CLI starts no
+ClientBridge listener.
+On Linux, a later error terminates through the existing named CLI error and bounded local
 session cleanup. Only the existing revocation_denied/revocation_stream_closed
 responses map to revoked; generic identity denial remains accessUnavailable,
 never proof of confirmed revocation. Transport loss remains homeUnavailable and

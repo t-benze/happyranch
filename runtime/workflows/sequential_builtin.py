@@ -13,7 +13,8 @@ from runtime.workflows.coding_builtin import _Deferred, _NativeCensusBudget, _Re
 from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows.sequential_definition import CompiledDefinition, GenericCompiledDefinition
 from runtime.workflows.sequential_engine import _engine_rows, _identity
-from runtime.workflows.sequential_history import _ReadBudget, _sql_budget, read_sequential_history
+from runtime.workflows.sequential_history import _ReadBudget, _sql_budget
+from runtime.workflows.sequential_task_history import read_write_history
 from runtime.workflows.sequential_release import (
     MANIFEST, STAGED_GENERIC, manifest_entry, select_bundled_release, staged_entry, select_staged_release,
 )
@@ -114,9 +115,16 @@ class SequentialBuiltinStore:
                     if reservation != dict(owner_id=own, publisher='builtin_sequential_registration', agents=(), teams=()):
                         raise ValueError('sequential_builtin_native_owner_changed')
                     with db.workflow_schema_transaction() as conn:
-                        history = read_sequential_history(conn, expected_org_slug=self.org.slug,
+                        with _sql_budget(conn, budget):
+                            existing = [inspect_definition(conn, compiled, budget) for compiled in self.catalog]
+                            settings = frozenset(row['id'] for identity in {item.pin.identity for item in self.catalog}
+                                for row in _engine_rows(conn, 'workflow_seq_settings', budget,
+                                    'org_slug=? AND definition_identity=?', (self.org.slug, identity)))
+                        selected = read_write_history(conn, expected_org_slug=self.org.slug,
+                            definition_ids=frozenset(row['id'] for row, exists in existing if exists),
+                            settings_ids=settings,
                             retained_budget=retained, deadline=budget.deadline)
-                        if not history.layout.sequential or history.layout.ownership != 2:
+                        if not selected.history.layout.sequential or selected.history.layout.ownership != 2:
                             raise ValueError('sequential_builtin_storage_required')
                         with _sql_budget(conn, budget):
                             after = native._native_suffix(conn, census, states, after)
@@ -132,8 +140,8 @@ class SequentialBuiltinStore:
                                     conn.execute(f'INSERT INTO workflow_seq_definitions ({columns}) '
                                         f'VALUES ({",".join("?" for _ in definition)})', tuple(definition.values()))
                                     inserted += 1
-                            # Complete source qualification authenticated every
-                            # existing row and the literal INSERT trigger/schema.
+                            # Scoped source qualification authenticated catalog
+                            # settings chains and the literal INSERT trigger/schema.
                             # Only compiled catalog bytes were appended. Verify that
                             # exact delta, not another full retained-history scan on
                             # the SAME bounded ledger (or a replenished allowance).

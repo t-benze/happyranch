@@ -1,5 +1,15 @@
 # U2b explicit sequential storage installer/check source
 
+> THR-404 group 6: sequential settings writes/original replay and builtin catalog
+> registration authenticate selected definition/settings chains with zero run
+> roots; settings revalidate the appended chain before publication. Exclusively
+> fresh org creation uses exact structure, bounded positive empty owned data and
+> original native/version/cutover seed, identity, FK and physical checks, retaining
+> O_EXCL/inode proof. Existing DBs never use this fresh path. Global installation,
+> load, bootstrap and Founder cutover retain COMPLETE validation under STOP-1.
+> Original CAS/pins, native reservation/safety, authority, locks and budgets stay.
+> [Current reader contract](2026-11-09-sequential-history-reader-d2.md#settings-builtin-registration-and-fresh-creation--thr-404-group-6).
+
 > S2a versioning (THR-336 / TASK-17139): this spec's schema1 history is retained.
 > The separately selected schema2 reference, verified-backup empty-only upgrade,
 > visible nonempty refusal and inert membership/inbox/control records are defined

@@ -189,6 +189,7 @@ private actor HomeSessionFixture: HomeInviteSession {
         try await checkAccess()
         return URL(string: "http://127.0.0.1:49152/")!
     }
+    func checkAccess(_ credential: SavedDeviceCredential) async throws { try await checkAccess() }
     func checkAccess() async throws { if let accessFailure { throw accessFailure } }
     func stop() async throws {
         stops += 1; await gate.pause("stop")

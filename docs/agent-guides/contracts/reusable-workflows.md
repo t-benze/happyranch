@@ -257,6 +257,16 @@ from current settings and cannot authorize resending an uncertain operation.
 New admission storage-operation encoding discriminates the action in the
 existing tables; old Save/offline operation and receipt encodings stay intact.
 
+THR-404 group 6 scopes these Save/admission operations and original lookups to
+zero-run definition/settings roots. Fresh requests select the registered pin;
+replay selects the original operation's setting even when the new body conflicts.
+Every generation from 1 for the definition identity, its immutable operation and
+receipt, and all referenced definition versions authenticate. The appended chain
+is read again after INSERT before publication. Disconnected run payload corruption
+does not veto setup. Latest-generation CAS, role eligibility/independence, admission
+behavior, current-authority bookends and original locks/transactions/budgets stay.
+No future cancellation headroom policy is added to settings.
+
 The separate Allow new runs / Disable new runs controls use saved defaults;
 they neither Save a dirty draft nor start work. Dirty role edits survive an
 admission result and can later be explicitly Saved on the new valid CAS. One
@@ -422,9 +432,23 @@ history_unverified; budget exhaustion never becomes an empty success.
 
 Both paths retain fresh authority capture and closing validation, the exact
 lock set/order and rollback-only snapshot, existing bounded readers/ledgers and
-one original five-second deadline. No cap is raised. Every write/admission,
-continuation, settings, initiator, bootstrap/schema load, historical @1 GET and
-v2 run list/detail keeps the complete read_sequential_history contract unchanged.
+one original five-second deadline. No cap is raised. THR-404 group 2 separately
+scopes start/admission and continuation preflight; group 3 scopes initiator
+dependencies/delivery/consumption and non-cancel generic dispatch/hold below.
+Group 4 scopes direct control/cancel/never-launched close below.
+Group 5 scopes selected return authorization/notification; all-run returned
+rediscovery retains complete validation below.
+Group A below scopes original @2 source outer settlement. Bootstrap/schema load,
+historical @1 GET and v2 run list/detail keep complete
+`read_sequential_history` validation.
+Group 1 of the THR-404 write work adds the explicit-root primitive
+in `sequential_task_history`. Its full selected @1/@2
+replay shares the task reader's graph and original validators but additionally
+checks all settings generations/receipts for selected definition identities,
+including settings/definition-only scopes with no runs. The task GET continues
+to validate only pinned settings. Selected certificates are snapshot-local,
+carry the charged C ledger, and supply no retained-family/global certificate or
+current authority. See the [D2 staged write contract](../../specs/2026-11-09-sequential-history-reader-d2.md#shared-write-scope-primitives--thr-404-group-1-staged).
 Positive absent storage returns `storage=absent` and
 an empty collection; valid installed storage returns `storage=readable`.
 Incoherent/budget/authority evidence returns non-success HTTP with closed
@@ -452,8 +476,8 @@ hook execution venue. Typecheck/source review is static evidence only.
 ## S6b: source cancellation and terminal initiators @2
 
 The existing Founder task-cancel route recognises `seq_source_wait_set` and uses
-its mixed cancellation owner. The complete history and every membership are
-re-read in the same authority writer, including runs admitted by earlier source
+its mixed cancellation owner. The mixed certificate and every affected membership
+are re-read in the same authority writer, including runs admitted by earlier source
 results/SIDs and already finished members. Cancelling a source or ordinary
 ancestor fences every unfinished owned run. Finished history stays unchanged.
 A result-owned S4a cancel of one run leaves the source and sibling runs alive.
@@ -486,8 +510,14 @@ replacement or launch crosses the fence. A precommitted exact step callback may
 replay unchanged; changed bytes refuse. Original positive native terminal and
 outer closure precede the existing finish writer, with cancellation-only digest
 validation even for empty/malformed business output. Member finish and its
-addressed inbox obligation commit together; full resulting-history validation
-uses the original complete-reader budgets and operation deadline.
+addressed inbox obligation commit together; full affected run/source validation
+uses the original reader budgets and operation deadline. THR-404 group 4 scopes
+the direct fence/finish and human close checks. Group 7b wires the enclosing mixed
+cancellation, member capture and legacy/tail readers to the group-7R
+ABSENCE-OR-COMPLETE certificate described below.
+Human close validates the affected source at immutable receipt replay, before
+finish and after finish/wake/canonical audit insertion. Original never-launched
+proofs and `native_cleanup=unresolved_unchanged` remain unchanged.
 
 Existing source settlement, continuation rediscovery and native member tails
 observe failed/cancelled/superseded sources and use that same mixed writer.
@@ -567,6 +597,18 @@ the invocation's SID. A SID with no admitted batch returns without writes or que
 publication, including a later ordinary `done` whose native source is already
 completed. Positive release of an actual batch still requires its current,
 in-progress, uncancelled source with no completion timestamp.
+
+THR-404 Group A supplies that actual source ID to the existing scoped write
+validator after writing the matching-SID proofs. Validation replays every
+same-source run and the entire wait set, including earlier SIDs/batches and
+original consumption receipts, then reserves all-unfinished scalar cancellation
+headroom H on the resulting reader's original ledger and absolute deadline.
+Affected sibling/receipt damage or capacity exhaustion refuses and rolls back
+the new proofs before any queue publication. Disconnected run payload damage
+does not veto this settlement. The original positive/negative proof semantics,
+no-member SID return, exact replay, locks/order and transaction remain unchanged.
+Historical @1 source settlement and STOP-1 global certificates keep their
+existing validation paths.
 
 S5's member hold wrapper and generic terminal/result writer persist one immutable
 `workflow-sequential-initiator-wake@2` inbox obligation in the same transaction as
@@ -660,8 +702,9 @@ positive terminal and outer closure, current assignment authority and exact
 task/principal/SID/result identities. It composes generic output references,
 validates content and declared outcomes, and persists one result transition
 atomically with output, counters and any successor. It invokes no Coding or
-document capability witness. Complete resulting-history validation can refuse
-and roll back tentative rows under the existing read ledger and deadline.
+document capability witness. Full affected source/wait-set resulting-history
+validation can refuse and roll back tentative rows under the existing read
+ledger and deadline; unrelated payloads are excluded by THR-404 group 3.
 Result replay allocates and notifies nothing. Start replay remains admission-only.
 
 Native terminal failure takes precedence over callback payload parsing. Real
@@ -768,14 +811,27 @@ Cancellation-only closure instead authenticates a bounded UTF8-validated byte
 stream against the same native callback digest, charging raw bytes and validation
 copies without reserving business-content parsing copies it never creates. A
 callback refused by Held is not accepted or parsed as business content by
-cancellation. Non-cancel admission, hold and replacement writers additionally
-reserve cancellation space after validating the **entire combined history**,
-including retained families and other runs. Each unfinished @2 run reserves
-16MiB plus 128 copies of its known source/current-visit identity bytes inside
+cancellation. Non-cancel writers additionally reserve cancellation space after
+validation. Admission and group-3 initiator/generic dispatch/hold use full
+affected history as below; direct control/replacement writers now select the
+actual run/source and full affected history under THR-404 group 4. Each unfinished @2 run
+reserves 16MiB plus 128 copies of its known source/current-visit identity bytes inside
 the unchanged 64MiB allowance, plus 32 row acquisitions, 4096 traversal steps
 and 65536 SQL steps inside the original finite ledgers. This covers worst-case fence, finish, bounded
 original proofs and a maximum 1MiB document callback (including its base64 carrier),
 independently of prior document sizes and committed visit/recovery counts.
+THR-404 group 1 adds the shared narrow H selector; group 2 wires admission and
+continuation preflight, group 3 wires initiator writes and non-cancel
+generic dispatch/hold, and group 4 wires replacement controls to it.
+It reads scalar identities for every unfinished @2 run, including Held and
+cancelling, and validates the active visit's run/selected relation. It acquires
+no unrelated history payloads and reserves nothing itself: callers
+combine prospective additions and apply the unchanged reservation once on the
+original charged C ledger. The per-value, byte, row, work, SQL and absolute
+deadline caps stay unchanged. Excluding disconnected payloads from a group-2
+through group-4 scoped write's ledger changes whole-org capacity coupling; it grants
+neither a fourth unfinished run nor a guaranteed fit for three with long identities or
+prior ledger consumption. Later writer groups still validate combined history.
 A candidate that cannot preserve that headroom refuses with
 `read_bytes_exhausted`, rolling back all allocations, rows, counters and CAS;
 cancellation stays available. Fence/finish consume the reservation without
@@ -790,17 +846,44 @@ This cancellation-headroom guarantee is preserved across all @2 writers only.
 Unchanged @1 writers on the same org, such as
 `SequentialDispatcher._record_business_hold`, are not budget-aware and can
 consume that headroom against the shared 64MiB complete-read cap. This is a
-pre-existing cross-family limitation: @1 growth can equally exhaust the complete
-reader for all families. Consequently an @2 cancellation fence may commit while
-finish refuses `read_bytes_exhausted`, leaving the run running/cancelling with
-one outstanding visit until budget relief. Family-scoped read budgets or @1
-retirement must resolve this in follow-up work; that resolution is outside S4a.
-The TASK-17807 Round-5 decision specifically overrides R4-F1 on this basis.
+pre-existing cross-family limitation of complete-history consumers: @1 growth
+can exhaust those readers for all families. THR-404 group 4's direct fence/finish
+checks exclude disconnected payloads, while affected source growth and enclosing
+mixed reads (including required complete fallback) remain bounded and can still
+refuse `read_bytes_exhausted`,
+retaining Running/cancelling with an outstanding visit. No budget relief or
+cross-family global certificate is granted. The TASK-17807 Round-5 decision
+overrode R4-F1 on the original whole-org reader basis; G4 changes only the
+addressed checks described below.
 The native digest, INTEGER result/task/principal/SID/status and original positive
 terminal/outer proofs remain mandatory. Start grammar/limits are unchanged.
-Fresh admission/hold/control/cancellation-finish writers run the complete reader
-on their resulting uncommitted state with unchanged budgets and the operation's
-original deadline; cancellation omits only the future headroom reservation.
+Admission now runs full selected source/run history and the selected definition
+identity's complete settings/receipt chain on its resulting uncommitted state.
+Continuation preflight and batch preallocation use all-unfinished scalar H plus
+their hypothetical members, once on each original charged ledger. Original
+key/body/INTEGER result/task/principal/SID replay, one-run-per-source @1 and
+batch uniqueness, assignment/authority, rollback, budgets and deadlines remain.
+THR-404 group 3 scopes initiator dependency observation and delivery/consumption
+to the actual source and all owned runs/batches/wait members/notifications/receipts.
+Generic non-cancel dispatch (including replay) and business hold select the actual
+run/source; full affected sibling replay and all-unfinished scalar H remain.
+Consumption still requires actual SID delivery; held/returned wakes and original
+receipt/result replay remain unchanged. The native start callback now stays on
+scoped validation through its initiator tail. Earlier phase timings do not
+certify full callback latency. THR-404 group 4 scopes direct controls, native
+cancel fence, positive-closure finish and never-launched close to their actual
+run/source, including all sibling members, historical proofs and settings chains.
+Exact original control replay now authenticates affected history before returning
+its original receipt; actor/result/key/body and CAS/Held-event checks remain.
+Replacement controls retain all-unfinished H; cancellation and inert receipt
+replay omit future headroom. Group A scopes original @2 source outer settlement
+as described above, retaining its all-unfinished H reservation.
+Group 7b wires the mixed cancellation/legacy tail to ABSENCE-OR-COMPLETE below.
+Group 5 scopes selected return/source authorization and notification to full
+addressed source closure. All-run return rediscovery retains complete validation,
+including noncompleted runs, and bounded refusal never returns partial IDs.
+Shared plumbing defaults remain complete unless a caller explicitly supplies
+roots. No lock/order, transaction, budget/deadline or TLA+ transition changes follow.
 No-result holds create
 no synthetic result, output or successor. Running cancel fences progression;
 positive original closure or the explicit human-only never-launched proof permits
@@ -956,7 +1039,7 @@ supply no task-session authority. Actual task/manager ownership, current genuine
 SID/INTEGER result, cancellation, bounded cycle-free ancestry, Pause, positive
 host settlement and the existing no-concurrent-child guards still govern.
 
-After complete-reader admission of a committed return, `sequential_return`
+After full addressed run/source replay of a committed return, `sequential_return`
 rebuilds source/carrier histories and requests the ordinary parent wake. It also
 runs the ordinary terminal facade under the DB lock, checking persisted terminal
 status, bounded original revisit-thread ancestry and all bounded SYSTEM marker
@@ -993,6 +1076,15 @@ does zero writes for an exact existing row and refuses mismatch. It creates no
 settings, admission, roles, runs or tasks; missing defaults remain Disabled and
 roles unset. Existing saved settings/admission/history stay exact. Native and
 authority qualification precede insertion, with original reader limits intact.
+THR-404 group 6 authenticates catalog definition/settings roots, including
+settings for a missing catalog definition, with zero run roots. Native census,
+safety, the single nondurable reservation, authority-pointer/cache checks, exact
+INSERT count, byte-exact compiled readback and FK checks retain their original
+order and budgets. Fresh creation checks the exact combined structure, bounded
+positive emptiness of every owned data table and exact version/cutover seeds,
+then retains native identity/FK and full physical installation checks. This path
+requires the original O_EXCL/inode proof; existing DBs never use it. Global
+load/install/bootstrap and Founder cutover retain COMPLETE certification (STOP-1).
 See the [A2 contract](../../specs/2026-11-14-automatic-workflow-setup.md#a2-fresh-creation-and-definition-only-catalog).
 Existing-org storage bootstrap remains A4; source delivery grants no live setup.
 
@@ -1507,7 +1599,11 @@ L permits 32 million SQL progress units only; its acquired rows/bytes/steps
 consume C. All four share one original cooperative five-second deadline and
 accumulate without reset between phases or runs. A is re-entered for native
 metadata. Only one native progress handler is active at a time; nested layout
-selection restores the enclosing handler on exit. Fixed source-literal
+and scoped FK/native-column schema inspection restore the enclosing handler.
+Scoped task/write/mixed replay uses its existing A ledger for native ABI and
+schema acquisition; native data discrimination, FK target probes, replay and
+cancellation headroom remain on C with every original cap and deadline intact.
+Fixed source-literal
 reference construction before the helper yields is unmetered SQL, bracketed only
 by B's deadline checks. Individual cells remain at most 1 MiB; existing
 definition/result limits also apply. Large hostile schema acquisition exhausts A;
@@ -2136,6 +2232,23 @@ never resumes a sequential visit or mutates/acknowledges the outbox. The guarant
 is one immutable workflow return; queue insertion is not a durable caller
 execution acknowledgement. At the historical U3e-2 checkpoint no terminal
 thread tail ran; R1a now supplies the guarded ordinary tail described above.
+THR-404 group 5 scopes `returned_source` and `notify_returned` to full replay of
+the actual run and its complete source/wait-set closure, including siblings,
+original native/ownership proofs and settings chains. The unchanged `_returned`
+then requires a completed run, its exact last `returned` event and one matching
+`run_return` outbox for the original source with no visit. Source-task equality
+still independently gates parent wake. Verified absent/non-return selectors
+return false; affected corruption raises before any consumer effects. History
+rebuild, parent wake, terminal-thread tail and supplied queue adaptation remain
+after the read snapshot closes. No return consumer completes the @2 source;
+WorkflowContinuation `ReturnCompletesSource` remains false.
+
+`returned_run_ids` deliberately retains complete validation in group 5. It
+authenticates ALL sequential run graphs before selecting obligations, including
+noncompleted runs and terminal sources; it never trusts a completed-state
+filter or returns a partial tuple on budget exhaustion. It still validates
+unrelated retained/native history and has no <=100ms guarantee. No locks/order,
+transaction, audit shape, replay acknowledgement, read cap or deadline changes.
 No fresh-start producer, public command or bundled skill change ships in U3e-2. U3f supplies the document-only successful-output exception below;
 repository U5 remainder, native recovery, venue/settings and Pause
 backout holds remain. Source/static delivery supplies no V3 or restart proof.
@@ -2700,6 +2813,86 @@ stays Held. No graph/task/result/effect/budget/Pause history is rewritten. See
 [U6 specification and remainder](../../specs/2026-11-11-sequential-coding-u6.md).
 
 
+### Separate mixed writer certificate — THR-404 group 7R
+
+`read_mixed_write_history_uncommitted` is a separate writer entry. Group 7b wires
+it into mixed cancellation source/target checks, legacy scope source/target,
+member cancellation capture and original-owner cancellation-tail selection.
+The original shared selected wrapper remains complete. The entry keeps closure I
+unchanged: terminal
+parents/children and complete workflow families, max512 tasks, original namespace,
+owner, cycle, orphan and INTEGER-result checks. Selected v2 runs use the group-1
+scoped replay and complete selected settings chains in the same snapshot.
+
+Before returning a retained inventory it proves absence over every column of the
+matched retained Coding/document tables, including shared catalog/authority,
+mapping, instance/task, submission/result, admission, event and publication links.
+Native metadata, `coding_ordinary_cancellation` audits, ownership and Coding/draft
+Pause journal entries are included. Incoming/outgoing native revisits use complete
+fallback; native chain/fanout JSON is probed without changing closure I. Bounded
+SQL negative probes do not acquire
+ordinary native result bodies. Structured references include escaped JSON,
+nested JSON, named base64/hex blobs and NativeSourceRecord typed cells. Duplicate,
+malformed, opaque or unsupported encodings cannot establish absence. Any retained
+reference or uncertain case selects the original complete reader and its existing
+refusals; a retained family in the closure or any selected @1 run also selects it.
+Only exhaustive absence returns a real EMPTY `_CodingInventory`/`QueuedStorage`,
+including empty reverse point-dependency facts. It never returns retained=None
+or a partial positive reconstruction.
+
+The B1 retained-table subset uses SQL negative discrimination over every matched
+column before the original bounded acquisition/decoder. Only plain ASCII values
+with no reference or uncertain JSON shape can be ruled out in SQL. Duplicates,
+encoded/native cells, nested JSON text, non-ASCII/opaque text and depth/number
+uncertainty remain candidates. Result references inside arrays retain their
+enclosing field name. Original L and retained/C ledgers remain cumulative.
+Native task-results metadata and eligible audit payloads use the same conservative
+candidate walk before bounded acquisition. Original Coding scalar/prefix markers
+remain candidates, including compiler/validator/source pins.
+Registrar matching includes case-folded `builtin:coding-v*` historical results
+on selected native sources; candidate prefix lengths derive from their literals.
+Action `coding_` matching folds case; namespace segments and other typed
+prefixes/values retain the original case-sensitive rules. Every format key is
+selected. These candidates retain COMPLETE/refusal and exact cancellation rollback.
+The original audit action set is located through distinct native action values; task bindings for
+Coding/workflow actions are inspected independently of payload negatives. Unknown
+or encoded candidates still enter the original decoder, and every probe and
+fallback shares the original ledgers and deadline. No native control action is
+exempted. Raw ASCII native JSON may rule out decoded Unicode string values after
+the same complete reference/marker walk. Non-ASCII raw text and keys, surrogate
+escapes (including valid pairs), decoded NUL, duplicates, encoded fields, nested
+JSON after Python whitespace and number/depth uncertainty retain the original
+decoder. JSON1 is only a guarded negative proof, not a replacement parser.
+The F layout stays COMPLETE: the copied proof avoids decode-byte exhaustion but
+reaches the unchanged 32M SQL allowance in native result selection at about
+1.44 seconds. The required affordable absence proof remains incomplete. This
+subset makes no F write success or handler-latency claim.
+
+A/B/C/L and the retained ledger, original caps and absolute deadline remain
+cumulative through probes, selected replay and fallback. The private complete
+reader composition inputs reuse the just-matched layout in the same unchanged
+snapshot, avoiding a second A/B acquisition; they change no default caller or
+complete data-validation algorithm. Exhaustion refuses the entire result.
+C1's unused selected-root retained readers were removed by normal revert.
+The complete retained Coding reconstruction and ordinary-overlay serialization
+remain unchanged. Global STOP-1 certification, ten-core-table equality, all-run
+returned rediscovery and run list/detail remain complete. Historical @1 Final
+consumers (7c) remain complete and excluded. No lock/order, transaction, schema,
+authority, permission, audit or replay change is made. Copy-only validation timings
+do not establish full-handler latency.
+
+The whole ten-core-table inventory/equality remains mandatory across retained
+consumers, including disconnected sequential rows. That inventory preserves rows;
+it does not semantically authenticate omitted payloads. Retained references or
+uncertain native encodings (including an in-flight control result) still select
+the original complete oracle/refusal. Each source/target phase keeps its original
+separate allowance and one original deadline; fallback is cumulative within that
+phase. Read-only lookup retains query_only, the original savepoint, monotonic
+changes and both schema cookies. Original invocation identity, positive closure,
+queued reverse dependencies and all-original-owner aggregation remain mandatory.
+Missing handles and negative cleanup supply no root clearance.
+
+
 ## U6b1 unmounted mixed stop producer (TASK-15301)
 
 `sequential_mixed_cancel.cancel_mixed` consumes the U6a full mixed oracle before
@@ -2755,7 +2948,7 @@ refusals, post-oracle rollback and COMMIT-before-Stop remain controlling.
 Standalone ordinary/document-only paths keep their behavior. Historical live
 document roots without an existing dispatch owner still refuse.
 
-Manager Option B composes proof owners. U6b2a remains byte-identical and selects
+Manager Option B composes proof owners. U6b2a retains its original predicates and selects
 only original sequential source/visit invocations. Other captured owners use
 only their existing original family qualification. Old Coding reads its own
 committed outer/native settlement; ordinary/document invocations have no
@@ -2775,8 +2968,9 @@ separate. See the [current U6 owner table](../../specs/2026-11-11-sequential-cod
 
 The U6 mixed stop authenticates combined history before composing legacy document lookup
 and the original cancelled document/Coding terminal/outer consumers on that same
-connection. Legacy consumers preserve sequential rows; the complete changed target is
-authenticated after scope reset. Default standalone validation remains unchanged. This
+connection. Legacy consumers preserve every enrolled core sequential row; the changed
+mixed target is authenticated after scope reset using ABSENCE-OR-COMPLETE above.
+Default standalone validation remains unchanged. This
 composition repairs mounted cancellation without changing captured ordinary/document
 UNSETTLED qualification or granting native/V3 acceptance.
 

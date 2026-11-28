@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Iterator
+from contextlib import closing
 from copy import deepcopy
 from typing import Any
 
@@ -855,6 +857,33 @@ def read_native(conn: Any, org: str, budget: Any, storage: Any, *, start: dict,
     return state
 
 
+def _native_journal_rows(conn: Any, budget: Any, source_ids: set[str]) -> Iterator[tuple[dict, dict]]:
+    """Stream ordinary native history; retain aggregate Coding/source charges.
+
+    Every row still passes the original storage/value gates and journal decoder.
+    The per-row observation is discarded; only a Coding owner or original source
+    invocation enters the cumulative Coding ledger. Complete readers retain their
+    enclosing SQL/deadline guard, as for other ordinary native discriminators.
+    """
+    from runtime.infrastructure.task_pause_controls import decode_journal
+    from runtime.workflows.coding_authority_history import _Budget
+    from runtime.workflows.coding_start_history import rows, same
+
+    with closing(conn.execute('SELECT rowid FROM task_pause_controls ORDER BY rowid')) as candidates:
+        for (rowid,) in candidates:
+            observed, = rows(conn, 'task_pause_controls', _Budget(),
+                             where='rowid=?', args=(rowid,), maximum=1)
+            journal = decode_journal(observed['admission_journal_json'])
+            if any(entry['owner'] == 'coding' or entry['id'] in source_ids
+                   for entry in journal['entries']):
+                row, = rows(conn, 'task_pause_controls', budget,
+                            where='rowid=?', args=(rowid,), maximum=1)
+                _check(same(row, observed))
+            else:
+                row = observed
+            yield row, journal
+
+
 def validate_native_journals(conn: Any, org: str, budget: Any, storage: Any) -> None:
     """Current native coding owners must close into an authenticated J leaf.
 
@@ -862,14 +891,12 @@ def validate_native_journals(conn: Any, org: str, budget: Any, storage: Any) -> 
     structural/source alias or a foreign SID. Historical event snapshots remain
     separate from current mutable Pause phase/generation observations.
     """
-    from runtime.infrastructure.task_pause_controls import decode_journal
-    from runtime.workflows.coding_start_history import rows
     if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='task_pause_controls'").fetchone() is None:
         _check(not any(entry['native']['claim'] is not None for entry in storage.runs.values()))
         return
     selected, uncertain = set(), set()
-    for row in rows(conn, 'task_pause_controls', budget):
-        journal = decode_journal(row['admission_journal_json'])
+    source_ids = {entry['source']['result_claim']['owner_invocation_id'] for entry in storage.runs.values()}
+    for row, journal in _native_journal_rows(conn, budget, source_ids):
         for entry in storage.runs.values():
             state = entry['native']
             source_id = entry['source']['result_claim']['owner_invocation_id']

@@ -910,7 +910,10 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
                             deadline: float | None = None,
                             ownership_sql_limit: int = 32000000,
                             task_id: str | None = None,
-                            reserve_cancellation: bool = False) -> SequentialHistory:
+                            reserve_cancellation: bool = False,
+                            _budgets: tuple[_ReadBudget, _ReadBudget, _ReadBudget, _ReadBudget] | None = None,
+                            _recognized_layout: tuple[SequentialLayout, dict[str, tuple[tuple, ...]]] | None = None,
+                            ) -> SequentialHistory:
     """Validate all sequential rows and complete combined schema in one snapshot.
 
     Absent storage, missing definitions or ownership != 2 is unavailable.
@@ -934,12 +937,30 @@ def read_sequential_history(conn: sqlite3.Connection, *, expected_org_slug: str,
              'ownership_sql_limit_invalid')
     _require(task_id is None or (type(task_id) is str and bool(task_id) and '\x00' not in task_id),
              'mixed_task_identity_invalid')
-    observed = _ReadBudget() if deadline is None else _ReadBudget(deadline=deadline)
-    reference = _ReadBudget(deadline=observed.deadline)
-    budget = _ReadBudget(deadline=observed.deadline)
-    legacy = _ReadBudget(deadline=observed.deadline, sql_limit=ownership_sql_limit)
+    if _budgets is None:
+        observed = _ReadBudget() if deadline is None else _ReadBudget(deadline=deadline)
+        reference = _ReadBudget(deadline=observed.deadline)
+        budget = _ReadBudget(deadline=observed.deadline)
+        legacy = _ReadBudget(deadline=observed.deadline, sql_limit=ownership_sql_limit)
+    else:
+        # Mixed-write absence probes and complete fallback are ONE read. Keep
+        # every preceding charge, including SQL and the original deadline.
+        observed, reference, budget, legacy = _budgets
+        _require(all(type(item) is _ReadBudget and item.deadline == deadline
+                     for item in _budgets) and len({id(item) for item in _budgets}) == 4
+                 and all(item.sql_limit == 2000000 for item in _budgets[:3])
+                 and legacy.sql_limit == ownership_sql_limit, 'read_budget_invalid')
+        for item in _budgets:
+            item.check()
     with _schema_snapshot(conn):
-        layout, metadata = _read_layout(conn, observed, reference, budget)
+        if _recognized_layout is None:
+            layout, metadata = _read_layout(conn, observed, reference, budget)
+        else:
+            # The mixed composition just ran this exact comparator, on these
+            # original ledgers in the SAME unchanged snapshot. Reacquiring it
+            # would spend A/B twice before the complete fallback even starts.
+            _require(_budgets is not None and conn.in_transaction, 'read_budget_invalid')
+            layout, metadata = _recognized_layout
         if not layout.sequential:
             _require(task_id is None, 'mixed_history_unavailable')
             retained = None

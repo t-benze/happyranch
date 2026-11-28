@@ -16,19 +16,81 @@ transcripts render guest labels; the old TUI is removed. Thread detail gains a
 safe `guests` list and the three seat routes have TS mirrors. No UI, setup or
 MCP tools ship in slice 1. Invite codes never appear on ordinary reads.
 
-### Codex guest setup (slice 2)
+### Codex guest setup (slices 2–3)
 
 Founder command `happyranch guests setup codex_desktop --org SLUG` calls the
 loopback founder setup route and prints `<runtime>/orgs/SLUG/guests/codex_desktop`.
 Open that project in Codex. Its `.codex/config.toml` contains exactly the
 happyranch URL at the actual daemon port, default_tools_approval_mode="approve"
 and tool_timeout_sec=60; AGENTS.md explains token retention, untrusted thread
-content, text-only scope and reporting seat-ended answers. Neither file holds
+content, out/ upload and in/ fetch rules and reporting seat-ended answers. Neither file holds
 secrets. Re-run after port changes; symlink/nonregular/edited project files are
 refused, and ~/.codex is never touched. Invite and New code prompts include
 thread_id, guest_id and invite_code. MCP is external-app-only, setup CLI-only;
 both routes are excluded from the browser contract and remain remotely denied.
-No guest Web UI or upload/fetch tools ship in slice 2.
+Setup upgrades only the exact prior daemon-owned AGENTS template and creates
+files/; join returns private files/G-n/out and in paths on the daemon machine.
+Write a direct regular out/ file and pass only its file_name to upload_attachment;
+post_message accepts up to five of that seat's own unattached upload IDs.
+fetch_attachment accepts only a read_thread message ref from another speaker
+within the seat's read scope; it writes a unique local in/ copy. Upload is capped
+at 10 MiB; unmeasured starting allowances are 10 unattached files/50 MiB and
+100 MiB in/ with oldest eviction. Seat end cleans transit/unattached files.
+Guests never publish Shared Artifacts or fetch them by name. Other-machine app
+files, Claude Desktop and scheduled pickup remain deferred; the Web UI
+(slice 4) is described below.
+
+### Thread guest Web UI (slice 4)
+
+The thread detail rail adds **Invite desktop app** beside Invite participant,
+and a **Guests** group under the agents. Each seat shows the daemon's label, its
+state (invited / joined / listening / ended), its expiry, "read to #n · m new"
+(m counts loaded messages above the larger of `last_read_seq` and the seat's
+read floor `read_from_seq - 1`, so a from-now seat never counts history from
+before its invite) and when it was last active. "listening" shows while the
+seat has an open `wait_for_messages` call (detail field `listening`). Guest
+reads and waits publish no thread event, so while the open thread has a seat
+that has not ended, the thread detail refetches every 10 seconds (paused while
+the page is hidden) to refresh cursor, count, last active and listening. **Copy
+nudge** (joined seats) copies the fixed English prompt `Check HappyRanch thread
+THR-n for new messages and respond.`. **New code** (invited seats) and
+**Revoke** (any seat that has not ended) call the existing seat routes. The
+invite dialog, a pending seat action and its error belong to the org/thread
+they started on: navigating to another thread closes the dialog, clears the
+error and drops a late New code result. Errors are held as catalog keys and
+translated at render, so a locale switch re-translates them.
+
+The invite dialog (`GuestInviteDialog`) asks for the app (Claude desktop
+labelled untested), the lifetime (1 hour / 24 hours default / 7 days) and the
+read scope (whole thread default / from now on). It shows the §7.5 warning
+about what the guest will read. After Create invite or New code, it shows the
+daemon's one-time prompt with Copy prompt, the shown-once / 10-minute note and
+New code while the seat is still invited. The prompt is kept only in dialog
+state.
+
+When the app's active target is a remote Host (`useRemoteHost`), Invite desktop
+app, New code and Revoke are not rendered. The seat list, Copy nudge and a short
+"only on this computer" note stay.
+
+Messages with a `guest:G-n` speaker show the seat label, a `guest` badge and
+the Avatar `guest` tone (attention-soft). Inbox rows show `Guest G-n` for a
+guest last speaker. The `thread_guest_invited`, `thread_guest_joined` and
+`thread_guest_ended` system rows (`system_payload` `{kind_tag, guest_id,
+label[, cause]}`) render as translated event chips with the label and cause.
+Before this slice, they showed the raw tag.
+These sentences appear in an open transcript without reload: Invite, New code
+and Revoke refetch the thread messages when they settle, and the tail consumer
+treats a `kind: "system"` event with `seq: null` (what the invite and revoke
+routes publish) as a refresh of the messages and detail that leaves the
+since_seq cursor alone. Other null-seq events, such as `decline_status`, are
+still ignored. Join and expiry publish a seq-bearing system event, which the
+existing invalidate path already refetches.
+
+Settings ▸ Organization ▸ Desktop app guests shows read-only text for Codex
+desktop: the `guests setup` command, `<runtime>/orgs/SLUG/guests/codex_desktop/`
+and the config stanza. The stanza uses the page's own loopback port when the
+daemon serves the page, else 8765. It calls no route. All strings ship in `en`
+and `zh-CN`.
 
 Start@2 B2+B3 uses genuine atomic first/later completion admission, original source
 settlement, initiator-owned hold recovery and source-never-auto-completes semantics;
@@ -84,7 +146,11 @@ owner gate; readiness and Disconnect do not change the record. Confirmed matchin
 Remove/Revoke clears it. Native files live under
 `~/Library/Application Support/HappyRanchApp/`, independently of daemon config,
 Keychain and target/org. Native compile/tests and platform acceptance are NOT RUN
-on Linux; MAC-4b lifecycle/updater/relaunch remains separate. Native timing and packaging
+on Linux. MAC-4b option A gates Mac close, Quit and updater exits through native
+consent and current Main owner receipts, holding pending/unknown saves and native
+custody. Mac recovery shows guidance + Recheck and tells the user to quit and
+reopen; Mac recovery Relaunch is deferred to a separate piece requiring founder
+approval (THR-387 seq178). Native timing and packaging
 acceptance are pending exact-reviewed-head QA; see
 [Mac app-scheme qualification](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
 Mac Connected requires the expected current document completion plus fresh
@@ -1897,11 +1963,25 @@ See the [current naming contract](../specs/2026-10-09-identity-names-core.md).
 ## Founder Create team / Create agent dialog
 
 Agents (header and empty roster) offers **Create team** and **Create agent**,
-which open ONE shared form (`features/agents/AddAgentDialog.tsx`; rules in
-`createAgentForm.ts`, checked by `web/scripts/create-agent-form.test.mjs`).
-Create team fixes Role to Manager and sends `new_team`; Create agent defaults to
-Worker with an explicit existing-team chooser (no implicit selection) and sends
-`team`; choosing Manager there switches to `new_team`. Exactly one is sent.
+which open ONE shared surface (`features/agents/AddAgentDialog.tsx`, presentation
+in `createParts.tsx`; rules in `createAgentForm.ts`, checked by
+`web/scripts/create-agent-form.test.mjs`). Layout follows Claude Design v1.1
+(Founder THR-402 seq33): a right-anchored drawer (desktop) / full-height sheet
+(phone) with Computer and Organization chips, groups Team and role → Agent
+responsibilities → Runtime, a live review rail whose rows each have Edit (focus
+only; a closed disclosure is opened first), and a footer status line + Cancel +
+the outcome-named action. Create team shows the fixed relationship and sends
+`new_team`; Create agent asks "What will this agent do?" (Worker default) with
+team cards naming each team's manager (no implicit selection, except the
+team-success follow-on, which preselects its confirmed team) and sends `team`;
+choosing Manager there switches to `new_team`. Exactly one is sent.
+Disclosure state (executor list, example, review instructions, submitted details,
+Finish setup) is React state, so a locale change keeps it, focus and caret.
+Format/required errors show after input or a Create attempt; an attempt focuses
+the first problem and the footer counts them. Create is `aria-disabled` with a
+footer reason while executors are loading, failed to read or are confirmed none,
+on a remote Host, or while the desktop target is `no_target`,
+`target_starting`, `unreachable` or `incompatible`; Retry/Recheck are reads.
 The form asks for a readable Name (1–64 ASCII letters, digits, underscores or
 hyphens, starting with a letter) and sends only `display_name`. A new team name
 must match `^[a-z][a-z0-9_]{0,63}$`, and `default` (any case) is reserved;
@@ -1910,25 +1990,45 @@ suggested from the manager name until edited; role changes never overwrite an
 edited team name, and a user-picked executor is never silently replaced.
 Server codes map to their field (`invalid_team_name`, `team_reserved`,
 `team_exists`, `unknown_team`, naming codes, `invalid_executor`) with other
-input kept. The create is a config owner (`agents.create`): single-flight, the
-request never re-sent on a 401 (`replayOnUnauthorized: false`), close/navigation/
-org switches held while pending or unknown. `agent_setup_incomplete` (500) shows
-"Agent created; setup incomplete" with `happyranch init-agent`; other lost or
-unrecognised answers (network loss, forwarded 499 cancellations, other 5xx, a
-raw 409 `target_changed`) show "Result unknown" and Check result. A change the
+input kept. A field refusal is remembered with the refused value: any change of
+that value (typing, Use suggestion, a name-driven suggestion update) drops it and
+its banner; a refusal for the branch that is not shown is parked (info note, not
+blocking) and returns with that branch. The create is a config owner (`agents.create`): single-flight, the
+request never re-sent on a 401 (`replayOnUnauthorized: false`), navigation/org
+switches held while pending or unknown. Closing then only hides the surface; the
+Agents top bar shows a held-action chip (a presentation of that org's existing
+`agents.create` owner record while pending/unknown) that reopens the same result.
+`agent_setup_incomplete` (500) shows a result panel (what exists / what remains,
+View agent, Finish setup with `happyranch init-agent --org <original org> <id>`);
+without a returned ID it offers Check result on the original org plus support
+details, no command and no View agent. Other lost or unrecognised answers
+(network loss, forwarded 499 cancellations, other 5xx, a raw 409
+`target_changed`) show the "Creation result unknown" panel and Check result. A change the
 transport proves native never forwarded (typed `NotSentError`,
 `ThrottledError`, or a 503 `NativeRecoveryError` such as busy/no_target) is
-"Not sent" instead: the draft stays, no unknown owner is registered, and only
-an explicit resubmit sends it. Check result first cancels in-flight roster and
+"Not sent" instead, naming the cause and next step for that typed reason
+(`notSentCopy`; no other cause is invented): the draft stays, no unknown owner is
+registered, and only an explicit resubmit sends it. In the desktop app only,
+Open Connection in a target/remote/not-sent notice opens a drawer-owned menu
+(This computer and the current remote). The current computer closes it and
+returns focus to its trigger; another asks the owner gate (`openConnection`)
+and then opens the existing Connection dialog
+(`shared/connection/openConnection.tsx`, provided by the desktop dialog host),
+which owns every target change. Check result first cancels in-flight roster and
 identity reads of the original org, then accepts only successful reads issued
 after that (`lib/freshReads.ts`), never an earlier first load or its
 completion time. Only a full match of the submitted fields resolves it; a name
 match alone stays unknown. Absence allows a new create only when naming
 observations are complete (`naming_diagnostic` explicitly null and every agent
 row `naming_status: ready`); unavailable or missing naming metadata keeps the
-result unknown. On success navigation uses returned `canonical_id`; the
-readback retires in-flight agents/enrollments/teams/identities reads before
-refetching, and a failed readback says "Created; refresh unavailable". The API's legacy `name` field still means
+result unknown. On success the surface closes, navigation uses returned
+`canonical_id`, and the detail shows a completion panel for what was actually
+created (a manager from either action → Team created → Create agent in that
+team; a worker → Agent created); the readback retires in-flight agents/
+enrollments/teams/identities reads before refetching, and a failed roster or
+team-list readback says the creation is confirmed, names the failed read and
+offers Refresh (GET of the roster and team list; never a Create). Submitted
+computer labels are stored as a locale-neutral identity and translated at render. The API's legacy `name` field still means
 an explicit ID; send exactly one name source.
 The Agents page's once-per-org auto-selection of the first agent never navigates
 while the form is open: a roster that settles after the form opened consumes
@@ -2555,6 +2655,8 @@ dialogs keep their launch language until the next launch. Focused check:
 `node --experimental-transform-types --test web/scripts/native-locale.test.mjs`.
 
 **W5a copy repair:** the mounted Jobs Reject, Settings Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Historical pending-import assertions lived in Markdown.loading.test.tsx; Markdown.test.tsx SVG/error cases used an independent lazy-module instance to avoid cross-file import dependencies. Both files were retired under THR-343; web behavior belongs to Product E2E.
+
+**Remote content in rendered Markdown (THR-406):** shared `Markdown` (threads, KB, task detail/recall, dreams) renders an image as `<img>` only when it resolves to the page's own scheme and host (relative or same-origin). `data:` and `blob:` images are not shown: react-markdown's default URL transform empties their `src` first, so they render as an `<img src="">` that fetches nothing and shows only the alt text. Any other image, including protocol-relative `//host/x`, renders as an inert placeholder: the localized `remoteImageLabel` (`common.remoteImageBlocked`; `MessageBubble.labels.remoteImage` forwards it), the alt text, and the URL as an ordinary `rel="noopener noreferrer"` link. Nothing is fetched unless the user follows that link; inside an authored link the URL is plain text, so anchors never nest. react-markdown's default URL transform and its refusal to render raw HTML are unchanged. Mermaid label HTML may not contain `img`/media/embedding tags or `style` attributes, and a diagram is not rendered when its source could carry a flowchart image shape (`A@{ img: … }`): shape metadata needs a literal `@`, and mermaid rewrites the source before parsing it (removing `%%` directives/comments, normalizing HTML quotes after `<`, dropping the `;` of a `style…#…;` run), so any source containing `@` that also contains, anywhere, `%%`, `<`, `#`, a backslash or the letters `img` in any case falls back. Sources without `@`, including ordinary `%%{init}%%` theming and `#` colors, render as before. The same applies to a source with `themeCSS`, a fetching CSS function (`url(`, `image-set(`, `image(`, `cross-fade(`, `src(`), `@import`/`@font-face` or a CSS hex escape. Each falls back to the existing raw-source view. There is no daemon Content-Security-Policy; that remains a separate follow-up.
 **W5a Work Hours reachability:** the agent-detail reconciliation heading and local edit controls wrap within the page, including long raw agent/team names. The reconciliation and overview roster tables keep every column, value and provenance cell in a localized, named, keyboard-focusable horizontal scroll region; focus the region and use the arrow keys to reach the rightmost columns. Shared Button/AppShell and editor/action semantics are unchanged. The earlier 390px document-width checks did not establish child/control or column reachability: historical clipping captures remain failed evidence. The affected ordinary-build browser case is `web/scripts/w4a-browser-evidence.mjs --slice work-hours-reachability`, checking actual control bounds, readable headings and keyboard access to the final column in en/zh-CN at 390/1440, with mounted editor/draft/focus/navigation preservation. W5a finite coverage was independently reviewed, QA-verified and manager-accepted with PR993; W5b enables full browser locale resolution. Historical evidence keeps its original source/build identity. The tier editor now stacks field rows below the small-screen breakpoint, bounds grid children and field/control groups, wraps resets/day controls and full raw title/provenance/selected-timezone text, and allows the existing dialog to scroll vertically. Desktop retains the row hierarchy. Editor child and text-range bounds must be measured against actual dialog content and viewport after scrolling, with pointer hit testing and a real Tab cycle; page/table bounds alone do not establish editor readability. The affected browser cases include all three tiers, windowed/continuous and impact stages, long raw values, both locales at390/1440, and both-direction node/focus/selection/draft preservation with zero locale HTTP. Actual Save/PUT, reset-null and verbatim422 contracts were checked by TierEditorDialog.test.tsx and work-hours.i18n.test.tsx before their THR-343 retirement. Current write evidence requires Product E2E; screenshots alone do not prove writes.
 
 

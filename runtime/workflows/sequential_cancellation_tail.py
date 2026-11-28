@@ -13,8 +13,8 @@ from typing import Any
 from runtime.infrastructure.task_pause_controls import decode_journal
 from runtime.workflows.coding_authority_history import _Budget
 from runtime.workflows.sequential_engine import _engine_rows
-from runtime.workflows.sequential_history import _ReadBudget, _bytes, _require, _sql_budget, read_sequential_history, read_sequential_layout
-from runtime.workflows.sequential_mixed_history import MixedSequentialHistory
+from runtime.workflows.sequential_history import _ReadBudget, _bytes, _require, _sql_budget, read_sequential_layout
+from runtime.workflows.sequential_mixed_history import MixedSequentialHistory, read_mixed_write_history_uncommitted
 
 
 def drain_source_cancellations(org: Any, source_task_id: str) -> None:
@@ -65,8 +65,9 @@ class CancelledOwnerDisposition:
 
 def _selected(conn: sqlite3.Connection, org: Any, invocation: Any, budget: _ReadBudget,
               retained_budget: _Budget) -> tuple[str, str]:
-    history = read_sequential_history(conn, expected_org_slug=org.slug,
-        retained_budget=retained_budget, deadline=budget.deadline, task_id=invocation.task.id)
+    history = read_mixed_write_history_uncommitted(conn, org_slug=org.slug,
+        task_id=invocation.task.id, budget=_ReadBudget(deadline=budget.deadline),
+        retained_budget=retained_budget)
     _require(isinstance(history, MixedSequentialHistory) and history.task_history is not None,
              'cancelled_owner_history_required')
     native = history.task_history

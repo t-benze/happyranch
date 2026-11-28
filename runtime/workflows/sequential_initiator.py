@@ -24,12 +24,12 @@ TABLES = ('workflow_seq_source_wait_sets', 'workflow_seq_source_memberships',
 def observe_dependencies(conn: sqlite3.Connection, db: Any, task_id: str) -> dict | None:
     """Read dependencies in the caller's snapshot, without installing storage.
 
-    Complete qualification retains its existing budgets; indexed observations
+    Selected qualification retains its existing budgets; indexed observations
     use the existing bounded reader on that deadline. Invalid owned evidence never means
     an empty wait set. Ordinary callers with genuinely absent storage retain
     their historical behavior.
     """
-    from runtime.workflows.sequential_history import read_sequential_history
+    from runtime.workflows.sequential_control import validate_control_write
     from runtime.workflows.sequential_start import _ordinary_dependencies
     _require(conn.in_transaction, 'initiator_requires_snapshot')
     if conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_task_ownership'").fetchone() is None:
@@ -39,7 +39,8 @@ def observe_dependencies(conn: sqlite3.Connection, db: Any, task_id: str) -> dic
     if owner[0] != 'seq_source_wait_set':
         return None
     budget = _ReadBudget()
-    read_sequential_history(conn, expected_org_slug=org_slug, deadline=budget.deadline)
+    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline,
+        run_ids=frozenset(), source_ids=frozenset((task_id,)))
     with _sql_budget(conn, budget):
         tasks = _rows(conn, 'tasks', budget, 'id=?', (task_id,))
         _require(len(tasks) == 1, 'initiator_identity_conflict')
@@ -58,7 +59,13 @@ def observe_dependencies(conn: sqlite3.Connection, db: Any, task_id: str) -> dic
         # children and structural carriers are never a lifetime veto.
         join_ids = []
         if task['active_fanout'] is not None:
-            join_ids = _decode(task['active_fanout'].encode('utf8'), budget)['children_ids']
+            from runtime.workflows.sequential_start_metadata import _json
+            # FanoutState.serialize writes native JSON, not canonical workflow
+            # bytes. Keep its strict size/depth/duplicate-key and budget gates.
+            join_ids = _json(task['active_fanout'], budget)['children_ids']
+            _require(type(join_ids) is list and 1 <= len(join_ids) <= 8
+                and all(type(key) is str and 0 < len(key.encode('utf8')) <= 128
+                    and '\x00' not in key for key in join_ids), 'initiator_dependency_bounds')
         elif task['active_chain'] is not None:
             join_ids = [row[0] for row in conn.execute(
                 'SELECT id FROM tasks WHERE parent_task_id=? AND NOT EXISTS '
@@ -187,13 +194,17 @@ def snapshot_delivery(conn: sqlite3.Connection, initiator_task_id: str, principa
         for row in keys:
             conn.execute('INSERT INTO workflow_seq_inbox_deliveries VALUES (?,?,?)',
                          (initiator_task_id, session_id, row[0]))
-        _validate_write(conn, audience['org_slug'], budget)
+        _validate_write(conn, audience['org_slug'], budget, source_id=initiator_task_id)
         return _page(conn, initiator_task_id, session_id, budget)
 
 
-def _validate_write(conn: sqlite3.Connection, org_slug: str, budget: _ReadBudget) -> None:
+def _validate_write(conn: sqlite3.Connection, org_slug: str, budget: _ReadBudget,
+                    *, source_id: str | None = None) -> None:
+    """Replay the full source closure for delivery, consumption and outer settlement."""
     from runtime.workflows.sequential_control import validate_control_write
-    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline, reserve_cancellation=True)
+    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline, reserve_cancellation=True,
+        run_ids=None if source_id is None else frozenset(),
+        source_ids=frozenset() if source_id is None else frozenset((source_id,)))
 
 
 def native_decision(raw: bytes, budget: _ReadBudget) -> dict:
@@ -268,7 +279,7 @@ def consume_decision_uncommitted(conn: sqlite3.Connection, *, initiator_task_id:
         for notification in consumed:
             conn.execute('INSERT INTO workflow_seq_consumed_notifications VALUES (?,?,?,?)',
                          (initiator_task_id, notification, session_id, key))
-        _validate_write(conn, audience['org_slug'], budget)
+        _validate_write(conn, audience['org_slug'], budget, source_id=initiator_task_id)
         return raw
 
 
@@ -515,7 +526,7 @@ def settle_source_runs(dispatcher: Any, invocation: Any, *, failed: bool, cleanu
                 visit = _rows(conn, 'workflow_seq_visits', budget, 'id=?', (run['active_visit_id'],))[0]
                 _require(visit['state'] == 'queued' and visit['session_id'] is None, 'initiator_source_outer_conflict')
                 ready.append(visit['task_id'])
-        _validate_write(conn, org.slug, budget)
+        _validate_write(conn, org.slug, budget, source_id=invocation.task.id)
     # Every proof commits before publication. Recovery replays the durable outbox;
     # queue insertion never acknowledges the source's inbox.
     for task_id in ready:

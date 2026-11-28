@@ -151,6 +151,7 @@ def fixture(root, *, retained_resources=False):
     write(app / 'Contents/Info.plist', plistlib.dumps(plist))
     for name in ('Contents/MacOS/HappyRanch', 'Contents/Resources/daemon/happyranch-daemon',
                  'Contents/Resources/daemon/happyranch', 'Contents/Helpers/happyranch-tsnet-sidecar',
+                 'Contents/Helpers/happyranch-home-bridge',
                  'Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle',
                  'Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate',
                  'Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app/Contents/MacOS/Updater'):
@@ -280,6 +281,83 @@ def python_spec_notices(scratch, stdlib=None):
                                limitation='Synthetic effective identity/Analysis; authentic pinned notice/stdlib bytes. No native interpreter executed.'))
 
 
+def client_patch_cases(source, output, app, mapping):
+    """Exact third-party association through both shipping notice consumers."""
+    relative = Path('app/mac/tsnet-bridge/third_party')
+    shutil.copytree(SOURCE / relative, source / relative,
+                    ignore=shutil.ignore_patterns('__pycache__', '.prepare-*'))
+    bridge = source / 'app/mac/tsnet-bridge'
+    target = bridge / 'third_party/tailscale.com'
+    main = dict(Main=True, Path='happyranch/tsnet-bridge', Dir=str(bridge))
+    module = dict(Path='tailscale.com', Version='v1.78.0', Dir=str(target),
+                  Replace=dict(Path='./third_party/tailscale.com', Dir=str(target)))
+    module_path = output / 'diagnostics/go-modules.json'
+    deps_path = output / 'diagnostics/go-deps.json'
+    saved_modules, saved_deps = module_path.read_bytes(), deps_path.read_bytes()
+    linux = runpy.run_path(str(SOURCE / 'packaging/linux/collect-notices.py'))
+    notices = output / 'client-notices'
+    notices.mkdir()
+
+    def exercise(label, candidate, accepted, main_candidate=None):
+        selected_main = main if main_candidate is None else main_candidate
+        write(module_path, H['encode'](selected_main) + H['encode'](candidate))
+        write(deps_path, dict(ImportPath='tailscale.com/tsnet', Module=candidate))
+        try:
+            inventory = H['snapshot'](source, output, mapping)
+            rows = H['expected'](inventory)
+        except ValueError as exc:
+            assert not accepted and 'MANIFEST_NOTICE_REFUSED' in str(exc), (label, str(exc))
+        else:
+            assert accepted, label + ' unexpectedly accepted by Mac collector'
+            row = next(r for r in rows if r['component'] == 'tailscale.com')
+            assert 'h1:/UF5EituVa1QMhojqOObFumTarVTcZ14nW1KIVVwbLw=' in row['source']
+            assert '5bbd46d04b423af475df37e07eda36e1dcfc845dd5fda460e81de67f5625a211' in row['source']
+            originals = H['sources_for'](row, inventory, source, mapping)
+            assert {p.name for p, _ in originals} == {'LICENSE', 'PATENTS', 'AUTHORS'}
+            for path, _ in originals:
+                assert path.read_bytes() == (SOURCE / relative / 'tailscale.com' / path.name).read_bytes()
+        raw = H['encode'](dict(ImportPath='tailscale.com/tsnet', Module=candidate)).decode()
+        with patch('subprocess.check_output', side_effect=[json.dumps(selected_main), raw]):
+            try:
+                linux['collect_client_go'](source, notices)
+            except (ValueError, RuntimeError) as exc:
+                assert not accepted and ('association' in str(exc) or 'CLIENT_TAILSCALE_REFUSED' in str(exc)), (label, str(exc))
+            else:
+                assert accepted, label + ' unexpectedly accepted by Linux collector'
+                retained = notices / 'client-go/tailscale.com@v1.78.0'
+                assert {p.name for p in retained.iterdir()} == {'LICENSE', 'PATENTS', 'AUTHORS', 'licenses'}
+                association = json.loads((notices / 'client-go-modules.json').read_text())[0]['OriginalAssociation']
+                assert association['Sum'] == 'h1:/UF5EituVa1QMhojqOObFumTarVTcZ14nW1KIVVwbLw='
+                assert association['PatchSHA256'] == '5bbd46d04b423af475df37e07eda36e1dcfc845dd5fda460e81de67f5625a211'
+                for path in retained.rglob('*'):
+                    if path.is_file():
+                        assert path.read_bytes() == (target / path.relative_to(retained)).read_bytes()
+        REPORT.append(dict(label='client patch Mac+Linux: ' + label, exit=0))
+
+    exercise('exact retained original association', module, True)
+    for label, change in (
+        ('another module refused', dict(Path='example.com/other')),
+        ('another version refused', dict(Version='v1.79.0')),
+        ('wrong upstream sum refused', dict(Sum='h1:wrong')),
+        ('another path refused', dict(Replace=dict(module['Replace'], Path='./third_party/other'))),
+        ('versioned replace refused', dict(Replace=dict(module['Replace'], Version='v1.78.0'))),
+        ('another directory refused', dict(Dir=str(bridge / 'other'))),
+    ):
+        exercise(label, dict(module, **change), False)
+    exercise('host main module refused', module, False, dict(main, Path='happyranch/linux-tsnet-sidecar'))
+    for name in ('tailscale-v1.78.0-peerapi.patch', 'tailscale.com/LICENSE', 'tailscale.com/ipn/ipnlocal/peerapi.go'):
+        path = bridge / 'third_party' / name
+        original = path.read_bytes()
+        try:
+            path.write_bytes(original + b'\nchanged\n')
+            exercise('changed ' + name + ' refused', module, False)
+        finally:
+            path.write_bytes(original)
+        assert path.read_bytes() == original
+    module_path.write_bytes(saved_modules)
+    deps_path.write_bytes(saved_deps)
+
+
 def run(scratch, stdlib=None):
     python_spec_sources()
     os.umask(0o077)  # Match shipping private output allocations.
@@ -287,6 +365,7 @@ def run(scratch, stdlib=None):
     python_spec_notices(scratch, stdlib)
     source, output, app, mapping = fixture(scratch)
     facts = REPORT[-1]
+    client_patch_cases(source, output, app, mapping)
     for label in ('missing selected Analysis input', 'different lane selection'):
         analysis, selected = copy.deepcopy(facts['analysis']), dict(facts['selected'])
         if label.startswith('missing'):

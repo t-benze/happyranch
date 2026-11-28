@@ -9,6 +9,14 @@ THR-336 msg398 option B. No runtime implementation or live operation is authoriz
 by publication of this document. All source locations below refer to main commit
 `5a88b4da2dd7843b626fa2f608dba735f2fb8043`.
 
+Current validation scope: [THR-404 group 4 in D2](2026-11-09-sequential-history-reader-d2.md#direct-controlcancel-and-never-launched-close--thr-404-group-4)
+supersedes this design's whole-history validation wording at replay, before close
+and after finish/wake/audit. Those checks fully replay the affected run/source,
+all sibling wait members and historical proofs/receipts/settings chains; they
+exclude disconnected payloads. Every no-launch predicate, authority, refusal
+code, rollback/audit rule, lock set/order and original cap/deadline below remains.
+The historical source references and original-head descriptions are retained.
+
 ## Scope and proof boundary
 
 Provide one human-only operation to finish an engine-v2 run already fenced for

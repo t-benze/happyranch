@@ -198,8 +198,21 @@ def first_party_go(module, source):
                     for value in (module.get('Dir'), replacement.get('Dir'))))
 
 
+def patched_client_go(module, source, modules):
+    """One exact third-party association; all other replacement refusals remain."""
+    if module.get('Path') != 'tailscale.com' or not module.get('Replace') or not source:
+        return None
+    root = Path(source)
+    main = next((m for m in modules if m.get('Main')), {})
+    try:
+        helper = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'tsnet-bridge/third_party/prepare_tailscale.py'))
+        return helper['association'](module, root, main)
+    except (ValueError, OSError) as exc:
+        require(False, module['Path'], 'client patch association invalid: ' + str(exc))
+
+
 def expected(e):
-    """Derive all owners, including explicit exclusions, without reading notices."""
+    """Derive all owners, exact local associations and explicit exclusions."""
     require(e.get('schema') == SCHEMA, 'inventory', 'unsupported schema')
     rows = []
     for package in e.get('swift_packages', []):
@@ -232,8 +245,12 @@ def expected(e):
     for name, module in sorted(modules.items()):
         if first_party_go(module, e.get('source_root')):
             continue
-        require(not module.get('Replace'), name, 'Go replacement requires explicit original association')
-        rows.append(owner('go', name, name, module['Version'], 'go.mod/go.sum:' + name,
+        association = patched_client_go(module, e.get('source_root'), e['go_modules'])
+        require(not module.get('Replace') or association, name, 'Go replacement requires explicit original association')
+        provenance = 'go.mod/go.sum:' + name
+        if association:
+            provenance += ';' + json.dumps(association, sort_keys=True)
+        rows.append(owner('go', name, name, module['Version'], provenance,
                           'included: target go list dependency' if name in used else 'excluded: module has no target dependency packages'))
     locks = {(norm(p['name']), p['version']): p for p in e['python_lock']['package']}
     distributions = {(norm(p['name']), p['version']): p for p in e['python_installed']}
@@ -409,6 +426,8 @@ def snapshot(source, output, mapping):
     go_modules = stream_json(read(output / 'diagnostics/go-modules.json', output, MAX_JSON).decode())
     for module in go_modules:
         if first_party_go(module, str(source)):
+            continue
+        if patched_client_go(module, str(source), go_modules):
             continue
         if not module.get('Main') and module.get('Dir'):
             require(Path(module['Dir']).is_relative_to(output / 'scratch/go-modules'), module['Path'], 'Go module root escapes invocation cache')

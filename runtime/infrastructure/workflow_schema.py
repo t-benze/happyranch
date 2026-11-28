@@ -1527,7 +1527,9 @@ def initialize_fresh_org_database(path: Path, *, expected_org_slug: str) -> Data
     from runtime.infrastructure.database import Database
     from runtime.infrastructure.workflow_sequential_schema import CANONICAL_WORKFLOW_SEQUENTIAL_DDL
     from runtime.infrastructure.workflow_task_ownership import initialize_fresh_sequential_ownership
-    from runtime.workflows.sequential_history import SequentialLayout, read_sequential_history
+    from runtime.workflows.sequential_history import (
+        SequentialLayout, _ReadBudget, _native_contract, _read_layout, _sql_budget,
+    )
 
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
@@ -1544,9 +1546,33 @@ def initialize_fresh_org_database(path: Path, *, expected_org_slug: str) -> Data
             _execute_ddl(conn, CANONICAL_WORKFLOW_SEQUENTIAL_DDL)
             conn.execute('INSERT INTO workflow_seq_schema_versions VALUES (1)')
             initialize_fresh_sequential_ownership(conn)
-            history = read_sequential_history(conn, expected_org_slug=expected_org_slug)
-            if history.layout != SequentialLayout('J', True, True, 2, True):
+            observed = _ReadBudget()
+            reference = _ReadBudget(deadline=observed.deadline)
+            data = _ReadBudget(deadline=observed.deadline)
+            layout, metadata = _read_layout(conn, observed, reference, data)
+            if layout != SequentialLayout('J', True, True, 2, True):
                 raise ValueError('workflow_fresh_creation_target_mismatch')
+            with _sql_budget(conn, data):
+                _native_contract(conn, data)
+                markers = {'workflow_adapter_versions', 'workflow_draft_adapter_versions',
+                           'workflow_submission_schema_versions', 'workflow_seq_schema_versions'}
+                for table in metadata:
+                    data.step()
+                    quoted = '"' + table.replace('"', '""') + '"'
+                    if table in markers:
+                        if [tuple(row) for row in conn.execute('SELECT version FROM ' + quoted + ' LIMIT 2')] != [(1,)]:
+                            raise ValueError('workflow_fresh_creation_target_mismatch')
+                    elif table in ('workflow_cutover_state', 'workflow_cutover_events'):
+                        columns = 'singleton,generation' if table == 'workflow_cutover_state' else 'event_seq'
+                        expected = [(1, 1)] if table == 'workflow_cutover_state' else [(1,)]
+                        if [tuple(row) for row in conn.execute('SELECT ' + columns + ' FROM ' + quoted + ' LIMIT 2')] != expected:
+                            raise ValueError('workflow_fresh_creation_target_mismatch')
+                    elif conn.execute('SELECT 1 FROM ' + quoted + ' LIMIT 1').fetchone() is not None:
+                        raise ValueError('workflow_fresh_creation_requires_empty_workflow_layout')
+                _validate_cutover_data(conn, expected_org_slug=expected_org_slug)
+                if conn.execute('PRAGMA foreign_key_check').fetchone() is not None:
+                    raise ValueError('workflow_seq_foreign_key_invalid')
+                data.check()
             require_install_integrity(conn, IntegrityLedger(deadline=time.monotonic() + 5), 'target')
         database._task_ownership_org = expected_org_slug
         return database

@@ -47,6 +47,9 @@ logs/
 app/mac/tsnet-bridge/libtsnet.a
 app/mac/tsnet-bridge/libtsnet.h
 app/mac/tsnet-bridge/.stub.o
+app/mac/tsnet-bridge/third_party/tailscale.com/
+app/mac/tsnet-bridge/third_party/tailscale-v1.78.0.zip
+app/mac/tsnet-bridge/third_party/.prepare-*/
 
 
 web/node_modules

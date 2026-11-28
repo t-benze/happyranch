@@ -426,6 +426,13 @@ export interface ThreadGuest {
   expires_at: string;
   last_seen_at: string | null;
   last_read_seq: number;
+  /** Thread detail only (THR-362 §7 item 2): read floor, 0 = whole thread,
+   *  else the first seq the seat may read. Absent on older daemons and on
+   *  invite / new-code responses. */
+  read_from_seq?: number;
+  /** Thread detail only: true while the seat has an open wait_for_messages
+   *  call. Absent on older daemons and on invite / new-code responses. */
+  listening?: boolean;
 }
 
 export interface ThreadDetailResponse extends ThreadRecord {
