@@ -4937,8 +4937,14 @@ unknown shapes, plus valid Unicode and reserved compiler-pin candidates).
 The latter compares original complete outcomes for references/unknowns and
 observes the original decoder for valid candidates it can prove unrelated.
 Both run with the same Python3.14/3.12 commands; existing mixed corruption and
-cumulative-budget keepers remain. The observed F probe still exhausts retained
-decode bytes, so F acceptance remains NOT RUN rather than substituted with J.
+cumulative-budget keepers remain. `--s7a=mixed_escaped_candidates` extends the
+same real cancellation fixture with 100 native result and 100 eligible audit
+TEXT/BLOB bodies containing escaped Unicode values. `--s7a=mixed_escaped_fallback`
+checks both native tables for surrogate high/low/pair, NUL, Unicode key/nested
+whitespace/duplicate/encoded-field/result, integer-limit and invalid-JSON cases.
+Candidates retain the original decoder or exact complete outcome. The copied F
+probe avoids decode-byte exhaustion but exhausts the original 32M SQL allowance;
+F acceptance remains NOT RUN rather than substituted with J.
 
 C1's unused selected-reader APIs/tests/docs are removed by normal revert; the
 original complete retained corruption keepers remain. Group 7b wires the mixed

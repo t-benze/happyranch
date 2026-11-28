@@ -284,10 +284,16 @@ enable the observed F layout. Native task-results metadata and eligible audit
 payloads now share this conservative candidate walk, with original reserved
 Coding scalar/prefix candidates and independent Coding/workflow audit task
 bindings. Distinct action lookup preserves the original eligible action set.
-Uncertain candidates still use the original decoder; the observed native result
-history exhausts its unchanged retained decode allowance. The F gate therefore
-stays COMPLETE until that proof fits the same cumulative allowances. No generic
-control exemption, F fast-path or approximately 100 ms acceptance follows.
+Raw ASCII native JSON can also rule out decoded Unicode string values after
+checking every JSON-tree level for the same reference and Coding markers.
+Non-ASCII raw text/keys, surrogate escapes (including valid pairs), decoded NUL,
+duplicates, encoded fields, nested JSON after Python whitespace, nonfinite/deep
+or invalid shapes still reach the original decoder. This is a guarded negative
+subclass, not general JSON1/Python parser equivalence. The copied F proof now
+avoids the decode-byte exhaustion but exhausts the unchanged 32M SQL allowance
+in native result selection at about 1.44 seconds. The F gate therefore stays
+COMPLETE. No generic control exemption, F fast-path or approximately 100 ms
+acceptance follows.
 
 Only exhaustive absence constructs an EMPTY retained `_CodingInventory` with a
 real empty `QueuedStorage` and empty reverse cancellation dependencies. All

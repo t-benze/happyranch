@@ -198,10 +198,11 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
 
         JSON1 is not the decoder: it accepts invalid UTF8, truncates some text
         operations at NUL, and has different number/depth rules. Only plain
-        ASCII raw AND decoded text can be negative here. Everything encoded,
-        nested, duplicate, deep or otherwise uncertain reaches _reference with
-        the original bounded acquisition. The rowid pages in _bounded_rows
-        retain indexed forward progress; no table/column is exempted.
+        ASCII raw text can be negative here. Native string values may contain
+        decoded Unicode after excluding surrogate escapes and NUL; keys keep
+        the ASCII gate. Encoded, nested, duplicate, deep or uncertain shapes
+        reach _reference with the original bounded acquisition. The rowid
+        pages retain indexed forward progress; no table/column is exempted.
         """
         keys = retained_keys
         native_marker = ''
@@ -227,6 +228,9 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
         text_matches = '(' + ','.join('?' + str(offset + i + 1) for i in range(len(texts))) + ')'
         result_matches = '(' + ','.join('?' + str(offset + i + 1) for i in range(len(texts), len(retained_keys))) + ')'
         ascii_bad = "'*[^ -~' || char(9,10,13) || ']*'"
+        # Python str.lstrip's whitespace set on both supported runtimes.
+        whitespace = ('char(9,10,11,12,13,28,29,30,31,32,133,160,5760,8192,8193,8194,'
+                      '8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)')
 
         def uncertain_text(value: str) -> str:
             return ('(' + value + ' GLOB (' + ascii_bad + ') OR length(CAST('
@@ -246,13 +250,14 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
             # includes those ancestors; quoted punctuation only overselects.
             result_path = ('1' if column == 'id' or 'result' in column else
                            "(key='id' OR instr(fullkey,'result')>0 OR instr(fullkey,'.id')>0)")
+            atom_uncertain = "instr(atom,char(0))>0" if native else uncertain_text('atom')
             tree = ('EXISTS (WITH tree AS MATERIALIZED (SELECT * FROM json_tree(' + text + ')) '
                 'SELECT 1 FROM tree WHERE atom IN ' + text_matches + ' OR key IN ' + text_matches
                 + ' OR (' + result_path + ' AND atom IN ' + result_matches + ')'
                 + native_marker
                 + " OR instr(key,'base64')>0 OR instr(key,'hex')>0 OR key='storage_class'"
-                + " OR (type='text' AND (" + uncertain_text('atom')
-                + " OR substr(ltrim(atom,char(9,10,11,12,13,32)),1,1) IN ('{','[')))"
+                + " OR (type='text' AND (" + atom_uncertain
+                + ' OR substr(ltrim(atom,' + whitespace + "),1,1) IN ('{','[')))"
                 + " OR (typeof(key)='text' AND " + uncertain_text('key') + ')'
                 + " OR (typeof(atom)='real' AND (atom>1.7976931348623157e308 OR atom< -1.7976931348623157e308))"
                 # Dots/brackets inside quoted names only overestimate depth.
@@ -268,6 +273,9 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
                    + (quoted + ' IN ' + matches if column == 'id' or 'result' in column else '0') + ') ')
                 + 'WHEN length(CAST(' + quoted + ' AS BLOB))>1048576 THEN 1 '
                 + 'WHEN ' + uncertain_text(text) + ' THEN 1 '
+                # Even paired surrogates remain candidates: JSON1/Python need
+                # not agree on invalid UTF8 or lone-surrogate handling.
+                + ('WHEN ' + text + " GLOB '*\\u[dD][89aAbBcCdDeEfF][0-9a-fA-F][0-9a-fA-F]*' THEN 1 " if native else '')
                 + 'WHEN ' + text + ' IN ' + matches + ' THEN 1 '
                 + ('ELSE ' + json_case if structured else 'WHEN substr(ltrim(' + text
                    + ",char(9,10,11,12,13,32)),1,1) IN ('{','[') THEN " + json_case + ' ELSE 0')

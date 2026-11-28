@@ -2849,10 +2849,15 @@ action set is located through distinct native action values; task bindings for
 Coding/workflow actions are inspected independently of payload negatives. Unknown
 or encoded candidates still enter the original decoder, and every probe and
 fallback shares the original ledgers and deadline. No native control action is
-exempted. The F layout stays COMPLETE: conservative native candidates still
-exhaust the unchanged retained decode allowance on the observed copy, so the
-required affordable absence proof is incomplete. This subset makes no F write
-success or handler-latency claim.
+exempted. Raw ASCII native JSON may rule out decoded Unicode string values after
+the same complete reference/marker walk. Non-ASCII raw text and keys, surrogate
+escapes (including valid pairs), decoded NUL, duplicates, encoded fields, nested
+JSON after Python whitespace and number/depth uncertainty retain the original
+decoder. JSON1 is only a guarded negative proof, not a replacement parser.
+The F layout stays COMPLETE: the copied proof avoids decode-byte exhaustion but
+reaches the unchanged 32M SQL allowance in native result selection at about
+1.44 seconds. The required affordable absence proof remains incomplete. This
+subset makes no F write success or handler-latency claim.
 
 A/B/C/L and the retained ledger, original caps and absolute deadline remain
 cumulative through probes, selected replay and fallback. The private complete
