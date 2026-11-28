@@ -213,7 +213,7 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
                 + ','.join('?' + str(offset + len(keys) + i + 1) for i in range(len(values))) + ')'
                 + " OR (key='action' AND substr(lower(atom),1,7)='coding_')"
                 + " OR (key IN ('namespace','authority_namespace','org_namespace') AND instr(atom,'coding-setup')>0)"
-                + " OR (key='registrar' AND substr(lower(atom),1,14)='builtin:coding-')")
+                + " OR (key='registrar' AND substr(lower(atom),1,length('builtin:coding-'))='builtin:coding-')")
             keys += values
             for name, prefixes in CODING_PREFIXES.items():
                 for prefix in prefixes:

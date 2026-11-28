@@ -3,8 +3,9 @@
 The complete sequential oracle calls this only on explicit selection, after all
 retained families validate in the SAME snapshot. Returned native values are
 immutable observations, never current authority, settlement or effect clearance.
-The separate unwired writer entry composes this same closure with scoped v2
-replay only after proving retained absence; otherwise it uses that full oracle.
+The mixed cancellation, legacy, member-capture and cancellation-tail writers
+use the separate writer entry to compose this same closure with scoped v2 replay
+only after proving retained absence; otherwise it uses that full oracle.
 """
 from __future__ import annotations
 
@@ -209,7 +210,7 @@ def read_selected_mixed_history_uncommitted(conn: sqlite3.Connection, *, org_slu
 def read_mixed_write_history_uncommitted(conn: sqlite3.Connection, *, org_slug: str,
                                          task_id: str, budget: _ReadBudget,
                                          retained_budget: _Budget) -> MixedSequentialHistory:
-    """Separate, unwired ABSENCE-OR-COMPLETE writer certificate.
+    """ABSENCE-OR-COMPLETE certificate for the mounted mixed writer sites.
 
     Caller owns the original locks, snapshot and C/retained ledgers. The mixed
     closure is unchanged. Only v2 closures with exhaustive retained absence use

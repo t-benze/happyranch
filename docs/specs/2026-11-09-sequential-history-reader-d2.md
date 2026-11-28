@@ -284,6 +284,12 @@ enable the observed F layout. Native task-results metadata and eligible audit
 payloads now share this conservative candidate walk, with original reserved
 Coding scalar/prefix candidates and independent Coding/workflow audit task
 bindings. Distinct action lookup preserves the original eligible action set.
+The native marker predicate is a conservative superset of the original Coding
+discriminator: registrar prefixes include case-folded `builtin:coding-v*` using
+a literal-derived SQL prefix length; `coding_` actions fold case, while namespace
+segments and the remaining typed prefixes/values retain their original exact
+case rules. Every format key remains a candidate. An older reserved result on a
+selected source still selects COMPLETE/refusal before cancellation can commit.
 Raw ASCII native JSON can also rule out decoded Unicode string values after
 checking every JSON-tree level for the same reference and Coding markers.
 Non-ASCII raw text/keys, surrogate escapes (including valid pairs), decoded NUL,

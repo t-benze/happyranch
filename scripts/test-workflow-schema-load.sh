@@ -9021,6 +9021,10 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             return ('accepted', value.layout, value.status, value.definition_ids, value.run_ids,
                                 value.task_history, vars(value.retained[1].queued))
 
+                        native_registrars = {
+                            'native_callback_registrar_v2': 'builtin:coding-v2',
+                            'native_callback_registrar_upper_v1': 'BUILTIN:CODING-V1',
+                        }
                         if case == 'mixed_corruption':
                             variants = ('event', 'parent_cycle', 'parent_missing', 'namespace')
                         elif case == 'mixed_candidate_fallback':
@@ -9030,10 +9034,41 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         else:
                             variants = ('mapping', 'task_scalar', 'run_scalar', 'instance_scalar',
                                 'result_scalar', 'document_result', 'json', 'escaped_json', 'base64', 'hex',
-                                'native_cell', 'native_integer', 'native_callback', 'ordinary_audit', 'native_journal',
+                                'native_cell', 'native_integer', 'native_callback', *native_registrars, 'ordinary_audit', 'native_journal',
                                 'ownership', 'revisit', 'settings_pointer', 'duplicate_json', 'unknown_journal', 'unknown_native_shape', 'unknown')
                         candidate_mismatches = []
                         for variant in variants:
+                            if variant in native_registrars:
+                                from fastapi import HTTPException
+                                with s6fixture() as victim:
+                                    # An older result on the SELECTED source, outside its
+                                    # current start result/SID, still reserves Coding metadata.
+                                    registrar = native_registrars[variant]
+                                    victim.conn.execute('INSERT INTO task_results'
+                                        '(task_id,agent,session_id,status,decision_json,created_at) VALUES (?,?,?,?,?,?)',
+                                        (victim.source.id, 's3_manager', 'old-affected-sid', 'completed',
+                                         json.dumps(dict(registrar=registrar)), '2026-11-01T00:00:00+00:00'))
+                                    victim.conn.commit()
+                                    before = tuple(victim.conn.iterdump())
+                                    try:
+                                        read_sequential_history(victim.conn, expected_org_slug='scratch', task_id=victim.source.id)
+                                    except ValueError as exc:
+                                        assert 'workflow_coding_data_unsupported: task_results.decision_json' in str(exc), str(exc)
+                                    else:
+                                        raise AssertionError((variant, 'COMPLETE accepted selected native metadata'))
+                                    refused = False
+                                    try:
+                                        s6bcancel(victim)
+                                    except HTTPException as exc:
+                                        assert exc.status_code == 409 and exc.detail['code'] == 'sequential_cancellation_reconciliation_required'
+                                        refused = True
+                                    unchanged = tuple(victim.conn.iterdump()) == before
+                                    if not (refused and unchanged):
+                                        candidate_mismatches.append(variant)
+                                    assert not victim.conn.in_transaction, (variant, 'cancellation left an open transaction')
+                                    print('PASS' if refused and unchanged else 'FAIL', 'S7a', case, variant,
+                                        registrar, 'HTTP409', refused, 'exact persisted-row rollback', unchanged, flush=True)
+                                continue
                             with s4fixture() as victim:
                                 target = victim.source.id
                                 event = {'task_id': target}

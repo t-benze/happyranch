@@ -2844,8 +2844,13 @@ uncertainty remain candidates. Result references inside arrays retain their
 enclosing field name. Original L and retained/C ledgers remain cumulative.
 Native task-results metadata and eligible audit payloads use the same conservative
 candidate walk before bounded acquisition. Original Coding scalar/prefix markers
-remain candidates, including compiler/validator/source pins. The original audit
-action set is located through distinct native action values; task bindings for
+remain candidates, including compiler/validator/source pins.
+Registrar matching includes case-folded `builtin:coding-v*` historical results
+on selected native sources; candidate prefix lengths derive from their literals.
+Action `coding_` matching folds case; namespace segments and other typed
+prefixes/values retain the original case-sensitive rules. Every format key is
+selected. These candidates retain COMPLETE/refusal and exact cancellation rollback.
+The original audit action set is located through distinct native action values; task bindings for
 Coding/workflow actions are inspected independently of payload negatives. Unknown
 or encoded candidates still enter the original decoder, and every probe and
 fallback shares the original ledgers and deadline. No native control action is

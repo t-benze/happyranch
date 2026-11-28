@@ -4920,6 +4920,13 @@ results/audits and consumption receipts with an empty retained inventory. Option
 `MIXED_DEFAULT_READ_DATABASE` use the same synthetic fixture copy under task-tmp
 for an exact base/head comparison, never a live database.
 
+F1 extends the existing `--s7a=mixed_fallback` table beside `native_callback` with
+`native_callback_registrar_v2` and `native_callback_registrar_upper_v1`. Both add
+an older historical result to a selected source, require the original COMPLETE
+Coding-metadata refusal, then drive real Founder cancellation without a mocked
+validator: HTTP409 and an exact whole-database persisted-row rollback are required.
+Run this same command on Python 3.14 and 3.12 for unfixed RED and fixed GREEN.
+
 The B1 retained-table subset adds `--s7a=mixed_candidates` and
 `--s7a=mixed_candidate_fallback` to the same Python3.14/3.12 command. The first
 drives real source/target cancellation with 100 unrelated publication snapshots
