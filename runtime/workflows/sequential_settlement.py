@@ -231,16 +231,17 @@ def observe_stalls(org: Any) -> None:
             observed.warned = True
 
 
-async def sweep_sequential(org: Any, queue: Any) -> None:
+async def sweep_sequential(org: Any, queue: Any, *, publish: bool = True) -> None:
     """Shared startup/periodic hook; each failure domain remains independent."""
     try:
         await settle_closed_visits(org, queue)
     except Exception as exc:
         logger.warning('sweep_failed org=%s reason=%s', org.slug, type(exc).__name__)
-    try:
-        org.orchestrator._workflow_continuation.rediscover(queue=queue)
-    except Exception as exc:
-        logger.warning('publication_failed org=%s reason=%s', org.slug, type(exc).__name__)
+    if publish:
+        try:
+            org.orchestrator._workflow_continuation.rediscover(queue=queue)
+        except Exception as exc:
+            logger.warning('publication_failed org=%s reason=%s', org.slug, type(exc).__name__)
     try:
         observe_stalls(org)
     except Exception as exc:

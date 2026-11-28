@@ -1094,6 +1094,17 @@ Missing, malformed, nonfinite, nonpositive or future launcher timestamps log
 `phase=launcher outcome=unavailable seconds=None` without refusing startup;
 missing process clocks similarly make their spans unavailable.
 
+Additional fixed `startup_timing` spans cover `startup_workflow_handoffs`,
+`org_startup_sequential_settlement`, `startup_wiring_and_workers` and its nested
+`org_rediscover_continuation`. Between job-liveness observation and projection
+loading, `startup_stale_pending_jobs`, `startup_blocked_job_resume`,
+`startup_pause_discovery`, `startup_thread_catchup` and `startup_scheduler_setup`
+identify recovery/scheduler work. `reaper_first_sweep` measures the first reached
+periodic pass after its initial sleep. Scheduler setup and the first reaper pass
+emit their completion marker only on completion; the other spans also report
+incomplete unwinds. These nested observations do not change the disjoint
+startup partition or supply readiness evidence.
+
 `org_load` covers preflight through return or
 failed unpublished close. `org_database`, `org_workflow_schema` (install/recover
 plus first locked validation), and `org_workflow_revalidation` are nested load
@@ -1344,8 +1355,18 @@ and business-settlement distinction.
 
 ## Sequential closed-visit rediscovery (U2 hardening)
 
-Before task workers start, `discover_completed_workflow_handoffs` calls the same
-`sequential_settlement.sweep_sequential` hook as the existing 30-second reaper.
+Before task workers start, `discover_completed_workflow_handoffs` calls
+`sequential_settlement.sweep_sequential(publish=False)`: closed-visit settlement
+and stall observation stay before workers. Thread/main-loop attachment then runs
+`_rediscover_returned`, publishing continuation work once with fresh wake checks.
+No result or history certificate is cached across these functions; settlement
+writes and authority changes are followed by the original fresh validation.
+The reaper sleeps one normal interval (30 seconds) before its first full sweep,
+then retains its existing sweep-plus-interval cadence. A completion after startup
+publication remains in durable native/event/inbox/outbox history for the next
+normal pass; no startup queue hint is its sole recovery owner. Discovery adds at
+most that normal interval, plus sweep/queue processing under the existing fair
+scan, storage, authority and finite-capacity conditions, not an execution SLA.
 It traverses engine-v2 running runs in keyset pages of 32, including selected
 terminal native tasks omitted from ordinary recovery and unbound queued visits
 with original no-launch receipts. Progress text does not select candidates.
@@ -1362,7 +1383,13 @@ inbox publication in independent pages of 32. Its existing readiness, Pause,
 live/job/ordinary dependency barriers and `enqueue_if_absent` remain controlling.
 One causal event has exactly one durable inbox item for its recorded initiator;
 queue hints may be redelivered/coalesced across boots. Terminal/unavailable
-initiators are logged and never replaced by another recipient.
+initiators are logged and never replaced by another recipient. Wiring calls
+`rediscover(diagnostics=False)` to defer its separate diagnostic dependency
+observations until the normal periodic sweep. Periodic/default rediscovery keeps
+unavailable/pending reporting; `wake` always performs its own fresh source fence,
+cancellation drain and readiness check. No diagnostic result feeds wake. Full
+startup/load/bootstrap sequential-history certification (STOP-1), all protecting
+checks and all reader/size/deadline limits stay unchanged.
 
 An independent SELECT-only observer uses logger
 `happyranch.workflows.sequential_settlement`. For a non-Held unfinished run with

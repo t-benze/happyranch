@@ -306,7 +306,8 @@ class Orchestrator:
         continuation = getattr(self, '_workflow_continuation', None)
         if continuation is not None:
             try:
-                continuation.rediscover(queue=queue)
+                with _startup_span('org_rediscover_continuation', org=self._slug):
+                    continuation.rediscover(queue=queue, diagnostics=False)
             except (ValueError, TypeError, sqlite3.Error):
                 logger.exception('workflow initiator continuation rediscovery unavailable')
 

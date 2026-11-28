@@ -443,7 +443,7 @@ class WorkflowContinuation:
             observation(self.db, task.id)
         return True
 
-    def rediscover(self, *, queue: Any = None) -> None:
+    def rediscover(self, *, queue: Any = None, diagnostics: bool = True) -> None:
         """Retry committed publication in bounded, independently fair pages."""
         import logging
         from runtime.workflows.sequential_history import _ReadBudget, _sql_budget
@@ -478,9 +478,13 @@ class WorkflowContinuation:
                     log.warning('publication_failed org=%s task=%s reason=%s', self.org.slug, task_id, type(exc).__name__)
         for (task_id,) in ids[:32]:
             try:
-                value = observation(self.db, task_id)
-                if value and value['pending'] and value['disposition'] in ('initiator_terminal', 'unavailable'):
-                    log.warning('initiator_unavailable org=%s task=%s reason=%s', self.org.slug, task_id, value['disposition'])
+                # Diagnostic certification is independent of wake eligibility.
+                # Startup defers it to the normal periodic sweep; wake always
+                # rechecks its own source fencing, drains and readiness below.
+                if diagnostics:
+                    value = observation(self.db, task_id)
+                    if value and value['pending'] and value['disposition'] in ('initiator_terminal', 'unavailable'):
+                        log.warning('initiator_unavailable org=%s task=%s reason=%s', self.org.slug, task_id, value['disposition'])
                 self.wake(task_id, queue=queue)
             except Exception as exc:
                 log.warning('publication_failed org=%s task=%s reason=%s', self.org.slug, task_id, type(exc).__name__)

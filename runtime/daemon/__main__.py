@@ -198,7 +198,10 @@ async def discover_completed_workflow_handoffs(state: DaemonState) -> None:
         # Terminal visits are absent from the ordinary nonterminal-task sweep.
         # Run on the startup event loop before workers, without native recovery.
         from runtime.workflows.sequential_settlement import sweep_sequential
-        await sweep_sequential(org, state.queue)
+        # Publication follows once, after thread/main-loop wiring. Settlement
+        # and alarm observation retain their mandatory pre-worker position.
+        with _startup_span('org_startup_sequential_settlement', org=org.slug):
+            await sweep_sequential(org, state.queue, publish=False)
 
 
 @_startup_span("sweep")

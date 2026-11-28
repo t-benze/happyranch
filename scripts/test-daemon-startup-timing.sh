@@ -91,6 +91,7 @@ for org_slug in ('alpha', 'beta'):
 
 app = SimpleNamespace(state=SimpleNamespace(daemon=SimpleNamespace(
     _cleanup_diagnostics=None, _thread_release_service=None,
+    _workflow_bootstrap=None,
     metrics_store=None, _metrics_serving=False,
 )))
 
