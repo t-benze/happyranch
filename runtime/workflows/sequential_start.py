@@ -712,7 +712,7 @@ def admit_batch_uncommitted(conn: sqlite3.Connection, db: Any, *, org_slug: str,
     """All-or-none writer. The native caller supplies per-member ceilings.
 
     Legacy internal aggregate fixtures retain their original scalar allowance.
-    Per-run pins and complete history/cancellation reservations never renew.
+    Per-run pins and selected history/cancellation reservations never renew.
     """
     from runtime.infrastructure.workflow_task_ownership import adopt_sequential_wait_set_uncommitted
     from runtime.workflows.sequential_assignments import parse_assignment_start
@@ -803,10 +803,17 @@ def admit_batch_uncommitted(conn: sqlite3.Connection, db: Any, *, org_slug: str,
                 total[key] += getattr(limits, key)
         if not isinstance(remaining, tuple):
             _check(all(total[key] <= getattr(remaining, key) for key in total), 'workflow_seq_batch_allowance_exhausted')
-        # Preserve the existing shared reservation before allocating any member;
-        # the complete resulting reader repeats its original full-ledger check.
-        all_runs = _engine_rows(conn, 'workflow_seq_runs', budget, '1', ())
-        all_visits = _engine_rows(conn, 'workflow_seq_visits', budget, '1', ())
+        # Authenticate the full affected source and pin chains before allocation.
+        # H includes every unfinished run and the prospective batch, charged on
+        # this original ledger once; unrelated payloads are not H inputs.
+        from runtime.workflows.sequential_task_history import read_write_history, read_cancellation_headroom
+        selected = read_write_history(conn, expected_org_slug=org_slug, deadline=budget.deadline,
+            source_ids=frozenset((source.task_id,)),
+            definition_ids=frozenset(item['setting']['definition_id'] for item in prepared),
+            settings_ids=frozenset(item['setting']['id'] for item in prepared))
+        headroom = read_cancellation_headroom(conn, expected_org_slug=org_slug,
+            metadata=selected.metadata, budget=budget)
+        all_runs, all_visits = headroom['workflow_seq_runs'], headroom['workflow_seq_visits']
         for item in prepared:
             all_runs.append(dict(engine_version=2, state='running', id=item['run_id'], source_task_id=source.task_id,
                 source_principal=source.assigned_agent, source_session_id=source.current_session_id,

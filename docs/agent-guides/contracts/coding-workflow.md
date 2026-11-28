@@ -240,6 +240,18 @@ or scratch acceptance. Those and ordinary coding admission remain root-owned.
 
 ## Current coding storage and setup — ROOT13150 / THR320seq261/267
 
+THR-404 group 6 scopes sequential Setup Save/Allow/Disable and immutable operation
+lookup to the selected definition identity's full settings/operation/receipt chain,
+with zero run roots and fresh post-INSERT validation. Catalog registration uses
+catalog definition/settings roots and retains native census/safety, its single
+nondurable reservation, pointer/cache checks and exact INSERT/readback. Disconnected
+run corruption no longer vetoes these writes; latest CAS, eligibility/independence,
+admitted pins and authority/transaction/budget rules remain. Exclusively fresh
+org creation proves exact structure and bounded empty owned data with original
+native/version/cutover seeds and FK/physical checks. Existing storage owners and
+global load/install/bootstrap/Founder cutover remain COMPLETE. See the
+[group-6 reader contract](../../specs/2026-11-09-sequential-history-reader-d2.md#settings-builtin-registration-and-fresh-creation--thr-404-group-6).
+
 Normal `OrgState.load` installs the unchanged four coding tables beside each
 normally admitted org's supported document foundation. Fresh F plus coding is
 one `Database.workflow_schema_transaction`; existing complete storage is

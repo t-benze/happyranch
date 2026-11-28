@@ -211,6 +211,8 @@ def apply_control_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug:
             _require((row['request_bytes'], row['actor_task_id'], row['actor_principal'], row['actor_session_id'], row['actor_result_id'])
                 == (capture.command_bytes, actor.task_id, actor.assigned_agent, actor.current_session_id, actor.result_row_id),
                 'control_operation_conflict')
+            validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline,
+                run_ids=frozenset((run['id'],)), source_ids=frozenset((run['source_task_id'],)))
             return _hashed(row['receipt_bytes'], row['receipt_digest'])
         _require(db._retry_claim_matches(actor), 'control_actor_conflict')
         data = _rows(conn, run, budget)
@@ -353,20 +355,35 @@ def apply_control_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug:
              hashlib.sha256(capture.command_bytes).hexdigest(), event_id, new_visit,
              receipt, hashlib.sha256(receipt).hexdigest()))
     validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline,
-                           reserve_cancellation=command.action != 'cancel')
+        reserve_cancellation=command.action != 'cancel',
+        run_ids=frozenset((run['id'],)), source_ids=frozenset((run['source_task_id'],)))
     return receipt
 
 
 def validate_control_write(conn: sqlite3.Connection, *, org_slug: str, deadline: float,
-                           reserve_cancellation: bool = False) -> None:
-    """Refuse an unreadable resulting history before the authority writer commits.
+                           reserve_cancellation: bool = False,
+                           run_ids: frozenset[str] | None = None,
+                           source_ids: frozenset[str] = frozenset(),
+                           definition_ids: frozenset[str] = frozenset(),
+                           settings_ids: frozenset[str] = frozenset()) -> None:
+    """Validate resulting history on the original deadline before commit.
 
-    Use the complete reader's unchanged allowances on the operation's original
-    deadline. No payload cache survives from the earlier writer observation.
+    Admission, initiator delivery/consumption/source outer settlement, generic
+    hold/dispatch and direct control/cancel/close supply explicit roots. Other
+    callers keep complete history.
     """
-    from runtime.workflows.sequential_history import read_sequential_history
-    read_sequential_history(conn, expected_org_slug=org_slug, deadline=deadline,
-                            reserve_cancellation=reserve_cancellation)
+    from runtime.workflows.sequential_history import read_sequential_history, _reserve_generic_cancellation
+    if run_ids is None:
+        read_sequential_history(conn, expected_org_slug=org_slug, deadline=deadline,
+                                reserve_cancellation=reserve_cancellation)
+        return
+    from runtime.workflows.sequential_task_history import read_write_history, read_cancellation_headroom
+    selected = read_write_history(conn, expected_org_slug=org_slug, deadline=deadline,
+        run_ids=run_ids, source_ids=source_ids, definition_ids=definition_ids, settings_ids=settings_ids)
+    if reserve_cancellation:
+        headroom = read_cancellation_headroom(conn, expected_org_slug=org_slug,
+            metadata=selected.metadata, budget=selected.budget)
+        _reserve_generic_cancellation(headroom, selected.budget)
 
 
 def native_cancel_fence_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug: str,
@@ -413,7 +430,8 @@ def native_cancel_fence_uncommitted(conn: sqlite3.Connection, db: object, *, org
         else:
             _require(run['state'] == 'running' and visit is not None, 'native_cancel_state_conflict')
             _move(conn, run, event_id, progress='cancelling')
-    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline)
+    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline,
+        run_ids=frozenset((run['id'],)), source_ids=frozenset((run['source_task_id'],)))
     return event_id
 
 
@@ -435,5 +453,6 @@ def finish_cancellation_uncommitted(conn: sqlite3.Connection, db: object, *, org
         _move(conn, run, event, state='finished', terminal_outcome='cancelled', progress=None,
               active_visit_id=None, held_node_id=None, held_event_id=None)
         _finish_member_carrier(conn, run)
-    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline)
+    validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline,
+        run_ids=frozenset((run['id'],)), source_ids=frozenset((run['source_task_id'],)))
     return event

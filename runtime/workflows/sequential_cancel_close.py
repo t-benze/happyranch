@@ -15,9 +15,10 @@ from pydantic import Field, StrictInt, StrictStr
 
 from runtime.infrastructure.task_pause_controls import MAX_JOURNAL_BYTES, decode_journal
 from runtime.workflows.sequential_contracts import Closed
+from runtime.workflows.sequential_control import validate_control_write
 from runtime.workflows.sequential_definition import _json, compile_generic_definition
 from runtime.workflows.sequential_engine import _engine_rows
-from runtime.workflows.sequential_history import _ReadBudget, _bytes, _sql_budget, read_sequential_history
+from runtime.workflows.sequential_history import _ReadBudget, _bytes, _sql_budget
 from runtime.workflows.sequential_initiator import finish_cancel_and_wake_uncommitted
 
 ACTION = 'sequential_never_launched_cancel_close'
@@ -216,11 +217,13 @@ def close_uncommitted(org: Any, conn: sqlite3.Connection, capture: Any, *, run_i
     run = runs[0]
     replay = _receipt(conn, run, key, command, budget)
     if replay is not None:
-        read_sequential_history(conn, expected_org_slug=org.slug, deadline=budget.deadline)
+        validate_control_write(conn, org_slug=org.slug, deadline=budget.deadline,
+            run_ids=frozenset((run_id,)), source_ids=frozenset((run['source_task_id'],)))
         return replay
     require(command is not None, 'operation_not_found', 404)
     visit, digest = _proof(conn, org.slug, run, command, budget)
-    read_sequential_history(conn, expected_org_slug=org.slug, deadline=budget.deadline)
+    validate_control_write(conn, org_slug=org.slug, deadline=budget.deadline,
+        run_ids=frozenset((run_id,)), source_ids=frozenset((run['source_task_id'],)))
     pins = _engine_rows(conn, 'workflow_seq_definitions', budget, 'id=?', (run['definition_id'],))
     require(len(pins) == 1, 'history_conflict')
     compiled = compile_generic_definition(pins[0]['definition_bytes'], source_digest=pins[0]['source_digest'])
@@ -232,7 +235,8 @@ def close_uncommitted(org: Any, conn: sqlite3.Connection, capture: Any, *, run_i
         journal_sha256=digest, native_cleanup='unresolved_unchanged').model_dump()
     org.db.insert_audit_log_uncommitted(visit['task_id'], 'founder', ACTION,
         {'command': command.model_dump(), 'response': receipt}, canonical_payload=True)
-    read_sequential_history(conn, expected_org_slug=org.slug, deadline=budget.deadline)
+    validate_control_write(conn, org_slug=org.slug, deadline=budget.deadline,
+        run_ids=frozenset((run_id,)), source_ids=frozenset((run['source_task_id'],)))
     budget.check()
     return receipt
 

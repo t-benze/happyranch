@@ -13,8 +13,8 @@ from runtime.workflows.coding_source_history import _TASK_TYPES
 from runtime.workflows.sequential_cancel import _check, _closure, _controls, _KINDS, _TERMINAL
 from runtime.workflows.sequential_definition import compile_definition
 from runtime.workflows.sequential_engine import _engine_rows, cancel_fence_uncommitted
-from runtime.workflows.sequential_history import _ReadBudget, _bytes, _sql_budget, read_sequential_history
-from runtime.workflows.sequential_mixed_history import MixedSequentialHistory, MixedTaskHistory, _rows
+from runtime.workflows.sequential_history import _ReadBudget, _bytes, _sql_budget
+from runtime.workflows.sequential_mixed_history import MixedSequentialHistory, MixedTaskHistory, _rows, read_mixed_write_history_uncommitted
 
 
 def has_sequential_descendant(org: Any, task_id: str) -> bool:
@@ -215,7 +215,7 @@ def _cancel_captured(org: Any, task_id: str, *, cascade: bool, actor: str, ratio
                     if key in live and kind in ('draft', 'f5'):
                         dispatcher = org.workflow_drafts if kind == 'draft' else org.workflow_reviews
                         _check(dispatcher is not None and dispatcher.org is org and dispatcher.db is org.db)
-                        # The first complete read stays pinned through lookup.
+                        # The first mixed certificate stays pinned through lookup.
                         intent = dispatcher._intent(conn, key)
                         documents.append((key, dispatcher, intent))
                 with _sql_budget(conn, budget):
@@ -258,8 +258,8 @@ def _cancel_captured(org: Any, task_id: str, *, cascade: bool, actor: str, ratio
                     'cancelled_at=?,completed_at=?,updated_at=? WHERE id=?', (note, now, completed_stamps[key], now, key))
                 org.db.insert_audit_log_uncommitted(key, actor, 'task_cancelled',
                                                   dict(rationale=rationale, cascade=cascade))
-            after = read_sequential_history(conn, expected_org_slug=org.slug,
-                retained_budget=after_budget, deadline=budget.deadline, task_id=task_id)
+            after = read_mixed_write_history_uncommitted(conn, org_slug=org.slug, task_id=task_id,
+                budget=_ReadBudget(deadline=budget.deadline), retained_budget=after_budget)
             _check(isinstance(after, MixedSequentialHistory) and after.task_history is not None)
             target = after.task_history
             with _sql_budget(conn, budget):

@@ -444,5 +444,6 @@ def hold_generic_uncommitted(conn: sqlite3.Connection, db: object, *, org_slug: 
         _move(conn, run, event_id, state='held', progress=None, active_visit_id=None,
               held_node_id=visit['node_id'], held_event_id=event_id)
     validate_control_write(conn, org_slug=org_slug, deadline=budget.deadline,
-                           reserve_cancellation=True)
+                           reserve_cancellation=True, run_ids=frozenset((run_id,)),
+                           source_ids=frozenset((run['source_task_id'],)))
     return event_id

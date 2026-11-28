@@ -1445,10 +1445,26 @@ storage checks. Its finite cases are `thread_source`, `thread_ancestor`,
 `duplicate_return`, `concurrent_return`, `restart_before_tail`,
 `restart_marker_only`, `restart_pending_or_settled_tail`,
 `composed_archive_recheck` and `marker_read_unavailable`. It drives actual
-complete-reader-authorized sequential return/recovery and ordinary SYSTEM,
+selected-run-authorized sequential return, complete-history rediscovery and ordinary SYSTEM,
 cap/mint and archive admission writers on private valid history/thread rows.
 It inspects source/status/original attribution, invocation IDs, cap and supplied
 queue publication. No executor starts and no successful tail is mocked.
+
+THR-404 group 5 extends the same selector table with `selected_scope`,
+`selected_unrelated` (native/retained), `selected_corruption` (event/outbox digest,
+wrong outbox source/event/visit, missing outbox, wrong run source, duplicate return,
+wrong/reverse ownership), `selected_nonreturn`, `discovery_corruption` and
+`discovery_budget`. Run each on Python 3.14 and 3.12, or include them through
+`--returned-storage=all`. They observe exact terminal-source obligation IDs,
+independent source equality, history rebuild/parent wake after snapshot closure,
+unchanged source/parent and inert outbox replay. Selected corruption refuses
+before tail effects. Disconnected ordinary native/retained damage no longer
+blocks selected returns; complete rediscovery still refuses that damage and
+noncompleted sequential corruption. Real data acquisition exhausts the original
+byte ledger with a causal `ReadExhaustion` and returns no partial IDs; no budget
+or successful validator is mocked. Rediscovery retains complete validation and
+has no <=100ms guarantee. Existing duplicate/concurrent/restart/marker cases
+remain keepers; this adds no required CI check, build or Product E2E trigger.
 
 These cases establish the scoped in-process R1a contracts, not serving restart
 latency or eventual thread delivery after a partial tail. Start@1 remains one
@@ -4792,5 +4808,190 @@ The existing private schema venue supports
 (and Python3.12). Focused selectors task_scoped_data, task_empty, task_corruption,
 task_unrelated and task_absent cover real route data, no org-wide reader on
 empty tasks, selected hash/orphan/pin/ownership refusal, unrelated corruption
-isolation with unchanged start/cancel/full-view refusal, and 404 precedence.
+isolation with scoped start/cancel success and unchanged complete-default/full-view refusal,
+and 404 precedence.
 These are private SQLite/authority fixtures, not E2E or a new required CI gate.
+
+
+THR-404 group 1 extends those same task cases with the explicit-root write
+primitive (no writer wiring). Focused `--s7a=write_settings_chain` covers full
+selected definition-identity generations/receipts and definition/settings-only
+roots; `--s7a=write_headroom` covers all-unfinished scalar H, three/four nominal
+reservations, earlier ledger consumption, long identities, a cancelling member
+and active-visit ownership. `task_scoped_data`, `task_corruption` and
+`task_unrelated` also exercise the write primitive on the existing real @1/@2
+fixtures, selected/reverse ownership and missing sibling corruption, and
+unrelated corrupt history. Use the same documented shell command with the
+focused selector substituted; no new CI lane, required check or Product E2E.
+
+
+THR-404 group 2 extends the same table with `--s7a=start_admission`,
+`--s7a=start_legacy` and `--s7a=start_preflight` on Python3.12/3.14. They observe
+real direct @1/@2 admission/replay and the real continuation preflight method:
+persisted graph, different-source corruption isolation, affected earlier
+hash/pin refusal with allocation rollback, original key/body/INTEGER
+result/principal/SID and one-run-per-source refusals, and three unfinished runs
+including hypothetical batch members versus four-run capacity refusal, including
+an unfinished member on a different source. The
+existing `task_unrelated` case now expects scoped admission success while
+the complete default/full views still refuse the same damage (group 4 adds cancel
+success). Original S5
+`batch_all_or_none`, assignment `independence`, Start2 `admission`/`capacity`,
+and setup `pins` remain adjacent keepers for invalid assignments, authority,
+partial allocation/replay, capacity and retained settings pins. Group 2 alone
+does not certify the full native callback; group 3 below covers its initiator
+tail. Use persistent jobs for these suites and local_ci
+all; no required check, trigger, Product E2E or retired test venue is added.
+
+
+THR-404 group 3 adds `--s7a=initiator_scope`, `--s7a=dispatch_scope`,
+`--s7a=hold_scope` and `--s7a=start_callback_scope` on Python3.12/3.14.
+They observe real dependency state, committed delivery/consumption and exact
+receipt replay, non-cancel generic transition/hold and durable held/returned
+wakes, affected sibling-event/receipt refusal with rollback, unrelated corrupt
+run isolation, and genuine native start callback allocation/result/consumption
+without complete validation. Existing S5 crash-before/after-ack, hold/return
+sibling and S6a workflow_wait/control_result_binding/join cases retain ownership,
+SID delivery, replay, authority and ordinary-join guards. Prior G1/G2 selectors
+remain regression keepers. All suites/local_ci all run as persistent jobs on
+the clean committed head; attributable temporary RED variants restore exact
+production bytes before GREEN. No new required CI check or Product E2E.
+
+THR-404 Group A adds `--s7a=source_outer_positive`, `source_outer_negative`,
+`source_outer_stale`, `source_outer_sibling`, `source_outer_earlier`,
+`source_outer_receipt`, `source_outer_unrelated_positive`,
+`source_outer_unrelated_negative`, `source_outer_capacity`,
+`source_outer_replay` and `source_outer_rollback` (each name uses the
+`--s7a=` prefix), on Python3.12/3.14. They drive the original @2 source outer
+writer, persisted proof polarity/identity and first-visit queue eligibility;
+same-source earlier-SID/batch/receipt refusal, unrelated-run isolation,
+all-unfinished H exhaustion, byte-exact replay and post-proof rollback before
+publication. The capacity fixture suppresses reservation only while constructing
+four private unfinished runs, then restores it before the actual settlement.
+Native containment/close/release observations are simulated by the existing S5
+fixture; these are not live provider or contended-lock acceptance. S5
+`source_outer_all_runs` and `later_sid_no_batch_settle`, G1–G7b keepers, local CI
+and OpenAPI remain; no required check or E2E trigger is added. Long verification
+runs as a persistent job at the exact clean committed head.
+
+THR-404 group 4 adds `--s7a=control_scope`, `--s7a=cancel_fence_scope` and
+`--s7a=cancel_finish_scope`, plus `--draft-review=C35`, on Python3.12/3.14.
+They drive original control/cancel/finish and human-close writers: queued
+immediate close, launched fence then positive terminal/outer finish, replacement
+controls, immutable replay and canonical audit bytes. Selected old event or
+sibling damage refuses with rollback; disconnected corruption permits the
+addressed write and replay. Damaged affected history also refuses replay;
+changed command and missing positive closure retain their original refusal.
+`task_unrelated` now observes scoped direct cancel success while run views and
+the complete default still refuse. C34 retains its full no-launch/journal,
+human authority, CAS, concurrency, audit and transaction-fault table. Its
+post-write fault observer now targets the scoped validator at the same boundary.
+S4a capacity cursor fixtures retain their explicit missing-prefix isolation
+against that validator; they still prove storage capacity only, never a full
+4094-event history. Keepers include cancel_never_held, cancel_resumed_running,
+cancel_replay_finished, stale_hold_event, control_state_action_matrix and the
+capacity_running_cancel/held_cancel/running_refusal boundaries. Prior G1-G3
+selectors and real result/authority keepers remain. Full schema suites stay
+deferred to the final serial head. No required CI check or E2E trigger is added.
+
+
+THR-404 group 6 extends the existing private schema fixture with
+`--s7a=settings_scope`, `--s7a=settings_corruption` and `--s7a=builtin_scope`
+on Python 3.12/3.14. They observe served Save/Disable/original replay and exact
+settings/operation appends, immutable admitted pins, selected definition/current/
+earlier generation/receipt corruption, missing operation/definition, disconnected
+run isolation, exact catalog INSERT/zero-write replay and pointer-drift refusal.
+`--setup-admission=validation`, `replay`, `race`, `pins`, `rollback` and `history`
+retain kind/body conflicts, latest CAS, role/independence, uncertain publication
+and post-INSERT rollback coverage. The rollback fault now intercepts the real
+scoped target-validation seam; its persisted rollback assertions are unchanged.
+`--fresh-catalog=historical` extends the native-pristine table with a valid but
+nonempty owned workflow target: exclusive fresh creation must refuse and roll
+back. Existing `--fresh-catalog=route` / `registration` retain real POST creation,
+exact catalog delta, native safety and lost-authority checks. No new CI lane or
+required check; full schema suites remain for the final serial head.
+
+The existing `--s7a=unavailable` genuine legacy-storage fixture also asserts
+settings PUT returns `sequential_storage_unavailable` without writes. Its absent
+path retains the original complete legacy validator; installed sequential setup
+uses the scoped chain.
+
+
+THR-404 group 7R uses the existing private schema shell and `--s7a=mixed_empty`,
+`mixed_corruption`, `mixed_unrelated`, `mixed_fallback`, `mixed_budget`,
+`mixed_default` and `mixed_native` on Python3.14 and3.12 (substitute these in the
+documented
+`WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --s7a=...`).
+They cover exact closure/empty-inventory equality and original ledger identity;
+selected event/ancestry/namespace refusal; disconnected Coding/document and
+sequential corruption plus8300 ordinary audits/results; complete-fallback outcome
+parity for scalar task/run/instance/result, mapping/document-result, escaped/nested
+JSON, base64/hex/typed native cells, implicit native callbacks, ordinary cancellation
+audits, journal/ownership/revisit and native settings-pointer references; uncertain/duplicate
+encodings; and deadline/C/retained exhaustion with no partial result. The default
+keeper compares the original wrapper/complete rows and ledger; `mixed_native`
+reuses the genuine HTTP Start2 callback fixture to authenticate native source
+results/audits and consumption receipts with an empty retained inventory. Optional
+`MIXED_DEFAULT_OUTPUT` exports canonical bytes; `MIXED_DEFAULT_DATABASE` and
+`MIXED_DEFAULT_READ_DATABASE` use the same synthetic fixture copy under task-tmp
+for an exact base/head comparison, never a live database.
+
+F1 extends the existing `--s7a=mixed_fallback` table beside `native_callback` with
+`native_callback_registrar_v2` and `native_callback_registrar_upper_v1`. Both add
+an older historical result to a selected source, require the original COMPLETE
+Coding-metadata refusal, then drive real Founder cancellation without a mocked
+validator: HTTP409 and an exact whole-database persisted-row rollback are required.
+Run this same command on Python 3.14 and 3.12 for unfixed RED and fixed GREEN.
+
+The B1 retained-table subset adds `--s7a=mixed_candidates` and
+`--s7a=mixed_candidate_fallback` to the same Python3.14/3.12 command. The first
+drives real source/target cancellation with 100 unrelated publication snapshots
+and disconnected retained corruption, requiring an EMPTY retained inventory and
+unchanged journals. The second compares original COMPLETE outcomes for duplicate
+and escaped keys, opaque UTF8, unknown encoded/typed cells, depth, nonfinite and
+scalar JSON, nested JSON, array/string result references and reference keys.
+`mixed_corruption` and `mixed_budget` remain affected-closure/exhaustion keepers.
+F remains COMPLETE; these J-layout tests do not claim F fast-path acceptance.
+The B1 native continuation adds `--s7a=mixed_native_candidates` (100 plain native
+results and 100 audits across original eligible actions, real mixed cancellation,
+unchanged native rows) and `--s7a=mixed_native_fallback` (both native tables,
+reference/escaped/array/key and duplicate/opaque/encoded/typed/nested/deep/number
+unknown shapes, plus valid Unicode and reserved compiler-pin candidates).
+The latter compares original complete outcomes for references/unknowns and
+observes the original decoder for valid candidates it can prove unrelated.
+Both run with the same Python3.14/3.12 commands; existing mixed corruption and
+cumulative-budget keepers remain. `--s7a=mixed_escaped_candidates` extends the
+same real cancellation fixture with 100 native result and 100 eligible audit
+TEXT/BLOB bodies containing escaped Unicode values. `--s7a=mixed_escaped_fallback`
+checks both native tables for surrogate high/low/pair, NUL, Unicode key/nested
+whitespace/duplicate/encoded-field/result, integer-limit and invalid-JSON cases.
+Candidates retain the original decoder or exact complete outcome. The copied F
+probe avoids decode-byte exhaustion but exhausts the original 32M SQL allowance;
+F acceptance remains NOT RUN rather than substituted with J.
+
+C1's unused selected-reader APIs/tests/docs are removed by normal revert; the
+original complete retained corruption keepers remain. Group 7b wires the mixed
+cancellation/legacy/member-capture/tail sites to this adapter. Complete
+retained-reader behavior remains unchanged; historical @1 Final/7c and STOP-1
+stay complete. Four authoring answers
+and attributable fail/restored-pass evidence stay in the existing PR body. No new
+required check, venue or trigger; integration SKIPPED THR243, retired units and
+Product E2E NOT RUN. Long verification and clean-head `scripts/local_ci.sh all`
+plus OpenAPI `--check` use the durable jobs boundary and authenticated receipt
+before publication.
+
+
+THR-404 group 7b extends the existing `--s6b=cancel_source_all_runs`,
+`--s6b=source_failed` and `--s6b=unknown_effect_kept` private cases on Python 3.14
+and 3.12. Run, for example,
+`WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --s6b=cancel_source_all_runs`.
+Assertions cover exact live task/audit deltas with disconnected corruption,
+selected source/target proof corruption with exact rollback, terminal-source
+cause preservation, required complete fallback for uncertain native control
+results, genuine captured invocation identity and point-dependency refusal.
+Every one of the ten enrolled core tables has an explicit forbidden-consumer-DML
+case. Lookup DML/reverted DML, query_only, savepoint and main/temp cookie drift
+refuse with exact rollback and context reset. These extend real SQLite/writer
+fixtures; no mock inventory or production test seam is added. Prior group-1–7R
+keepers and exact clean-head local CI/OpenAPI remain required maker evidence;
+final serial-head full schema suites remain a separate root-owned gate.

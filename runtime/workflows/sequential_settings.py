@@ -9,6 +9,7 @@ from typing import Annotated, Any, Callable, Literal
 
 from pydantic import BeforeValidator, Field, StrictInt, WithJsonSchema, field_serializer
 
+from runtime.infrastructure.workflow_schema_load import sequential_storage_present
 from runtime.orchestrator.producer_move import native_writer
 from runtime.workflows.sequential_contracts import (
     BindingClaim, Closed, DefinitionPin, Digest, Limits, Positive, Token, _array,
@@ -20,6 +21,7 @@ from runtime.workflows.sequential_history import (
     StorageSettings, GenericStorageSettings, _storage_settings, _generic_limits_value, _GENERIC_LIMITS_SCHEMA,
     _ReadBudget, _bytes, _decode, _parse, _sql_budget, read_sequential_history,
 )
+from runtime.workflows.sequential_task_history import read_write_history
 from runtime.workflows.sequential_coding_evidence import _current_authority
 from runtime.workflows.sequential_views import ProjectionRefusal, SettingsView, GenericSettingsView
 
@@ -194,10 +196,27 @@ def _inspect(conn: sqlite3.Connection, org: Any, capture: Any, budget: _ReadBudg
              deadline: float, key: str, command: SetupCommand | None, kind: str) -> SetupReceipt | None:
     with _sql_budget(conn, budget):
         _current_authority(conn, org.workflow_authority, capture, budget)
-    history = read_sequential_history(conn, expected_org_slug=org.slug, deadline=deadline)
-    if not history.layout.sequential:
+        available = sequential_storage_present(conn, budget=budget)
+    if not available:
+        # Preserve the original legacy validation and unavailable error; the
+        # scoped write helper requires installed sequential companion storage.
+        read_sequential_history(conn, expected_org_slug=org.slug, deadline=deadline)
         raise ProjectionRefusal('sequential_storage_unavailable')
-    # Complete reader clears its own SQL hook; caller restores its original hook.
+    with _sql_budget(conn, budget):
+        operations = _engine_rows(conn, 'workflow_seq_settings_operations', budget,
+            'org_slug=? AND principal=? AND operation_key=?', (org.slug, PRINCIPAL, key))
+        # Replays authenticate the original identity, even for a conflicting
+        # command. Fresh requests select only their registered definition.
+        settings = frozenset(row['settings_id'] for row in operations)
+        definitions = frozenset()
+        if command is not None and not operations:
+            definitions = frozenset(row['id'] for row in _engine_rows(conn, 'workflow_seq_definitions', budget,
+                'identity=? AND version=?', (command.definition.identity, command.definition.version)))
+    selected = read_write_history(conn, expected_org_slug=org.slug, deadline=deadline,
+        definition_ids=definitions, settings_ids=settings)
+    if not selected.history.layout.sequential:
+        raise ProjectionRefusal('sequential_storage_unavailable')
+    # Scoped reader clears its SQL hook; caller restores its original hook.
     with _sql_budget(conn, budget):
         receipt = _original(conn, org, key, budget)
         if receipt is not None:
@@ -217,7 +236,7 @@ async def settings_operation(org: Any, *, key: str, command: SetupCommand | None
                              revalidate: Callable[[], None], kind: str = 'workflow-sequential-settings-put@1') -> SetupReceipt:
     """SELECT-only lookup/replay; fresh writes recheck under the original writer.
 
-    One deadline; each complete oracle retains its OWN D2 allowance. Projection,
+    One deadline; each scoped oracle retains its OWN D2 allowance. Projection,
     command and write work share one finite allowance. No retries or work IDs.
     """
     if command is not None and (command.operation_key != key or command.format != kind):
@@ -284,7 +303,8 @@ async def settings_operation(org: Any, *, key: str, command: SetupCommand | None
                                 'VALUES (?,?,?,?,?,?,?,?,?)', (operation_id, org.slug, PRINCIPAL, key, request,
                                     hashlib.sha256(request).hexdigest(), setting_id, stored_receipt,
                                     hashlib.sha256(stored_receipt).hexdigest()))
-                            read_sequential_history(conn, expected_org_slug=org.slug, deadline=deadline)
+                            read_write_history(conn, expected_org_slug=org.slug, deadline=deadline,
+                                settings_ids=frozenset((setting_id,)))
                             with _sql_budget(conn, budget):
                                 receipt = _original(conn, org, key, budget)
                     with _sql_budget(conn, budget):

@@ -187,14 +187,14 @@ async def run_cases(fixture: Callable[..., Any], start: Callable[..., Any], inve
                     await post(status=503, code='evidence_unavailable')
                 assert inventory(f) == original
                 from runtime.workflows import sequential_cancel_close as owner
-                original_read = owner.read_sequential_history
+                original_read = owner.validate_control_write
                 reads = []
                 def fail_postwrite(*args: Any, **kwargs: Any) -> Any:
                     reads.append(1)
                     if len(reads) == 2:
                         raise ValueError('private postwrite validation fault')
                     return original_read(*args, **kwargs)
-                with patch.object(owner, 'read_sequential_history', side_effect=fail_postwrite):
+                with patch.object(owner, 'validate_control_write', side_effect=fail_postwrite):
                     await post(status=503, code='evidence_unavailable')
                 assert len(reads) == 2 and inventory(f) == original
                 with patch.object(_ReadBudget, 'check', side_effect=ValueError('private exhausted allowance')):
@@ -266,3 +266,73 @@ async def run_cases(fixture: Callable[..., Any], start: Callable[..., Any], inve
         response = await f.client.post(PATH, json=dict(operation_key='late-human',run_id=run['id'],expected_cas=0), headers=f.auth)
         assert response.status_code == 409 and response.json()['detail']['code'] == 'already_closed'
         assert inventory(f) == before
+
+
+async def run_scope_cases(fixture: Callable[..., Any], start: Callable[..., Any],
+                          inventory: Callable[..., Any], legacy: Callable[..., Any]) -> None:
+    """C35: real human close/replay validates its whole affected source only."""
+    for defect in ('valid', 'unrelated', 'selected_event', 'sibling_event', 'native'):
+        async with fixture() as f:
+            runs = await start(f, ('release/happyranch/draft-review', 'release/happyranch/coding'))
+            run = next(row for row in runs if row['id'] == f.ids.run_id)
+            tid = f.ids.visit_task_id
+            store = f.db._task_pause_store
+            with store.writer(tid) as (root, row):
+                row = store.ensure_uncommitted(root['id'])
+                row['journal']['entries'] = [dict(id='scope-original-unknown', org='scratch', root_task_id=root['id'],
+                    task_id=tid, agent=f.db.get_task(tid).assigned_agent, session_id='scope-never-bound',
+                    owner='sequential', owner_identity={}, fingerprint=fingerprint(f.db.get_task(tid)),
+                    generation=row['generation'], phase='unknown', retry={},
+                    context=dict(execution_unknown=True, producer_settled=True), started_at=None, captured_generation=None)]
+                store.save_journal_uncommitted(row)
+            await cancel_task(f.source.id, CancelBody(rationale='Private scope cancellation'), f.org)
+            current = dict(f.conn.execute('SELECT * FROM workflow_seq_runs WHERE id=?', (run['id'],)).fetchone())
+            assert (current['state'], current['progress']) == ('running', 'cancelling')
+            command = dict(operation_key='scope-human-close', run_id=run['id'], expected_cas=current['cas'])
+
+            def damage_event(run_id: str) -> None:
+                triggers = [tuple(row) for row in f.conn.execute(
+                    "SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND tbl_name='workflow_seq_events'")]
+                for name, _ in triggers:
+                    f.conn.execute('DROP TRIGGER "' + name + '"')
+                f.conn.execute('UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?', ('0'*64, run_id))
+                for _, sql in triggers:
+                    f.conn.execute(sql)
+                f.conn.commit()
+
+            if defect == 'unrelated':
+                damage_event(legacy(f).run_id)
+            elif defect in ('selected_event', 'sibling_event'):
+                damage_event(run['id'] if defect == 'selected_event' else next(row['id'] for row in runs if row['id'] != run['id']))
+            elif defect == 'native':
+                f.conn.execute('UPDATE tasks SET executor_pid=123 WHERE id=?', (tid,)); f.conn.commit()
+            before = inventory(f)
+            response = await f.client.post(PATH, json=command, headers=f.auth)
+            if defect in ('selected_event', 'sibling_event', 'native'):
+                assert response.status_code == (409 if defect == 'native' else 503), (defect, response.text)
+                assert response.json()['detail']['code'] == ('executor_admission_present' if defect == 'native' else 'evidence_unavailable')
+                assert inventory(f) == before, (defect, 'refusal changed rows')
+            else:
+                assert response.status_code == 200, (defect, response.status_code, response.text)
+                receipt = response.json()
+                assert (receipt['before_cas'], receipt['after_cas'], receipt['native_cleanup']) == (current['cas'], current['cas']+1, 'unresolved_unchanged')
+                audit = f.conn.execute('SELECT task_id,agent,payload FROM audit_log WHERE action=?', (ACTION,)).fetchall()
+                expected = json.dumps(dict(command=command, response=receipt), sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+                assert len(audit) == 1 and tuple(audit[0]) == (tid, 'founder', expected), 'canonical original audit bytes changed'
+                closed = inventory(f)
+                for body in (command, dict(command, expected_cas=command['expected_cas']+1)):
+                    replay = await f.client.post(PATH, json=body, headers=f.auth)
+                    assert replay.status_code == (200 if body == command else 409), replay.text
+                    assert (replay.json() == receipt if body == command else replay.json()['detail']['code'] == 'operation_key_conflict')
+                    assert inventory(f) == closed
+                status_path = '/api/v1/orgs/scratch/workflows/sequential/runs/' + run['id'] + '/cancel-close-never-launched'
+                replay = await f.client.get(status_path, params={'operation_key': command['operation_key']}, headers=f.auth)
+                assert replay.status_code == 200 and replay.json() == receipt and inventory(f) == closed
+                damage_event(run['id'])
+                damaged = inventory(f)
+                for method in ('POST', 'GET'):
+                    response = await (f.client.post(PATH, json=command, headers=f.auth) if method == 'POST' else
+                        f.client.get(status_path, params={'operation_key': command['operation_key']}, headers=f.auth))
+                    assert response.status_code == 503 and response.json()['detail']['code'] == 'evidence_unavailable', response.text
+                    assert inventory(f) == damaged, 'damaged replay changed rows'
+            print('PASS cancel-close scope', defect, flush=True)

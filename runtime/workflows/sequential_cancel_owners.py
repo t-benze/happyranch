@@ -24,13 +24,14 @@ def capture_member_cancel(org: Any, conn: sqlite3.Connection, run_id: str, captu
     """
     from runtime.orchestrator.run_step import _RootWorktreeTransitions
     from runtime.workflows.sequential_cancel import _controls
-    from runtime.workflows.sequential_mixed_history import read_selected_mixed_history_uncommitted
+    from runtime.workflows.sequential_mixed_history import read_mixed_write_history_uncommitted
 
     budget = _ReadBudget()
     with _sql_budget(conn, budget):
         run = _engine_rows(conn, 'workflow_seq_runs', budget, 'id=?', (run_id,))[0]
-        history = read_selected_mixed_history_uncommitted(conn, org_slug=org.slug,
-            task_id=run['carrier_task_id'], deadline=budget.deadline)
+        history = read_mixed_write_history_uncommitted(conn, org_slug=org.slug,
+            task_id=run['carrier_task_id'], budget=_ReadBudget(deadline=budget.deadline),
+            retained_budget=_Budget()).task_history
         keys = {key for key, kind, _, instance in history.owners
             if instance == run_id and kind in ('seq_carrier', 'seq_visit')}
         tasks = {row[0]: dict(zip(history.task_columns, row, strict=True)) for row in history.tasks if row[0] in keys}

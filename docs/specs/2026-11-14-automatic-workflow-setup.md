@@ -1,5 +1,15 @@
 # Automatic workflow setup — incremental delivery
 
+> THR-404 group 6: sequential settings writes/original replay and builtin catalog
+> registration authenticate selected definition/settings chains with zero run
+> roots; settings revalidate the appended chain before publication. Exclusively
+> fresh org creation uses exact structure, bounded positive empty owned data and
+> original native/version/cutover seed, identity, FK and physical checks, retaining
+> O_EXCL/inode proof. Existing DBs never use this fresh path. Global installation,
+> load, bootstrap and Founder cutover retain COMPLETE validation under STOP-1.
+> Original CAS/pins, native reservation/safety, authority, locks and budgets stay.
+> [Current reader contract](2026-11-09-sequential-history-reader-d2.md#settings-builtin-registration-and-fresh-creation--thr-404-group-6).
+
 Current R2 units (a) and (b) addendum: additive Coding v3/@2 setup reads/Save and separate
 Founder Allow/Disable are supported in source. Save preserves admission; Disable
 affects new starts only; immutable admitted pins and @1 contracts are retained.
@@ -500,10 +510,12 @@ The existing schema shell adds focused `--org-access-fence`, `--org-access-opene
 checkpoint. POST `/orgs` retains A1's pre-open fence and exclusively creates its
 skeleton. The distinct `initialize_fresh_org_database` uses native O_EXCL file
 creation, the historical J initializer with the constructor metadata exception
-below, sequential literals and an empty-only ownership-2 owner. A complete default reader validates the literal
-independent J + Coding + sequential/ownership-2 reference, followed by a target
-full physical integrity check before publication. The route retains the current
-Default human-managed team, zero agents and current intentional `none` reviewer
+below, sequential literals and an empty-only ownership-2 owner. Exact structure
+validation recognizes the independent J + Coding + sequential/ownership-2 reference.
+Bounded positive emptiness of each owned data table, exact version/cutover seeds
+and their original validator, native identity and full FK checks precede the
+unchanged target full physical integrity check before publication. The route
+retains the current Default human-managed team, zero agents and current intentional `none` reviewer
 configuration. Historical initializer defaults and generic Database stay
 unchanged. The J emptiness check permits only empty native tables, the two exact
 completed remote-schema markers, and the constructor-created
@@ -524,16 +536,18 @@ An immutable mismatch refuses without repair or replacing its stored ID.
 
 Before insertion, the owner requires real file/cache authority readiness, the
 original mounted native owner, its existing bounded strict census and safety
-predicates, and complete default source history/storage qualification under
-publisher/Database locks and an owning writer transaction. The original live
+predicates, and full catalog definition/settings-chain qualification with zero
+run roots under publisher/Database locks and an owning writer transaction.
+Settings roots include those referencing a missing catalog definition, so
+registration cannot silently repair orphaned saved history. The original live
 nondurable native reservation is identified by its unique registry addition
 while those locks remain held. Only compiled catalog definition bytes are
 inserted. Target verification checks exact immutable row bytes, the precise
 write count, definition FK state and original authority/native ownership before
 COMMIT. This append-only operation does not rescan the entire unchanged retained
-history on a replenished ledger. Full source parts 2–7 and every existing load
-check remain; L32M, separate A/B/C2M, logical charges, the original five-second
-reader deadline, I1a/I1b physical checks and the <=10s all-org startup limit do
+history on a replenished ledger. Full selected-chain replay and every existing
+COMPLETE global load/install/bootstrap/cutover check remain; L32M, separate
+A/B/C2M, logical charges, the original five-second reader deadline, I1a/I1b physical checks and the <=10s all-org startup limit do
 not change. Whole production startup qualification remains A4's acceptance.
 
 Registration never creates settings, admission, roles, runs, tasks or Allowed

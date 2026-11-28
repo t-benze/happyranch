@@ -1,11 +1,15 @@
-"""Task projection integrity, never write/admission or run-list authority.
+"""Scoped sequential integrity primitives, never current authority.
 
-THR-404 Option B: retain complete layout recognition, but authenticate only the
-selected task's connected sequential graph. Disconnected data cannot veto it.
+Task projections keep THR-404 Option B's pinned settings contract. Explicit
+write roots additionally authenticate the full selected settings chains; writer
+wiring and retained-family certification belong to their respective owners.
 """
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
+
+from runtime.workflows.coding_authority_history import _Budget
 
 from runtime.infrastructure.workflow_schema import _structure_cells
 from runtime.infrastructure.workflow_sequential_ownership import (
@@ -14,10 +18,10 @@ from runtime.infrastructure.workflow_sequential_ownership import (
 from runtime.infrastructure.workflow_sequential_schema import sequential_tables
 from runtime.workflows.sequential_history import (
     SequentialHistory, _ReadBudget, _auxiliary, _decode, _definitions, _hashed, _native_contract,
-    _outputs, _read_layout, _require, _run_history, _sql_budget,
+    _outputs, _read_layout, _require, _run_history, _settings, _sql_budget,
 )
 from runtime.workflows.sequential_run_validation import (
-    _generic_admission_history, _read_selected, _selected_settings,
+    _generic_admission_history, _read_selected, _selected_rows, _selected_settings,
 )
 
 
@@ -63,20 +67,25 @@ def _data_types(data: dict[str, list[dict]], budget: _ReadBudget) -> None:
                              'identity_invalid')
 
 
-def _graph(conn: sqlite3.Connection, metadata: dict, task_id: str, budget: _ReadBudget) -> dict[str, list[dict]]:
+def _graph(conn: sqlite3.Connection, metadata: dict, task_id: str | None, budget: _ReadBudget, *,
+           run_roots: frozenset[str] = frozenset(),
+           source_roots: frozenset[str] = frozenset()) -> dict[str, list[dict]]:
     def read(table: str, where: str, args: tuple) -> list[dict]:
         return _read_selected(conn, metadata, table, budget, where, args)
 
     # Separate indexed probes avoid a whole-run scan for an ordinary task.
-    run_ids = {row['id'] for column in ('source_task_id', 'carrier_task_id')
-               for row in read('workflow_seq_runs', column + '=?', (task_id,))}
-    run_ids.update(row['run_id'] for row in read('workflow_seq_visits', 'task_id=?', (task_id,)))
-    sources = {task_id}
+    run_ids = set(run_roots)
+    sources = set(source_roots)
+    if task_id is not None:
+        run_ids.update(row['id'] for column in ('source_task_id', 'carrier_task_id')
+            for row in read('workflow_seq_runs', column + '=?', (task_id,)))
+        run_ids.update(row['run_id'] for row in read('workflow_seq_visits', 'task_id=?', (task_id,)))
+        sources.add(task_id)
     waits: set[str] = set()
     runs: dict[str, dict] = {}
     members: dict[str, dict] = {}
     if 'workflow_seq_source_wait_sets' in metadata:
-        waits.update(row['id'] for row in read('workflow_seq_source_wait_sets', 'source_task_id=?', (task_id,)))
+        waits.update(row['id'] for row in read('workflow_seq_source_wait_sets', *_in('source_task_id', sources)))
     # A member needs the entire source/wait set, including earlier batches and
     # native decision receipts; a wait-set mark must never select one member.
     while True:
@@ -141,7 +150,8 @@ def _graph(conn: sqlite3.Connection, metadata: dict, task_id: str, budget: _Read
     return data
 
 
-def _native_metadata(conn: sqlite3.Connection, data: dict[str, list[dict]], budget: _ReadBudget) -> None:
+def _native_metadata(conn: sqlite3.Connection, data: dict[str, list[dict]], budget: _ReadBudget, *,
+                     retained_budget: _Budget | None = None) -> None:
     """Retain old Coding discrimination on the native rows in this graph.
 
     Per-run replay owns sequential/Coding evidence. Retained family bindings
@@ -152,8 +162,9 @@ def _native_metadata(conn: sqlite3.Connection, data: dict[str, list[dict]], budg
         CODING_NAMESPACE_COLUMNS, CODING_PREFIXES, CODING_VALUES,
         _coding_column_masks, _coding_scalar, _refuse_coding_metadata,
     )
-    from runtime.workflows.coding_authority_history import _Budget, _bounded_rows
-    legacy = _Budget()
+    from runtime.workflows.coding_authority_history import _bounded_rows
+    legacy = _Budget() if retained_budget is None else retained_budget
+    opening = legacy.consumed, legacy.accepted_rows, legacy.traversed
     cells = sum(len(row) for rows in data.values() for row in rows)
     budget.work(cells)
     budget.reserve(128 * cells)
@@ -195,15 +206,72 @@ def _native_metadata(conn: sqlite3.Connection, data: dict[str, list[dict]], budg
                         _refuse_coding_metadata(raw, location=table + '.' + column, budget=legacy,
                             sequential=data if decision else None, result_id=row[0] if decision else None)
     finally:
-        budget.consumed += legacy.consumed
-        budget.accepted_rows += legacy.accepted_rows
-        budget.traversed += legacy.traversed
+        budget.consumed += legacy.consumed - opening[0]
+        budget.accepted_rows += legacy.accepted_rows - opening[1]
+        budget.traversed += legacy.traversed - opening[2]
     # Apply C's original cumulative ceilings after charging retained work.
     from runtime.workflows.coding_authority_history import _CALL_ROW_LIMIT
     from runtime.workflows._read_exhaustion import check
     check(budget.accepted_rows <= _CALL_ROW_LIMIT, lambda ok: _require(ok, 'read_rows_exhausted'),
-          budget, 'rows', legacy.accepted_rows, _CALL_ROW_LIMIT - budget.accepted_rows + legacy.accepted_rows)
+          budget, 'rows', legacy.accepted_rows - opening[1],
+          _CALL_ROW_LIMIT - budget.accepted_rows + legacy.accepted_rows - opening[1])
     budget.reserve(0)
+
+
+def _replay(conn: sqlite3.Connection, metadata: dict, data: dict[str, list[dict]], *,
+            expected_org_slug: str, budget: _ReadBudget, full_settings: bool = False,
+            retained_budget: _Budget | None = None) -> dict:
+    """Full selected replay shared with the original task projection."""
+    _data_types(data, budget)
+    for table, rows in data.items():
+        _foreign_keys(conn, table, rows, budget)
+    definitions = _definitions(data, budget)
+    settings, snapshots = (_settings if full_settings else _selected_settings)(
+        data, definitions, expected_org_slug, budget)
+    runs = {row['id']: row for row in data['workflow_seq_runs']}
+    visits = {row['id']: row for row in data['workflow_seq_visits']}
+    events = {row['id']: row for row in data['workflow_seq_events']}
+    _require(all(row['run_id'] in runs for table, rows in data.items()
+                 for row in rows if 'run_id' in row), 'orphan_history')
+    outputs = _outputs(data, visits, runs, definitions, budget)
+    if runs:
+        native_tasks = {row['source_task_id'] for row in runs.values()} | {
+            row['carrier_task_id'] for row in runs.values()} | {row['task_id'] for row in visits.values()}
+        predicate, args = _in('owner_id', set(runs) | set(visits) | {
+            row['id'] for row in data.get('workflow_seq_source_wait_sets', [])})
+        marks = _read_selected(conn, metadata, 'workflow_task_ownership', budget,
+            'version IN (2,3) AND (' + predicate + ')', args)
+        _require(all(row['task_id'] in native_tasks for row in marks), 'ownership_relation_conflict')
+    for run in runs.values():
+        budget.step()
+        setting = settings.get(run['settings_id'])
+        _require(run['org_slug'] == expected_org_slug and run['definition_id'] in definitions
+            and setting is not None and setting['definition_id'] == run['definition_id'], 'run_pin_invalid')
+        if run.get('engine_version', 1) == 2:
+            _generic_admission_history(conn, org_slug=expected_org_slug, run=run,
+                compiled=definitions[run['definition_id']], settings=setting, snapshot=snapshots[setting['id']],
+                data=data, budget=budget)
+        else:
+            rv = [row for row in visits.values() if row['run_id'] == run['id']]
+            re = [row for row in events.values() if row['run_id'] == run['id']]
+            budget.work(len(visits) + len(events) + len(rv) * max(1, len(rv).bit_length())
+                + len(re) * max(1, len(re).bit_length()))
+            _run_history(conn, run, definitions[run['definition_id']], setting, snapshots[setting['id']],
+                sorted(rv, key=lambda row: row['ordinal']), sorted(re, key=lambda row: row['sequence']),
+                outputs, budget, [row for row in data['workflow_seq_evidence']
+                                 if row['run_id'] == run['id'] and row['kind'] == 'observation'])
+    if 'workflow_seq_source_wait_sets' in metadata:
+        for table in ('workflow_seq_assignments', 'workflow_seq_controls', 'workflow_seq_node_counters'):
+            _require(all(row['run_id'] in runs and runs[row['run_id']]['engine_version'] == 2
+                         for row in data[table]), 'control_owner_conflict')
+        from runtime.workflows.sequential_initiator import validate_initiator_history
+        validate_initiator_history(conn, data, runs, visits, events, definitions, budget, expected_org_slug)
+    _auxiliary(conn, data, runs, visits, events, budget, definitions)
+    validate_sequential_ownership(conn, org_slug=expected_org_slug, budget=budget,
+        runs={key: row for key, row in runs.items() if row.get('engine_version', 1) == 1},
+        visits={key: row for key, row in visits.items() if row.get('engine_version', 1) == 1})
+    _native_metadata(conn, data, budget, retained_budget=retained_budget)
+    return definitions
 
 
 def read_task_history(conn: sqlite3.Connection, *, expected_org_slug: str,
@@ -234,53 +302,138 @@ def read_task_history(conn: sqlite3.Connection, *, expected_org_slug: str,
             _require(not data.get('workflow_seq_source_wait_sets'), 'initiator_membership_missing')
             budget.check()
             return SequentialHistory(layout, 'storage readable', (), ())
-        _data_types(data, budget)
-        for table, rows in data.items():
-            _foreign_keys(conn, table, rows, budget)
-        definitions = _definitions(data, budget)
-        settings, snapshots = _selected_settings(data, definitions, expected_org_slug, budget)
+        definitions = _replay(conn, metadata, data, expected_org_slug=expected_org_slug, budget=budget)
         runs = {row['id']: row for row in data['workflow_seq_runs']}
-        visits = {row['id']: row for row in data['workflow_seq_visits']}
-        events = {row['id']: row for row in data['workflow_seq_events']}
-        _require(all(row['run_id'] in runs for table, rows in data.items()
-                     for row in rows if 'run_id' in row), 'orphan_history')
-        outputs = _outputs(data, visits, runs, definitions, budget)
-        if runs:
-            native_tasks = {row['source_task_id'] for row in runs.values()} | {
-                row['carrier_task_id'] for row in runs.values()} | {row['task_id'] for row in visits.values()}
-            predicate, args = _in('owner_id', set(runs) | set(visits) | {
-                row['id'] for row in data.get('workflow_seq_source_wait_sets', [])})
-            marks = _read_selected(conn, metadata, 'workflow_task_ownership', budget,
-                'version IN (2,3) AND (' + predicate + ')', args)
-            _require(all(row['task_id'] in native_tasks for row in marks), 'ownership_relation_conflict')
-        for run in runs.values():
-            budget.step()
-            setting = settings.get(run['settings_id'])
-            _require(run['org_slug'] == expected_org_slug and run['definition_id'] in definitions
-                and setting is not None and setting['definition_id'] == run['definition_id'], 'run_pin_invalid')
-            if run.get('engine_version', 1) == 2:
-                _generic_admission_history(conn, org_slug=expected_org_slug, run=run,
-                    compiled=definitions[run['definition_id']], settings=setting, snapshot=snapshots[setting['id']],
-                    data=data, budget=budget)
-            else:
-                rv = [row for row in visits.values() if row['run_id'] == run['id']]
-                re = [row for row in events.values() if row['run_id'] == run['id']]
-                budget.work(len(visits) + len(events) + len(rv) * max(1, len(rv).bit_length())
-                    + len(re) * max(1, len(re).bit_length()))
-                _run_history(conn, run, definitions[run['definition_id']], setting, snapshots[setting['id']],
-                    sorted(rv, key=lambda row: row['ordinal']), sorted(re, key=lambda row: row['sequence']),
-                    outputs, budget, [row for row in data['workflow_seq_evidence']
-                                     if row['run_id'] == run['id'] and row['kind'] == 'observation'])
-        if layout.schema_version == 2:
-            for table in ('workflow_seq_assignments', 'workflow_seq_controls', 'workflow_seq_node_counters'):
-                _require(all(row['run_id'] in runs and runs[row['run_id']]['engine_version'] == 2
-                             for row in data[table]), 'control_owner_conflict')
-            from runtime.workflows.sequential_initiator import validate_initiator_history
-            validate_initiator_history(conn, data, runs, visits, events, definitions, budget, expected_org_slug)
-        _auxiliary(conn, data, runs, visits, events, budget, definitions)
-        validate_sequential_ownership(conn, org_slug=expected_org_slug, budget=budget,
-            runs={key: row for key, row in runs.items() if row.get('engine_version', 1) == 1},
-            visits={key: row for key, row in visits.items() if row.get('engine_version', 1) == 1})
-        _native_metadata(conn, data, budget)
         budget.check()
         return SequentialHistory(layout, 'storage readable', tuple(sorted(definitions)), tuple(sorted(runs)))
+
+
+@dataclass(frozen=True)
+class ScopedSequentialHistory:
+    """Snapshot-local sequential certificate and its original charged C ledger.
+
+    No retained-family inventory is certified. Do not cache across mutations or
+    transactions, or substitute this for whole-org installation/load validation.
+    """
+
+    history: SequentialHistory
+    data: dict[str, list[dict]]
+    metadata: dict
+    budget: _ReadBudget
+
+
+def _roots(values: frozenset[str], budget: _ReadBudget) -> frozenset[str]:
+    for value in values:
+        budget.step()
+        _require(type(value) is str and bool(value) and '\x00' not in value
+                 and len(value.encode('utf8')) <= 1048576, 'identity_invalid')
+        budget.reserve(512 + 2 * len(value.encode('utf8')))
+    return frozenset(values)
+
+
+def _settings_chain(conn: sqlite3.Connection, metadata: dict, data: dict[str, list[dict]], *,
+                    org_slug: str, definition_ids: frozenset[str], settings_ids: frozenset[str],
+                    budget: _ReadBudget) -> None:
+    """Assemble all generations/receipts for every selected definition identity."""
+    def selected(table: str, column: str, ids: set[str] | frozenset[str]) -> list[dict]:
+        return _read_selected(conn, metadata, table, budget, *_in(column, ids))
+
+    definitions = {row['id']: row for row in data['workflow_seq_definitions']}
+    settings = {row['id']: row for row in data['workflow_seq_settings']}
+    definitions.update((row['id'], row) for row in selected('workflow_seq_definitions', 'id', definition_ids))
+    settings.update((row['id'], row) for row in selected('workflow_seq_settings', 'id', settings_ids))
+    _require(definition_ids <= definitions.keys() and settings_ids <= settings.keys(), 'selected_pin_missing')
+    identities = {row['identity'] for row in definitions.values()} | {
+        row['definition_identity'] for row in settings.values()}
+    predicate, args = _in('definition_identity', identities)
+    settings.update((row['id'], row) for row in _read_selected(conn, metadata, 'workflow_seq_settings', budget,
+        'org_slug=? AND (' + predicate + ')', (org_slug, *args)))
+    definitions.update((row['id'], row) for row in selected('workflow_seq_definitions', 'id', {
+        row['definition_id'] for row in settings.values()} - definitions.keys()))
+    data['workflow_seq_definitions'] = list(definitions.values())
+    data['workflow_seq_settings'] = list(settings.values())
+    data['workflow_seq_settings_operations'] = selected('workflow_seq_settings_operations', 'settings_id', set(settings))
+
+
+def read_write_history(conn: sqlite3.Connection, *, expected_org_slug: str, deadline: float,
+                       run_ids: frozenset[str] = frozenset(), source_ids: frozenset[str] = frozenset(),
+                       definition_ids: frozenset[str] = frozenset(), settings_ids: frozenset[str] = frozenset(),
+                       retained_budget: _Budget | None = None) -> ScopedSequentialHistory:
+    """Full replay of explicit run/source closure and complete settings chains.
+
+    The caller owns the existing transaction, locks and absolute deadline. This
+    acquires none, commits nothing, and performs no current-authority checks.
+    A settings/definition-only root may select zero runs. H is applied separately
+    at the caller's original capacity seam, using the returned ledger.
+    """
+    _require(conn.in_transaction, 'task_history_requires_snapshot')
+    _require(type(expected_org_slug) is str and bool(expected_org_slug), 'org_required')
+    budget = _ReadBudget(deadline=deadline)
+    roots = [_roots(values, budget) for values in (run_ids, source_ids, definition_ids, settings_ids)]
+    run_ids, source_ids, definition_ids, settings_ids = roots
+    observed, reference = _ReadBudget(deadline=deadline), _ReadBudget(deadline=deadline)
+    layout, metadata = _read_layout(conn, observed, reference, budget)
+    _require(layout.sequential and layout.ownership == 2, 'companion_ownership_required')
+    with _sql_budget(conn, budget):
+        _native_contract(conn, budget)
+        for source in source_ids:
+            read_sequential_owner(conn, task_id=source, org_slug=expected_org_slug)
+        data = _graph(conn, metadata, None, budget, run_roots=run_ids, source_roots=source_ids)
+        _require([tuple(row.values()) for row in data['workflow_seq_schema_versions']] == [(layout.schema_version,)],
+                 'schema_marker_invalid')
+        _require(data['workflow_seq_runs'] or not data.get('workflow_seq_source_wait_sets'),
+                 'initiator_membership_missing')
+        _settings_chain(conn, metadata, data, org_slug=expected_org_slug,
+                        definition_ids=definition_ids, settings_ids=settings_ids, budget=budget)
+        definitions = _replay(conn, metadata, data, expected_org_slug=expected_org_slug,
+                             budget=budget, full_settings=True, retained_budget=retained_budget)
+    budget.check()
+    history = SequentialHistory(layout, 'storage readable', tuple(sorted(definitions)),
+                                tuple(sorted(row['id'] for row in data['workflow_seq_runs'])))
+    return ScopedSequentialHistory(history, data, metadata, budget)
+
+
+def read_cancellation_headroom(conn: sqlite3.Connection, *, expected_org_slug: str,
+                               metadata: dict, budget: _ReadBudget) -> dict[str, list[dict]]:
+    """Select scalar H inputs for ALL unfinished @2 runs, including cancelling.
+
+    Metadata must come from layout recognition in this same transaction. This
+    does not replay unrelated payloads or reserve capacity. The caller combines
+    any hypothetical admissions, then calls _reserve_generic_cancellation once
+    on its already charged ledger. No fresh allowance or count-based shortcut.
+    """
+    _require(conn.in_transaction, 'task_history_requires_snapshot')
+    _require(type(expected_org_slug) is str and bool(expected_org_slug), 'org_required')
+    budget.check()
+    data: dict[str, list[dict]] = {'workflow_seq_runs': [], 'workflow_seq_visits': []}
+    if 'workflow_seq_source_wait_sets' not in metadata:
+        return data
+
+    def read(table: str, names: set[str], where: str, args: tuple) -> list[dict]:
+        columns = tuple(row[1] for row in metadata[table] if row[1] in names)
+        return list(_selected_rows(conn, table, metadata[table], budget, columns=columns, where=where, args=args))
+
+    with _sql_budget(conn, budget):
+        runs = read('workflow_seq_runs', {'id', 'org_slug', 'engine_version', 'state', 'source_task_id',
+            'source_principal', 'source_session_id', 'carrier_task_id', 'active_visit_id'},
+            "engine_version=2 AND state IN ('running','held')", ())
+        visits = read('workflow_seq_visits', {'id', 'run_id', 'engine_version', 'task_id', 'principal',
+            'session_id', 'selected'}, *_in('id', {row['active_visit_id'] for row in runs
+                                                 if row['active_visit_id'] is not None}))
+        data.update(workflow_seq_runs=runs, workflow_seq_visits=visits)
+        _data_types(data, budget)
+        for row in (*runs, *visits):
+            for key in ('id', 'source_task_id', 'source_principal', 'source_session_id',
+                        'carrier_task_id', 'task_id', 'principal', 'session_id'):
+                if key in row and row[key] is not None:
+                    _require(type(row[key]) is str and bool(row[key]) and '\x00' not in row[key], 'identity_invalid')
+        by_id = {row['id']: row for row in visits}
+        for run in runs:
+            budget.step()
+            _require(run['org_slug'] == expected_org_slug, 'run_pin_invalid')
+            visit = by_id.get(run['active_visit_id'])
+            _require((run['state'] == 'held' and run['active_visit_id'] is None) or
+                (run['state'] == 'running' and visit is not None and visit['run_id'] == run['id']
+                 and visit['engine_version'] == 2 and visit['selected'] == 1), 'headroom_visit_conflict')
+    budget.check()
+    return data

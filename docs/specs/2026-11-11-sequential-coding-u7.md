@@ -1,5 +1,15 @@
 # Sequential Coding U7: common transport and agent initiation
 
+> THR-404 group 6: sequential settings writes/original replay and builtin catalog
+> registration authenticate selected definition/settings chains with zero run
+> roots; settings revalidate the appended chain before publication. Exclusively
+> fresh org creation uses exact structure, bounded positive empty owned data and
+> original native/version/cutover seed, identity, FK and physical checks, retaining
+> O_EXCL/inode proof. Existing DBs never use this fresh path. Global installation,
+> load, bootstrap and Founder cutover retain COMPLETE validation under STOP-1.
+> Original CAS/pins, native reservation/safety, authority, locks and budgets stay.
+> [Current reader contract](2026-11-09-sequential-history-reader-d2.md#settings-builtin-registration-and-fresh-creation--thr-404-group-6).
+
 Current R2 unit (b) addendum: @2 discovery/compose remain read-only; public
 admission, source continuation and initiator-owned recovery are supported through
 an eligible manager task's genuine completion callback. @1 bytes and historical
@@ -240,10 +250,11 @@ replay use the existing profile/publisher/DB fences, BEGIN/rollback and SELECTs,
 with no durable write lease. Absent operation404 precedes existing ownership409;
 invalid/foreign bearer has no access. Fresh saves then register the unchanged
 native org_settings writer and enter the supported admission writer, rechecking
-key/body/CAS/current authority and complete history. Complete target validation,
-closing authority and serving-org identity precede COMMIT; COMMIT/lease/native
+key/body/CAS/current authority and the full selected definition-identity settings
+chain. Fresh post-INSERT validation reacquires that chain; closing authority
+and serving-org identity precede COMMIT; COMMIT/lease/native
 settlement failures retain uncertainty and never return a fabricated receipt.
-One original five-second deadline covers the operation. Each mandatory complete
+One original five-second deadline covers the operation. Each mandatory scoped
 read retains its OWN unchanged D2 allowances; projection/copy/write work shares
 one finite original allowance, without retry/reset. Save allocates zero runs,
 tasks, sessions or jobs and changes no admitted run pins.
