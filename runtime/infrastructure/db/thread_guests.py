@@ -384,6 +384,7 @@ class ThreadGuestsMixin:
         files = ThreadGuestFiles(self.db_path.parent, seat["app_id"], seat["guest_id"])
         store = ThreadScopedAttachmentStore(self.db_path.parent / "threads")
         aid = None
+        committed = False
         try:
             with files.directory("out") as fd:
                 content, identity = files.read_outgoing(fd, file_name)
@@ -406,13 +407,15 @@ class ThreadGuestsMixin:
                     (aid, seat["thread_id"], file_name, len(content), mimetypes.guess_type(file_name)[0],
                      f"guest:{seat['guest_id']}", datetime.now(timezone.utc).isoformat()),
                 )
-                files.consume(fd, file_name, identity)
                 self._conn.commit()
+                committed = True
+                files.consume(fd, file_name, identity)
                 return {"attachment_id": aid, "size_bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
         except BaseException:
-            self._conn.rollback()
-            if aid is not None:
-                files.delete_upload(seat["thread_id"], aid)
+            if not committed:
+                self._conn.rollback()
+                if aid is not None:
+                    files.delete_upload(seat["thread_id"], aid)
             raise
 
     @_synchronized
@@ -422,6 +425,8 @@ class ThreadGuestsMixin:
         if not selected:
             raise ThreadGuestError(400, "attachment is not available in this seat's read scope")
         seq, ordinal = map(int, selected.groups())
+        if not (1 <= seq <= 9223372036854775807 and 0 <= ordinal < 5):
+            raise ThreadGuestError(400, "attachment is not available in this seat's read scope")
         row = self._conn.execute(
             "SELECT a.*,l.generation FROM thread_message_attachments a "
             "JOIN thread_messages m ON m.thread_id=a.thread_id AND m.seq=a.message_seq "

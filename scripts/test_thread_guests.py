@@ -521,8 +521,12 @@ class GuestMcpTests(unittest.IsolatedAsyncioTestCase):
         seq = self.append("visible", attachments=[attachment])
         read = await self.good("read_thread", guest_token=token, since_seq=0)
         ref = next(m for m in read["messages"] if m["seq"] == seq)["attachments"][0]["ref"]
-        for invalid in ("artifact:guest-shared.txt", f"message:{old}:0", "message:999999:0", f"message:{seq}:1"):
-            await self.bad("fetch_attachment", guest_token=token, ref=invalid)
+        for invalid in ("artifact:guest-shared.txt", f"message:{old}:0", "message:999999:0", f"message:{seq}:1",
+                "message:9223372036854775807:0", "message:9223372036854775808:0", "message:9999999999999999999:0",
+                f"message:{seq}:-1", f"message:{seq}:5", f"message:{seq}:9223372036854775808"):
+            with self.subTest(ref=invalid):
+                self.assertEqual(await self.bad("fetch_attachment", guest_token=token, ref=invalid),
+                    "attachment is not available in this seat's read scope")
         fetched = await self.good("fetch_attachment", guest_token=token, ref=ref)
         self.assertEqual(Path(fetched["path"]).read_bytes(), b"shared bytes")
         self.assertGreaterEqual(self.seat(gid)["last_read_seq"], seq)
@@ -592,6 +596,54 @@ class GuestMcpTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(out.parent.exists())
             self.assertIsNone(self.db.get_thread_scoped_attachment(tid, uploaded["attachment_id"]))
             self.assertEqual(outside.read_bytes(), b"outside cleanup sentinel")
+
+    async def test_F06_upload_final_commit_failure_preserves_source(self) -> None:
+        from runtime.infrastructure.thread_scoped_attachment_store import ThreadScopedAttachmentStore
+        _gid, joined = await self.join()
+        source = Path(joined["out_dir"]) / "original.txt"
+        content = b"synthetic irreplaceable original"
+        source.write_bytes(content)
+        connection = self.db._conn
+
+        class RefuseUploadCommit:
+            refused = False
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(connection, name)
+
+            def commit(self) -> None:
+                if connection.execute("SELECT COUNT(*) FROM thread_scoped_attachments").fetchone()[0]:
+                    self.refused = True
+                    raise sqlite3.OperationalError("synthetic final upload COMMIT failure")
+                connection.commit()
+
+        fault = RefuseUploadCommit()
+        with patch.object(self.db, "_conn", fault):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "synthetic final upload COMMIT failure"):
+                self.db.upload_thread_guest_attachment(joined["guest_token"], source.name)
+        self.assertTrue(fault.refused, "fault must reach staged metadata at the final COMMIT")
+        self.assertTrue(source.exists(), "failed publication must preserve the source")
+        self.assertEqual(source.read_bytes(), content)
+        self.assertEqual(self.db.list_thread_scoped_attachments(THREAD), [])
+        self.assertEqual(list((self.org.root / "threads" / THREAD / "attachments").iterdir()), [])
+        uploaded = await self.good("upload_attachment", guest_token=joined["guest_token"], file_name=source.name)
+        self.assertFalse(source.exists())
+        self.assertEqual(ThreadScopedAttachmentStore(self.org.root / "threads").read(THREAD, uploaded["attachment_id"]), content)
+
+    async def test_F07_upload_consume_failure_preserves_committed_storage(self) -> None:
+        from runtime.infrastructure.thread_guest_files import ThreadGuestFiles
+        from runtime.infrastructure.thread_scoped_attachment_store import ThreadScopedAttachmentStore
+        _gid, joined = await self.join()
+        source = Path(joined["out_dir"]) / "original.txt"
+        content = b"synthetic committed bytes"
+        source.write_bytes(content)
+        with patch.object(ThreadGuestFiles, "consume", side_effect=OSError("synthetic source removal failure")):
+            await self.bad("upload_attachment", guest_token=joined["guest_token"], file_name=source.name)
+        rows = self.db.list_thread_scoped_attachments(THREAD)
+        self.assertEqual(len(rows), 1, "source cleanup failure must not roll back published metadata")
+        self.assertFalse(self.db._conn.in_transaction)
+        self.assertEqual(ThreadScopedAttachmentStore(self.org.root / "threads").read(THREAD, rows[0].attachment_id), content)
+        self.assertEqual(source.read_bytes(), content)
 
     async def test_C01_wire_and_argument_contract(self) -> None:
         initialized = await self.rpc("initialize", {"protocolVersion": "2025-06-18", "clientInfo": {"name": "case-client", "version": "1"}})

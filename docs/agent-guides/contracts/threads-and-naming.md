@@ -67,9 +67,13 @@ secret or founder config. Exact prior daemon-owned rules are upgraded; edited
 rules still refuse. Join returns daemon-local out_dir/in_dir under the app's
 files/G-n/ (0700). Upload takes only a direct regular no-follow out/ file up to
 10 MiB, validates its display name, stores uploaded_by=guest:G-n and removes the
-source. Per-seat unattached allowance is 10 files/50 MiB. Fetch resolves a
+source only after metadata commits. A failed commit preserves the source;
+post-commit source-removal failure cannot compensate away committed storage.
+Per-seat unattached allowance is 10 files/50 MiB. Fetch resolves a
 message:<seq>:<ordinal> ref within this thread, at/above read_from_seq, from
 someone else's message, then copies into in/ (100 MiB, oldest copies evicted).
+Sequence must fit a positive signed 64-bit integer and ordinal must be 0–4;
+out-of-range refs return the plain unavailable tool error before SQL binding.
 Thread attachments and linked shared-artifact generations retain existing
 availability/retention checks; artifact-name fetch and guest Shared Artifacts
 publication are forbidden. Read/wait/fetch have no guest audit and stamp read

@@ -439,7 +439,9 @@ it (the config is project-level in a folder they do not run in).
 Slice 3 adds upload/fetch and seat folders to join/read/post/wait.
 `post_message` accepts optional `attachment_ids` (including an empty list), up to
 five unique IDs. Guest read attachment refs use `message:<seq>:<ordinal>`;
-fetch resolves them only within the credential's thread and read scope, never as
+sequence is a positive signed 64-bit integer and ordinal is 0–4. Out-of-range
+refs return the plain unavailable tool error before any SQL binding.
+Fetch resolves them only within the credential's thread and read scope, never as
 artifact-name authority. Ownership/unattached checks run inside the existing
 arrival transaction before any message or wake is written. Wait timeout_sec is
 an integer from 1 through 50; values outside that range are refused as plain
@@ -501,7 +503,9 @@ the same machine, so files move through the seat's folder.
   folder, opened without following links, at most 10 MiB (the existing thread
   cap), validates the name with the existing display-name check, stores it as a
   thread-scoped attachment with `uploaded_by = guest:G-n`, and removes the
-  source. `post_message` then attaches up to 5 (the existing cap) of the
+  source only after the attachment metadata commits. A failed commit preserves
+  the source; a later source-removal failure preserves committed storage.
+  `post_message` then attaches up to 5 (the existing cap) of the
   seat's own unattached uploads, and nothing else (section 8.2).
 - **Download.** `fetch_attachment` copies an attachment into `in/` and returns
   the path. The server resolves the `ref` to a message and allows it only when
