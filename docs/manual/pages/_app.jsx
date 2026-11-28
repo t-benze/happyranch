@@ -1,3 +1,4 @@
+import Head from 'next/head'
 import 'nextra-theme-docs/style.css'
 import '../styles/globals.css'
 
@@ -6,6 +7,21 @@ export default function App({ Component, pageProps, router }) {
   const error = router.pathname === '/_error' || router.pathname === '/404'
   return (
     <>
+      {/* Emit the bundled font licences into both production packages. */}
+      <Head>
+        <link
+          rel="license"
+          href={new URL('../static/fonts/Newsreader-OFL.txt', import.meta.url).pathname}
+        />
+        <link
+          rel="license"
+          href={new URL('../static/fonts/InstrumentSans-OFL.txt', import.meta.url).pathname}
+        />
+        <link
+          rel="license"
+          href={new URL('../static/fonts/IBMPlexMono-OFL.txt', import.meta.url).pathname}
+        />
+      </Head>
       {/* First focusable element on every manual page, server-rendered so it
           works without JavaScript. The target is the page's h1
           (theme.config.jsx components.h1). */}

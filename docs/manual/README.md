@@ -148,9 +148,16 @@ beside `site/`, never inside it.
 The export has the same pages, navigation and search as the Node package.
 Nextra's `/:path*/_meta` rewrite does not apply to a static export; the
 `_meta` routes produce no HTML there, so they are unknown paths (404). The
-pages load the three brand fonts from Google Fonts (`fonts.googleapis.com`,
-`fonts.gstatic.com`) in both builds; a visitor's browser makes those requests
-to Google directly. The navbar "Website" link targets `https://happyranch.ai`,
+pages load Newsreader (normal/italic, weights 400–500, optical sizes 6–72),
+Instrument Sans (normal 400–700, italic 400), and IBM Plex Mono (400, 500)
+from the same origin in both builds, with `font-display: swap`. The unmodified
+fonts and their SIL Open Font License files live in `static/fonts/`, sourced
+from [`google/fonts` at `5026800714d07231937d92eb4cceabf06e05d74e`](https://github.com/google/fonts/tree/5026800714d07231937d92eb4cceabf06e05d74e/ofl)
+(`newsreader/`, `instrumentsans/`, `ibmplexmono/`; licence whitespace normalized).
+CSS asset URLs and `_app.jsx` licence links emit them into `.next/static/media/`
+(and `out/_next/static/media/` for the static export), so the existing packaging
+steps include them. No third-party font connection is made by visitors.
+The navbar "Website" link targets `https://happyranch.ai`,
 which serves the website only after its cutover.
 
 Run the package:
