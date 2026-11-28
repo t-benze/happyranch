@@ -176,6 +176,20 @@ const MERMAID_BLOCKED = [
   ['multi-line metadata', 'flowchart LR\nA@{\n  shape: rect\n  "i\\u006dg": "https://evil.example/ml.png"\n}'],
   ['real block after an @{ inside a label', 'flowchart LR\nA["@{"] --> B@{ label: "}", "i\\u006dg": "https://evil.example/hidden.png" }'],
   ['unterminated metadata', 'flowchart LR\nA@{ "i\\u006dg": "https://evil.example/open.png"'],
+  // TASK-19736: mermaid rewrites the source before parsing it. Directive
+  // removal splices text together...
+  ['directive spliced inside the key', 'flowchart LR\nA@{ i%%{init: {}}%%mg: "https://evil.example/s1.png" }'],
+  ['directive spliced inside a quoted key', 'flowchart LR\nA@{ "i%%{init: {}}%%mg": "https://evil.example/s2.png" }'],
+  ['wrap directive spliced inside the key', 'flowchart LR\nA@{ i%%{wrap}%%mg: "https://evil.example/s3.png" }'],
+  ['directive spliced between @ and {', 'flowchart LR\nA@%%{init: {}}%%{ img: "https://evil.example/s4.png", w: 40, h: 40 }'],
+  ['directive spliced between @ and {, escaped key', 'flowchart LR\nA@%%{init: {}}%%{ "i\\u006dg": "https://evil.example/s5.png" }'],
+  ['directive before the key inside a block', 'flowchart LR\nA@{ label: "probe", dummy: 1 %%{init: {}}%%, img: "https://evil.example/s6.png" }'],
+  // ...HTML attribute quotes after `<` are normalized (`a="}"` -> `a='}'`)...
+  ['HTML quote normalization', 'flowchart LR\nA@{ label: "<b a="}">probe</b>", img: "https://evil.example/h1.png", w: 40, h: 40 }'],
+  ['HTML quote normalization, escaped key', 'flowchart LR\nA@{ label: "<b a="}">probe</b>", "i\\u006dg": "https://evil.example/h2.png", w: 40, h: 40 }'],
+  // ...and the `;` ending a `style…#…;` / `classDef…#…;` run is dropped.
+  ['style entity rewrite splices the key', 'flowchart LR\nA@{ label: "style:#x", i;mg: "https://evil.example/e1.png", w: 40, h: 40 }'],
+  ['classDef entity rewrite splices the key', 'flowchart LR\nA@{ label: "classDef:#x", i;mg: "https://evil.example/e2.png", w: 40, h: 40 }'],
 ];
 
 for (const [name, source] of MERMAID_BLOCKED) {
@@ -186,11 +200,13 @@ for (const [name, source] of MERMAID_BLOCKED) {
   });
 }
 
-test('mermaid: ordinary diagrams, including image-free shape metadata, still render', () => {
+test('mermaid: ordinary diagrams, image-free shape metadata and plain directives still render', () => {
   for (const source of [
     'flowchart LR\nA[hello] --> B',
     'flowchart LR\nA@{ shape: rounded, label: "Start" } --> B@{ shape: diam }',
     'sequenceDiagram\nAlice->>Bob: hi',
+    '%%{init: {"theme": "forest"}}%%\nflowchart LR\nA[themed] --> B',
+    'flowchart LR\nA[styled] --> B\nstyle A fill:#f9f,stroke:#333',
   ]) {
     const result = mount(source);
     assert.equal(result.rendered, true, source);

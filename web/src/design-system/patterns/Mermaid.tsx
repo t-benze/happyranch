@@ -46,32 +46,18 @@ const EXTERNAL_RESOURCE = [
 ];
 
 /**
- * Shape metadata (`@{ … }`) is parsed by mermaid as YAML, where escapes
- * (`"i\u006dg"`, `"\x69mg"`, an escaped line break) can spell the `img` key
- * without those letters appearing in the source. Fail closed instead of
- * enumerating spellings: refuse any metadata block that contains a backslash
- * or the letters `img` in any case. Without a backslash YAML cannot produce
- * those letters unless they appear literally in the same block (anchors and
- * aliases repeat literal text; folding only inserts spaces). A block ends at
- * the first `}` outside double quotes, as in mermaid's lexer, or at the end
- * of the source when unterminated. Every `@{` is checked as a possible start,
- * so one inside a label string cannot hide the real block that follows.
+ * Shape metadata (`A@{ … }`) is YAML that mermaid parses only after rewriting
+ * the source: it removes `%%` directives and comments, normalizes HTML
+ * attribute quotes after `<`, and drops the `;` ending a `style…#…;` run. Each
+ * rewrite can splice or re-delimit text, so the guard does not try to locate
+ * metadata blocks. Metadata needs a literal `@` (no rewrite inserts one). A
+ * source containing `@` is refused when it also contains, anywhere: `%%`, `<`,
+ * `#` (the inputs of those rewrites), a backslash (YAML escapes can spell a
+ * key), or the letters `img` in any case.
  */
-function hasUnsafeShapeData(source: string): boolean {
-  let start = source.indexOf('@{');
-  while (start !== -1) {
-    let end = start + 2;
-    let quoted = false;
-    while (end < source.length && (quoted || source[end] !== '}')) {
-      if (source[end] === '"') quoted = !quoted;
-      end += 1;
-    }
-    const block = source.slice(start + 2, end);
-    if (block.includes('\\') || /img/i.test(block)) return true;
-    start = source.indexOf('@{', start + 1);
-  }
-  return false;
-}
+const SHAPE_DATA_HAZARD = /%%|<|#|\\|img/i;
+const hasUnsafeShapeData = (source: string): boolean =>
+  source.includes('@') && SHAPE_DATA_HAZARD.test(source);
 
 export default function Mermaid({ source }: { source: string }): JSX.Element {
   const [svg, setSvg] = useState<string | null>(null);
