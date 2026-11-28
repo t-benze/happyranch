@@ -14,7 +14,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * NO autonomy toggle (founder ruling). NO permission-model changes.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Users } from 'lucide-react';
+import { CircleCheck, Plus, Users } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
 import { useThreadRoutes } from '@/hooks/threads';
@@ -34,7 +34,9 @@ import { useDensity } from '@/hooks/density';
 import { PendingEnrollmentsTab } from './PendingEnrollmentsTab';
 import { AgentDetailPane } from './AgentDetailPane';
 import type { AgentSummary } from '@/lib/api/types';
-import { AddAgentDialog } from './AddAgentDialog';
+import { AddAgentDialog, type CreatedInfo } from './AddAgentDialog';
+import { useTeamsList } from '@/hooks/teams';
+import { useOwnerRecords } from '@/shared/owners';
 import { Avatar } from '@/design-system/primitives/Avatar';
 import { agentInitials } from './agentInitials';
 import { RetiredAgentDetail } from './retired/RetiredAgentDetail';
@@ -52,7 +54,7 @@ export function AgentsPage(): JSX.Element {
   const { agent_name: openAgentName, slug } = useParams<{ agent_name?: string; slug?: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { t } = useTranslation();
+  const { t, render } = useTranslation();
   const routes = useAgentsRoutes();
   const agentsQuery = useAgentsList();
   const identityPresentation = useIdentityPresentation();
@@ -61,10 +63,32 @@ export function AgentsPage(): JSX.Element {
   // THR-402: Create team and Create agent open the ONE shared form in its two modes.
   const [addOpen, setAddOpen] = useState(false);
   const [addMode, setAddMode] = useState<'team' | 'agent'>('agent');
-  const openCreate = (mode: 'team' | 'agent') => {
+  const [addPreselect, setAddPreselect] = useState('');
+  const openCreate = (mode: 'team' | 'agent', preselect = '') => {
     setAddMode(mode);
+    setAddPreselect(preselect);
     setAddOpen(true);
   };
+  // THR-402 v1.1: a confirmed create closes the surface onto the returned
+  // detail, which shows this completion panel (Team created → Create agent in
+  // that team). A failed roster readback keeps the creation confirmed and
+  // offers Refresh, a read that never creates again.
+  const teamsQuery = useTeamsList();
+  const [completion, setCompletion] = useState<CreatedInfo | null>(null);
+  const completionHeading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (completion) requestAnimationFrame(() => completionHeading.current?.focus());
+  }, [completion]);
+  useEffect(() => setCompletion(null), [slug]);
+  // Held-action chip: presentation of this org's existing `agents.create`
+  // owner record while its sent create is pending or unknown and the surface
+  // is closed. Open reopens the same result; nothing is sent.
+  const ownerRecords = useOwnerRecords();
+  const held = addOpen
+    ? undefined
+    : ownerRecords.find(
+      (record) => record.page === 'agents.create' && record.org === (slug ?? null) && (record.status === 'pending' || record.status === 'unknown'),
+    );
 
   // Start Thread dialog state
   const threadRoutes = useThreadRoutes();
@@ -155,6 +179,20 @@ export function AgentsPage(): JSX.Element {
         {/* AGENTS-03 / THR-376 r2 A1b: the creation actions live in the AppBar.
             THR-402 A1: Create team and Create agent are explicit actions. */}
         <TopbarActions>
+          {held && (
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="create-held-chip"
+              className="border-attention bg-attention-soft text-attention-text rounded-full"
+              onClick={() => setAddOpen(true)}
+            >
+              <span className="max-w-64 truncate">
+                {t(held.status === 'pending' ? 'agents.create.held.creating' : 'agents.create.held.unknown', { name: held.subject ?? '' })}
+              </span>
+              <span className="bg-surface-canvas text-text-primary rounded-full px-2 py-0.5 text-xs">{t('agents.create.held.open')}</span>
+            </Button>
+          )}
           <Button size="sm" variant="secondary" onClick={() => openCreate('team')}>
             <Users aria-hidden="true" />
             {t('agents.page.createTeam')}
@@ -293,6 +331,53 @@ export function AgentsPage(): JSX.Element {
               <p className="text-text-muted max-w-sm text-center text-sm">{t('knowledge.roster.select')}</p>
             </div>
           ) : selectedAgent ? (
+            <>
+            {completion && completion.canonicalId === selectedAgent && (
+              <section
+                role="status"
+                aria-labelledby="create-completion-heading"
+                data-testid="create-completion"
+                className="border-tier-green/40 bg-tier-green-tint mx-4 mt-4 flex items-start gap-3 rounded-md border p-4 md:mx-6"
+              >
+                <CircleCheck aria-hidden="true" className="text-tier-green mt-0.5 h-5 w-5 shrink-0" />
+                <div className="min-w-0 flex-1 text-sm break-words [&_b]:font-semibold">
+                  <h2 id="create-completion-heading" ref={completionHeading} tabIndex={-1} className="text-text-primary font-semibold focus:outline-none">
+                    {t(agentsQuery.isError ? 'agents.create.done.refreshTitle' : completion.mode === 'team' ? 'agents.create.done.teamTitle' : 'agents.create.done.agentTitle')}
+                  </h2>
+                  <p className="text-text-primary mt-1">
+                    {agentsQuery.isError
+                      ? t('agents.create.done.refreshBody')
+                      : completion.mode === 'team'
+                        ? render('agents.create.done.teamBody', { team: <b>{completion.team}</b>, name: <b>{completion.name}</b> })
+                        : render('agents.create.done.agentBody', { team: <b>{completion.team}</b>, name: <b>{completion.name}</b> })}
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {agentsQuery.isError && (
+                      <Button size="sm" variant="outline" onClick={() => void agentsQuery.refetch()}>
+                        {t('agents.create.success.refresh')}
+                      </Button>
+                    )}
+                    {completion.mode === 'team' && (
+                      <Button
+                        size="sm"
+                        disabled={!(teamsQuery.data?.teams ?? []).some((entry) => entry.name === completion.team)}
+                        onClick={() => {
+                          const team = completion.team;
+                          setCompletion(null);
+                          openCreate('agent', team);
+                        }}
+                      >
+                        <Plus aria-hidden="true" />
+                        {t('agents.create.success.addToTeam', { team: completion.team })}
+                      </Button>
+                    )}
+                    <Button size="sm" variant="outline" onClick={() => setCompletion(null)}>
+                      {t('agents.create.done')}
+                    </Button>
+                  </div>
+                </div>
+              </section>
+            )}
             <AgentDetailPane
               agentName={selectedAgent}
               onClose={() => navigate(routes.inbox())}
@@ -304,6 +389,7 @@ export function AgentsPage(): JSX.Element {
                   : undefined
               }
             />
+            </>
           ) : (
             <div className="text-text-muted flex h-full items-center justify-center">
               <div className="text-center">
@@ -336,7 +422,13 @@ export function AgentsPage(): JSX.Element {
         </main>
       </div>
 
-      <AddAgentDialog open={addOpen} mode={addMode} onOpenChange={setAddOpen} />
+      <AddAgentDialog
+        open={addOpen}
+        mode={addMode}
+        preselectTeam={addPreselect}
+        onOpenChange={setAddOpen}
+        onCreated={setCompletion}
+      />
 
       <NewThreadDialog
         open={showStartThread}

@@ -238,3 +238,78 @@ export function findCreatedAgent(
   if (identity) return { kind: 'nameOnly', canonicalId: identity.canonical_id };
   return namingComplete(roster, read) ? { kind: 'absent' } : { kind: 'incomplete' };
 }
+
+// ---- v1.1 rules (THR-402 seq33 rework; design v1.1 R1/N1/N3 and S5d) ----
+
+/** Fields each branch shows and submits, in visible (first-error) order. */
+export const BRANCH_FIELDS: Readonly<Record<CreateRole, readonly CreateField[]>> = {
+  worker: ['team', 'name', 'description', 'systemPrompt', 'executor'],
+  manager: ['name', 'newTeam', 'description', 'systemPrompt', 'executor'],
+};
+
+/** A server refusal tied to one field, remembered with the exact value it refused. */
+export interface FieldRefusal<V> {
+  field: CreateField;
+  value: string;
+  view: V;
+}
+
+export type RefusalStatus = 'active' | 'parked' | 'stale';
+
+/**
+ * Where a field refusal stands now (R1, N1):
+ * - `stale`  — the field no longer holds the refused value (any edit,
+ *              Use suggestion or a name-driven suggestion update): drop it;
+ * - `parked` — the value is unchanged but the field belongs to the branch
+ *              that is not shown (Manager → Worker): it neither blocks nor
+ *              shows as an error, and returns if that branch comes back;
+ * - `active` — shown next to its field; Create waits for a correction.
+ */
+export function refusalStatus(
+  refusal: { field: CreateField; value: string },
+  role: CreateRole,
+  values: Readonly<Record<CreateField, string>>,
+): RefusalStatus {
+  if (values[refusal.field] !== refusal.value) return 'stale';
+  return BRANCH_FIELDS[role].includes(refusal.field) ? 'active' : 'parked';
+}
+
+export type NotSentReason = Extract<CreateOutcome, { kind: 'notSent' }>['reason'];
+
+/**
+ * Named cause and next step for a proven not-sent answer. Only the existing
+ * typed pre-forward reasons map here; there is no invented "runtime stopping"
+ * cause. The returned ids are message-key suffixes (`agents.create.notSent.*`).
+ */
+export function notSentCopy(reason: NotSentReason): { cause: string; next: string; recheck: boolean; connection: boolean } {
+  switch (reason) {
+    case 'target_changed':
+      return { cause: 'targetChanged', next: 'nextConnection', recheck: false, connection: true };
+    case 'too_many_requests':
+      return { cause: 'throttled', next: 'nextWait', recheck: false, connection: false };
+    case 'busy':
+      return { cause: 'busy', next: 'nextWait', recheck: false, connection: false };
+    case 'no_target':
+      return { cause: 'noTarget', next: 'nextConnection', recheck: false, connection: true };
+    case 'target_starting':
+      return { cause: 'starting', next: 'nextRecheck', recheck: true, connection: false };
+    case 'target_unreachable':
+      return { cause: 'unreachable', next: 'nextRecheck', recheck: true, connection: true };
+    case 'incompatible':
+      return { cause: 'incompatible', next: 'nextUpdate', recheck: true, connection: false };
+  }
+}
+
+export type ExecutorState = 'loading' | 'error' | 'empty' | 'ready';
+
+/**
+ * N3: Create is unavailable (with a footer reason) while the executor list is
+ * loading, failed to read, or is confirmed empty. A ready list never blocks
+ * here; a stale or missing pick is an ordinary field problem instead.
+ */
+export function executorBlocker(state: ExecutorState): 'executorsLoading' | 'executorsError' | 'executorsNone' | null {
+  if (state === 'loading') return 'executorsLoading';
+  if (state === 'error') return 'executorsError';
+  if (state === 'empty') return 'executorsNone';
+  return null;
+}

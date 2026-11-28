@@ -47,27 +47,47 @@ tool for model diversity and specialization.
 Adding or enrolling agents can require founder approval depending on the org's
 rules. The v1 manual does not expand agent administration into a full reference.
 
-**Agents** shows two actions, also offered on an empty roster:
+**Agents** shows two actions, also offered on an empty roster. Both open the
+same creation panel. It names the computer and organization the agent will be
+created on, groups the form as **Team and role**, **Agent responsibilities** and
+**Runtime**, and keeps a live **Review** beside it (at the end of the form on a
+phone). Every review row has **Edit**, which moves to that field and sends
+nothing. Nothing is sent until you choose the action.
 
 - **Create team** creates a new team together with its manager. Enter the
   manager's name and the new team name (1–64 lowercase ASCII letters, digits or
   `_`, starting with a letter; `default` is reserved). The team name is suggested
-  from the manager name until you edit it.
-- **Create agent** adds a Worker to an existing team you choose, including the
-  special **Default** team, which the human Founder manages without a manager
-  agent. Choosing Manager instead creates a new team, as above.
+  from the manager name until you edit it; after an edit, **Use suggestion**
+  puts the suggestion back.
+- **Create agent** first asks what the agent will do: **Join an existing team ·
+  Worker** or **Lead a new team · Manager**. A worker joins a team you choose
+  from a list that names each team's manager, including the special **Default**
+  team, which the human Founder manages without a manager agent. Leading a new
+  team works as above and ends in **Create team**.
 
-After a successful create the new agent opens; Create team then offers Create
-agent in the new team. If the answer is lost, the form says **Result unknown**
-and keeps your values until **Check result** re-reads the roster; while agent
-names cannot be read completely, the result stays unknown. If the desktop app
-could not forward the request at all (for example the computer is busy), the
-form says **Not sent**, keeps your values and lets you submit again. If the agent
-was enrolled but its workspace setup failed, it says **Agent created; setup
-incomplete** and shows the `happyranch init-agent` command that finishes setup.
-Nothing is retried or deleted automatically. Moving existing agents between
-teams is unsupported. Founder-created agents become active directly;
-agent-initiated enrollment retains its separate approval flow.
+Create stays unavailable, with the reason shown next to it, while the executor
+list is loading, could not be read, or is empty; **Retry** only reads the list
+again. After a successful create the panel closes and the new agent opens with a
+short confirmation; for a new team it offers **Create agent in** that team. If
+the server refuses one field (for example, the team already exists), that field
+explains it and the rest is kept; changing the value clears the refusal, and a
+refusal about the new team name does not block adding a worker instead. If the
+answer is lost, the panel says **Creation result unknown** and offers **Check
+result**, which re-reads only the original computer and organization; while
+agent names cannot be read completely, the result stays unknown. Closing the
+panel then cancels nothing: a **Result unknown** chip on Agents reopens it. If
+the desktop app could not forward the request at all, the panel says **Not
+sent**, names the cause (for example, the computer was busy or could not be
+reached) and the next step, keeps your values and lets you submit again. If the
+agent was enrolled but its workspace setup failed, it says **Agent created;
+workspace setup incomplete**, lists what exists and what remains, and shows the
+`happyranch init-agent` command under **Finish setup**; when the server did not
+return the agent's ID, **Check result** looks for it first. Nothing is retried or
+deleted automatically. In the desktop app, **Open Connection** in a connection
+notice lists the current computer; choosing another one asks about your unsent
+draft and then opens Connection, where the switch happens. Moving existing
+agents between teams is unsupported. Founder-created agents become active
+directly; agent-initiated enrollment retains its separate approval flow.
 
 The canonical [Create team and Create agent product specification](../../../product/prds/2026-11-26-team-and-agent-creation.md)
 defines this behavior and its acceptance checks.
