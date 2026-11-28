@@ -21,6 +21,7 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.thread_queue import ThreadJob
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.infrastructure.db.thread_guests import ThreadGuestError
+from runtime.infrastructure.shared_artifact_service import SharedArtifactError
 from runtime.infrastructure.thread_archive import publish_thread_event
 from runtime.identities.schema import NamingError
 from runtime.models import ThreadMessageKind
@@ -41,11 +42,16 @@ TOOLS = [
     _tool("read_thread", "Read labelled messages of your one thread, starting at your saved read cursor by default.",
           {"guest_token": _STRING, "since_seq": {"type": "integer", "minimum": 0},
            "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}}, ["guest_token"]),
-    _tool("post_message", "Post text to your one thread. Attachment tools are not available in this slice.",
-          {"guest_token": _STRING, "body_markdown": _STRING}, ["guest_token", "body_markdown"]),
+    _tool("post_message", "Post text and up to five of your own unattached uploads to your one thread.",
+          {"guest_token": _STRING, "body_markdown": _STRING,
+           "attachment_ids": {"type": "array", "items": _STRING, "maxItems": 5, "uniqueItems": True}}, ["guest_token", "body_markdown"]),
     _tool("wait_for_messages", "Wait for newer messages, up to 50 seconds. One wait at a time per seat.",
           {"guest_token": _STRING, "since_seq": {"type": "integer", "minimum": 0},
            "timeout_sec": {"type": "integer", "minimum": 1, "maximum": 50}}, ["guest_token", "since_seq", "timeout_sec"]),
+    _tool("upload_attachment", "Upload a regular file directly inside your daemon-local out/ folder, up to 10 MiB; removes the source.",
+          {"guest_token": _STRING, "file_name": _STRING}, ["guest_token", "file_name"]),
+    _tool("fetch_attachment", "Copy a message attachment from your read scope into daemon-local in/. Your own messages grant no file access.",
+          {"guest_token": _STRING, "ref": _STRING}, ["guest_token", "ref"]),
 ]
 
 
@@ -102,6 +108,11 @@ def _arguments(name: object, args: object) -> dict:
                 value.encode("utf-8")
             except UnicodeEncodeError:
                 raise ThreadGuestError(400, "invalid arguments") from None
+        elif prop["type"] == "array":
+            if (not isinstance(value, list) or len(value) > prop["maxItems"]
+                    or any(not isinstance(v, str) or not re.fullmatch(r"att-[0-9]{1,19}", v) for v in value)
+                    or len(set(value)) != len(value)):
+                raise ThreadGuestError(400, "invalid arguments")
         elif type(value) is not int or not prop["minimum"] <= value <= prop.get("maximum", 2**63 - 1):
             raise ThreadGuestError(400, "invalid arguments")
     if "invite_code" in args and not args["invite_code"].startswith("hrinv_"):
@@ -147,13 +158,25 @@ async def _call(request: Request, slug: str, name: str, args: dict) -> dict:
         seat = org.db.authenticate_thread_guest(token)
         if name == "read_thread":
             return org.db.read_thread_guest(token, args.get("since_seq"), args.get("limit", 50))
+        if name == "upload_attachment":
+            from runtime.daemon.routes.threads import _validate_display_name
+            try:
+                _validate_display_name(args["file_name"])
+            except HTTPException:
+                raise ThreadGuestError(400, "invalid attachment display name") from None
+            return await asyncio.to_thread(org.db.upload_thread_guest_attachment, token, args["file_name"])
+        if name == "fetch_attachment":
+            from runtime.daemon.routes.artifacts import artifact_service
+            return await asyncio.to_thread(org.db.fetch_thread_guest_attachment, token, args["ref"], artifact_service(org))
         if name == "post_message":
             tid = seat["thread_id"]
             speaker = f"guest:{seat['guest_id']}"
             recipients = [p.agent_name for p in org.db.list_thread_participants(tid)]
+            attachments = org.db.guest_post_attachments(token, args.get("attachment_ids", []))
             try:
                 seq, arrivals = org.db.record_conversational_arrival(thread_id=tid, speaker=speaker,
-                    kind=ThreadMessageKind.MESSAGE, body_markdown=args["body_markdown"], recipients=recipients, guest_token=token)
+                    kind=ThreadMessageKind.MESSAGE, body_markdown=args["body_markdown"], attachments=attachments,
+                    recipients=recipients, guest_token=token)
             except ThreadGuestError as exc:
                 if exc.code == "this guest seat has ended":
                     # If expiry crossed during naming capture, arrival rolled
@@ -161,7 +184,8 @@ async def _call(request: Request, slug: str, name: str, args: dict) -> dict:
                     org.db.authenticate_thread_guest(token)
                 raise
             org.db.increment_thread_turns_used(tid, by=1)
-            AuditLogger(org.db).log_thread_message_sent(tid, seq=seq, speaker=speaker, kind="message")
+            AuditLogger(org.db).log_thread_message_sent(tid, seq=seq, speaker=speaker, kind="message",
+                attachment_names=[a.display_name for a in attachments])
             for arrival in arrivals:
                 if arrival.invocation_token:
                     await org.thread_queue.put(ThreadJob(org_slug=slug, invocation_token=arrival.invocation_token))
@@ -238,6 +262,11 @@ async def guest_mcp(slug: str, request: Request) -> Response:
         except (ThreadGuestError, NamingError) as exc:
             text = exc.code if isinstance(exc, ThreadGuestError) else "message addresses are not valid"
             result = {"content": [{"type": "text", "text": text}], "isError": True}
+        except SharedArtifactError as exc:
+            # Only the existing availability reason, never arbitrary paths or metadata.
+            result = {"content": [{"type": "text", "text": exc.detail["code"]}], "isError": True}
+        except (OSError, ValueError):
+            result = {"content": [{"type": "text", "text": "guest file operation refused"}], "isError": True}
     else:
         return JSONResponse(_rpc_error(mid, -32601, "method not found"), headers=headers)
     return JSONResponse({"jsonrpc": "2.0", "id": mid, "result": result}, headers=headers)
