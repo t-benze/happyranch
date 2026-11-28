@@ -4280,22 +4280,19 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         elif case == 'read_budget_rollback':
             with s4fixture() as f:
                 s4closed(f, f.ids.visit_id, summary=s4bsummary(), terminal='success')
-                original_read = seq_history.read_sequential_history
+                from runtime.workflows import sequential_task_history
+                original_read = sequential_task_history.read_write_history
                 def limited_read(conn, **kwargs):
-                    # The existing reader's real byte ledger must refuse the
-                    # resulting complete history, rolling back tentative rows.
+                    # The resulting scoped history's actual data ledger must
+                    # refuse, rolling back the tentative rows.
                     assert conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 1
-                    original_budget = seq_history._ReadBudget
-                    ledgers = []
-                    def nearly_spent(**values):
-                        ledger = original_budget(**values)
-                        ledgers.append(ledger)
-                        if len(ledgers) == 3:  # Real complete reader's data ledger C.
-                            ledger.consumed = 64 * 1048576 - 1
-                        return ledger
-                    with patch.object(seq_history, '_ReadBudget', side_effect=nearly_spent):
+                    original_layout = sequential_task_history._read_layout
+                    def nearly_spent(conn, observed, reference, data):
+                        data.consumed = 64 * 1048576 - 1
+                        return original_layout(conn, observed, reference, data)
+                    with patch.object(sequential_task_history, '_read_layout', side_effect=nearly_spent):
                         return original_read(conn, **kwargs)
-                with patch.object(seq_history, 'read_sequential_history', side_effect=limited_read):
+                with patch.object(sequential_task_history, 'read_write_history', side_effect=limited_read):
                     s4refuses(f, lambda: s4baccept(f), 'workflow_seq_read_bytes_exhausted')
                 assert f.conn.execute('SELECT count(*) FROM workflow_seq_outputs').fetchone()[0] == 0
                 assert s4baccept(f)
@@ -7071,7 +7068,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         'recovery_reassign', 'recovery_cancel_held', 'recovery_cancel_pristine', 'recovery_cancel_launched', 'recovery_retry_chain', 'recovery_reassign_fanout',
         'capacity', 'settings_race', 'accounting', 'native_bounds', 'crash_reopen', 'pause_cancel', 'related_sources')
 
-    async def start2_public(case, *, b_first=True):
+    async def start2_public(case, *, b_first=True, scope_case=None):
         import httpx
         from runtime.daemon.app import create_app
         from runtime.daemon.state import DaemonState
@@ -7401,7 +7398,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         await post(value,payload=conflict,code=409)
                         assert inventory()==before,'B10 conflict mutated'
                         if case == 'scope':
-                            if s7a_case == 'mixed_native':
+                            if scope_case == 'mixed_native':
                                 from runtime.workflows import sequential_mixed_history as mixed_owner
                                 from runtime.workflows.coding_authority_history import _Budget
                                 from runtime.workflows.sequential_history import _ReadBudget
@@ -7428,7 +7425,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             assert f.db.get_task(f.source.id).completed_at is None
                             print('PASS S7a start_callback_scope HTTP200 allocation/result/receipt/replay; '
                                 'foreign run/undelivered notification HTTP409; no complete callback validation', flush=True)
-                            return 'mixed-native-observed' if s7a_case == 'mixed_native' else None
+                            return 'mixed-native-observed' if scope_case == 'mixed_native' else None
                         if case=='replay':
                             for mode in ('defaults','disable'):
                                 await settings_change(mode)
@@ -9456,7 +9453,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     # another and observes a route error, never empty success.
                     pass
             if case in ('start_callback_scope', 'mixed_native'):
-                observed = asyncio.run(start2_public('scope'))
+                observed = asyncio.run(start2_public('scope', scope_case=case))
                 if case == 'mixed_native':
                     assert observed == 'mixed-native-observed', 'mixed native case missed the genuine callback'
             if case in ('control_scope', 'cancel_fence_scope', 'cancel_finish_scope'):

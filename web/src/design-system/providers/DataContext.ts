@@ -117,6 +117,11 @@ export type InviteResult = Awaited<ReturnType<typeof threadsApi.inviteToThread>>
 export type RemoveParticipantArgs = Parameters<typeof threadsApi.removeParticipantFromThread>[2];
 export type RemoveParticipantResult = Awaited<ReturnType<typeof threadsApi.removeParticipantFromThread>>;
 
+export type InviteGuestArgs = Parameters<typeof threadsApi.inviteThreadGuest>[2];
+export type GuestInviteResult = Awaited<ReturnType<typeof threadsApi.inviteThreadGuest>>;
+export type GuestSeatArgs = { guestId: string };
+export type RevokeGuestResult = Awaited<ReturnType<typeof threadsApi.revokeThreadGuest>>;
+
 export type ArchiveArgs = Parameters<typeof threadsApi.archiveThread>[2];
 export type ArchiveResult = Awaited<ReturnType<typeof threadsApi.archiveThread>>;
 
@@ -159,6 +164,11 @@ export interface ThreadsApi {
   useRemoveParticipant: (
     threadId: string,
   ) => MutationLike<RemoveParticipantArgs, RemoveParticipantResult>;
+  /** Founder-only desktop-app guest seats (THR-362 slice 4). The invite and
+   *  new-code results carry the one-time prompt; nothing caches them. */
+  useInviteGuest: (threadId: string) => MutationLike<InviteGuestArgs, GuestInviteResult>;
+  useReplaceGuestCode: (threadId: string) => MutationLike<GuestSeatArgs, GuestInviteResult>;
+  useRevokeGuest: (threadId: string) => MutationLike<GuestSeatArgs, RevokeGuestResult>;
   useArchiveThread: (threadId: string) => MutationLike<ArchiveArgs, ArchiveResult>;
   useResumeThread: (threadId: string) => MutationLike<ResumeArgs, ResumeResult>;
   useAbortReplies: (threadId: string) => MutationLike<AbortRepliesArgs, AbortRepliesResult>;

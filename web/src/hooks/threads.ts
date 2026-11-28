@@ -13,7 +13,7 @@ import { useData } from '@/design-system/providers/DataContext';
 
 // Re-export the API row type so compositions in features/ can annotate against
 // it without deep-importing @/lib/api/* (blocked by no-restricted-imports).
-export type { ThreadTaskSummary } from '@/lib/api/threads';
+export type { ThreadTaskSummary, ThreadGuest, ThreadGuestInviteResponse } from '@/lib/api/threads';
 
 /**
  * Provider-aware route builder for the threads feature. Compositions
@@ -75,6 +75,18 @@ export const useInviteAgent: ReturnType<typeof useData>['threads']['useInviteAge
 export const useRemoveParticipant: ReturnType<typeof useData>['threads']['useRemoveParticipant'] = (
   threadId,
 ) => useData().threads.useRemoveParticipant(threadId);
+
+export const useInviteGuest: ReturnType<typeof useData>['threads']['useInviteGuest'] = (
+  threadId,
+) => useData().threads.useInviteGuest(threadId);
+
+export const useReplaceGuestCode: ReturnType<typeof useData>['threads']['useReplaceGuestCode'] = (
+  threadId,
+) => useData().threads.useReplaceGuestCode(threadId);
+
+export const useRevokeGuest: ReturnType<typeof useData>['threads']['useRevokeGuest'] = (
+  threadId,
+) => useData().threads.useRevokeGuest(threadId);
 
 export const useArchiveThread: ReturnType<typeof useData>['threads']['useArchiveThread'] = (
   threadId,

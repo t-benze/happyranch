@@ -48,7 +48,7 @@ interface MessageBubbleProps {
    * Optional localized product copy (THR-118 W3a). Omitted fields keep the
    * historical English copy.
    */
-  labels?: { declined?: string; systemEvent?: string; mermaidLoading?: string };
+  labels?: { declined?: string; systemEvent?: string; mermaidLoading?: string; remoteImage?: string };
   /**
    * Optional display formatter for `timestamp` (e.g. an explicit-locale
    * formatter). Defaults to the historical host-locale `toLocaleString()`.
@@ -150,7 +150,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
             bubble at max-w-md (28rem ≈ 56ch of 14px body text). */}
         <div className="flex w-full max-w-4/5 justify-end">
           <div className="bg-accent-soft text-text-primary min-w-0 max-w-md rounded-lg rounded-tr-sm px-3.75 py-2.5">
-            <Markdown threadMentions body={body ?? ''} mermaidLoadingLabel={props.labels?.mermaidLoading} />
+            <Markdown threadMentions body={body ?? ''} mermaidLoadingLabel={props.labels?.mermaidLoading} remoteImageLabel={props.labels?.remoteImage} />
           </div>
         </div>
         {attachmentRow}
@@ -179,7 +179,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
         // radius (nearest tokens: sm 8px tail, lg 18px), shadow-sm, 68ch cap
         // (nearest token: max-w-prose = 65ch).
         <div className="bg-surface-raised border-border-default shadow-pasture-sm text-body max-w-prose rounded-lg rounded-tl-sm border px-4 py-3">
-          <Markdown threadMentions body={body ?? ''} mermaidLoadingLabel={props.labels?.mermaidLoading} />
+          <Markdown threadMentions body={body ?? ''} mermaidLoadingLabel={props.labels?.mermaidLoading} remoteImageLabel={props.labels?.remoteImage} />
         </div>
       )}
       {attachmentRow}

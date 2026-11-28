@@ -40,6 +40,7 @@ import type {
   ReplyDeliveryEntry,
   ThreadAttachment,
   ThreadAttachmentRef,
+  ThreadGuest,
   ThreadMessage,
 } from '@/lib/api/types';
 import { allocateArtifactName, attachmentContentType } from '@/lib/threadAttachments';
@@ -48,6 +49,8 @@ import { useAgentsList } from '@/hooks/agents';
 import { useThreadFreshTokens } from '@/hooks/tokens';
 import {
   useAbortReplies,
+  useReplaceGuestCode,
+  useRevokeGuest,
   useRenameThread,
   useSendFollowUp,
   useSetThreadPinned,
@@ -58,9 +61,23 @@ import {
   useThreadTasks,
   useThreadsInboxSSE,
   useThreadsInfiniteList,
+  type ThreadGuestInviteResponse,
 } from '@/hooks/threads';
 import { ArchiveDialog } from './ArchiveDialog';
 import { InviteDialog } from './InviteDialog';
+import { GuestInviteDialog } from './GuestInviteDialog';
+import { GuestSeats } from './GuestSeats';
+import {
+  guestEndCauseLabel,
+  guestErrorKey,
+  guestErrorText,
+  guestLabelMap,
+  guestSpeakerLabel,
+  guestTime,
+  isGuestSpeaker,
+  type GuestErrorKey,
+} from './guestSeats';
+import { useRemoteHost } from '@/lib/remotePolicy';
 import { RemoveParticipantDialog } from './RemoveParticipantDialog';
 import { NewThreadDialog } from '@/shared/threads/NewThreadDialog';
 import { ResponderStatusStrip } from './ResponderStatusStrip';
@@ -218,10 +235,15 @@ function messageTime(locale: Locale, iso: string): string {
  * Derive a display label for the last speaker.
  * Returns { name, role } for AgentChip, or null if the thread has no speaker yet.
  */
-function lastSpeakerChip(speaker: string | null | undefined): { name: string; label?: React.ReactNode; role: 'manager' | 'worker' | 'founder' } | null {
+function lastSpeakerChip(speaker: string | null | undefined, t: Translate): { name: string; label?: React.ReactNode; role: 'manager' | 'worker' | 'founder' } | null {
   if (!speaker) return null;
   if (speaker === 'founder') return { name: 'founder', label: <IdentityName canonicalId="founder" founderNameOnly />, role: 'founder' };
   if (speaker === 'system') return { name: 'system', role: 'worker' };
+  // Desktop-app guest (THR-362 §5.4): list rows carry no seat labels, so name
+  // the seat id as a guest instead of looking it up as an agent identity.
+  if (isGuestSpeaker(speaker)) {
+    return { name: speaker, label: t('threads.page.guest.listSpeaker', { id: speaker.slice('guest:'.length) }), role: 'worker' };
+  }
   return { name: speaker, label: <IdentityName canonicalId={speaker} />, role: 'worker' };
 }
 
@@ -319,8 +341,13 @@ function latestResponderStatusByAgent(messages: ThreadMessage[]): Map<string, st
  * Role color mirrors AgentChip's honest founder-vs-worker mapping; the initials
  * are decor. `aria-hidden` because the speaker name is announced by the bubble.
  */
-function TurnAvatar({ name }: { name: string }): JSX.Element {
+function TurnAvatar({ name, guestLabel }: { name: string; guestLabel?: string }): JSX.Element {
   const founderName = useFounderName();
+  // Desktop-app guests (THR-362) get their own tone and label-derived
+  // initials: a `guest:G-n` id is never an agent.
+  if (isGuestSpeaker(name)) {
+    return <Avatar initials={identityInitials(guestLabel ?? name.slice('guest:'.length))} tone="guest" size="md" />;
+  }
   const tone = participantChipRole(name) === 'founder' ? 'founder' : 'worker';
   return <Avatar initials={speakerInitials(name, founderName)} tone={tone} size="md" />;
 }
@@ -1008,7 +1035,7 @@ export function ThreadsPage(): JSX.Element {
               )}
               {pinnedThreads.map((t) => {
                 const path = routes.detail(t.thread_id);
-                const speaker = lastSpeakerChip(t.last_speaker);
+                const speaker = lastSpeakerChip(t.last_speaker, tr);
                 return (
                   <InboxRow
                     key={t.thread_id}
@@ -1040,7 +1067,7 @@ export function ThreadsPage(): JSX.Element {
               )}
               {unpinnedThreads.map((t) => {
                 const path = routes.detail(t.thread_id);
-                const speaker = lastSpeakerChip(t.last_speaker);
+                const speaker = lastSpeakerChip(t.last_speaker, tr);
                 return (
                   <InboxRow
                     key={t.thread_id}
@@ -1200,6 +1227,8 @@ interface DetailColumnProps {
         composed_from_dream_id?: string | null;
         reply_delivery?: ReplyDeliveryEntry[];
         pinned?: boolean;
+        /** Desktop-app guest seats (THR-362); optional for older daemons. */
+        guests?: ThreadGuest[];
       }
     | undefined;
   messages: ThreadMessage[];
@@ -1268,6 +1297,32 @@ function DetailColumn({
   // null (→ row omitted) when the thread has no recorded usage. Called before
   // the early returns to keep the hook order stable.
   const freshTokens = useThreadFreshTokens(threadId);
+  // Desktop-app guests (THR-362 slice 4). Invite / New code / Revoke are
+  // loopback founder routes that remote access denies (spec §7.3, decision
+  // 13), so remote access hides those controls; the seat list stays.
+  const remoteHost = useRemoteHost();
+  const revokeGuest = useRevokeGuest(threadId ?? '');
+  const replaceGuestCode = useReplaceGuestCode(threadId ?? '');
+  // Guest dialog, pending seat and error belong to the org/thread they were
+  // started on. DetailColumn is reused across thread routes, so each value
+  // carries its scope: a value from another thread is never shown, is cleared
+  // on navigation, and a late New code result for a departed thread is
+  // dropped (it would invite the app into the wrong thread). Errors are kept
+  // as catalog keys and translated at render, so a locale switch re-translates.
+  const guestScope = `${slug ?? ''}/${threadId ?? ''}`;
+  const guestScopeRef = useRef(guestScope);
+  const [guestDialogState, setGuestDialog] = useState<{ scope: string; result: ThreadGuestInviteResponse | null } | null>(null);
+  const [guestPendingState, setGuestPending] = useState<{ scope: string; id: string } | null>(null);
+  const [guestErrorState, setGuestError] = useState<{ scope: string; error: GuestErrorKey } | null>(null);
+  useEffect(() => {
+    guestScopeRef.current = guestScope;
+    setGuestDialog(null);
+    setGuestError(null);
+  }, [guestScope]);
+  const guestDialog = guestDialogState?.scope === guestScope ? guestDialogState : null;
+  const guestPendingId = guestPendingState?.scope === guestScope ? guestPendingState.id : null;
+  const guestError = guestErrorState?.scope === guestScope ? guestErrorState.error : null;
+  const maxSeq = useMemo(() => messages.reduce((max, m) => Math.max(max, m.seq), 0), [messages]);
   // Back affordance — the list column is collapsed in this view, so the link
   // back to the single-column thread list must stay reachable in every state.
   // THR-376: mockup .crumb — chevron + "All threads", rendered inside the
@@ -1335,6 +1390,32 @@ function DetailColumn({
   // older payloads / loading → empty list renders nothing (no live
   // obligation). Never inferred from per-message rows.
   const replyDelivery = thread.reply_delivery ?? [];
+  const guests = thread.guests ?? [];
+  const manageGuests = remoteHost === null;
+  const runGuestAction = async (guest: ThreadGuest, op: (scope: string) => Promise<void>) => {
+    if (guestPendingId !== null) return;
+    const scope = guestScope;
+    setGuestPending({ scope, id: guest.id });
+    setGuestError(null);
+    try {
+      await op(scope);
+    } catch (err) {
+      if (guestScopeRef.current === scope) setGuestError({ scope, error: guestErrorKey(err) });
+    } finally {
+      setGuestPending((cur) => (cur?.scope === scope && cur.id === guest.id ? null : cur));
+    }
+  };
+  const onGuestNewCode = (guest: ThreadGuest) => {
+    void runGuestAction(guest, async (scope) => {
+      const result = await replaceGuestCode.mutateAsync({ guestId: guest.id });
+      if (guestScopeRef.current === scope) setGuestDialog({ scope, result });
+    });
+  };
+  const onGuestRevoke = (guest: ThreadGuest) => {
+    void runGuestAction(guest, async () => {
+      await revokeGuest.mutateAsync({ guestId: guest.id });
+    });
+  };
 
   return (
     <section className="flex h-full flex-col">
@@ -1409,6 +1490,7 @@ function DetailColumn({
               threadId={threadId}
               nowMs={nowMs}
               replyDelivery={replyDelivery}
+              guests={guests}
             />
           </div>
           {/* THR-376 .composer: border-top wrapper, padding 12/28/16 (14px sides
@@ -1495,7 +1577,48 @@ function DetailColumn({
                 {t('threads.page.rail.invite')}
               </button>
             )}
+            {/* Invite desktop app (THR-362 §4.2) — beside Invite participant,
+                same dashed rail button; hidden through remote access. */}
+            {open && manageGuests && (
+              <button
+                type="button"
+                onClick={() => setGuestDialog({ scope: guestScope, result: null })}
+                title={t('threads.page.rail.inviteGuestTitle')}
+                className="border-border-strong text-caption text-text-secondary hover:border-accent-default hover:bg-accent-soft hover:text-accent-text focus-visible:ring-ring mt-1.5 flex w-full items-center justify-start gap-1.75 rounded-sm border border-dashed px-2.5 py-1.75 font-semibold transition-colors focus-visible:ring-2 focus-visible:outline-none"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" className="size-3.5 shrink-0">
+                  <rect x="3" y="4" width="18" height="12" rx="2" />
+                  <path d="M8 20h8M12 16v4" />
+                </svg>
+                {t('threads.page.rail.inviteGuest')}
+              </button>
+            )}
           </div>
+
+          {/* Guests (THR-362 §13.2) — desktop-app seats in their own group
+              under the agents. Seats are never participants. */}
+          {guests.length > 0 && (
+            <div>
+              <h3 className={RAIL_LABEL}>{t('threads.page.rail.guests')}</h3>
+              <GuestSeats
+                threadId={thread.thread_id}
+                guests={guests}
+                maxSeq={maxSeq}
+                formatTime={(iso) => guestTime(locale, iso)}
+                relativeLabel={(iso) => relativeStartLabel(iso, Date.now(), t)}
+                manageable={manageGuests}
+                pendingGuestId={guestPendingId}
+                onNewCode={onGuestNewCode}
+                onRevoke={onGuestRevoke}
+              />
+              {guestError && (
+                <p className="text-caption text-feedback-danger mt-1.5" role="alert">{guestErrorText(guestError, t)}</p>
+              )}
+              {!manageGuests && open && (
+                <p className="text-caption text-text-secondary mt-1.5">{t('threads.page.guest.remoteNote')}</p>
+              )}
+            </div>
+          )}
 
           {/* Reply delivery — STORE-PROJECTED pair state (GH-688 Phase 1
               Slice C). Renders only while any pair has a live obligation
@@ -1639,6 +1762,15 @@ function DetailColumn({
         </aside>
       </div>
       </div>
+      {threadId && manageGuests && (
+        <GuestInviteDialog
+          key={guestScope}
+          threadId={threadId}
+          open={guestDialog !== null}
+          initialResult={guestDialog?.result ?? null}
+          onClose={() => setGuestDialog(null)}
+        />
+      )}
     </section>
   );
 }
@@ -1655,10 +1787,13 @@ interface TranscriptProps {
   nowMs?: number;
   /** Store-projected pair reply-delivery state (GH-688 Phase 1 Slice C). */
   replyDelivery: ReplyDeliveryEntry[];
+  /** Desktop-app guest seats (THR-362): labels for `guest:` speakers/events. */
+  guests?: ThreadGuest[];
 }
 
-function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, replyDelivery }: TranscriptProps): JSX.Element {
+function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, replyDelivery, guests }: TranscriptProps): JSX.Element {
   const { t, locale } = useTranslation();
+  const guestLabels = useMemo(() => guestLabelMap(guests), [guests]);
   const endRef = useRef<HTMLDivElement>(null);
   // Re-renders the day separators when the local date rolls over.
   const todayKey = useLocalDayKey();
@@ -1760,6 +1895,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
                   <SystemEvent
                     timestamp={m.created_at}
                     systemPayload={m.system_payload}
+                    guests={guests}
                     slug={slug}
                     formatTime={formatTime}
                     formatTitle={formatTitle}
@@ -1774,7 +1910,18 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
               variant={variant}
               seq={m.seq}
               speaker={m.speaker}
-              speakerLabel={<IdentityName canonicalId={m.speaker} founderNameOnly />}
+              speakerLabel={
+                isGuestSpeaker(m.speaker) ? (
+                  // Guest speaker (THR-362 §5.4): the seat label plus a guest
+                  // badge; never an IdentityName lookup (a guest is no agent).
+                  <span className="inline-flex min-w-0 items-baseline gap-1.5">
+                    <span className="min-w-0 truncate">{guestSpeakerLabel(m.speaker, guestLabels)}</span>
+                    <StatusBadge tone="attention" label={t('threads.page.guest.badge')} />
+                  </span>
+                ) : (
+                  <IdentityName canonicalId={m.speaker} founderNameOnly />
+                )
+              }
               speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
               timestamp={m.created_at}
               body={m.body_markdown}
@@ -1783,6 +1930,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
               labels={{
                 declined: t('threads.page.message.declined'),
                 mermaidLoading: t('common.mermaidLoading'),
+                remoteImage: t('common.remoteImageBlocked'),
                 systemEvent: t('threads.page.system.event'),
               }}
               formatTimestamp={formatTime}
@@ -1817,7 +1965,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
           // strip lives inside the column so it aligns under the card.
           return (
             <div key={key} className="mt-4.5 flex min-w-0 gap-3">
-              <TurnAvatar name={m.speaker} />
+              <TurnAvatar name={m.speaker} guestLabel={guestLabels.get(m.speaker)} />
               <div className="min-w-0 flex-1">
                 {bubble}
                 {receipts}
@@ -1963,13 +2111,14 @@ const EVENT_AGENT = 'text-mono-sm text-text-primary font-mono font-semibold';
 interface SystemEventProps {
   timestamp: string;
   systemPayload: Record<string, unknown> | null;
+  guests?: ThreadGuest[];
   slug?: string;
   formatTime: (iso: string) => string;
   formatTitle: (iso: string) => string;
 }
 
-function SystemEvent({ timestamp, systemPayload, slug, formatTime, formatTitle }: SystemEventProps): JSX.Element {
-  const { t, render } = useTranslation();
+function SystemEvent({ timestamp, systemPayload, guests, slug, formatTime, formatTitle }: SystemEventProps): JSX.Element {
+  const { t, render, locale } = useTranslation();
   const tag = String(systemPayload?.kind_tag ?? systemPayload?.event ?? '');
   if (tag === 'task_escalated' && systemPayload) {
     return (
@@ -1982,7 +2131,8 @@ function SystemEvent({ timestamp, systemPayload, slug, formatTime, formatTitle }
       />
     );
   }
-  const description = describeSystem(systemPayload, slug, t, render);
+  const description = describeGuestSystem(systemPayload, guests, locale, t, render)
+    ?? describeSystem(systemPayload, slug, t, render);
   const Icon = SYSTEM_EVENT_ICON[tag] ?? Info;
   return (
     <div className="flex justify-center">
@@ -2012,7 +2162,48 @@ const SYSTEM_EVENT_ICON: Record<string, LucideIcon> = {
   task_dispatched: Send,
   task_completed: CircleCheck,
   task_failed: CircleX,
+  thread_guest_invited: UserPlus,
+  thread_guest_joined: UserPlus,
+  thread_guest_ended: UserMinus,
 };
+
+/**
+ * Desktop-app guest seat events (THR-362 §4.3/§4.6): the daemon writes
+ * `system_payload = {kind_tag, guest_id: "G-n", label[, cause]}` from
+ * `runtime/infrastructure/db/thread_guests.py`. Product phrasing is
+ * translated; the label and an unknown cause render verbatim. The seat's
+ * expiry comes from the thread's guest projection when present. Returns null
+ * for every other tag.
+ */
+function describeGuestSystem(
+  payload: Record<string, unknown> | null,
+  guests: ThreadGuest[] | undefined,
+  locale: Locale,
+  t: Translate,
+  render: RenderTranslated,
+): React.ReactNode | null {
+  const tag = String(payload?.kind_tag ?? '');
+  if (!payload || !tag.startsWith('thread_guest_')) return null;
+  const seatId = `guest:${String(payload.guest_id ?? '')}`;
+  const seat = guests?.find((g) => g.id === seatId);
+  const label = payload.label ? String(payload.label) : (seat?.label ?? seatId);
+  const guest = <span className={EVENT_AGENT}>{label}</span>;
+  const time = seat ? guestTime(locale, seat.expires_at) : null;
+  switch (tag) {
+    case 'thread_guest_invited':
+      return time
+        ? render('threads.page.system.guestInvitedUntil', { guest, time })
+        : render('threads.page.system.guestInvited', { guest });
+    case 'thread_guest_joined':
+      return time
+        ? render('threads.page.system.guestJoinedUntil', { guest, time })
+        : render('threads.page.system.guestJoined', { guest });
+    case 'thread_guest_ended':
+      return render('threads.page.system.guestEnded', { guest, cause: guestEndCauseLabel(payload.cause, t) });
+    default:
+      return null;
+  }
+}
 
 /**
  * Decline (kind=decline) as an attention chip (mockup .chip-evt.attn) with a

@@ -19,6 +19,9 @@ never codes/tokens/hashes. Founder decision 13 denies even remote Revoke.
 Slice 2 also keeps POST `/guests/mcp` and `/guests/setup/{app_id}` absent from
 the remote policy and denied. MCP accepts only local tool-argument credentials
 and rejects non-loopback peer/Host, wrong port, every Origin and HTTP credentials.
+Slice 3's upload/fetch tools share that same local MCP gate. Seat out/in paths
+refer only to the daemon filesystem; SSH tunnels do not provide supported
+other-machine guest file access (decision 20 remains deferred).
 Setup requires the existing founder bearer/human gate and loopback peer. Neither
 route is browser-consumed. No remote authority or policy entry is added.
 

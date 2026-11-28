@@ -1611,7 +1611,11 @@ L permits 32 million SQL progress units only; its acquired rows/bytes/steps
 consume C. All four share one original cooperative five-second deadline and
 accumulate without reset between phases or runs. A is re-entered for native
 metadata. Only one native progress handler is active at a time; nested layout
-selection restores the enclosing handler on exit. Fixed source-literal
+and scoped FK/native-column schema inspection restore the enclosing handler.
+Scoped task/write/mixed replay uses its existing A ledger for native ABI and
+schema acquisition; native data discrimination, FK target probes, replay and
+cancellation headroom remain on C with every original cap and deadline intact.
+Fixed source-literal
 reference construction before the helper yields is unmetered SQL, bracketed only
 by B's deadline checks. Individual cells remain at most 1 MiB; existing
 definition/result limits also apply. Large hostile schema acquisition exhausts A;

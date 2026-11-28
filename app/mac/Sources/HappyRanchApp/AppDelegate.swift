@@ -373,6 +373,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             diagnostics.recordUpdaterEvent("Disabled: SUPublicEDKey absent or invalid")
             return
         }
+        // Keep optional profile parameters out of feed requests. Automatic
+        // check/download preferences remain owned and persisted by Sparkle.
+        updaterController.updater.sendsSystemProfile = false
         updaterObservation = updaterController.updater.publisher(for: \.canCheckForUpdates)
             .sink { [weak self] enabled in
                 // Sparkle's updater and its KVO notifications are main-thread APIs.
@@ -391,6 +394,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     func checkForUpdates() {
         guard canCheckForUpdates, !hasPendingUpdate else { return }
         updaterController.checkForUpdates(nil)
+    }
+
+    func showUpdateSettings() {
+        let chinese = AppLocalePreference.shared.nativeChinese
+        let updater = updaterController.updater
+        let configured = UpdateConfiguration.hasValidPublicKey(Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey"))
+        let alert = NSAlert()
+        alert.messageText = chinese ? "更新设置" : "Update Settings"
+        alert.informativeText = chinese
+            ? "启用后，HappyRanch 会自动检查 https://app.happyranch.ai/mac/appcast.xml，并可能自动下载更新。请求会向 app.happyranch.ai 暴露你的 IP 地址，并在 User-Agent 中发送应用名称、应用版本和 Sparkle 版本。系统信息发送已关闭；Sparkle 不会在此检查请求中添加 macOS 版本或硬件信息。\n\n关闭下方选项会停用后续自动检查和自动下载；再次启用会同时开启两者。此选择会在重新启动后保留。正在进行或已下载的更新仍可能完成。你仍可手动选择“检查更新…”。"
+            : "When enabled, HappyRanch automatically checks https://app.happyranch.ai/mac/appcast.xml and may download updates automatically. The request reveals your IP address to app.happyranch.ai and sends the app name, app version and Sparkle version in User-Agent. System-profile sending is off; Sparkle does not add your macOS version or hardware details to this check request.\n\nTurning off the option below disables future automatic checks and downloads; turning it back on enables both. Your choice persists across launches. An update already in progress or downloaded may still complete. You can still choose Check for Updates… manually."
+        if !configured {
+            alert.informativeText += chinese
+                ? "\n\n此构建未配置更新签名公钥，更新功能已停用。"
+                : "\n\nUpdates are disabled in this build because its update signing public key is not configured."
+        }
+        alert.showsSuppressionButton = true
+        let checkbox = alert.suppressionButton
+        checkbox?.title = chinese ? "自动检查更新" : "Automatically check for updates"
+        checkbox?.state = configured && updater.automaticallyChecksForUpdates ? .on : .off
+        checkbox?.isEnabled = configured
+        alert.addButton(withTitle: chinese ? "保存" : "Save")
+        alert.addButton(withTitle: chinese ? "取消" : "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn, configured, let checkbox else { return }
+        let enabled = checkbox.state == .on
+        guard enabled != updater.automaticallyChecksForUpdates else { return }
+        if enabled {
+            updater.automaticallyChecksForUpdates = true
+            updater.automaticallyDownloadsUpdates = true
+        } else {
+            // Sparkle ignores download-setting writes when automatic updates
+            // are disallowed, so persist this before disabling checks.
+            updater.automaticallyDownloadsUpdates = false
+            updater.automaticallyChecksForUpdates = false
+        }
     }
 
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,
