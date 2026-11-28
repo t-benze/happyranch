@@ -110,11 +110,6 @@ export async function runAgentsCreateCases(h, { org, only = '' }) {
     await evaluate(page, `(() => { const el = document.querySelector(${JSON.stringify(selector)}); el.scrollIntoView({ block: 'center' }); el.focus(); return document.activeElement === el; })()`);
     await cdp.send('Input.insertText', { text }, page.sessionId);
   }
-  async function choose(page, selector, value) {
-    // A <select> pick through the element's own value setter + change event,
-    // the event React's onChange listens to.
-    await evaluate(page, `(() => { const s = document.querySelector(${JSON.stringify(selector)}); const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; set.call(s, ${JSON.stringify(value)}); s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
-  }
   async function openAgents(locale, width, height, gated) {
     fixture.reset({ gated });
     const page = await openPage(`${base}${agentsPath}`, { init: seedLocale(locale), width, height });
@@ -145,8 +140,9 @@ export async function runAgentsCreateCases(h, { org, only = '' }) {
       await type(page, '#agent-name', name);
       if (mode === 'team') check(`${id} team name suggested from the manager name`, await waitTrue(page, `document.querySelector('#agent-new-team')?.value === 'growth'`, 'suggestion', 3000), true);
       if (mode === 'agent') {
-        await waitTrue(page, `!!document.querySelector('#agent-team option[value="eng"]')`, 'team options');
-        await choose(page, '#agent-team', 'eng');
+        // THR-402 v1.1: the team is an explicit radio card, not a <select>.
+        await waitTrue(page, `!!document.querySelector('input[name="create-team"][value="eng"]')`, 'team options');
+        await evaluate(page, `(() => { document.querySelector('input[name="create-team"][value="eng"]').click(); return true; })()`);
       }
       await type(page, '#agent-description', 'Synthetic draft');
       await type(page, '#agent-system-prompt', 'You are a synthetic draft.');

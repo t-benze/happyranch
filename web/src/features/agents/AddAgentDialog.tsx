@@ -720,7 +720,7 @@ export function AddAgentDialog({ open, mode: requestedMode, preselectTeam = '', 
             aria-label={t('agents.create.connection.menu')}
             data-create-menu
             onKeyDown={onMenuKeyDown}
-            className="border-border-default bg-surface-canvas shadow-pasture-lg absolute top-full left-0 z-10 mt-1.5 w-72 max-w-full rounded-md border p-2"
+            className="border-border-default bg-surface-canvas shadow-pasture-lg absolute top-full left-0 z-10 mt-1.5 w-72 rounded-md border p-2"
           >
             <p className="text-text-secondary px-1.5 pb-1 text-xs">{t('agents.create.connection.note')}</p>
             {dirty && <p className="text-attention-text px-1.5 pb-1 text-xs font-semibold">{t('agents.create.connection.discardNote')}</p>}
