@@ -446,6 +446,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "tasks.pause.error.forbidden": "你没有执行此操作的权限。",
   "tasks.pause.error.failed": "无法更改根任务暂停状态。请刷新并确认后再试。",
   "common.mermaidLoading": "正在渲染图表…",
+  "common.remoteImageBlocked": "未加载远程图片",
   "usage.localStamp": "{month}{day}日 {time}",
   // W4d-2: Usage app-owned presentation; daemon identities and metrics stay verbatim.
   "usage.compare": "与前7天比较",

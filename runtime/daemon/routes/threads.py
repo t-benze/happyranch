@@ -2818,13 +2818,16 @@ async def remove_thread_participant_endpoint(
     if t.status is not ThreadStatus.OPEN:
         raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
 
-    org_paths = OrgPaths(root=org.root)
-    agent_def = prompt_loader.load_agent(org_paths, body.agent_name)
-    workspace_exists = (org.root / "workspaces" / body.agent_name).exists()
-    if agent_def is None or not workspace_exists:
-        raise HTTPException(status_code=404, detail={"code": "unknown_agent"})
-
     async with org.db_lock:
+        # Membership is keyed by permanent agent ID, even after retirement
+        # archives its definition/workspace. Only nonmembers need a roster check.
+        if not org.db.is_thread_participant(thread_id, body.agent_name):
+            org_paths = OrgPaths(root=org.root)
+            agent_def = prompt_loader.load_agent(org_paths, body.agent_name)
+            workspace_exists = (org.root / "workspaces" / body.agent_name).exists()
+            if agent_def is None or not workspace_exists:
+                raise HTTPException(status_code=404, detail={"code": "unknown_agent"})
+
         removed = org.db.remove_thread_participant(thread_id, body.agent_name)
         if not removed:
             raise HTTPException(status_code=409, detail={"code": "not_participant"})

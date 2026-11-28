@@ -35,9 +35,14 @@ Slice 2 exchanges `(thread_id, guest_id, invite_code)` for a `hrguest_`
 credential (32 random bytes, SHA-256 only at rest), one seat/thread, fixed
 invite-time lifetime. Only the loopback JSON MCP route accepts it as a tool
 argument; master/other credentials and Authorization headers are refused there.
-Read/post/wait recheck expiry/revoke; restart preserves the digest. Setup writes
-no secret and never edits founder ~/.codex. The attended kit check passed; first
-product join/read/post remains pending. No executor or allow rule changes.
+Read/post/wait/upload/fetch recheck expiry/revoke; restart preserves the digest.
+Setup writes no secret and never edits founder ~/.codex. Slice 3's out/in paths
+are on the daemon machine inside the app project, never a remote transfer path.
+Post attachment authorization shares the arrival transaction; fetch grants only
+other-message files within this seat's read scope, including linked available
+shared artifacts, never lookup by artifact name. Guests cannot publish artifacts.
+The founder product conversation run passed via SSH tunnel; same-machine seat
+file access remains unproven. No executor or allow rule changes.
 Only the founder invites: this remains an instruction/audited action under
 decision 16, since possession of the shared local bearer does not prove a human.
 

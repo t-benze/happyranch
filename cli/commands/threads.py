@@ -479,6 +479,23 @@ def cmd_threads_invite(args: argparse.Namespace) -> None:
 
 
 
+def cmd_threads_remove_participant(args: argparse.Namespace) -> None:
+    import json as _json
+    identities.validate_address(args.agent)
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(
+        args_org=args.org, available=_shared._fetch_available_orgs(client),
+    )
+    target = identities.agent_target(client, slug, args.agent, lifecycles={"active", "terminated"})
+    r = client.post(
+        f"/api/v1/orgs/{slug}/threads/{args.thread_id}/remove-participant",
+        json={"agent_name": target},
+    )
+    if not _ok(r):
+        return
+    print(_json.dumps(r.json(), indent=2))
+
+
 def cmd_threads_extend(args: argparse.Namespace) -> None:
     import json as _json
     client = OpcClient.from_env()
@@ -884,6 +901,14 @@ def register(sub) -> None:
     p_threads_invite.add_argument("--thread-id", dest="thread_id", required=True)
     p_threads_invite.add_argument("--agent", required=True)
     p_threads_invite.set_defaults(func=cmd_threads_invite)
+
+    p_threads_remove = threads_sub.add_parser(
+        "remove-participant", help="Founder: remove an active or terminated participant from an open thread",
+    )
+    p_threads_remove.add_argument("--org", default=None, help="Org slug")
+    p_threads_remove.add_argument("--thread-id", dest="thread_id", required=True)
+    p_threads_remove.add_argument("--agent", required=True, help="Current ASCII name or permanent agent ID")
+    p_threads_remove.set_defaults(func=cmd_threads_remove_participant)
 
     p_threads_extend = threads_sub.add_parser("extend", help="Founder: raise a thread's turn cap")
     p_threads_extend.add_argument("--org", default=None, help="Org slug")

@@ -16,19 +16,28 @@ transcripts render guest labels; the old TUI is removed. Thread detail gains a
 safe `guests` list and the three seat routes have TS mirrors. No UI, setup or
 MCP tools ship in slice 1. Invite codes never appear on ordinary reads.
 
-### Codex guest setup (slice 2)
+### Codex guest setup (slices 2–3)
 
 Founder command `happyranch guests setup codex_desktop --org SLUG` calls the
 loopback founder setup route and prints `<runtime>/orgs/SLUG/guests/codex_desktop`.
 Open that project in Codex. Its `.codex/config.toml` contains exactly the
 happyranch URL at the actual daemon port, default_tools_approval_mode="approve"
 and tool_timeout_sec=60; AGENTS.md explains token retention, untrusted thread
-content, text-only scope and reporting seat-ended answers. Neither file holds
+content, out/ upload and in/ fetch rules and reporting seat-ended answers. Neither file holds
 secrets. Re-run after port changes; symlink/nonregular/edited project files are
 refused, and ~/.codex is never touched. Invite and New code prompts include
 thread_id, guest_id and invite_code. MCP is external-app-only, setup CLI-only;
 both routes are excluded from the browser contract and remain remotely denied.
-No guest Web UI or upload/fetch tools ship in slice 2.
+Setup upgrades only the exact prior daemon-owned AGENTS template and creates
+files/; join returns private files/G-n/out and in paths on the daemon machine.
+Write a direct regular out/ file and pass only its file_name to upload_attachment;
+post_message accepts up to five of that seat's own unattached upload IDs.
+fetch_attachment accepts only a read_thread message ref from another speaker
+within the seat's read scope; it writes a unique local in/ copy. Upload is capped
+at 10 MiB; unmeasured starting allowances are 10 unattached files/50 MiB and
+100 MiB in/ with oldest eviction. Seat end cleans transit/unattached files.
+Guests never publish Shared Artifacts or fetch them by name. Other-machine app
+files, Claude Desktop and scheduled pickup remain deferred; Web is slice 4.
 
 ### Thread guest Web UI (slice 4)
 
@@ -2604,6 +2613,8 @@ dialogs keep their launch language until the next launch. Focused check:
 `node --experimental-transform-types --test web/scripts/native-locale.test.mjs`.
 
 **W5a copy repair:** the mounted Jobs Reject, Settings Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Historical pending-import assertions lived in Markdown.loading.test.tsx; Markdown.test.tsx SVG/error cases used an independent lazy-module instance to avoid cross-file import dependencies. Both files were retired under THR-343; web behavior belongs to Product E2E.
+
+**Remote content in rendered Markdown (THR-406):** shared `Markdown` (threads, KB, task detail/recall, dreams) renders an image as `<img>` only when it resolves to the page's own scheme and host (relative or same-origin). `data:` and `blob:` images are not shown: react-markdown's default URL transform empties their `src` first, so they render as an `<img src="">` that fetches nothing and shows only the alt text. Any other image, including protocol-relative `//host/x`, renders as an inert placeholder: the localized `remoteImageLabel` (`common.remoteImageBlocked`; `MessageBubble.labels.remoteImage` forwards it), the alt text, and the URL as an ordinary `rel="noopener noreferrer"` link. Nothing is fetched unless the user follows that link; inside an authored link the URL is plain text, so anchors never nest. react-markdown's default URL transform and its refusal to render raw HTML are unchanged. Mermaid label HTML may not contain `img`/media/embedding tags or `style` attributes, and a diagram is not rendered when its source could carry a flowchart image shape (`A@{ img: … }`): shape metadata needs a literal `@`, and mermaid rewrites the source before parsing it (removing `%%` directives/comments, normalizing HTML quotes after `<`, dropping the `;` of a `style…#…;` run), so any source containing `@` that also contains, anywhere, `%%`, `<`, `#`, a backslash or the letters `img` in any case falls back. Sources without `@`, including ordinary `%%{init}%%` theming and `#` colors, render as before. The same applies to a source with `themeCSS`, a fetching CSS function (`url(`, `image-set(`, `image(`, `cross-fade(`, `src(`), `@import`/`@font-face` or a CSS hex escape. Each falls back to the existing raw-source view. There is no daemon Content-Security-Policy; that remains a separate follow-up.
 **W5a Work Hours reachability:** the agent-detail reconciliation heading and local edit controls wrap within the page, including long raw agent/team names. The reconciliation and overview roster tables keep every column, value and provenance cell in a localized, named, keyboard-focusable horizontal scroll region; focus the region and use the arrow keys to reach the rightmost columns. Shared Button/AppShell and editor/action semantics are unchanged. The earlier 390px document-width checks did not establish child/control or column reachability: historical clipping captures remain failed evidence. The affected ordinary-build browser case is `web/scripts/w4a-browser-evidence.mjs --slice work-hours-reachability`, checking actual control bounds, readable headings and keyboard access to the final column in en/zh-CN at 390/1440, with mounted editor/draft/focus/navigation preservation. W5a finite coverage was independently reviewed, QA-verified and manager-accepted with PR993; W5b enables full browser locale resolution. Historical evidence keeps its original source/build identity. The tier editor now stacks field rows below the small-screen breakpoint, bounds grid children and field/control groups, wraps resets/day controls and full raw title/provenance/selected-timezone text, and allows the existing dialog to scroll vertically. Desktop retains the row hierarchy. Editor child and text-range bounds must be measured against actual dialog content and viewport after scrolling, with pointer hit testing and a real Tab cycle; page/table bounds alone do not establish editor readability. The affected browser cases include all three tiers, windowed/continuous and impact stages, long raw values, both locales at390/1440, and both-direction node/focus/selection/draft preservation with zero locale HTTP. Actual Save/PUT, reset-null and verbatim422 contracts were checked by TierEditorDialog.test.tsx and work-hours.i18n.test.tsx before their THR-343 retirement. Current write evidence requires Product E2E; screenshots alone do not prove writes.
 
 

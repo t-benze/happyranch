@@ -447,6 +447,7 @@ export const en = {
   "tasks.pause.error.forbidden": "You do not have permission for this action.",
   "tasks.pause.error.failed": "Could not change the root hold. Refresh and review before retrying.",
   "common.mermaidLoading": "Rendering diagram…",
+  "common.remoteImageBlocked": "Remote image not loaded",
   "usage.localStamp": "{month} {day}, {time}",
   // W4d-2: Usage app-owned presentation; daemon identities and metrics stay verbatim.
   "usage.compare": "Compare with previous 7 days",

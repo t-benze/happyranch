@@ -298,7 +298,7 @@ export function DreamDetailPane({
               {dream.summary && (
                 <blockquote className={`border-accent-default text-text-secondary border-l-2 pl-4 text-sm italic ${SUMMARY_CODE_TOKENS}`}>
                   {/* Dr1 (THR-376 r2): render the summary markdown, not raw text */}
-                  <Markdown body={dream.summary} mermaidLoadingLabel={t('common.mermaidLoading')} />
+                  <Markdown body={dream.summary} mermaidLoadingLabel={t('common.mermaidLoading')} remoteImageLabel={t('common.remoteImageBlocked')} />
                 </blockquote>
               )}
 

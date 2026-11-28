@@ -1930,6 +1930,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
               labels={{
                 declined: t('threads.page.message.declined'),
                 mermaidLoading: t('common.mermaidLoading'),
+                remoteImage: t('common.remoteImageBlocked'),
                 systemEvent: t('threads.page.system.event'),
               }}
               formatTimestamp={formatTime}

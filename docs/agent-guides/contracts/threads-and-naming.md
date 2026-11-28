@@ -1,5 +1,26 @@
 # Threads, routing and naming contracts
 
+## Participant removal
+
+Founder removal from an open thread checks membership under `db_lock`, using
+the permanent agent ID stored in `thread_participants.agent_name`. A current
+participant can be removed even after its definition or workspace is archived
+or missing. Removal keeps the existing reply-delivery discard, pending-invocation
+decline, `participant_removed` system message, audit row and thread events.
+For nonparticipants, a missing active definition or workspace still returns
+404 `unknown_agent`; an otherwise known agent returns 409 `not_participant`.
+Route authority and the open-thread requirement are unchanged.
+
+Founder CLI: `happyranch threads remove-participant --org SLUG --thread-id THR-NNN --agent ADDRESS`.
+`ADDRESS` accepts an active or terminated agent's permanent ID or current ASCII
+name and resolves to the permanent ID before posting `{"agent_name": ID}` to
+`/api/v1/orgs/SLUG/threads/THR-NNN/remove-participant`, using the same founder
+bearer path as `threads invite`. Pending agents are ineligible. An unknown
+address exits 1 with the CLI's `unknown_identity` diagnostic before removal;
+former names do not forward. Daemon errors also exit nonzero through the existing
+CLI error handler; success prints the JSON response. This adds no termination
+auto-removal behavior.
+
 ## Guest seats (THR-362, slice 1)
 
 Founder-approved decisions 1–16 (msg56) add `thread_guests`, installed on fresh
@@ -38,11 +59,11 @@ and frozen-exchange exceptions unchanged), with no guest invocation or usage.
 The send/reply routes retain their binding/membership gates; no public guest
 posting, join, MCP, setup or agent-prompt changes ship in slice 1.
 
-### Guest tools and setup (slice 2)
+### Guest tools and setup (slices 2–3)
 
 `POST /api/v1/orgs/{slug}/guests/mcp` is plain JSON-RPC POST, no SSE or bearer
 admission. It refuses non-loopback peers/Host/wrong daemon port, every Origin,
-non-JSON content and HTTP credentials. Only join/read/post/wait are advertised.
+non-JSON content and HTTP credentials. Join/read/post/wait/upload/fetch are advertised.
 EM clarified join as `(thread_id, guest_id, invite_code)`: selection is per seat;
 wrong counts lock at five, New code resets, reuse/lapse are audited. Unknown,
 wrong-thread or ended seats get the wrong-code plain response, no counter or
@@ -53,10 +74,12 @@ at rest, with the original fixed invite-time seat deadline. Every later tool
 checks end/expiry. Read derives its thread solely from that credential, enforces
 read_from_seq, projects labelled data without system payload/invocation data,
 uses saved per-seat cursor by default and bounds pages to 50(default)/200 rows
-and 256 KiB bodies (explicit truncated flag). Post is text-only (all attachment
-arguments refused), at most 32 KiB and 30 messages/seat/rolling hour, using the
-existing arrival transaction with agent-only recipients and ordinary seq/kind
-audit. It never puts a guest in a wake set or participant/invocation/usage row.
+and 256 KiB bodies (explicit truncated flag). Post accepts up to five unique
+attachment_ids, each a thread-scoped upload owned by this guest and not yet
+attached; the arrival transaction rejects the entire post otherwise. Text stays
+bounded to 32 KiB and 30 messages/seat/rolling hour, with agent-only recipients.
+Ordinary seq/kind audit gains attachment_count/attachment_names only when nonempty.
+It never puts a guest in a wake set or participant/invocation/usage row.
 Wait accepts 1..50 seconds only, one call per seat; one-second polling rechecks
 end/expiry without holding org readers/DB locks across sleep, and cancellation
 releases ownership. Credentials survive daemon/private-state reconstruction.
@@ -65,10 +88,25 @@ Full, resumed and delta agent prompts mark guest speakers as external untrusted
 input, list active guests separately and ask the founder to nudge for an answer;
 the bundled thread skill carries the same rule. Founder local `guests setup
 codex_desktop` writes only the org-owned project config and AGENTS rules, no
-secret or founder config. MCP/setup stay remotely denied. Attachments, Web UI,
-Claude and scheduled/remote pickup remain deferred. Founder kit token/slow-call/
-file checks passed; app identity/version/approval observations and first real
-product join/read/post remain unproven.
+secret or founder config. Exact prior daemon-owned rules are upgraded; edited
+rules still refuse. Join returns daemon-local out_dir/in_dir under the app's
+files/G-n/ (0700). Upload takes only a direct regular no-follow out/ file up to
+10 MiB, validates its display name, stores uploaded_by=guest:G-n and removes the
+source only after metadata commits. A failed commit preserves the source;
+post-commit source-removal failure cannot compensate away committed storage.
+Per-seat unattached allowance is 10 files/50 MiB. Fetch resolves a
+message:<seq>:<ordinal> ref within this thread, at/above read_from_seq, from
+someone else's message, then copies into in/ (100 MiB, oldest copies evicted).
+Sequence must fit a positive signed 64-bit integer and ordinal must be 0–4;
+out-of-range refs return the plain unavailable tool error before SQL binding.
+Thread attachments and linked shared-artifact generations retain existing
+availability/retention checks; artifact-name fetch and guest Shared Artifacts
+publication are forbidden. Read/wait/fetch have no guest audit and stamp read
+position/last seen. All file allowances are unmeasured starting values. Ended
+seat folders and unattached uploads are cleaned; posted bytes remain.
+MCP/setup stay remotely denied. Web UI, Claude and scheduled/remote pickup remain
+separate/deferred. The founder's first product join/read/post/revoke passed via
+SSH tunnel; same-machine desktop file behaviour is still unproven.
 
 > Moved verbatim from the repository-root `AGENTS.md` on 2026-10-30. Sections keep
 > their original relative order. Where a later section says it supersedes or

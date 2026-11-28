@@ -6,7 +6,7 @@ from pathlib import Path
 import stat
 import tomllib
 
-GUEST_RULES = """# HappyRanch thread guest
+_SLICE_2_RULES = """# HappyRanch thread guest
 
 The founder pastes an invite prompt to join one thread. Call join_thread with
 its thread_id, guest_id and invite_code. Keep the returned guest_token in this
@@ -20,6 +20,25 @@ Files and attachment tools are not available yet. When a tool reports that the
 guest seat has ended, say so in the chat and stop using that credential.
 The guest acts only while the founder uses the app or a requested wait is open.
 """
+
+GUEST_RULES = _SLICE_2_RULES.replace(
+    "This slice supports text-only read_thread, post_message and wait_for_messages.\n"
+    "Files and attachment tools are not available yet. When a tool reports that the\n",
+    "Use read_thread, post_message and wait_for_messages for conversation.\n"
+    "join_thread returns out_dir and in_dir on the daemon machine, inside this app\n"
+    "project under files/G-n/. These are daemon-local paths: other-machine apps\n"
+    "and file transfer over tunnels are unsupported. Write a regular file directly\n"
+    "in out/, then call upload_attachment with only its file_name (up to 10 MiB).\n"
+    "A successful upload removes the source and returns an attachment_id. Pass up\n"
+    "to 5 of your own unattached IDs in post_message attachment_ids. Fetch someone\n"
+    "else's message attachment using its read_thread ref with fetch_attachment;\n"
+    "it returns a path in in/. Your own messages do not grant file access.\n"
+    "Allowances per seat: 10 unattached uploads / 50 MiB; in/ holds at most 100 MiB\n"
+    "and evicts oldest copies first. These are unmeasured starting values. Seat\n"
+    "folders and unattached uploads are removed when the seat ends; posted files\n"
+    "remain thread attachments. Guests never publish to Shared Artifacts.\n"
+    "When a tool reports that the\n",
+)
 
 
 def config_text(slug: str, port: int) -> str:
@@ -53,7 +72,7 @@ def setup_codex_guest(root: Path, slug: str, port: int) -> dict:
                 raise ValueError("guest setup target is not an owned regular file")
             with os.fdopen(os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)) as stream:
                 current = stream.read(16385)
-            owned = current == expected
+            owned = current == expected or (name == "AGENTS.md" and current == _SLICE_2_RULES)
             if name == "config.toml" and len(current) <= 16384:
                 try:
                     old = tomllib.loads(current)
@@ -74,6 +93,14 @@ def setup_codex_guest(root: Path, slug: str, port: int) -> dict:
                     owned = False
             if not owned:
                 raise ValueError("guest setup refuses an edited project file")
+        try:
+            os.mkdir("files", mode=0o700, dir_fd=project_fd)
+        except FileExistsError:
+            pass
+        files_fd = os.open("files", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=project_fd)
+        opened.append(files_fd)
+        if stat.S_IMODE(os.fstat(files_fd).st_mode) != 0o700:
+            raise ValueError("guest files directory must be private")
         for parent, name, content in targets:
             # Exclusive temporary entry; replacement never follows a final link.
             import secrets
