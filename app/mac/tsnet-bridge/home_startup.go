@@ -6,16 +6,28 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/net/proxy"
 	"tailscale.com/envknob"
 	"tailscale.com/net/dnscache"
+	"tailscale.com/net/netmon"
+	"tailscale.com/net/netns"
+	"tailscale.com/net/tshttpproxy"
+	"tailscale.com/types/logger"
+	"tailscale.com/version/distro"
 )
+
+const homeProxyScheme = "happyranch-home"
+const homeProxyURL = homeProxyScheme + "://owned"
 
 var homeProcessMu sync.Mutex
 var homeProcessStarted bool
@@ -26,6 +38,19 @@ func prepareHomeProcess(cfg homeLaunch) (*homeTransport, error) {
 	homeProcessMu.Lock()
 	defer homeProcessMu.Unlock()
 	if homeProcessStarted {
+		return nil, errHomeTrust
+	}
+	// The pinned Darwin selector has no OS hook. Linux's hook uses this same
+	// immutable distro cache and returns no proxy except on Synology, where
+	// /etc/proxy.conf can change after startup. There is no exported hook override:
+	// refuse that platform (and unknown platforms) before roots or engine startup.
+	switch runtime.GOOS {
+	case "darwin":
+	case "linux":
+		if distro.Get() == distro.Synology {
+			return nil, errHomeTrust
+		}
+	default:
 		return nil, errHomeTrust
 	}
 	if _, err := validateHomeLaunch(cfg); err != nil {
@@ -70,18 +95,66 @@ func prepareHomeProcess(cfg homeLaunch) (*homeTransport, error) {
 			}
 		}
 	}
-	proxy := "http://" + h.Addr().String()
-	if os.Setenv("HTTP_PROXY", proxy) != nil || os.Setenv("HTTPS_PROXY", proxy) != nil {
+	// Both supported helper platforms use netns' x/net wrapper. Register before
+	// either package reads its one-shot environment caches. No forwarding dialer
+	// is retained, even for a refused target or an invalid private-scheme URL.
+	proxy.RegisterDialerType(homeProxyScheme, func(u *url.URL, _ proxy.Dialer) (proxy.Dialer, error) {
+		if u.String() != homeProxyURL {
+			return nil, errHomeTrust
+		}
+		return h, nil
+	})
+	if os.Setenv("ALL_PROXY", homeProxyURL) != nil {
 		return nil, errHomeTrust
 	}
 	resolver := fixedHomeResolver(h.ctx, netip.MustParseAddr(cfg.DialIP))
 	net.DefaultResolver = resolver
 	dnscache.Get().Forward = resolver
 	dnscache.Get().LookupIPFallback = nil
+	if h.verifyRouting() != nil {
+		return nil, errHomeTrust
+	}
 	// This owner also closes tsnet admission and exported streams on failure.
 	context.AfterFunc(h.ctx, cancelManaged)
 	success = true
 	return h, nil
+}
+
+// verifyRouting freezes proxy-free HTTP selectors before engine startup, and
+// refuses NO_PROXY wrappers and disabled netns. DERP's HTTP proxy path precedes
+// netns, so confinement must hold without a later DialContext recheck.
+func (h *homeTransport) verifyRouting() error {
+	if h.ctx.Err() != nil || os.Getenv("ALL_PROXY") != homeProxyURL {
+		return errHomeTrust
+	}
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"} {
+		if _, present := os.LookupEnv(name); present {
+			return errHomeTrust
+		}
+	}
+	if netns.NewDialer(logger.Discard, netmon.NewStatic()) != h {
+		return errHomeTrust
+	}
+	// Probe the pinned selectors locally with a NUL-only host: no IP/domain
+	// exception can match it. OS environment values cannot contain NUL, successful
+	// IDNA normalization cannot produce it, and it has no domain suffix. Only '*'
+	// masks this probe, disabling ALL environment proxy destinations. Empty host
+	// is insufficient: IDNA can map a soft-hyphen exception to an empty matcher.
+	// No HTTP request is sent. Per-home bypasses cannot hide a cached proxy here.
+	// Accepted caches cannot adopt later environment edits; InvalidateCache only
+	// resets the OS retry time, and dynamic OS selection was excluded above.
+	for _, authority := range []string{"\x00", homeControlName + ":8443", homeControlName + ":443", h.dialIP + ":8443", h.dialIP + ":443"} {
+		for _, scheme := range []string{"http", "https"} {
+			req := &http.Request{URL: &url.URL{Scheme: scheme, Host: authority}}
+			for _, selectProxy := range []func(*http.Request) (*url.URL, error){http.ProxyFromEnvironment, tshttpproxy.ProxyFromEnvironment} {
+				selected, err := selectProxy(req)
+				if err != nil || selected != nil {
+					return errHomeTrust
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // net.Resolver's production Dial API uses TCP framing for net.Pipe. No DNS
