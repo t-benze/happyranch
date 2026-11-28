@@ -106,15 +106,18 @@ struct AppSchemeRoute {
 /// Current-document owner evidence. Invalid input removes clearance; losing a
 /// document with unresolved saves permanently retains uncertainty in this view.
 struct AppSchemeOwnerSummary {
+    struct Gate { let requestID: String; let decision: String }
     private(set) var blocking: String?
     private(set) var counts: [String: Int64]?
     private var unresolved = false
     private var uncertain = false
 
-    mutating func accept(_ raw: String) throws {
+    @discardableResult
+    mutating func accept(_ raw: String, requestID: String? = nil) throws -> Gate? {
         blocking = nil; self.counts = nil
         let value = try ConnectionJSON.parse(raw, limit: 1024)
-        guard let object = value.object, Set(object.keys) == ["schema", "blocking", "counts"],
+        guard let object = value.object,
+              Set(object.keys) == ["schema", "blocking", "counts"] || Set(object.keys) == ["schema", "blocking", "counts", "gate"],
               object["schema"] == .integer(2), let counts = object["counts"]?.object,
               Set(counts.keys) == ["dirty", "failed", "pending", "unknown"],
               counts.values.allSatisfy({ $0.integer.map { (0...255).contains($0) } == true }) else {
@@ -123,15 +126,26 @@ struct AppSchemeOwnerSummary {
         let held = counts["pending"]!.integer! > 0 || counts["unknown"]!.integer! > 0
         let level = held ? "hold" : counts["dirty"]!.integer! > 0 || counts["failed"]!.integer! > 0 ? "prompt" : "none"
         guard object["blocking"] == .string(level) else { throw ConnectionRefusal.invalid }
-        // No native lifecycle request is offered in MAC-1, so unsolicited gate
-        // decisions cannot authorize an effect and are refused above.
+        var gate: Gate?
+        if let rawGate = object["gate"] {
+            guard let fields = rawGate.object, Set(fields.keys) == ["requestId", "decision"],
+                  let id = fields["requestId"]?.string,
+                  id == requestID,
+                  id.range(of: #"^[A-Za-z0-9_-]{1,64}$"#, options: .regularExpression) != nil,
+                  let decision = fields["decision"]?.string, ["keep", "proceed"].contains(decision) else {
+                throw ConnectionRefusal.invalid
+            }
+            gate = Gate(requestID: id, decision: decision)
+        }
         blocking = level; self.counts = counts.mapValues { $0.integer! }; unresolved = held
+        return gate
     }
     mutating func retire(nonGETPending: Bool) {
         uncertain = uncertain || unresolved || nonGETPending
         blocking = nil; counts = nil
     }
     var allowsNavigation: Bool { !uncertain && blocking == "none" }
+    var hasEvidence: Bool { !uncertain && counts != nil }
     var switchRefusal: String? {
         guard !uncertain, let counts else { return "owner_save_unknown" }
         if counts["unknown", default: 0] > 0 { return "owner_save_unknown" }
@@ -327,6 +341,24 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
     var switchRefusal: String? { nonGETPending ? "non_get_pending" : documentOwners.switchRefusal }
     var hasLocalTarget: Bool { targetID != nil && !remote }
     var localPromptWindow: NSWindow? { view?.window }
+    struct LifecycleAnchor: Equatable {
+        let document: UUID
+        let context: String
+        let generation: String
+        let target: String?
+    }
+    var lifecycleAnchor: LifecycleAnchor? {
+        guard let context = documentContext, view != nil, documentOwners.hasEvidence,
+              subscriptions.contains("app.lifecycleRequested") else { return nil }
+        return LifecycleAnchor(document: document, context: context, generation: generation, target: targetID)
+    }
+    var connectionMutationPending: Bool { connectionCommands?.lifecycleBusy == true }
+    var lifecycleNonGETPending: Bool { nonGETPending }
+    func emitLifecycle(_ token: UUID, action: String) {
+        let object: [String: Any] = ["schema": 2, "requestId": token.uuidString, "action": action]
+        let raw = String(decoding: (try? JSONSerialization.data(withJSONObject: object)) ?? Data(), as: UTF8.self)
+        emitEvent("app.lifecycleRequested", raw: raw)
+    }
 
     /// No suspension between admission, selection and generation swap. Owner
     /// evidence belongs to Main and survives this transition.
@@ -394,10 +426,24 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
         emitStatus()
     }
     func receiveOwnerSummary(_ raw: String) throws {
-        try documentOwners.accept(raw)
+        let gate = try documentOwners.accept(raw)
+        guard gate == nil else { throw ConnectionRefusal.invalid }
         connectionApp?.resumeStartupSelection()
     }
+    func receiveOwnerSummary(_ raw: String, reply: @escaping @MainActor @Sendable (Any?, String?) -> Void) {
+        do {
+            let gate = try documentOwners.accept(raw, requestID: connectionApp?.appLifetime.token?.uuidString)
+            if let gate {
+                guard let app = connectionApp else { throw ConnectionRefusal.invalid }
+                app.appLifetime.receiveGate(scheme: self, requestID: gate.requestID, decision: gate.decision, reply: reply)
+            } else {
+                connectionApp?.resumeStartupSelection()
+                reply("{}", nil)
+            }
+        } catch { reply(nil, MacLocalControls.error("invalidRequest", recovery: "refresh")) }
+    }
     func documentDidStart(url: URL? = nil) {
+        connectionApp?.appLifetime.retire(self)
         subscriptions.removeAll()
         connectionCommands?.invalidate(showNotice: false); connectionCommands = nil
         connectionEventSequence = 0
@@ -783,12 +829,7 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             return
         }
         if item["command"] as? String == "app.ownersChanged" {
-            do {
-                // Parsing and storage are synchronous on MainActor, before ACK.
-                // Invalid current-document input cannot retain clean clearance.
-                try receiveOwnerSummary(item.count == 3 ? item["data"] as? String ?? "" : "")
-                replyHandler("{}", nil)
-            } catch { replyHandler(nil, #"{"code":"invalidRequest","effect":"none","recovery":"refresh"}"#) }
+            receiveOwnerSummary(item.count == 3 ? item["data"] as? String ?? "" : "", reply: replyHandler)
             return
         }
         if let command = item["command"] as? String, MacLocalControls.commands.contains(command) {
@@ -824,9 +865,10 @@ final class AppScheme: NSObject, WKURLSchemeHandler, WKScriptMessageHandlerWithR
             return
         }
         if item["command"] == "subscribe", Set(item.keys) == ["context", "command", "event", "active"],
-           let event = item["event"], ["app.stateChanged", "app.dialogRequested", "client.stateChanged"].contains(event),
+           let event = item["event"], ["app.stateChanged", "app.dialogRequested", "app.lifecycleRequested", "client.stateChanged"].contains(event),
            let active = item["active"], ["0", "1"].contains(active) {
             if active == "1" { subscriptions.insert(event) } else { subscriptions.remove(event) }
+            if event == "app.lifecycleRequested", active == "0" { connectionApp?.appLifetime.retire(self) }
             if event == "client.stateChanged" { mainConnectionCommands()?.subscribeMain(active == "1") }
             replyHandler("{}", nil); return
         }

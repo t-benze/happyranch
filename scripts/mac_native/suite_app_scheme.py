@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import base64
 import json
+import math
 import os
 import stat
 import struct
@@ -190,12 +191,14 @@ def qualify_cold_client(argv: list[str], env: dict[str, str], scratch: Path, dea
 
 
 def screenshot_archive(folder: Path, locale: str,
-                       scroll_counts: dict[tuple[str, str], int] | None = None) -> list[dict[str, Any]]:
+                       scroll_counts: dict[tuple[str, str], int] | None = None,
+                       element_counts: dict[tuple[int, str], int] | None = None) -> list[dict[str, Any]]:
     """Closed names, bounded top/scroll PNGs in the existing probe JSON."""
     if locale not in ('en', 'zh'):
         raise ValueError('unsupported capture locale')
     rows = []
     scroll_counts = scroll_counts or {}
+    captures = []
     for theme in ('light', 'dark'):
         for scale in (100, 200):
             for dialog in ('settings', 'connection', 'main'):
@@ -205,22 +208,109 @@ def screenshot_archive(folder: Path, locale: str,
                 for number in range(count + 1):
                     suffix = f'-scroll-{number}' if number else ''
                     name = f'{locale}-{theme}-{scale}-{dialog}{suffix}.png'
-                    descriptor = os.open(folder / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                    with os.fdopen(descriptor, 'rb') as source:
-                        info = os.fstat(source.fileno())
-                        if not stat.S_ISREG(info.st_mode) or not 33 <= info.st_size <= PNG_CAP:
-                            raise ValueError('screenshot size/type')
-                        raw = source.read(PNG_CAP + 1)
-                    if (len(raw) != info.st_size or len(raw) > PNG_CAP
-                            or raw[:16] != b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
-                            or struct.unpack('>II', raw[16:24]) != (760, 560)):
-                        raise ValueError('screenshot PNG dimensions/header')
-                    rows.append(dict(name=name, locale=locale, theme=theme, text_percent=scale, dialog=dialog,
-                        scroll_capture=number, width=760, height=560, encoding='base64', bytes=len(raw),
-                        sha256=hashlib.sha256(raw).hexdigest(), data=base64.b64encode(raw).decode('ascii')))
+                    captures.append((theme, scale, dialog, number, name))
+    for scale, suffix in ((100, '-100'), (200, '')):
+        captures.append(('dark', scale, 'main', 0, f'mac-recovery-no-relaunch-{locale}{suffix}.png'))
+    recovery_count = scroll_counts.get(('dark', 'recovery'), 0)
+    if type(recovery_count) is not int or not 0 <= recovery_count <= 16:
+        raise ValueError('recovery screenshot scroll count')
+    for number in range(1, recovery_count + 1):
+        captures.append(('dark', 200, 'main', number, f'mac-recovery-no-relaunch-{locale}-scroll-{number}.png'))
+    for (scale, key), count in (element_counts or {}).items():
+        if scale not in (100, 200) or key not in ('guidance', 'reopen', 'recheck') or type(count) is not int or not 1 <= count <= 8:
+            raise ValueError('recovery element screenshot count')
+        for number in range(1, count + 1):
+            captures.append(('dark', scale, 'main', number,
+                f'mac-recovery-no-relaunch-{locale}-{scale}-{key}-{number}.png'))
+    for theme, scale, dialog, number, name in captures:
+        descriptor = os.open(folder / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, 'rb') as source:
+            info = os.fstat(source.fileno())
+            if not stat.S_ISREG(info.st_mode) or not 33 <= info.st_size <= PNG_CAP:
+                raise ValueError('screenshot size/type')
+            raw = source.read(PNG_CAP + 1)
+        if (len(raw) != info.st_size or len(raw) > PNG_CAP
+                or raw[:16] != b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
+                or struct.unpack('>II', raw[16:24]) != (760, 560)):
+            raise ValueError('screenshot PNG dimensions/header')
+        rows.append(dict(name=name, locale=locale, theme=theme, text_percent=scale, dialog=dialog,
+            scroll_capture=number, width=760, height=560, encoding='base64', bytes=len(raw),
+            sha256=hashlib.sha256(raw).hexdigest(), data=base64.b64encode(raw).decode('ascii')))
     if sum(row['bytes'] for row in rows) > 8 * 1024 * 1024:
         raise ValueError('screenshot archive size')
     return rows
+
+
+def recovery_content_covered(receipts: list[dict[str, Any]], scale: int) -> bool:
+    """Full captured content; partial intervals are eligible only for tall items.
+
+    Historical Boolean-only receipts retain the old whole-rectangle requirement.
+    New receipts must all carry internally consistent rect/clip/hit diagnostics.
+    The caller separately closes names, files, counts and process success.
+    """
+    rows = [row for row in receipts if row.get('textPercent') == scale]
+    keys = {'guidance', 'reopen', 'recheck'}
+    if not rows or any(not isinstance(row.get('recoveryVisible'), dict)
+            or set(row['recoveryVisible']) != keys
+            or any(type(value) is not bool for value in row['recoveryVisible'].values()) for row in rows):
+        return False
+    if all('recoveryDiagnostics' not in row for row in rows):
+        return all(any(row['recoveryVisible'][key] for row in rows) for key in keys)
+    if any(not isinstance(row.get('recoveryDiagnostics'), dict) or set(row['recoveryDiagnostics']) != keys for row in rows):
+        return False
+
+    def number(value: Any) -> bool:
+        return type(value) in (int, float) and math.isfinite(value)
+
+    for key in sorted(keys):
+        intervals = []
+        signature = None
+        height = 0
+        for row in rows:
+            d = row['recoveryDiagnostics'][key]
+            if not isinstance(d, dict) or d.get('identity') != key or not isinstance(d.get('textPrefix'), str):
+                return False
+            r, c, hit = d.get('rect'), d.get('clip'), d.get('hit')
+            if (not isinstance(r, dict) or not isinstance(c, dict) or not isinstance(hit, dict)
+                    or any(not number(r.get(k)) for k in ('top', 'bottom', 'left', 'right', 'width', 'height'))
+                    or any(not number(c.get(k)) for k in ('top', 'bottom', 'left', 'right'))):
+                return False
+            current = (d.get('tag'), d['textPrefix'], r['width'], r['height'], d.get('rootFontSize'))
+            if signature is not None and signature != current:
+                return False
+            signature, height = current, r['height']
+            if (height <= 0 or r['width'] <= 0 or r['bottom'] - r['top'] != height
+                    or r['right'] - r['left'] != r['width']):
+                return False
+            top, bottom = max(r['top'], c['top']), min(r['bottom'], c['bottom'])
+            eligible = (d.get('rootFontSize') == 16 * scale / 100 and d.get('stylesOK') is True
+                        and r['left'] >= c['left'] and r['right'] <= c['right'] and bottom > top
+                        and hit.get('matches') is True)
+            point = hit.get('point')
+            if eligible:
+                eligible = (isinstance(point, dict) and number(point.get('x')) and number(point.get('y'))
+                            and r['left'] <= point['x'] <= r['right'] and top <= point['y'] <= bottom)
+            whole = eligible and r['top'] >= c['top'] and r['bottom'] <= c['bottom']
+            if row['recoveryVisible'][key] is not whole or not isinstance(d.get('rejection'), str):
+                return False
+            if whole != (d['rejection'] == ''):
+                return False
+            segment = d.get('segment')
+            if eligible:
+                if segment != [top - r['top'], bottom - r['top']]:
+                    return False
+                if whole or height > c['bottom'] - c['top']:
+                    intervals.append(segment)
+            elif segment is not None:
+                return False
+        end = 0
+        for start, stop in sorted(intervals):
+            if start > end:
+                break
+            end = max(end, stop)
+        if end < height:
+            return False
+    return True
 
 
 def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadline: float,
@@ -249,6 +339,10 @@ def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadlin
             row['last_step'] = progress[-1] if progress else None
             receipts = [event for event in evidence if event.get('event') == 'screenshot']
             row['events'] = receipts
+            recovery = [event for event in receipts if str(event.get('name', '')).startswith('mac-recovery-no-relaunch-')]
+            row['recovery_diagnostics'] = [{k: event.get(k) for k in
+                ('name', 'textPercent', 'recoveryVisible', 'recoveryDiagnostics')} for event in recovery]
+            row['recovery_coverage'] = {str(scale): recovery_content_covered(recovery, scale) for scale in (100,200)}
             completions = [event for event in evidence if event.get('event') == 'capture_complete']
             row['completion_events'] = completions
             counts = {}
@@ -256,7 +350,8 @@ def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadlin
                 key = (event.get('theme'), event.get('dialog'))
                 count = event.get('scrollCaptures')
                 panes = event.get('scrollers')
-                if (key in counts or key[0] not in ('light', 'dark') or key[1] not in ('settings', 'connection', 'main')
+                if (key in counts or key[0] not in ('light', 'dark') or key[1] not in ('settings', 'connection', 'main', 'recovery')
+                        or (key[1] == 'recovery' and key[0] != 'dark')
                         or event.get('locale') != locale or event.get('textPercent') != 200
                         or type(count) is not int or not 0 <= count <= 16 or not isinstance(panes, list)
                         or len(panes) > 8 or any(not isinstance(pane, dict) or pane.get('index') != index
@@ -265,15 +360,55 @@ def qualify_dialogs(argv: list[str], env: dict[str, str], scratch: Path, deadlin
                         or sum(pane['pages'] for pane in panes) != count):
                     raise ValueError('incomplete scroll capture receipt')
                 counts[key] = count
-            if len(counts) != 6:
+            if len(counts) != 7:
                 raise ValueError('missing scroll capture completion')
-            images = screenshot_archive(downloads, locale, counts)
+            element_counts = {}
+            row['recovery_completion_events'] = [e for e in evidence if e.get('event') == 'recovery_capture_complete']
+            for event in row['recovery_completion_events']:
+                scale = event.get('textPercent')
+                elements = event.get('elements')
+                if (type(scale) is not int or scale not in (100, 200) or event.get('locale') != locale
+                        or event.get('theme') != 'dark' or not isinstance(elements, list) or len(elements) != 3
+                        or any(not isinstance(e, dict) for e in elements)
+                        or [e.get('key') for e in elements if isinstance(e, dict)] != ['guidance', 'reopen', 'recheck']):
+                    raise ValueError('invalid recovery element completion')
+                for element in elements:
+                    key, pages = element['key'], element.get('pages')
+                    if (scale, key) in element_counts or type(pages) is not int or not 1 <= pages <= 8:
+                        raise ValueError('invalid recovery element count')
+                    element_counts[scale, key] = pages
+            if len(element_counts) != 6:
+                raise ValueError('missing recovery element completion')
+            images = screenshot_archive(downloads, locale, counts, element_counts)
             capture['screenshots'].extend(images)
             expected = {image['name']: image for image in images}
+            if (any('recoveryDiagnostics' not in event for event in recovery)
+                    or not all(row['recovery_coverage'].values())):
+                raise ValueError('recovery content not visibly captured at both scales')
+            for event in recovery:
+                key = event.get('recoveryElement')
+                if key is not None:
+                    scale, page = event.get('textPercent'), event.get('recoveryPage')
+                    if (key not in ('guidance', 'reopen', 'recheck') or type(scale) is not int or scale not in (100,200)
+                            or type(page) is not int or type(event.get('recoveryPages')) is not int
+                            or not 1 <= page <= element_counts.get((scale, key), 0)
+                            or event.get('recoveryPages') != element_counts[scale, key]
+                            or event['name'] != f'mac-recovery-no-relaunch-{locale}-{scale}-{key}-{page}.png'):
+                        raise ValueError('invalid recovery element receipt')
+            if any(not any(event.get('name') == f'mac-recovery-no-relaunch-{locale}-{scale}-{key}-{page}.png'
+                    and event.get('recoveryElement') == key and event.get('recoveryPage') == page for event in recovery)
+                    for (scale, key), pages in element_counts.items() for page in range(1, pages + 1)):
+                raise ValueError('missing recovery element receipt')
             if (row['exit_code'] == 0 and len(receipts) == len(expected)
                     and {event.get('name') for event in receipts} == set(expected)
                     and all(event.get('webTheme') == event.get('theme') == expected[event['name']]['theme']
-                        for event in receipts)):
+                        for event in receipts)
+                    and all(event.get('locale') == locale
+                        and type(event.get('textPercent')) is int
+                        and event['textPercent'] == expected[event['name']]['text_percent']
+                        and event.get('dialog') == 'main'
+                        and event.get('width') == 760 and event.get('height') == 560
+                        for event in receipts if event['name'].startswith('mac-recovery-no-relaunch-'))):
                 row['status'] = 'PASS'
         except (OSError, ValueError, RuntimeError) as error:
             row['capture_error'] = type(error).__name__

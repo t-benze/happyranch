@@ -101,6 +101,7 @@ export function NativeRecoveryPanel({ state, onRetry }: NativeRecoveryPanelProps
           body={
             <div className="flex flex-col gap-2">
               <p>{t(copy.body)}</p>
+              {state.code === 'incompatible' && state.side === 'app' && !canRelaunch && <p>{t('recovery.incompatible.app.reopen')}</p>}
               {copy.otherComputer && <p>{t('recovery.incompatible.otherComputer')}</p>}
               <p>{t('recovery.kept')}</p>
               {canRelaunch && (

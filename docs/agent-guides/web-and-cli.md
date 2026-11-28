@@ -84,7 +84,11 @@ owner gate; readiness and Disconnect do not change the record. Confirmed matchin
 Remove/Revoke clears it. Native files live under
 `~/Library/Application Support/HappyRanchApp/`, independently of daemon config,
 Keychain and target/org. Native compile/tests and platform acceptance are NOT RUN
-on Linux; MAC-4b lifecycle/updater/relaunch remains separate. Native timing and packaging
+on Linux. MAC-4b option A gates Mac close, Quit and updater exits through native
+consent and current Main owner receipts, holding pending/unknown saves and native
+custody. Mac recovery shows guidance + Recheck and tells the user to quit and
+reopen; Mac recovery Relaunch is deferred to a separate piece requiring founder
+approval (THR-387 seq178). Native timing and packaging
 acceptance are pending exact-reviewed-head QA; see
 [Mac app-scheme qualification](../../app/mac/README.md#mac-1-main-app-scheme-and-native-api-transport).
 Mac Connected requires the expected current document completion plus fresh

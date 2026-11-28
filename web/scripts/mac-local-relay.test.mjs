@@ -108,3 +108,31 @@ test('Mac locale relay preserves exact JSON, admission, string errors and state 
   assert.deepEqual(states, [state]);
   assert.equal(posts.filter(item => item.command !== 'subscribe').length, 1, 'locale never sends a lifecycle/target command');
 });
+
+for (const kind of ['string', 'Error']) {
+  test(`Mac lifecycle relay forwards the exact gate and definitive ${kind} refusal without retry`, async () => {
+    const refusal = JSON.stringify({ code: 'stateChanged', effect: 'none', recovery: 'explicitRetry' });
+    const posts = [];
+    const page = relay(async item => {
+      posts.push(item);
+      if (item.command === 'app.ownersChanged') throw kind === 'string' ? refusal : new Error(refusal);
+      return '{}';
+    });
+    page.__hrAppAdmit(page.__hrAppContext);
+    const events = [];
+    const off = page.happyranchConnection.on('app.lifecycleRequested', raw => events.push(raw));
+    const event = '{"schema":2,"requestId":"captured-1","action":"relaunch"}';
+    page.__hrAppEvent('foreign', 'app.lifecycleRequested', event);
+    page.__hrAppEvent(page.__hrAppContext, 'app.lifecycleRequested', event);
+    assert.deepEqual(events, [event]);
+    const data = '{"schema":2,"blocking":"none","counts":{"dirty":0,"failed":0,"pending":0,"unknown":0},"gate":{"requestId":"captured-1","decision":"proceed"}}';
+    await assert.rejects(page.happyranchConnection.call('app.ownersChanged', data), error => error === refusal);
+    assert.equal(posts.filter(item => item.command === 'app.ownersChanged').length, 1);
+    assert.equal(posts.find(item => item.command === 'app.ownersChanged').data, data);
+    off();
+    page.__hrAppEvent(page.__hrAppContext, 'app.lifecycleRequested', event);
+    assert.equal(events.length, 1);
+    await assert.rejects(page.happyranchConnection.call('app.relaunch', '{}'));
+    assert.equal(posts.filter(item => item.command === 'app.relaunch').length, 0, 'recovery Relaunch is not implemented on Mac');
+  });
+}

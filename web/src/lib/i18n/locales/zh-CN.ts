@@ -3787,6 +3787,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "recovery.incompatible.host.body": "所选电脑上的 HappyRanch 与此应用不匹配。请在该电脑上更新 HappyRanch，然后重新检查。此应用无需更新。",
   "recovery.incompatible.app.title": "请更新此应用",
   "recovery.incompatible.app.body": "此应用版本过旧，无法使用所选电脑上的 HappyRanch。请更新桌面应用。所选电脑无需更新。",
+  "recovery.incompatible.app.reopen": "更新后，请退出 HappyRanch 并重新打开。",
   "recovery.incompatible.unknown.title": "无法确认兼容性",
   "recovery.incompatible.unknown.body": "此应用无法确认能否与所选电脑上的 HappyRanch 配合使用。请重新检查，或在“连接”中选择其他电脑。",
   "recovery.incompatible.otherComputer": "也可以在“连接”中选择其他电脑。",

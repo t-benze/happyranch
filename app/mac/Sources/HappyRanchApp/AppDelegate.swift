@@ -5,10 +5,17 @@ import HappyRanchSupervisor
 
 /// Application delegate — owns the daemon supervisor and app-level state.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUUpdaterDelegate, MacLocalControlBackend {
+final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUUpdaterDelegate, MacLocalControlBackend, MacAppLifetimeBackend {
 
     let supervisor = DaemonSupervisor()
     lazy var localControls = MacLocalControls(backend: self)
+    lazy var appLifetime = MacAppLifetime(backend: self)
+    var terminationDelivery: any MacTerminationDelivery = AppKitTerminationDelivery()
+    private var mainWindowOwner: MacMainWindowOwner?
+    private var lifecycleAlert: NSAlert?
+    private var lifecycleAlertDeadline: Task<Void, Never>?
+    private enum TerminationAdmission: Equatable { case quit, update }
+    private var admittedTermination: TerminationAdmission?
     private lazy var updaterController = SPUStandardUpdaterController(
         startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
     private var updaterObservation: AnyCancellable?
@@ -18,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     private var updateRequestID = UUID()
     private var updateTask: Task<Void, Never>?
     private var updateStopping = false
+    private var waitingForUpdateIdle = false
     private var terminating = false
     let diagnostics = DiagnosticsCollector(homeDir: daemonHome())
 
@@ -83,6 +91,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
             let cleanup = outcomes.contains("incomplete") ? "incomplete" : outcomes.contains("unknown") ? "unknown" : outcomes.isEmpty ? "notApplicable" : "confirmed"
             return ConnectionClientProjection.savedAction(self.homeInvite, catalog: self.mainComputerCatalog, localCleanup: cleanup)
         }
+    }
+
+    func bindMainWindow(_ window: NSWindow) {
+        guard mainWindowOwner?.window !== window else { return }
+        mainWindowOwner = MacMainWindowOwner(app: self, window: window)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if let admission = admittedTermination {
+            admittedTermination = nil
+            if admission == .quit || updateStopping { return .terminateNow }
+        }
+        appLifetime.request(.quit)
+        return .terminateCancel
     }
 
     /// Shared native entries use exactly the same Main owner/transfer gate.
@@ -314,6 +336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        admittedTermination = nil
         terminating = true
         updateTask?.cancel()
         pendingUpdateInstall = nil
@@ -324,17 +347,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         // Retry bounded teardown for any live owned child, including .stopping
         // after an incomplete Stop or refused role switch. Keep the actual outcome.
         // External daemons are NEVER terminated on quit.
-        guard supervisor.isManagedBySelf, let handle = currentHandle else { return }
+        _ = stopOwnedChildForExit()
+    }
+
+    private func stopOwnedChildForExit() -> Bool {
+        guard supervisor.isManagedBySelf else { return true }
+        guard let handle = currentHandle else { return supervisor.state == .stopped }
         if handle.isRunning {
             terminateManagedProcess()
         }
         // Termination is synchronous: a nested run loop need not run a queued
         // MainActor Task before this method returns and the app exits.
-        guard currentHandle === handle, !handle.isRunning else { return }
+        guard currentHandle === handle, !handle.isRunning else { return false }
         let status = handle.terminationStatus
         settleManagedProcessExit(
             exitCode: status,
             signal: handle.terminationReason == .uncaughtSignal ? status : nil)
+        return true
     }
 
     // MARK: - Updates
@@ -370,148 +399,202 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
         return true
     }
 
-    /// Shared by every Sparkle relaunch, including scheduled/impatient prompts.
+    /// Sparkle owns its post-install launch; recovery app.relaunch is deferred.
     func postponeUpdateRelaunch(_ installHandler: @escaping () -> Void) {
-        updateTask?.cancel()
-        updateRequestID = UUID()
-        pendingUpdateInstall = installHandler
-        hasPendingUpdate = true
+        guard pendingUpdateInstall == nil else { return }
+        pendingUpdateInstall = installHandler; hasPendingUpdate = true
         resumePendingUpdate()
     }
 
     func resumePendingUpdate() {
-        guard hasPendingUpdate, !updateStopping, !terminating else { return }
-        updateTask?.cancel()
-        updateRequestID = UUID()
-        let requestID = updateRequestID
-        updateTask = Task { [weak self] in
-            await self?.checkUpdateGate(requestID: requestID, choice: nil)
-        }
+        guard hasPendingUpdate, !updateStopping, !terminating, !appLifetime.busy else { return }
+        updateTask?.cancel(); updateRequestID = UUID()
+        appLifetime.request(.update)
     }
 
-    private func checkUpdateGate(requestID: UUID, choice: UpdateGate.Choice?) async {
-        guard !Task.isCancelled, !terminating, requestID == updateRequestID, hasPendingUpdate else { return }
-        let handle = currentHandle
-        let ownsDaemon = connectionRole == .home && supervisor.isManagedBySelf
-        let count: Int?
-        if ownsDaemon && handle?.isRunning == true {
-            count = await UpdateSessionProbe.count(homeDir: supervisor.homeDir ?? daemonHome())
-        } else {
-            count = nil
-        }
-        guard !Task.isCancelled, !terminating, requestID == updateRequestID, hasPendingUpdate else { return }
-        // An observation of the old daemon never authorizes stopping its replacement.
-        guard currentHandle === handle,
-              ownsDaemon == (connectionRole == .home && supervisor.isManagedBySelf) else {
-            scheduleUpdateRecheck(requestID: requestID, choice: nil)
-            return
+    private func checkUpdateGate(token: UUID, choice: UpdateGate.Choice?) async {
+        guard !Task.isCancelled, appLifetime.token == token, hasPendingUpdate, !terminating else { return }
+        let handle = currentHandle, owned = supervisor.isManagedBySelf
+        let count = owned && handle?.isRunning == true
+            ? await UpdateSessionProbe.count(homeDir: supervisor.homeDir ?? daemonHome()) : nil
+        guard !Task.isCancelled, appLifetime.token == token, currentHandle === handle,
+              owned == supervisor.isManagedBySelf, hasPendingUpdate, !terminating else {
+            appLifetime.cancelUnstarted(token: token); return
         }
         applyUpdateGate(runningSessions: count, choice: choice)
     }
 
-    /// Applies the pure policy to the current owned-process observation.
+    /// Policy chooses a prompt or web admission, never a stop/release.
     func applyUpdateGate(runningSessions: Int?, choice: UpdateGate.Choice?) {
-        guard hasPendingUpdate, !updateStopping, !terminating else { return }
-        let action = UpdateGate.action(
-            ownsDaemon: connectionRole == .home && supervisor.isManagedBySelf,
-            processRunning: currentHandle?.isRunning, runningSessions: runningSessions, choice: choice)
-        switch action {
-        case .release:
-            releaseUpdate()
-        case .stopDaemon:
-            guard let handle = currentHandle else { return }
-            let requestID = updateRequestID
-            updateStopping = true
-            pendingRestart = false
-            terminateManagedProcess()
-            // ManagedProcessStop pumps the run loop. Revalidate identity and exit.
-            guard !terminating, requestID == updateRequestID, UpdateGate.canReleaseAfterStop(
-                sameProcess: currentHandle === handle, processRunning: handle.isRunning) else {
-                updateStopping = false
-                diagnostics.recordUpdaterEvent("Install held: Stop incomplete or process changed")
-                return
-            }
-            settleManagedProcessExit(exitCode: handle.terminationStatus,
-                signal: handle.terminationReason == .uncaughtSignal ? handle.terminationStatus : nil)
-            releaseUpdate()
+        guard let token = appLifetime.token, hasPendingUpdate, !updateStopping, !terminating else { return }
+        switch UpdateGate.action(ownsDaemon: supervisor.isManagedBySelf,
+            processRunning: currentHandle?.isRunning, runningSessions: runningSessions, choice: choice) {
+        case .release, .stopDaemon: appLifetime.beginWebGate(token: token)
+        case .confirmRestart: appLifetime.offerConfirmation(token: token, kind: .updateIdle)
+        case .prompt(let count): appLifetime.offerConfirmation(token: token, kind: .updateBusy(count))
         case .wait:
-            diagnostics.recordUpdaterEvent(runningSessions == nil
-                ? "Install held: work status unavailable (BUSY)" : "Waiting for agent work to finish")
-            scheduleUpdateRecheck(requestID: updateRequestID, choice: .whenIdle)
-        case .later:
-            updateTask?.cancel()
-            diagnostics.recordUpdaterEvent("Install postponed by user")
-        case .confirmRestart:
-            let alert = NSAlert()
-            alert.messageText = (AppLocalePreference.shared.nativeChinese ? "重新启动 HappyRanch 以安装更新？" : "Restart HappyRanch to install the update?")
-            alert.informativeText = (AppLocalePreference.shared.nativeChinese ? "HappyRanch 将停止并重新启动。在停止前开始的智能体工作将被中断。" : "HappyRanch will stop and restart. Any agent work that starts before it stops will be interrupted.")
-            alert.addButton(withTitle: (AppLocalePreference.shared.nativeChinese ? "立即重新启动" : "Restart now"))
-            alert.addButton(withTitle: (AppLocalePreference.shared.nativeChinese ? "稍后" : "Later"))
-            let requestID = updateRequestID
-            let handle = currentHandle
-            let response = alert.runModal()
-            guard !terminating, requestID == updateRequestID, hasPendingUpdate else { return }
-            guard currentHandle === handle else {
-                scheduleUpdateRecheck(requestID: requestID, choice: nil)
-                return
-            }
-            if response == .alertFirstButtonReturn {
-                // This click alone authorizes the idle stop. Fresh BUSY/unknown
-                // returns to the busy prompt; polling never retains consent.
-                updateTask = Task { [weak self] in
-                    await self?.checkUpdateGate(requestID: requestID, choice: .restart)
-                }
-            } else {
-                applyUpdateGate(runningSessions: nil, choice: .later)
-            }
-        case .prompt(let count):
-            let alert = NSAlert()
-            alert.messageText = count == nil ? (AppLocalePreference.shared.nativeChinese ? "工作状态不可用" : "Work status is unavailable") : (AppLocalePreference.shared.nativeChinese ? "智能体工作正在运行" : "Agent work is running")
-            alert.informativeText = (AppLocalePreference.shared.nativeChinese ? "HappyRanch 必须先停止后台服务才能更新。你也可以在退出时更新。" : "HappyRanch must stop its daemon before updating. You can also update when you quit.")
-            alert.addButton(withTitle: (AppLocalePreference.shared.nativeChinese ? "工作完成后更新" : "Update when they finish"))
-            alert.addButton(withTitle: (AppLocalePreference.shared.nativeChinese ? "立即更新并停止工作" : "Update now and stop them"))
-            alert.addButton(withTitle: (AppLocalePreference.shared.nativeChinese ? "稍后" : "Later"))
-            alert.buttons[1].isEnabled = count != nil
-            let requestID = updateRequestID
-            let handle = currentHandle
-            let response = alert.runModal()
-            guard !terminating, requestID == updateRequestID, hasPendingUpdate else { return }
-            guard currentHandle === handle else {
-                scheduleUpdateRecheck(requestID: requestID, choice: nil)
-                return
-            }
-            let choice: UpdateGate.Choice = response == .alertFirstButtonReturn ? .whenIdle
-                : (response == .alertSecondButtonReturn ? .now : .later)
-            // Re-read status after the modal rather than using an old idle/busy answer.
-            if choice == .later {
-                applyUpdateGate(runningSessions: nil, choice: .later)
-            } else {
-                updateTask = Task { [weak self] in
-                    await self?.checkUpdateGate(requestID: requestID, choice: choice)
-                }
-            }
+            appLifetime.cancelUnstarted(token: token)
+            scheduleUpdateRecheck(requestID: updateRequestID)
+        case .later: appLifetime.cancelUnstarted(token: token)
         }
     }
 
-    private func scheduleUpdateRecheck(requestID: UUID, choice: UpdateGate.Choice?) {
+    private func scheduleUpdateRecheck(requestID: UUID) {
         updateTask = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
-            await self?.checkUpdateGate(requestID: requestID, choice: choice)
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            guard let self, requestID == updateRequestID, hasPendingUpdate, !terminating else { return }
+            // New reservation/consent on every observation; no standing permission.
+            resumePendingUpdate()
         }
     }
 
-    private func releaseUpdate() {
-        guard !terminating, let install = pendingUpdateInstall else { return }
-        updateStopping = true
-        refreshDerivedState()
-        pendingUpdateInstall = nil
-        hasPendingUpdate = false
-        updateTask?.cancel()
-        diagnostics.recordUpdaterEvent("Daemon exit confirmed or not owned; releasing install")
-        install()
+    private func releaseUpdate(token: UUID) -> Bool {
+        guard appLifetime.isExecuting(token, intent: .update), !terminating, let install = pendingUpdateInstall else { return false }
+        pendingUpdateInstall = nil; hasPendingUpdate = false
+        updateTask?.cancel(); updateStopping = true
+        admittedTermination = .update
+        diagnostics.recordUpdaterEvent("Lifecycle admitted; owned exit observed; releasing install")
+        install(); return true
+    }
+
+    // MARK: - App lifetime
+
+    var lifetimeScheme: AppScheme? { mainScheme }
+    var lifetimeObservation: MacLifetimeObservation {
+        MacLifetimeObservation(process: currentHandle.map { ObjectIdentifier($0) },
+            running: currentHandle?.isRunning, owned: supervisor.isManagedBySelf,
+            connection: homeInvite.lifetime, role: connectionRole.rawValue)
+    }
+    var lifetimeRefusal: String? {
+        if localControls.busy || updateStopping || terminating { return "native_effect_pending" }
+        if homeInvite.busy || managedJoin.busy || homeInvite.bridgeHasConfirmation
+            || homeInvite.lifecycleUnresolved || mainScheme?.lifecycleNonGETPending == true
+            || homeInvite.cleanupOutcomes.values.contains(where: { $0 != "confirmed" })
+            || mainScheme?.connectionMutationPending == true || connectionWindow?.lifecycleBusy == true {
+            return "connection_outcome_pending"
+        }
+        if supervisor.isManagedBySelf, currentHandle == nil, supervisor.state != .stopped {
+            return "owned_process_unknown"
+        }
+        return nil
+    }
+
+    func prepareLifecycleConfirmation(token: UUID, intent: MacLifetimeIntent) {
+        if intent == .update {
+            updateTask = Task { [weak self] in
+                guard let self else { return }
+                await checkUpdateGate(token: token, choice: waitingForUpdateIdle ? .whenIdle : nil)
+            }
+        } else { appLifetime.offerConfirmation(token: token, kind: .exit) }
+    }
+
+    static func lifecycleAlert(for prompt: MacAppLifetime.Prompt, zh: Bool,
+                               ownedRunning: Bool, remote: Bool, accessUnsaved: Bool) -> NSAlert {
+        let alert = NSAlert(); alert.alertStyle = .warning
+        switch prompt.kind {
+        case .exit: alert.messageText = zh ? "退出 HappyRanch？" : "Quit HappyRanch?"
+        case .updateIdle:
+            alert.messageText = zh ? "重新启动 HappyRanch 以安装更新？" : "Restart HappyRanch to install the update?"
+        case .updateBusy(let count):
+            alert.messageText = count == nil ? (zh ? "工作状态不可用" : "Work status is unavailable")
+                : (zh ? "智能体工作正在运行" : "Agent work is running")
+        }
+        var body = ownedRunning
+            ? (zh ? "此应用拥有的本机后台服务将停止，正在运行的工作将被中断。" : "The local daemon owned by this app will stop. Running work will be interrupted.")
+            : (zh ? "此应用没有正在运行且由其拥有的本机后台服务可停止。" : "This app has no running local daemon of its own to stop.")
+        if remote {
+            body += zh ? " 远程连接将关闭；远程电脑上的服务、授权和已保存的访问权限将保留。"
+                : " The remote connection will close; its Host service, grant and saved access will remain."
+            if accessUnsaved {
+                body += zh ? " 访问权限尚未保存；下次连接可能需要新的邀请。"
+                    : " Access is not saved; connecting again may require a new invite."
+            }
+        }
+        body += zh ? " 未完成的连接操作或保存结果不会被视为已完成。" : "Unfinished connection operations or save results are not treated as completed."
+        alert.informativeText = body
+        alert.addButton(withTitle: zh ? "取消" : "Cancel"); alert.buttons[0].keyEquivalent = "\r"
+        switch prompt.kind {
+        case .exit: alert.addButton(withTitle: zh ? "退出" : "Quit")
+        case .updateIdle: alert.addButton(withTitle: zh ? "立即重新启动" : "Restart now")
+        case .updateBusy(let count):
+            alert.addButton(withTitle: zh ? "工作完成后更新" : "Update when they finish")
+            alert.addButton(withTitle: zh ? "立即更新并停止工作" : "Update now and stop them")
+            alert.buttons[2].isEnabled = count != nil
+        }
+        for button in alert.buttons.dropFirst() { button.keyEquivalent = "" }
+        return alert
+    }
+
+    func presentLifecycleConfirmation(_ prompt: MacAppLifetime.Prompt) {
+        guard lifecycleAlert == nil, let window = mainScheme?.localPromptWindow,
+              window.attachedSheet == nil else {
+            appLifetime.respondToLifecycleConfirmation(token: prompt.token, response: .abort); return
+        }
+        let alert = Self.lifecycleAlert(for: prompt, zh: AppLocalePreference.shared.nativeChinese,
+            ownedRunning: supervisor.isManagedBySelf && currentHandle?.isRunning == true,
+            remote: mainScheme?.remote == true, accessUnsaved: homeInvite.bridgeHasUnsavedAccess)
+        lifecycleAlert = alert
+        alert.beginSheetModal(for: window) { [weak self, weak alert] response in
+            guard let self, self.lifecycleAlert === alert else { return }
+            self.lifecycleAlert = nil; self.lifecycleAlertDeadline?.cancel()
+            self.appLifetime.respondToLifecycleConfirmation(token: prompt.token, response: response)
+        }
+        lifecycleAlertDeadline = Task { @MainActor [weak self, weak alert] in
+            try? await Task.sleep(for: .seconds(120))
+            guard !Task.isCancelled, let self, let alert, self.lifecycleAlert === alert else { return }
+            window.endSheet(alert.window, returnCode: .abort)
+        }
+    }
+
+    func lifecycleConfirmed(token: UUID, choice: MacAppLifetime.Choice) {
+        switch choice {
+        case .proceed: appLifetime.beginWebGate(token: token)
+        case .whenIdle:
+            waitingForUpdateIdle = true
+            appLifetime.cancelUnstarted(token: token)
+            scheduleUpdateRecheck(requestID: updateRequestID)
+        case .restart, .now:
+            waitingForUpdateIdle = false
+            updateTask = Task { [weak self] in
+                await self?.checkUpdateGate(token: token, choice: choice == .now ? .now : .restart)
+            }
+        }
+    }
+
+    func completeLifecycle(_ intent: MacLifetimeIntent, token: UUID) -> Bool {
+        guard appLifetime.effectsStillCurrent(token, intent: intent) else { return false }
+        pendingRestart = false
+        if intent == .update {
+            guard stopOwnedChildForExit(), appLifetime.frontendStillCurrent(token, intent: intent),
+                  hasPendingUpdate else { return false }
+            return releaseUpdate(token: token)
+        }
+        return intent == .close ? completeMainClose(token: token) : completeOrdinaryQuit(token: token, intent: .quit)
+    }
+    func completeMainClose(token: UUID) -> Bool { completeOrdinaryQuit(token: token, intent: .close) }
+    private func completeOrdinaryQuit(token: UUID, intent: MacLifetimeIntent) -> Bool {
+        guard appLifetime.isExecuting(token, intent: intent) else { return false }
+        pendingRestart = false
+        guard stopOwnedChildForExit(), appLifetime.frontendStillCurrent(token, intent: intent) else { return false }
+        mainWindowOwner?.closeAfterAdmission(); mainScheme?.close()
+        admittedTermination = .quit
+        defer { admittedTermination = nil }
+        terminationDelivery.completeQuit()
+        return true
+    }
+    func lifecycleHeld(_ reason: String) {
+        if reason == "lifecycle_outcome_unknown", stateText.contains("Stop incomplete") {
+            diagnostics.recordUpdaterEvent("Lifecycle held: " + reason); return
+        }
+        stateText = AppLocalePreference.shared.nativeChinese
+            ? "退出或更新已暂停。请保留当前窗口，检查未完成的编辑、保存或连接操作，然后重试。"
+            : "Quit or update held. Keep this window, check unfinished edits, saves or connection operations, then retry."
+        diagnostics.recordUpdaterEvent("Lifecycle held: " + reason)
     }
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        if admittedTermination == .update { admittedTermination = nil }
+        if appLifetime.intent == .update, let token = appLifetime.token { appLifetime.cancelUnstarted(token: token) }
         updateRequestID = UUID()
         updateTask?.cancel()
         pendingUpdateInstall = nil
@@ -677,7 +760,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// canStart check after stopDaemon() was always false because the
     /// supervisor was still .stopping.
     func restartDaemon() {
-        guard !localControls.busy else { return }
+        guard !localControls.busy, !appLifetime.busy else { return }
         restartOwnedDaemon()
     }
 
@@ -689,7 +772,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     func startDaemon() {
-        guard !localControls.busy else { return }
+        guard !localControls.busy, !appLifetime.busy else { return }
         startOwnedDaemon()
     }
 
@@ -719,7 +802,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     func stopDaemon(confirmed: Bool = false) {
-        guard !localControls.busy else { return }
+        guard !localControls.busy, !appLifetime.busy else { return }
         stopOwnedDaemon(confirmed: confirmed)
     }
 
@@ -1154,7 +1237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     }
 
     var localMutationAvailable: Bool {
-        !terminating && !updateStopping && localObservation.supported
+        !terminating && !updateStopping && !appLifetime.busy && localObservation.supported
             && ![.starting, .stopping].contains(supervisor.state)
     }
 
@@ -1326,7 +1409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject, SPUU
     /// No-op when the target role equals the current effective role.
     /// This method is safe to call from tests (no UI dependency).
     func switchConnectionRole(to preference: ConnectionRolePreference) {
-        guard !updateStopping, !terminating, !localControls.busy else { return }
+        guard !updateStopping, !terminating, !localControls.busy, !appLifetime.busy else { return }
         let currentRole = connectionRole
         let targetRole = ConnectionRole.detect(supervisor: supervisor, preference: preference)
 

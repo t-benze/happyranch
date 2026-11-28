@@ -151,6 +151,10 @@ final class HomeInviteModel: ObservableObject {
     }
 
     var busy: Bool { (phase.busy && phase != .runtimeBusy) || operation != nil }
+    var lifecycleUnresolved: Bool {
+        session != nil || saving != nil || cancelledSave != nil || pendingRemoval != nil || unfinishedMembership != nil
+            || !unconfirmedSaves.isEmpty || !retiring.isEmpty || !revokedRetiring.isEmpty || !retiringBridges.isEmpty
+    }
     // Nonsecret observations only; no read or discovery is initiated here.
     var bridgeActiveComputerID: UUID? { active?.credential.networkProfileID ?? activeCredential?.networkProfileID }
     var bridgeHasUnsavedAccess: Bool { unsaved != nil || active?.unsaved != nil }
