@@ -41,11 +41,12 @@ const InsideLink = createContext(false);
 
 /**
  * Privacy: an image loads only from this page's own origin (relative or
- * same scheme+host), or from inline data:/blob: sources. Anything else
- * (another host, protocol-relative `//host/x`, unparsable) would make the
- * visitor's browser contact a third party, so it is not rendered as <img>.
- * (react-markdown's default urlTransform already blanks data: and other
- * non-http(s) schemes before this runs; those stay as they were.)
+ * same scheme+host). Anything else (another host, protocol-relative
+ * `//host/x`, unparsable) would make the visitor's browser contact a third
+ * party, so it is not rendered as <img>. react-markdown's default
+ * urlTransform already empties data:, blob: and other non-http(s) sources
+ * before this runs, so they arrive as src="" (an <img> that fetches nothing);
+ * the data:/blob: branch below is therefore not reached today.
  */
 function isLoadableImageSrc(src: string, base: { href: string; protocol: string; host: string }): boolean {
   let url: URL;

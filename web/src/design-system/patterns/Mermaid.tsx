@@ -39,12 +39,39 @@ function ensureInitialized(): void {
  * raw-source fallback is shown instead.
  */
 const EXTERNAL_RESOURCE = [
-  /@\{[\s\S]*?\bimg\b["']?\s*:/i,
   /\bthemeCSS\b/i,
   /(?:url|image-set|image|cross-fade|src)\(/i,
   /@import|@font-face/i,
   /\\[0-9a-f]/i,
 ];
+
+/**
+ * Shape metadata (`@{ … }`) is parsed by mermaid as YAML, where escapes
+ * (`"i\u006dg"`, `"\x69mg"`, an escaped line break) can spell the `img` key
+ * without those letters appearing in the source. Fail closed instead of
+ * enumerating spellings: refuse any metadata block that contains a backslash
+ * or the letters `img` in any case. Without a backslash YAML cannot produce
+ * those letters unless they appear literally in the same block (anchors and
+ * aliases repeat literal text; folding only inserts spaces). A block ends at
+ * the first `}` outside double quotes, as in mermaid's lexer, or at the end
+ * of the source when unterminated. Every `@{` is checked as a possible start,
+ * so one inside a label string cannot hide the real block that follows.
+ */
+function hasUnsafeShapeData(source: string): boolean {
+  let start = source.indexOf('@{');
+  while (start !== -1) {
+    let end = start + 2;
+    let quoted = false;
+    while (end < source.length && (quoted || source[end] !== '}')) {
+      if (source[end] === '"') quoted = !quoted;
+      end += 1;
+    }
+    const block = source.slice(start + 2, end);
+    if (block.includes('\\') || /img/i.test(block)) return true;
+    start = source.indexOf('@{', start + 1);
+  }
+  return false;
+}
 
 export default function Mermaid({ source }: { source: string }): JSX.Element {
   const [svg, setSvg] = useState<string | null>(null);
@@ -52,7 +79,7 @@ export default function Mermaid({ source }: { source: string }): JSX.Element {
   const rawId = useId();
   const id = `m_${rawId.replace(/:/g, '_')}`;
   useEffect(() => {
-    if (EXTERNAL_RESOURCE.some((pattern) => pattern.test(source))) {
+    if (hasUnsafeShapeData(source) || EXTERNAL_RESOURCE.some((pattern) => pattern.test(source))) {
       setErrored(true);
       return;
     }

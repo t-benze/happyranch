@@ -6,6 +6,7 @@
 // into CI). Run from the repository root:
 //   node --test web/scripts/markdown-remote-images.test.mjs
 // MARKDOWN_UNDER_TEST=<abs path> renders another copy (base-branch RED proof).
+// MERMAID_UNDER_TEST=<abs path> does the same for Mermaid.tsx.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { dirname, resolve as resolvePath } from 'node:path';
@@ -14,6 +15,7 @@ import { build } from 'esbuild';
 
 const WEB = resolvePath(dirname(fileURLToPath(import.meta.url)), '..');
 const MARKDOWN = process.env.MARKDOWN_UNDER_TEST ?? resolvePath(WEB, 'src/design-system/patterns/Markdown.tsx');
+const MERMAID = process.env.MERMAID_UNDER_TEST ?? resolvePath(WEB, 'src/design-system/patterns/Mermaid.tsx');
 
 // Mermaid is lazy-imported and never reached by these bodies; keep it out of the bundle.
 const stubMermaid = {
@@ -122,4 +124,76 @@ test('unchanged: ordinary links keep their href and gain no placeholder', () => 
   const html = render({ body: 'see [docs](https://docs.example/page) now' });
   assert.deepEqual(anchors(html), ['<a href="https://docs.example/page">']);
   assert.doesNotMatch(html, /data-remote-image/);
+});
+
+// Mermaid.tsx: a diagram that could make mermaid fetch a URL must never reach
+// mermaid.render (mermaid's image shape calls `new Image()` before any
+// sanitizer). There is no DOM here, so React and mermaid are stubbed: hooks
+// run the effect synchronously and the stub records every render call.
+const stubReactAndMermaid = {
+  name: 'stub-react-mermaid',
+  setup(b) {
+    b.onResolve({ filter: /^(react|react\/jsx-runtime|mermaid)$/ }, (a) => ({ path: a.path, namespace: 'stub' }));
+    b.onLoad({ filter: /.*/, namespace: 'stub' }, (a) => ({
+      loader: 'js',
+      contents: a.path === 'mermaid'
+        ? `export default { initialize() {}, render(id, src) { globalThis.__mermaidRenders.push(src); return new Promise(() => {}); } };`
+        : a.path === 'react'
+          ? `export const useId = () => ':r0:';
+export const useState = (init) => [init, (v) => { if (v === true) globalThis.__mermaidFallbacks += 1; }];
+export const useEffect = (fn) => { fn(); };`
+          : `export const jsx = (type, props) => ({ type, props }); export const jsxs = jsx;`,
+    }));
+  },
+};
+const mermaidBundle = await build({
+  entryPoints: [MERMAID],
+  bundle: true,
+  write: false,
+  format: 'esm',
+  platform: 'node',
+  jsx: 'automatic',
+  plugins: [stubReactAndMermaid],
+  logLevel: 'silent',
+});
+const { default: MermaidUnderTest } = await import(`data:text/javascript;base64,${Buffer.from(mermaidBundle.outputFiles[0].text).toString('base64')}`);
+const mount = (source) => {
+  globalThis.__mermaidRenders = [];
+  globalThis.__mermaidFallbacks = 0;
+  MermaidUnderTest({ source });
+  return { rendered: globalThis.__mermaidRenders.length > 0, fallback: globalThis.__mermaidFallbacks > 0 };
+};
+
+// Escaped/encoded spellings of the image-shape key (TASK-19709 review), plus
+// the literal one. Each would make mermaid request the URL.
+const MERMAID_BLOCKED = [
+  ['literal img key', 'flowchart LR\nA@{ img: "https://evil.example/a.png", label: "p", w: 40, h: 40 }'],
+  ['quoted img key', 'flowchart LR\nA@{ "img": "https://evil.example/q.png" }'],
+  ['\\u-escaped key (i\\u006dg)', 'flowchart LR\nA@{ "i\\u006dg": "https://evil.example/escaped-key.png", label: "probe", w: 40, h: 40 }'],
+  ['\\u-escaped key (\\u0069mg)', 'flowchart LR\nA@{ "\\u0069mg": "https://evil.example/escaped-key2.png", label: "probe", w: 40, h: 40 }'],
+  ['\\x-escaped key', 'flowchart LR\nA@{ "\\x69mg": "https://evil.example/x.png" }'],
+  ['escaped line break inside the key', 'flowchart LR\nA@{ "i\\\n  mg": "https://evil.example/fold.png" }'],
+  ['multi-line metadata', 'flowchart LR\nA@{\n  shape: rect\n  "i\\u006dg": "https://evil.example/ml.png"\n}'],
+  ['real block after an @{ inside a label', 'flowchart LR\nA["@{"] --> B@{ label: "}", "i\\u006dg": "https://evil.example/hidden.png" }'],
+  ['unterminated metadata', 'flowchart LR\nA@{ "i\\u006dg": "https://evil.example/open.png"'],
+];
+
+for (const [name, source] of MERMAID_BLOCKED) {
+  test(`mermaid: ${name} is never rendered and shows the raw-source fallback`, () => {
+    const result = mount(source);
+    assert.equal(result.rendered, false, `mermaid.render was called for: ${source}`);
+    assert.equal(result.fallback, true);
+  });
+}
+
+test('mermaid: ordinary diagrams, including image-free shape metadata, still render', () => {
+  for (const source of [
+    'flowchart LR\nA[hello] --> B',
+    'flowchart LR\nA@{ shape: rounded, label: "Start" } --> B@{ shape: diam }',
+    'sequenceDiagram\nAlice->>Bob: hi',
+  ]) {
+    const result = mount(source);
+    assert.equal(result.rendered, true, source);
+    assert.equal(result.fallback, false, source);
+  }
 });
