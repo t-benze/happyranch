@@ -1,10 +1,20 @@
 # Teams and org administration contracts
 
 The canonical [Create team and Create agent Product build specification](../../product/prds/2026-11-26-team-and-agent-creation.md)
-consolidates creation UX and acceptance under THR-402 seq5. Its proposed entry
-points and recovery changes remain delivery work; it preserves the Default,
-membership, naming and remote-configuration contracts below. The historical
-May 30 web creation design is provenance, not deployed verification.
+consolidates creation UX and acceptance under THR-402 seq5. PR1901/PR1902 delivered
+the original entry points and recovery. Founder seq16 requested a later design
+handoff; seq33 then authorized the v1.1 build, delivered by
+[PR1935](https://github.com/t-benze/happyranch/pull/1935) at reviewed/QA head
+`d20ee84ddd40d05f0df4feed4d82aadfbcd75999`, merged as
+`5ff2b76746720cfa864d04ef049c81caa25d9a72`. The PRD records held-result reopening,
+canonical-detail completion/follow-on, executor blocking/read-only Retry, typed
+not-sent reasons and the undelivered S4m authority-readiness design state.
+Existing authority enforcement, A1–A10, Default, membership, naming and
+endpoint-specific remote-configuration restrictions remain unchanged. Its scoped
+web QA record is distinct from the older packaged A7 evidence; no new packaged,
+installed/deployed or user-research proof follows. The historical May 30 design
+and subsequent design proposals retain their provenance; the PRD identifies the
+authorized implementation and remaining evidence limits.
 
 ## Founder creation API (THR-402)
 
