@@ -118,7 +118,8 @@ constraint-backed uniqueness, authority/assignment and rollback checks remain.
 The shared control validator accepts these roots only when admission supplies
 them; group 3 adds explicit roots at the initiator and non-cancel generic
 hold/dispatch sites, and group 4 adds direct control/cancel/close roots below.
-Default source-settlement and mixed callers remain complete.
+Default source-settlement callers remain complete; group 7b mixed callers use the
+separate ABSENCE-OR-COMPLETE composition below.
 Original @1 admission also authenticates its selected closure/settings chain.
 
 Preflight resolves the actual selected definition/settings IDs and validates
@@ -158,10 +159,11 @@ scoped phases. No allowance or deadline is raised.
 
 The native start callback now uses scoped validation through first delivery,
 dependency observation and consumption. Source outer settlement is a distinct
-lifecycle phase and retains its complete-reader default, including its mixed
-cancellation fence. Group 4 below scopes direct cancel/control/close; group 5
+lifecycle phase and retains its complete-reader default; its mixed
+cancellation fence uses the separate group-7b certificate. Group 4 below scopes direct cancel/control/close; group 5
 scopes selected returns and retains complete rediscovery. Settings/builtin,
-retained adapters, mixed and historical Final consumers remain for later groups;
+retained adapters and mixed consumers are described in groups 7R/7b below;
+historical Final consumers remain complete;
 STOP-1 whole-org certifications remain complete. Lock set/order and transactions
 are unchanged; WorkflowContinuation/SequentialSettlement need no model edit.
 
@@ -187,7 +189,8 @@ retains native uncertainty and grants no cleanup clearance.
 Disconnected payload corruption no longer vetoes these addressed checks; selected
 event, sibling or native-proof corruption still refuses and rolls back. The
 native fence's enclosing mixed owner and legacy/tail retained-family readers stay
-complete until group 7b; `drain_source_cancellations` reaches the scoped finish
+on the ABSENCE-OR-COMPLETE certificate in group 7b;
+`drain_source_cancellations` reaches the scoped finish
 through its unchanged wrapper. Source outer settlement and STOP-1 global
 certification remain complete. No lock set/order, transaction, audit shape,
 budget, deadline or represented NeverLaunchedCancelClose/SequentialSettlement
@@ -254,7 +257,7 @@ transaction, lock set/order or transition changes; no TLA+ change follows.
 
 ## Retained ABSENCE-OR-COMPLETE mixed certificate — THR-404 group 7R
 
-The separate, unwired mixed-write entry preserves original closure I and reuses
+The separate mixed-write entry preserves original closure I and reuses
 `_graph`, `_settings_chain` and `_replay` for selected v2 runs. Its retained adapter
 examines all columns of the exact matched retained workflow schema and the native
 Coding/document metadata, cancellation-audit, ownership and journal surfaces.
@@ -279,8 +282,16 @@ predicates/default callers are unchanged. Exhaustion yields no partial result.
 
 Unused C1 selected retained readers and their documentation are normally reverted.
 Complete retained readers remain unchanged; follow-up repair notes belong in
-the PR. No writer call site is wired in
-7R. 7b remains next; retired historical @1 Final consumers (7c), STOP-1 global
-certification, ten-core equality, all-run returned IDs and full run views remain
-complete. Locks/order, schema, deadlines/caps, transactions, audit/replay and
+the PR. Group 7R delivered the separate entry; group 7b wires only mixed
+cancellation source/target, legacy source/target/lookup, member capture and
+original-owner cancellation-tail selection. Each phase retains its original
+allowance and absolute deadline; fallback shares cumulative ledgers within it.
+The whole ten-core-table preservation inventory/equality and lookup query_only,
+savepoint, total_changes and main/temp schema-cookie checks remain unchanged.
+Preservation inventory does not authenticate unrelated payload semantics.
+Retained references/uncertain native control-result encodings retain COMPLETE
+refusals. Original invocation, dependency and positive-closure guards supply no
+clearance from missing handles/negative cleanup. Historical @1 Final consumers
+(7c), source outer settlement, STOP-1 global certification, all-run returned IDs
+and full run views remain complete. Locks/order, schema, deadlines/caps, transactions, audit/replay and
 permissions remain unchanged, so no TLA+ transition/model change is introduced.

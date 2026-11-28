@@ -4904,12 +4904,28 @@ results/audits and consumption receipts with an empty retained inventory. Option
 for an exact base/head comparison, never a live database.
 
 C1's unused selected-reader APIs/tests/docs are removed by normal revert; the
-original complete retained corruption keepers remain. This is an unwired adapter,
-not mixed-writer acceptance or latency evidence. Complete retained-reader
-behavior remains unchanged. 7b
-owns wiring; historical @1 Final/7c and STOP-1 stay complete. Four authoring answers
+original complete retained corruption keepers remain. Group 7b wires the mixed
+cancellation/legacy/member-capture/tail sites to this adapter. Complete
+retained-reader behavior remains unchanged; historical @1 Final/7c and STOP-1
+stay complete. Four authoring answers
 and attributable fail/restored-pass evidence stay in the existing PR body. No new
 required check, venue or trigger; integration SKIPPED THR243, retired units and
 Product E2E NOT RUN. Long verification and clean-head `scripts/local_ci.sh all`
 plus OpenAPI `--check` use the durable jobs boundary and authenticated receipt
 before publication.
+
+
+THR-404 group 7b extends the existing `--s6b=cancel_source_all_runs`,
+`--s6b=source_failed` and `--s6b=unknown_effect_kept` private cases on Python 3.14
+and 3.12. Run, for example,
+`WORKFLOW_SCHEMA_PYTHON=3.14 bash scripts/test-workflow-schema-load.sh --s6b=cancel_source_all_runs`.
+Assertions cover exact live task/audit deltas with disconnected corruption,
+selected source/target proof corruption with exact rollback, terminal-source
+cause preservation, required complete fallback for uncertain native control
+results, genuine captured invocation identity and point-dependency refusal.
+Every one of the ten enrolled core tables has an explicit forbidden-consumer-DML
+case. Lookup DML/reverted DML, query_only, savepoint and main/temp cookie drift
+refuse with exact rollback and context reset. These extend real SQLite/writer
+fixtures; no mock inventory or production test seam is added. Prior group-1–7R
+keepers and exact clean-head local CI/OpenAPI remain required maker evidence;
+final serial-head full schema suites remain a separate root-owned gate.

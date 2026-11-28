@@ -6157,6 +6157,57 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 assert s6queue(f).count('s5-parent') == 1
         print('PASS S6a', case, 'real native/result/dependency boundaries; provider FORBIDDEN', flush=True)
 
+    def s7legacy(f):
+        from runtime.workflows.sequential_definition import compile_definition
+        from runtime.workflows.sequential_contracts import Limits
+        limits = dict(content_returns=0, max_content_epochs=1, max_visits=1, max_events=4)
+        definition = dict(format='workflow-sequential-definition@1', identity='release/synthetic/history', version=1,
+            description='Private retained history', required_inputs=[dict(name='request', contract='bounded-text@1', required=True)],
+            roles=dict(author=dict(kind='agent', executable=True, eligibility='worker', independent_of=[])),
+            entry_node='author', nodes=[dict(id='author', role='author', responsibilities=['Write retained report'],
+                inputs=[dict(name='request', source='run.request', required=True)],
+                output_contract=dict(slot='document', type='immutable-document@1'), completion_checks=['immutable-document@1'],
+                outcomes=dict(produced=dict(action='terminal', condition='done'), BLOCK=dict(action='fail', code='blocked')))],
+            limits=limits, terminal_conditions=dict(done=dict(output='document', requires=['immutable-document@1', 'native-success-and-positive-outer-settlement@1'])))
+        raw = s4bytes(definition)
+        compiled = compile_definition(raw, source_digest=hashlib.sha256(raw).hexdigest())
+        pin = compiled.pin
+        bindings = [dict(role='author', principal='s3_author')]
+        saved = s4bytes(dict(format='workflow-sequential-settings-storage@1', definition=pin.model_dump(mode='json'),
+            bindings=bindings, limits=limits, admission='Allowed'))
+        digest = hashlib.sha256(saved).hexdigest()
+        request = s4bytes(dict(format='workflow-sequential-settings-operation-storage@1', operation_key='s7-save',
+            principal='founder', settings_id='s7-settings', expected_generation=0, snapshot_digest=digest))
+        receipt = s4bytes(dict(format='workflow-sequential-settings-receipt-storage@1', operation_id='s7-operation',
+            settings_id='s7-settings', generation=1, snapshot_digest=digest))
+        f.conn.execute('INSERT INTO workflow_seq_definitions VALUES (?,?,?,?,?,?,?,?,?,?)',
+            ('s7-definition', pin.identity, pin.version, raw, pin.definition_digest, pin.source_digest,
+             pin.compiler, pin.validator, pin.interpreter, pin.capabilities))
+        f.conn.execute('INSERT INTO workflow_seq_settings VALUES (?,?,?,?,?,?,?)',
+            ('s7-settings', 'scratch', 's7-definition', pin.identity, 1, saved, digest))
+        f.conn.execute('INSERT INTO workflow_seq_settings_operations VALUES (?,?,?,?,?,?,?,?,?)',
+            ('s7-operation', 'scratch', 'founder', 's7-save', request, hashlib.sha256(request).hexdigest(), 's7-settings', receipt, hashlib.sha256(receipt).hexdigest()))
+        f.conn.commit()
+        source = TaskRecord(id='s7-source', assigned_agent='s3_manager', team='engineering', task_type='task',
+            status='in_progress', current_session_id='s7-session', brief='Retained source')
+        f.db.insert_task(source)
+        result = f.conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,created_at) VALUES (?,?,?,?,?)',
+            (source.id, source.assigned_agent, source.current_session_id, 'completed', source.created_at.isoformat())).lastrowid
+        f.conn.commit()
+        start = s4bytes(dict(format='workflow-sequential-start@1', operation_key='s7-start', definition=pin.model_dump(mode='json'),
+            settings=dict(generation=1, snapshot_digest=digest), request='Retained request', inputs=[], bindings=bindings, lower_limits=limits))
+        capture = f.org.workflow_authority.capture_admission()
+        setting = dict(f.conn.execute("SELECT * FROM workflow_seq_settings WHERE id='s7-settings'").fetchone())
+        with f.org.workflow_authority.admission_writer(capture) as writer:
+            ids = admit_uncommitted(writer, f.db, org_slug='scratch', compiled=compiled, settings_row=setting, start=start,
+                source=RetryClaim.from_task(source, result_row_id=result), original_limits=Limits(**limits),
+                carrier_task=TaskRecord(id='s7-carrier', parent_task_id=source.id, assigned_agent=source.assigned_agent,
+                    team='engineering', task_type='subtask', brief='Retained carrier'),
+                visit_task=TaskRecord(id='s7-task', parent_task_id='s7-carrier', assigned_agent='s3_author',
+                    team='engineering', task_type='subtask', brief='Retained visit'),
+                authority=f.org.workflow_authority, capture=capture)
+        return ids
+
     # S6b reuses S5/S6a's private SQLite/native fixtures. Real production cancel
     # writers and original source-result identities are exercised; no provider
     # or external host effect is allowed. Faults wrap existing commit boundaries.
@@ -6218,10 +6269,139 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
         assert not f.dispatcher.queue_admission_allowed(ids.visit_task_id)
         return run
 
+    def s6bdamage(f, table, sql, args):
+        # Corruption stays in synthetic storage. Restore canonical guards before
+        # the real cancellation owner observes the deliberately damaged history.
+        triggers = [tuple(row) for row in f.conn.execute(
+            "SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND tbl_name=?", (table,))]
+        for name, _ in triggers:
+            f.conn.execute('DROP TRIGGER "' + name + '"')
+        f.conn.execute(sql, args)
+        for _, ddl in triggers:
+            f.conn.execute(ddl)
+        f.conn.commit()
+
     for case in (S6B_CASES if s6b_case or not sys.argv[1:] else ()):
         if s6b_case not in (None, 'all', case):
             continue
         if case == 'cancel_source_all_runs':
+            with s6fixture() as f:
+                old = s7legacy(f)
+                s6bdamage(f, 'workflow_seq_events',
+                    'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?', ('0'*64, old.run_id))
+                before = s5snap(f)
+                tasks = {row['id']: dict(row) for row in f.conn.execute('SELECT * FROM tasks')}
+                candidates = {f.source.id, *(ids.carrier_task_id for ids in f.batch_ids),
+                    *(ids.visit_task_id for ids in f.batch_ids)}
+                live = {key for key in candidates if tasks[key]['status'] not in ('completed','failed','cancelled','superseded')}
+                audit = f.conn.execute('SELECT coalesce(max(id),0) FROM audit_log').fetchone()[0]
+                try:
+                    reply = s6bcancel(f)
+                except Exception as exc:
+                    raise AssertionError('7b valid scoped mixed stop refused') from exc
+                assert reply['ok'] and set(reply['cancelled']) == live, '7b exact cancellation live set'
+                after_tasks = {row['id']: dict(row) for row in f.conn.execute('SELECT * FROM tasks')}
+                assert {key for key in tasks if tasks[key] != after_tasks[key]} == live, '7b changed a foreign native row'
+                mutable={'status','block_kind','note','cancelled_at','completed_at','updated_at'}
+                for key in live:
+                    assert all(tasks[key][column]==after_tasks[key][column] for column in tasks[key] if column not in mutable), ('7b unexpected native field delta',key)
+                    assert after_tasks[key]['status']=='cancelled' and after_tasks[key]['block_kind'] is None
+                    assert after_tasks[key]['note']=='cancelled by founder: private S6b stop'
+                    assert after_tasks[key]['cancelled_at']==after_tasks[key]['updated_at'] and after_tasks[key]['cancelled_at'] is not None
+                    if key in {ids.visit_task_id for ids in f.batch_ids}:
+                        assert after_tasks[key]['completed_at']==tasks[key]['completed_at'], '7b visit completion timestamp changed'
+                    else:
+                        assert after_tasks[key]['completed_at']==after_tasks[key]['cancelled_at'], '7b native cancellation timestamp drift'
+                cancelled = [dict(row) for row in f.conn.execute(
+                    "SELECT * FROM audit_log WHERE id>? AND action='task_cancelled' ORDER BY id", (audit,))]
+                assert len(cancelled) == len(live) and {row['task_id'] for row in cancelled} == live, '7b exact cancellation audits'
+                assert all(row['agent']=='founder' and json.loads(row['payload']) ==
+                    dict(rationale='private S6b stop',cascade=True) for row in cancelled), '7b cancellation audit shape'
+                for ids in f.batch_ids: s6bfenced(f, ids)
+                assert s4row(f,'workflow_seq_runs',old.run_id) == next(dict(zip(
+                    [r[1] for r in f.conn.execute('PRAGMA table_info(workflow_seq_runs)')], row, strict=True))
+                    for row in before['workflow_seq_runs'] if row[0]==old.run_id), '7b disconnected run changed'
+                assert tuple(tuple(row) for row in f.conn.execute('SELECT * FROM workflow_seq_events WHERE run_id=? ORDER BY sequence',
+                    (old.run_id,))) == tuple(row for row in before['workflow_seq_events'] if row[1]==old.run_id)
+                print('PASS 7b disconnected source cancellation exact native write set/audits; old corrupt run preserved',flush=True)
+                from runtime.workflows.sequential_legacy_cancel import legacy_cancellation_scope
+                stable=tuple(f.conn.iterdump())
+                with f.db.coherent_read_view() as conn, legacy_cancellation_scope(conn,org_slug='scratch',task_id=f.source.id):
+                    assert f.db.get_task(f.source.id).status=='cancelled'
+                assert tuple(f.conn.iterdump())==stable, '7b legacy source/target certificate changed rows'
+                visit=s4row(f,'workflow_seq_visits',f.ids.visit_id)
+                # OrgState.load's private fixture has no daemon attachment; bind
+                # its actual tracker as mounted original-owner callers require.
+                f.org.orchestrator._sessions=f.org.sessions
+                unbound=TaskInvocation(f.org.orchestrator,f.db.get_task(visit['task_id']),visit['principal'],
+                    visit['session_id'],owner='sequential',workflow_dispatcher=f.dispatcher)
+                from runtime.workflows.sequential_cancellation_tail import cancelled_owner_disposition_uncommitted
+                from runtime.workflows.sequential_history import _ReadBudget
+                from runtime.workflows.coding_authority_history import _Budget
+                with f.db._lock, f.db.coherent_read_view() as conn:
+                    assert conn is f.org.db._conn and conn.in_transaction and f.org.db._lock._is_owned(), '7b test snapshot identity'
+                    assert unbound.store is f.db._task_pause_store and unbound.store.org_slug==f.org.slug, '7b test store identity'
+                    assert f.org.workflow_sequential_dispatch is f.org.orchestrator._workflow_sequential_dispatch, '7b test dispatcher identity'
+                    assert f.org.sessions is f.org.orchestrator._sessions, '7b test sessions identity'
+                    disposition=cancelled_owner_disposition_uncommitted(conn,f.org,unbound,failed=False,cleanup=None,
+                        native_entry=None,close_disposition=None,release_disposition=None,
+                        budget=_ReadBudget(),retained_budget=_Budget())
+                assert disposition.settled is False and tuple(f.conn.iterdump())==stable, '7b missing original proof gained tail clearance'
+                print('PASS 7b scoped legacy source/target and tail retain disconnected rows and missing-proof UNSETTLED',flush=True)
+            with s6fixture(hold=False) as f:
+                task=f.db.get_task(f.ids.visit_task_id)
+                original=TaskInvocation(f.org.orchestrator,task,task.assigned_agent,'7b-member-original',
+                    owner='sequential',workflow_dispatcher=f.dispatcher)
+                original.prepare()
+                old=s7legacy(f)
+                s6bdamage(f,'workflow_seq_events','UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',('0'*64,old.run_id))
+                from runtime.workflows.sequential_cancel_owners import capture_member_cancel
+                stable=tuple(f.conn.iterdump())
+                capture=f.org.workflow_authority.capture_admission()
+                with f.org.workflow_authority.admission_writer(capture) as conn, ExitStack() as captures:
+                    member=capture_member_cancel(f.org,conn,f.ids.run_id,captures)
+                    assert list(member['owners'].originals)==[original.identity]
+                    assert member['owners'].originals[original.identity][1] is original
+                    assert member['owners'].incomplete, '7b member lookup supplied settlement'
+                assert not original._sequential_cancel_owners and tuple(f.conn.iterdump())==stable, '7b capture rollback leaked handoff/DML'
+                print('PASS 7b scoped member capture retains exact original and rollback; disconnected history excluded',flush=True)
+            for phase in ('source', 'target'):
+                with s6fixture() as f:
+                    from fastapi import HTTPException
+                    if phase == 'source':
+                        s6bdamage(f,'workflow_seq_events',
+                            'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',('0'*64,f.ids.run_id))
+                    before = tuple(f.conn.iterdump())
+                    import runtime.workflows.sequential_control as control_owner
+                    real = control_owner.native_cancel_fence_uncommitted
+                    def corrupt_target(*args, **kwargs):
+                        result = real(*args, **kwargs)
+                        # Corrupt only AFTER the last native fence's own checks:
+                        # the enclosing mixed target certificate must own refusal.
+                        if kwargs['run_id']==max(ids.run_id for ids in f.batch_ids):
+                            f.conn.execute('UPDATE workflow_seq_runs SET cas=cas+1 WHERE id=?',(kwargs['run_id'],))
+                        return result
+                    with ExitStack() as faults:
+                        if phase == 'target': faults.enter_context(patch.object(control_owner,'native_cancel_fence_uncommitted',corrupt_target))
+                        try:
+                            s6bcancel(f)
+                        except HTTPException as exc:
+                            assert exc.status_code==409 and exc.detail['code']=='sequential_cancellation_reconciliation_required'
+                        else:
+                            raise AssertionError('7b accepted affected '+phase+' corruption')
+                    assert tuple(f.conn.iterdump()) == before, '7b affected corruption escaped rollback: '+phase
+                    print('PASS 7b affected '+phase+' corruption HTTP409/exact rollback',flush=True)
+            with s6fixture() as f:
+                from fastapi import HTTPException
+                before = tuple(f.conn.iterdump())
+                try:
+                    asyncio.run(founder_cancel_task('s5-parent',CancelBody(cascade=False),f.org))
+                except HTTPException as exc:
+                    assert exc.status_code==409 and exc.detail['code']=='sequential_cancellation_reconciliation_required'
+                else:
+                    raise AssertionError('7b point stop severed a live sequential dependency')
+                assert tuple(f.conn.iterdump())==before, '7b dependency refusal wrote rows'
+                print('PASS 7b point dependency HTTP409/exact rollback',flush=True)
             with s6fixture(hold=False) as f:
                 task = f.db.get_task(f.ids.visit_task_id)
                 invocation = TaskInvocation(f.org.orchestrator, task, task.assigned_agent,
@@ -6229,6 +6409,9 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 invocation.prepare()
                 ids = s6blaunch(f, 0)
                 visit = s4row(f, 'workflow_seq_visits', ids.visit_id)
+                old = s7legacy(f)
+                old_events=[tuple(row) for row in f.conn.execute('SELECT id,event_digest FROM workflow_seq_events WHERE run_id=?',(old.run_id,))]
+                s6bdamage(f,'workflow_seq_events','UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',('0'*64,old.run_id))
                 sibling = s4row(f, 'workflow_seq_runs', f.batch_ids[1].run_id)
                 parent = f.db.get_task('s5-parent')
                 stops = []
@@ -6258,6 +6441,20 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         async with callback_bridge.callback_admission(f.source.id, decision):
                             f.db.admit_task_completion_callback(**f.s6_last_kwargs)
                 import asyncio
+                # This original native control result is an uncertain retained
+                # encoding for 7R, so complete fallback MUST retain its refusal.
+                try:
+                    asyncio.run(rollback_capture())
+                except ValueError as exc:
+                    assert str(exc)=='workflow_seq_digest_invalid', ('7b wrong complete fallback',str(exc))
+                else:
+                    raise AssertionError('7b native control uncertainty bypassed complete refusal')
+                assert s5snap(f)==before and stops==[] and not bridge._cancel_publications
+                assert not getattr(invocation,'_sequential_cancel_owners',()), '7b fallback leaked owner handoff'
+                for event_id,event_digest in old_events:
+                    s6bdamage(f,'workflow_seq_events','UPDATE workflow_seq_events SET event_digest=? WHERE id=?',(event_digest,event_id))
+                before=s5snap(f)
+                print('PASS 7b uncertain native control retains complete refusal/exact rollback; synthetic digest restored',flush=True)
                 try:
                     asyncio.run(rollback_capture())
                 except RuntimeError as exc:
@@ -6298,6 +6495,18 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 assert len(owners) == 1 and owners[0].sealed and owners[0].incomplete
                 assert not owners[0].unknown and owners[0].observations == {}, case + ': live original became permanently unknown'
                 assert owners[0].originals[invocation.identity][1] is invocation
+                from copy import copy
+                impostor = copy(invocation)
+                assert impostor.identity==invocation.identity and impostor is not invocation
+                try:
+                    owners[0].observe(impostor,failed=False,cleanup=None,native_entry=None,
+                        close_disposition=None,release_disposition=None)
+                except ValueError as exc:
+                    assert str(exc)=='sequential_cancellation_reconciliation_required', ('7b wrong captured-invocation refusal',str(exc))
+                else:
+                    raise AssertionError('7b accepted recreated captured invocation')
+                assert owners[0].observations=={}, '7b wrong invocation changed aggregate'
+                print('PASS 7b exact captured invocation required; no aggregate clearance',flush=True)
                 assert all(original.task.id == visit['task_id'] for _, original in owners[0].originals.values())
                 assert invocation.store._live[invocation.identity] is invocation
                 assert f.db.get_task(f.source.id).status == 'in_progress' and f.db.get_task('s5-parent') == parent
@@ -6429,6 +6638,17 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         f.conn.commit()
                         assert replay == saved and s5snap(f) == before, case + ': exact receipt replay advanced'
         elif case == 'source_failed':
+            with s6fixture() as f:
+                old=s7legacy(f)
+                s6bdamage(f,'workflow_seq_events','UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',('0'*64,old.run_id))
+                f.conn.execute("UPDATE tasks SET status='failed',completed_at=?,block_kind=NULL WHERE id=?",
+                    ('2026-11-20T00:00:00+00:00',f.source.id));f.conn.commit()
+                source=f.db.get_task(f.source.id)
+                from runtime.workflows.sequential_mixed_cancel import fence_terminal_source
+                assert fence_terminal_source(f.org,f.source.id), '7b terminal source fence not observed'
+                assert f.db.get_task(f.source.id)==source, '7b terminal source cause changed'
+                for ids in f.batch_ids: s6bfenced(f,ids)
+                print('PASS 7b terminal source mixed writer excludes disconnected corruption; source cause retained',flush=True)
             for status, before_release in product(('failed', 'cancelled', 'superseded'), (False, True)):
                 with s5fixture() as f, patch.object(f.org.orchestrator, '_run_agent', side_effect=AssertionError('provider launch forbidden')):
                     if not before_release:
@@ -6495,6 +6715,65 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 assert tuple(tuple(row) for row in f.conn.execute('SELECT id,original_limits_bytes,visit_count,recovery_count FROM workflow_seq_runs ORDER BY id')) == limits
                 assert observation(f.db, source.id)['pending'], case + ': Pause/Resume lost obligation'
         elif case == 'unknown_effect_kept':
+            from runtime.workflows.sequential_legacy_cancel import legacy_cancellation_scope, _mixed_lookup_scope
+            from runtime.infrastructure.workflow_sequential_schema import SEQUENTIAL_TABLES
+            from runtime.infrastructure.workflow_schema import _sequential_legacy_read
+            from runtime.workflows.coding_authority_history import _Budget
+            from runtime.workflows.sequential_history import _ReadBudget
+            with s6fixture(hold=False) as f:
+                s4closed(f,f.ids.visit_id,summary=s4bsummary('finish'),terminal='success');s4baccept(f)
+                for table in SEQUENTIAL_TABLES:
+                    assert f.conn.execute('SELECT count(*) FROM '+table).fetchone()[0]>0, ('7b unexercised core table',table)
+                    before=tuple(f.conn.iterdump())
+                    f.conn.execute('BEGIN');f.conn.execute('PRAGMA defer_foreign_keys=ON')
+                    try:
+                        with legacy_cancellation_scope(f.conn,org_slug='scratch',task_id=f.source.id,cancelled=False):
+                            triggers=[tuple(row) for row in f.conn.execute(
+                                "SELECT name,sql FROM sqlite_schema WHERE type='trigger' AND tbl_name=?",(table,))]
+                            for name,_ in triggers: f.conn.execute('DROP TRIGGER "'+name+'"')
+                            f.conn.execute('DELETE FROM '+table+' WHERE rowid=(SELECT rowid FROM '+table+' LIMIT 1)')
+                            for _,ddl in triggers: f.conn.execute(ddl)
+                    except ValueError as exc:
+                        assert str(exc)=='sequential_cancellation_reconciliation_required',('7b wrong preservation refusal',table,str(exc))
+                    else:
+                        raise AssertionError('7b legacy consumer changed enrolled core table: '+table)
+                    finally:
+                        f.conn.rollback()
+                    assert _sequential_legacy_read.get() is None and tuple(f.conn.iterdump())==before
+                    print('PASS 7b whole-core legacy preservation '+table+'; exact rollback',flush=True)
+                for drift in ('dml','reverted_dml','query_only','savepoint','main_cookie','temp_cookie'):
+                    before=tuple(f.conn.iterdump())
+                    f.conn.execute('BEGIN')
+                    try:
+                        with _mixed_lookup_scope(f.conn,org_slug='scratch',task_id=f.source.id,
+                                retained_budget=_Budget(),budget=_ReadBudget()):
+                            if drift=='dml':
+                                f.conn.execute("UPDATE tasks SET note='forbidden' WHERE id=?",(f.source.id,))
+                            elif drift=='savepoint':
+                                f.conn.execute('RELEASE SAVEPOINT workflow_seq_cancel_lookup')
+                            else:
+                                f.conn.execute('PRAGMA query_only=OFF')
+                                if drift=='reverted_dml':
+                                    original=f.conn.execute('SELECT note FROM tasks WHERE id=?',(f.source.id,)).fetchone()[0]
+                                    f.conn.execute("UPDATE tasks SET note='reverted' WHERE id=?",(f.source.id,))
+                                    f.conn.execute('UPDATE tasks SET note=? WHERE id=?',(original,f.source.id))
+                                elif drift.endswith('_cookie'):
+                                    temp='TEMP ' if drift=='temp_cookie' else ''
+                                    f.conn.execute('CREATE '+temp+'TABLE forbidden_lookup_cookie(x)')
+                                    f.conn.execute('DROP TABLE forbidden_lookup_cookie')
+                                if drift!='query_only': f.conn.execute('PRAGMA query_only=ON')
+                    except (ValueError,sqlite3.Error) as exc:
+                        if drift in ('reverted_dml','query_only','main_cookie','temp_cookie'):
+                            assert str(exc)=='sequential_cancellation_reconciliation_required',('7b wrong lookup refusal',drift,str(exc))
+                        else:
+                            assert ('readonly' in str(exc) if drift=='dml' else 'no such savepoint' in str(exc)),(drift,str(exc))
+                    else:
+                        raise AssertionError('7b lookup accepted '+drift)
+                    finally:
+                        f.conn.rollback()
+                    assert _sequential_legacy_read.get() is None and f.conn.execute('PRAGMA query_only').fetchone()[0]==0
+                    assert tuple(f.conn.iterdump())==before, '7b lookup drift escaped rollback: '+drift
+                    print('PASS 7b lookup '+drift+' refused; context reset/exact rollback',flush=True)
             for source_loss in ('founder', 'failed'):
                 with s6fixture(hold=False) as f:
                     ids = f.ids
@@ -8351,57 +8630,6 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                 assert f.conn.execute('SELECT count(*) FROM workflow_seq_settings_operations WHERE operation_key=?',(lost['operation_key'],)).fetchone()[0]==1
             print('TRANSCRIPT unit-a Save -> Allow -> readback -> Save-while-Allowed -> replay -> stale -> Disable',
                 json.dumps(dict(save=saved,allow=allowed,save_allowed=kept,disable=disabled)),flush=True)
-
-    def s7legacy(f):
-        from runtime.workflows.sequential_definition import compile_definition
-        from runtime.workflows.sequential_contracts import Limits
-        limits = dict(content_returns=0, max_content_epochs=1, max_visits=1, max_events=4)
-        definition = dict(format='workflow-sequential-definition@1', identity='release/synthetic/history', version=1,
-            description='Private retained history', required_inputs=[dict(name='request', contract='bounded-text@1', required=True)],
-            roles=dict(author=dict(kind='agent', executable=True, eligibility='worker', independent_of=[])),
-            entry_node='author', nodes=[dict(id='author', role='author', responsibilities=['Write retained report'],
-                inputs=[dict(name='request', source='run.request', required=True)],
-                output_contract=dict(slot='document', type='immutable-document@1'), completion_checks=['immutable-document@1'],
-                outcomes=dict(produced=dict(action='terminal', condition='done'), BLOCK=dict(action='fail', code='blocked')))],
-            limits=limits, terminal_conditions=dict(done=dict(output='document', requires=['immutable-document@1', 'native-success-and-positive-outer-settlement@1'])))
-        raw = s4bytes(definition)
-        compiled = compile_definition(raw, source_digest=hashlib.sha256(raw).hexdigest())
-        pin = compiled.pin
-        bindings = [dict(role='author', principal='s3_author')]
-        saved = s4bytes(dict(format='workflow-sequential-settings-storage@1', definition=pin.model_dump(mode='json'),
-            bindings=bindings, limits=limits, admission='Allowed'))
-        digest = hashlib.sha256(saved).hexdigest()
-        request = s4bytes(dict(format='workflow-sequential-settings-operation-storage@1', operation_key='s7-save',
-            principal='founder', settings_id='s7-settings', expected_generation=0, snapshot_digest=digest))
-        receipt = s4bytes(dict(format='workflow-sequential-settings-receipt-storage@1', operation_id='s7-operation',
-            settings_id='s7-settings', generation=1, snapshot_digest=digest))
-        f.conn.execute('INSERT INTO workflow_seq_definitions VALUES (?,?,?,?,?,?,?,?,?,?)',
-            ('s7-definition', pin.identity, pin.version, raw, pin.definition_digest, pin.source_digest,
-             pin.compiler, pin.validator, pin.interpreter, pin.capabilities))
-        f.conn.execute('INSERT INTO workflow_seq_settings VALUES (?,?,?,?,?,?,?)',
-            ('s7-settings', 'scratch', 's7-definition', pin.identity, 1, saved, digest))
-        f.conn.execute('INSERT INTO workflow_seq_settings_operations VALUES (?,?,?,?,?,?,?,?,?)',
-            ('s7-operation', 'scratch', 'founder', 's7-save', request, hashlib.sha256(request).hexdigest(), 's7-settings', receipt, hashlib.sha256(receipt).hexdigest()))
-        f.conn.commit()
-        source = TaskRecord(id='s7-source', assigned_agent='s3_manager', team='engineering', task_type='task',
-            status='in_progress', current_session_id='s7-session', brief='Retained source')
-        f.db.insert_task(source)
-        result = f.conn.execute('INSERT INTO task_results(task_id,agent,session_id,status,created_at) VALUES (?,?,?,?,?)',
-            (source.id, source.assigned_agent, source.current_session_id, 'completed', source.created_at.isoformat())).lastrowid
-        f.conn.commit()
-        start = s4bytes(dict(format='workflow-sequential-start@1', operation_key='s7-start', definition=pin.model_dump(mode='json'),
-            settings=dict(generation=1, snapshot_digest=digest), request='Retained request', inputs=[], bindings=bindings, lower_limits=limits))
-        capture = f.org.workflow_authority.capture_admission()
-        setting = dict(f.conn.execute("SELECT * FROM workflow_seq_settings WHERE id='s7-settings'").fetchone())
-        with f.org.workflow_authority.admission_writer(capture) as writer:
-            ids = admit_uncommitted(writer, f.db, org_slug='scratch', compiled=compiled, settings_row=setting, start=start,
-                source=RetryClaim.from_task(source, result_row_id=result), original_limits=Limits(**limits),
-                carrier_task=TaskRecord(id='s7-carrier', parent_task_id=source.id, assigned_agent=source.assigned_agent,
-                    team='engineering', task_type='subtask', brief='Retained carrier'),
-                visit_task=TaskRecord(id='s7-task', parent_task_id='s7-carrier', assigned_agent='s3_author',
-                    team='engineering', task_type='subtask', brief='Retained visit'),
-                authority=f.org.workflow_authority, capture=capture)
-        return ids
 
     for case in (S7A_CASES if s7a_case or not sys.argv[1:] else ()):
         if s7a_case not in (None, 'all', case):

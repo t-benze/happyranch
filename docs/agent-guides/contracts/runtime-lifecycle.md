@@ -1740,8 +1740,14 @@ this prevents a late native drain from invalidating Coding's original overlay.
 
 Mixed cancellation keeps legacy document intent and original document/Coding
 terminal/outer consumers inside an authenticated same-transaction composition. The
-original schema/semantic readers remain intact; complete target validation occurs after
-the temporary composition ends and before COMMIT. Sequential rows cannot change within
+original schema/semantic readers remain intact. THR-404 group 7b uses the separate
+ABSENCE-OR-COMPLETE mixed certificate before/after cancellation, at original member
+capture and cancellation-tail selection. A retained reference or uncertain encoding
+still selects the original complete reader/refusal on cumulative ledgers. Target
+validation occurs after the temporary composition ends and before COMMIT. Every
+enrolled core sequential row, including disconnected rows, stays in the whole
+ten-table equality inventory; lookup query_only/savepoint/change/cookie guards
+remain unchanged. Sequential rows cannot change within
 that legacy scope. A read or terminal/control return supplies no additional settlement
 proof; Option B ordinary/document owners remain UNSETTLED.
 

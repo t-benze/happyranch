@@ -476,8 +476,8 @@ hook execution venue. Typecheck/source review is static evidence only.
 ## S6b: source cancellation and terminal initiators @2
 
 The existing Founder task-cancel route recognises `seq_source_wait_set` and uses
-its mixed cancellation owner. The complete history and every membership are
-re-read in the same authority writer, including runs admitted by earlier source
+its mixed cancellation owner. The mixed certificate and every affected membership
+are re-read in the same authority writer, including runs admitted by earlier source
 results/SIDs and already finished members. Cancelling a source or ordinary
 ancestor fences every unfinished owned run. Finished history stays unchanged.
 A result-owned S4a cancel of one run leaves the source and sibling runs alive.
@@ -512,8 +512,9 @@ outer closure precede the existing finish writer, with cancellation-only digest
 validation even for empty/malformed business output. Member finish and its
 addressed inbox obligation commit together; full affected run/source validation
 uses the original reader budgets and operation deadline. THR-404 group 4 scopes
-the direct fence/finish and human close checks only; the enclosing mixed
-cancellation owner and its legacy/tail retained-family readers remain complete.
+the direct fence/finish and human close checks. Group 7b wires the enclosing mixed
+cancellation, member capture and legacy/tail readers to the group-7R
+ABSENCE-OR-COMPLETE certificate described below.
 Human close validates the affected source at immutable receipt replay, before
 finish and after finish/wake/canonical audit insertion. Original never-launched
 proofs and `native_cleanup=unresolved_unchanged` remain unchanged.
@@ -836,7 +837,8 @@ consume that headroom against the shared 64MiB complete-read cap. This is a
 pre-existing cross-family limitation of complete-history consumers: @1 growth
 can exhaust those readers for all families. THR-404 group 4's direct fence/finish
 checks exclude disconnected payloads, while affected source growth and enclosing
-mixed complete reads remain bounded and can still refuse `read_bytes_exhausted`,
+mixed reads (including required complete fallback) remain bounded and can still
+refuse `read_bytes_exhausted`,
 retaining Running/cancelling with an outstanding visit. No budget relief or
 cross-family global certificate is granted. The TASK-17807 Round-5 decision
 overrode R4-F1 on the original whole-org reader basis; G4 changes only the
@@ -862,8 +864,8 @@ run/source, including all sibling members, historical proofs and settings chains
 Exact original control replay now authenticates affected history before returning
 its original receipt; actor/result/key/body and CAS/Held-event checks remain.
 Replacement controls retain all-unfinished H; cancellation and inert receipt
-replay omit future headroom. Source outer settlement and the enclosing mixed
-cancellation/legacy tail retain complete validation until their owning group.
+replay omit future headroom. Source outer settlement retains complete validation.
+Group 7b wires the mixed cancellation/legacy tail to ABSENCE-OR-COMPLETE below.
 Group 5 scopes selected return/source authorization and notification to full
 addressed source closure. All-run return rediscovery retains complete validation,
 including noncompleted runs, and bounded refusal never returns partial IDs.
@@ -2796,9 +2798,11 @@ stays Held. No graph/task/result/effect/budget/Pause history is rewritten. See
 
 ### Separate mixed writer certificate — THR-404 group 7R
 
-`read_mixed_write_history_uncommitted` is a separate, currently unwired entry.
-The original selected wrapper and every existing mixed writer/legacy/tail caller
-still use the complete oracle. The new entry keeps closure I unchanged: terminal
+`read_mixed_write_history_uncommitted` is a separate writer entry. Group 7b wires
+it into mixed cancellation source/target checks, legacy scope source/target,
+member cancellation capture and original-owner cancellation-tail selection.
+The original shared selected wrapper remains complete. The entry keeps closure I
+unchanged: terminal
 parents/children and complete workflow families, max512 tasks, original namespace,
 owner, cycle, orphan and INTEGER-result checks. Selected v2 runs use the group-1
 scoped replay and complete selected settings chains in the same snapshot.
@@ -2828,9 +2832,20 @@ C1's unused selected-root retained readers were removed by normal revert.
 The complete retained Coding reconstruction and ordinary-overlay serialization
 remain unchanged. Global STOP-1 certification, ten-core-table equality, all-run
 returned rediscovery and run list/detail remain complete. Historical @1 Final
-consumers (7c) remain complete and excluded; 7b owns later mixed/legacy/tail wiring.
-No lock/order, transaction, schema, authority, permission, audit or replay change
-is made, and this unwired entry establishes no writer latency claim.
+consumers (7c) remain complete and excluded. No lock/order, transaction, schema,
+authority, permission, audit or replay change is made. Copy-only validation timings
+do not establish full-handler latency.
+
+The whole ten-core-table inventory/equality remains mandatory across retained
+consumers, including disconnected sequential rows. That inventory preserves rows;
+it does not semantically authenticate omitted payloads. Retained references or
+uncertain native encodings (including an in-flight control result) still select
+the original complete oracle/refusal. Each source/target phase keeps its original
+separate allowance and one original deadline; fallback is cumulative within that
+phase. Read-only lookup retains query_only, the original savepoint, monotonic
+changes and both schema cookies. Original invocation identity, positive closure,
+queued reverse dependencies and all-original-owner aggregation remain mandatory.
+Missing handles and negative cleanup supply no root clearance.
 
 
 ## U6b1 unmounted mixed stop producer (TASK-15301)
@@ -2888,7 +2903,7 @@ refusals, post-oracle rollback and COMMIT-before-Stop remain controlling.
 Standalone ordinary/document-only paths keep their behavior. Historical live
 document roots without an existing dispatch owner still refuse.
 
-Manager Option B composes proof owners. U6b2a remains byte-identical and selects
+Manager Option B composes proof owners. U6b2a retains its original predicates and selects
 only original sequential source/visit invocations. Other captured owners use
 only their existing original family qualification. Old Coding reads its own
 committed outer/native settlement; ordinary/document invocations have no
@@ -2908,8 +2923,9 @@ separate. See the [current U6 owner table](../../specs/2026-11-11-sequential-cod
 
 The U6 mixed stop authenticates combined history before composing legacy document lookup
 and the original cancelled document/Coding terminal/outer consumers on that same
-connection. Legacy consumers preserve sequential rows; the complete changed target is
-authenticated after scope reset. Default standalone validation remains unchanged. This
+connection. Legacy consumers preserve every enrolled core sequential row; the changed
+mixed target is authenticated after scope reset using ABSENCE-OR-COMPLETE above.
+Default standalone validation remains unchanged. This
 composition repairs mounted cancellation without changing captured ordinary/document
 UNSETTLED qualification or granting native/V3 acceptance.
 
