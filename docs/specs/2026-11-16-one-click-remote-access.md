@@ -14,6 +14,33 @@ Linux and unsigned Mac; security/Product decision and implementation qualificati
 The revised trust/invite and unsigned-Keychain details require renewed review. This
 document itself authorizes no implementation or host operation.
 
+## Home-network port upgrade (THR-327 seq758)
+
+Home mode fixes coordination/embedded DERP at LAN TCP 28443, STUN at LAN UDP
+23478, metrics at 127.0.0.1:29090 and TLS gRPC at 127.0.0.1:29443. No security
+property depends on these numbers. Keep the existing 443 CONNECT alternative.
+
+1. On the current **old build**, **Turn off** and confirm it is off.
+2. Install the new .deb / Mac build.
+3. **Turn on** with the new build.
+4. Replace the manual LAN-only UFW rules from the same subnet: delete TCP 8443
+   and UDP 3478, then add TCP 28443 and UDP 23478.
+5. Re-invite **each previously approved device**; devices/trust are not migrated.
+
+If installed too early, the new build refuses both Turn on and Turn off before
+any stop, disable or file mutation. Reinstall the previous version, Turn off
+there, reinstall the new version and Turn on. The
+[upgrade runbook](../operations/remote-access-runbook.md#home-network-port-upgrade-thr-327-seq758)
+contains the exact `apt install --allow-downgrades` recovery and four UFW commands.
+
+Every admission/trust path is new-only. Read-only exact legacy URL recognition
+can only choose the bilingual refusal. Only a retained sidecar/provision whose
+ControlURL is exactly `https://control.happyranch.invalid:8443` after old-build
+Turn off is a prior own provision to regenerate; it is never a trust binding.
+B6 has no legacy-publication acceptance. Receipt, custody, ownership and
+authorization checks remain unchanged. Clients consume the explicit DERP/STUN
+ports from the server map.
+
 ## 1. Outcome, assumptions and current seams
 
 Linux: **Turn on remote access** → fresh polkit system-password dialog → generated configuration,
@@ -430,6 +457,10 @@ unchanged Upholds/BindsTo sidecar dependency recovers. Allow the existing two
 startup budgets plus polling/delay (250 seconds) with all other gates healthy;
 installed-systemd validation is separate.
 
+The retry-only upgrade description below predates the fixed-port cutover.
+Hosts still on the old home ports must use the five-step port upgrade above;
+Turn on again under this build applies only to an intact **new-port** profile.
+
 For an already-READY d05afaac/98a87688 host, package upgrade alone retains the
 old connector unit and old failure behaviour. The new package's configure-only
 postinst reloads the system manager after replacing packaged renewal fragments
@@ -601,7 +632,7 @@ prefix; refuse oversize, never truncate. Exact fields: `v`, `mode`, `control_url
 HTTPS trust, or local CA DER + SHA-256 fingerprint **and `dial_ip`**, the derived RFC1918 IPv4.
 The remaining field names, size/TTL limits and one-invite ceremony stay as stated here;
 `home_endpoint` retains its runtime target meaning and is not overloaded as a control dial address.
-Home `control_url` must be exactly `https://control.happyranch.invalid:8443` (optional trailing `/`
+Home `control_url` must be exactly `https://control.happyranch.invalid:28443` (optional trailing `/`
 normalizes away); reject other names, IP URLs, extra trust fields and mismatched mode/trust.
 Version 1 home/IP profiles require a new invite and approval; never silently reinterpret old
 protected URL bindings or consumed markers. Custom-server intake does not exist and is not planned;
@@ -611,7 +642,7 @@ unknown versions/fields refuse. Text transfer is sufficient; QR display is defer
 certificate-bearing envelope cannot fit one symbol. No redirect/lookup service or separate pairing
 code. The Mac validates HTTPS URL, no userinfo/query/fragment/path except `/`, fixed tailnet runtime
 port 443, times and exact schema before connecting; shows the control host and release runtime.
-That fixed tailnet runtime port is distinct from the control server's HTTPS port: derived LAN 8443
+That fixed tailnet runtime port is distinct from the control server's HTTPS port: derived LAN 28443
 in home mode. Outside-home server configuration remains subject to the open gates below.
 Trusting an invite is trusting its sender for the target CA/home, not independent host attestation.
 
@@ -634,7 +665,7 @@ round-trip fixtures are the shared contract.
 | 10 | `join_key` is exactly 48 lowercase hex characters. |
 | 11 | `home_endpoint` is canonical ASCII tailnet `host:443`, without scheme, userinfo, path, query, fragment or percent-escape. |
 | 12 | Total size is ≤4096 decoded JSON / ≤5500 encoded bytes including the prefix. There is no separate DER allowance. Never truncate. |
-| 13 | `control_url` is exactly `https://control.happyranch.invalid:8443`, with an optional single trailing `/`. |
+| 13 | `control_url` is exactly `https://control.happyranch.invalid:28443`, with an optional single trailing `/`. |
 
 Row 3's R3 reference is historical: R3/own-server is superseded and removed.
 `{"kind":"system"}` stays refused by the shipped home-only parsers. Any future
@@ -690,13 +721,13 @@ fork, dependency change, root helper for Mac or additional infrastructure is aut
 | Option | Mechanism, Linux / unsigned Mac feasibility | LAN attacker, Noise and DERP outcome | Effort and slices 1b / 3b / 3c / 5 |
 | --- | --- | --- | --- |
 | **A — conditional alternative, explicit founder rescope required** | Fixed `control.happyranch.invalid` DNS-SAN home leaf and process-local resolver to admitted `dial_ip`, with Linux scoped roots / Mac forced fallback roots. No root/signing/host trust-store installation on Mac. | Refuses unrelated names, but **accepts a valid matching-name public/LE chain independently of the home CA on both OSes**. Reserved-name issuance restrictions do not establish home-only authentication. This fails the unchanged requirement for `/key` and DERP; never select it without an explicit founder reduction of that requirement. | **5–8 days** across 1b/3b/3c/5, plus explicit security rescope and renewed review; lower relay/lifecycle cost purchases a weaker trust property. No rescope is supplied here. |
-| **B — RECOMMEND: strict in-process TLS CONNECT forwarder** | Each dedicated Go process binds `127.0.0.1:0` before tsnet. Existing HTTP proxy paths route control and DERP to it; stdlib TLS dials only admitted `dial_ip:8443`, with explicit **home-only** `RootCAs`, fixed DNS-name/validity verification. It re-presents a leaf from a per-process ephemeral CA held only in memory and in tsnet's isolated fallback pool. Same APIs on Linux and unsigned Mac; no root/signing/trust-store install on Mac. | **Remote public chains for any name, including the matching reserved name, refuse before `/key`, registration or DERP.** Wrong/no/IP-only SAN, forged and expired chains refuse. Noise still authenticates the bootstrapped key. The unchanged baked pool sees only the local re-presented leaf; it cannot authorize the remote connection. LAN interception gives denial/metadata risk. Local forwarder/process compromise remains within the existing host trust boundary. | **8–12 days:** 1b strict verifier + CONNECT/duplex/lifecycle/startup proof (2–3); 3b protected home CA/DNS leaf/private map + refresh (1–2); 3c v2 bindings (0.5–1); 5 dedicated-process proxy/root lifecycle, recovery and native qualification (3–5). Linux transport feasibility executed below; native Darwin/full tsnet/packaged acceptance NOT RUN. No dependency, upgrade, fork or new service/infrastructure. |
+| **B — RECOMMEND: strict in-process TLS CONNECT forwarder** | Each dedicated Go process binds `127.0.0.1:0` before tsnet. Existing HTTP proxy paths route control and DERP to it; stdlib TLS dials only admitted `dial_ip:28443`, with explicit **home-only** `RootCAs`, fixed DNS-name/validity verification. It re-presents a leaf from a per-process ephemeral CA held only in memory and in tsnet's isolated fallback pool. Same APIs on Linux and unsigned Mac; no root/signing/trust-store install on Mac. | **Remote public chains for any name, including the matching reserved name, refuse before `/key`, registration or DERP.** Wrong/no/IP-only SAN, forged and expired chains refuse. Noise still authenticates the bootstrapped key. The unchanged baked pool sees only the local re-presented leaf; it cannot authorize the remote connection. LAN interception gives denial/metadata risk. Local forwarder/process compromise remains within the existing host trust boundary. | **8–12 days:** 1b strict verifier + CONNECT/duplex/lifecycle/startup proof (2–3); 3b protected home CA/DNS leaf/private map + refresh (1–2); 3c v2 bindings (0.5–1); 5 dedicated-process proxy/root lifecycle, recovery and native qualification (3–5). Linux transport feasibility executed below; native Darwin/full tsnet/packaged acceptance NOT RUN. No dependency, upgrade, fork or new service/infrastructure. |
 | **C — upstream upgrade, founder-reserved** | Read-only survey below finds no IP-SAN fix in sampled later releases. v1.104.7 supplies `ts_omit_bakedroots`; an approved upgrade/build change must also enforce identity and home-only roots on both OSes. | An upgrade alone fails. Omitted baked roots plus a proven home-only/name verifier could meet the refusal set without B's relay; must qualify `/key` and DERP, never infer security from the version. | **1–2 days investigation; 5–10+ days qualification** across 1b/3b/3c/5; new module/toolchain/transitive/build inventory and compatibility cost. Founder approval required; no manifest or build flag changes here. |
 | **D — IP URL with scoped roots: REJECT** | Keep the old direct IP URL and Linux scoped OS / Mac constrained fallback pool. | LE for an unrelated name can authenticate bootstrap and DERP; Linux also accepts wrong/no-SAN home leaves. Attacker supplies both `/key` and its Noise endpoint; later Noise authentication does not repair it. | No acceptable delivery; 1b/5 remain held. Unchanged hardening cannot compensate. |
 | **E — fork or vendored verifier patch, founder-reserved** | Patch pinned tlsdial to remove baked fallback and bind the expected name for both clients, with upstream/security maintenance owned explicitly. | Could meet the property only after real bootstrap/DERP and both-platform qualification; source changes alone are not acceptance. | **2–4 days repair plus 4–8 days qualification**, recurring patch/rebase/security ownership. Explicit founder exception required; not selected. |
 
 **B: concrete transport and custody proposal.** Keep the v2 canonical remote URL
-`https://control.happyranch.invalid:8443` and `dial_ip` contract above. The root helper generates the
+`https://control.happyranch.invalid:28443` and `dial_ip` contract above. The root helper generates the
 per-home private CA and fixed DNS-SAN server leaf in protected Headscale custody. Check exact CA DER,
 CA constraints/validity and SHA-256 fingerprint before any network/root use; save the same
 home/control-plane binding. The reserved name is an identity label, **never a reason to accept a
@@ -721,10 +752,10 @@ public chain**. Remote identity is established solely by the explicit home pool 
   resolver installed before clients) mapping only the admitted home name to `dial_ip`; it changes
   no host DNS. It grants no trust or alternate endpoint. Proxy address lookup uses literal loopback;
   remote verifier dials literal `dial_ip`, with explicit fixed `ServerName`.
-- **Closed CONNECT adapter:** accept only CONNECT authorities for the exact fixed name on 8443
+- **Closed CONNECT adapter:** accept only CONNECT authorities for the exact fixed name on 28443
   (control) or 443 (pinned DERP proxy behavior). v1.78.0's DERP proxy path uses `HostName:443` even
-  when the map has `DERPPort=8443`; map both allowlisted authorities to the **same admitted
-  `dial_ip:8443`**, never to a client-supplied host/port. Reject absolute HTTP requests (including
+  when the map has `DERPPort=28443`; map both allowlisted authorities to the **same admitted
+  `dial_ip:28443`**, never to a client-supplied host/port. Reject absolute HTTP requests (including
   Noise's HTTP/80 attempt), other methods/targets and malformed/oversize headers. Upstream's
   existing HTTPS fallback then uses CONNECT; no HTTP/80 egress is opened. Open upstream with
   standard `crypto/tls` using a separate `x509.NewCertPool` containing exactly the admitted home CA,
@@ -756,10 +787,10 @@ public chain**. Remote identity is established solely by the explicit home pool 
   CA installation, root helper, signing identity or entitlement is needed for this transport.
   Bearer custody still follows the separate login-Keychain requirements below. Native unsigned
   bootstrap/DERP, save/reopen/rebuild and sequential homes remain **NOT RUN**, not inferred from Linux.
-- **Headscale / DERP 3b:** keep `server_url=https://control.happyranch.invalid:8443`, HTTPS/control
-  and embedded DERP on actual `dial_ip:8443`, and a protected private-only map with
-  `HostName=control.happyranch.invalid`, explicit `IPv4=dial_ip`, IPv6 disabled, `DERPPort=8443`,
-  `STUNPort=3478`, no `CertName`/`InsecureForTests`. Use v0.25.1's
+- **Headscale / DERP 3b:** keep `server_url=https://control.happyranch.invalid:28443`, HTTPS/control
+  and embedded DERP on actual `dial_ip:28443`, and a protected private-only map with
+  `HostName=control.happyranch.invalid`, explicit `IPv4=dial_ip`, IPv6 disabled, `DERPPort=28443`,
+  `STUNPort=23478`, no `CertName`/`InsecureForTests`. Use v0.25.1's
   [`automatically_add_embedded_derp_region=false` and `derp.paths`](https://github.com/juanfont/headscale/blob/v0.25.1/config-example.yaml#L102)
   if needed for the exact tuple. **No loopback map entries or per-client map rewrite:** the existing
   proxy path reaches the process-local listener on its own random port. STUN stays at the LAN IP;
@@ -847,8 +878,8 @@ A system unit runs as locked nologin `happyranch-headscale`, separate from hr, w
 system hardening in §2, empty capabilities, only fixed state/runtime writes, restart limits and
 bounded readiness. Its admin Unix socket is service-owned 0600 in its 0700 runtime parent; only
 that service and root can access it, and only the fixed root helper acts as administrative client.
-Bind HTTPS/control + embedded private DERP only to the derived `dial_ip`:8443, STUN to that IP:3478/UDP;
-metrics to 127.0.0.1:19090 and gRPC to 127.0.0.1:50443 with insecure mode off; no wildcard/IPv6/admin
+Bind HTTPS/control + embedded private DERP only to the derived `dial_ip`:28443, STUN to that IP:23478/UDP;
+metrics to 127.0.0.1:29090 and gRPC to 127.0.0.1:29443 with insecure mode off; no wildcard/IPv6/admin
 LAN listener, ACME/80, router forwarding or firewall edits. Refuse occupied ports. Load only the
 embedded private DERP region; empty public map URLs and no automatic public fallback/update checks.
 Exact renderer/ports follow the [versioned config](https://raw.githubusercontent.com/juanfont/headscale/v0.25.1/config-example.yaml);
@@ -1343,7 +1374,7 @@ The fixed C-locale `/usr/sbin/ufw status verbose` observation has three named
 advisory categories:
 
 - `likely_blocked`: recognized active UFW, default deny incoming, neither an
-  IPv4 user allow for 8443/tcp nor one for 3478/udp, and stock IPv4 before/after
+  IPv4 user allow for 28443/tcp nor one for 23478/udp, and stock IPv4 before/after
   templates. This is a probability: live INPUT allows from initialization or
   other owners can exist even when both files are stock.
 - `clear`: UFW is inactive, or recognized user allows cover both ports with
@@ -1373,7 +1404,7 @@ successful native/CLI result may carry the same optional closed advisory.
 Absent advice never substitutes for setup/effect evidence. `clear` is carried
 without warning text; English and Simplified Chinese host views and CLI say
 that the **home computer's firewall probably blocks** the home ports for
-`likely_blocked`, and tell the user to allow **8443/tcp and 3478/udp from the
+`likely_blocked`, and tell the user to allow **28443/tcp and 23478/udp from the
 home LAN only**, then check Status. Unverified advice is conditional on failed
 connections. No rule contents, addresses, paths or stderr cross the boundary.
 

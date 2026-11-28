@@ -360,6 +360,7 @@ const HOST_ERROR: Record<string, MessageKey> = {
 };
 
 const HOST_STATE_ERROR: Record<string, MessageKey> = {
+  turn_off_then_on: 'connection.host.hErrStateOlderVersion',
   not_applicable: 'connection.host.hErrStateNotApplicable',
   residue: 'connection.host.hErrStateResidue', owner: 'connection.host.hErrStateOwner',
   provenance: 'connection.host.hErrStateProvenance', custody: 'connection.host.hErrStateCustody',

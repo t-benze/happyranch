@@ -186,8 +186,8 @@ def preflight_ports(dial_ip: str) -> None:
     """
     if not _dial_ip_valid(dial_ip):
         raise HeadscaleServiceError("dial-ip")
-    bindings = ((dial_ip, 8443, socket.SOCK_STREAM), (dial_ip, 3478, socket.SOCK_DGRAM),
-                ("127.0.0.1", 19090, socket.SOCK_STREAM), ("127.0.0.1", 50443, socket.SOCK_STREAM))
+    bindings = ((dial_ip, 28443, socket.SOCK_STREAM), (dial_ip, 23478, socket.SOCK_DGRAM),
+                ("127.0.0.1", 29090, socket.SOCK_STREAM), ("127.0.0.1", 29443, socket.SOCK_STREAM))
     category = None
     try:
         for address, port, kind in bindings:
@@ -234,10 +234,10 @@ def require_owned_ports(dial_ip: str, *, uid: int, pid: int) -> None:
             if match:
                 inodes.add(match[1])
         lan = socket.inet_aton(dial_ip)
-        endpoints = {('tcp', int.from_bytes(lan, sys.byteorder), 8443),
-                     ('udp', int.from_bytes(lan, sys.byteorder), 3478),
-                     ('tcp', int.from_bytes(socket.inet_aton('127.0.0.1'), sys.byteorder), 19090),
-                     ('tcp', int.from_bytes(socket.inet_aton('127.0.0.1'), sys.byteorder), 50443)}
+        endpoints = {('tcp', int.from_bytes(lan, sys.byteorder), 28443),
+                     ('udp', int.from_bytes(lan, sys.byteorder), 23478),
+                     ('tcp', int.from_bytes(socket.inet_aton('127.0.0.1'), sys.byteorder), 29090),
+                     ('tcp', int.from_bytes(socket.inet_aton('127.0.0.1'), sys.byteorder), 29443)}
         found = set()
         for table in ('tcp', 'udp', 'tcp6', 'udp6'):
             with Path('/proc/net/' + table).open(encoding='ascii') as source:
@@ -283,7 +283,7 @@ def wait_ready() -> None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        connection = http.client.HTTPConnection("127.0.0.1", 19090, timeout=min(1.0, remaining))
+        connection = http.client.HTTPConnection("127.0.0.1", 29090, timeout=min(1.0, remaining))
         try:
             connection.request("GET", "/metrics")
             if connection.getresponse().status == 200:

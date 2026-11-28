@@ -180,7 +180,7 @@ func TestHomeSessionProcessChild(t *testing.T) {
 	}
 	// Existing transport tests use the same test-side endpoint isolation; the
 	// production constructor's fixed RFC1918 target is checked independently.
-	if transport.upstream != "192.168.1.40:8443" {
+	if transport.upstream != "192.168.1.40:28443" {
 		t.Fatal("unexpected production endpoint")
 	}
 	transport.upstream = os.Getenv("HOME_SESSION_TEST_UPSTREAM")
@@ -350,7 +350,7 @@ func TestHomeSessionScratchCustodyAndLifetime(t *testing.T) {
 	ca := makeHomeCA(t, true)
 	relay := derp.NewServer(key.NewNode(), func(string, ...any) {})
 	defer relay.Close()
-	region := &tailcfg.DERPRegion{RegionID: 1, RegionCode: "home", Nodes: []*tailcfg.DERPNode{{Name: "home", RegionID: 1, HostName: homeControlName, IPv4: "192.168.1.40", IPv6: "none", DERPPort: 8443, STUNPort: -1}}}
+	region := &tailcfg.DERPRegion{RegionID: 1, RegionCode: "home", Nodes: []*tailcfg.DERPNode{{Name: "home", RegionID: 1, HostName: homeControlName, IPv4: "192.168.1.40", IPv6: "none", DERPPort: 28443, STUNPort: -1}}}
 	control := &testcontrol.Server{Logf: func(string, ...any) {}, DERPMap: &tailcfg.DERPMap{Regions: map[int]*tailcfg.DERPRegion{1: region}}, RequireAuthKey: strings.Repeat("ab", 24)}
 	var requests atomic.Int32
 	var holdEnrollment atomic.Bool

@@ -2998,14 +2998,14 @@ def test_thr327_firewall_rule_files_enable(mount: Any, ufw_rules: dict[str, Path
         name = 'after.rules' if case == 'after-lan' else 'before.rules'
         chain = 'ufw-after-input' if case == 'after-lan' else 'ufw-before-input'
         if case == 'multiport':
-            rules = f'-A {chain} -p tcp -m multiport --dports 443,8443 -j ACCEPT\n'
+            rules = f'-A {chain} -p tcp -m multiport --dports 443,28443 -j ACCEPT\n'
         elif case == 'broad':
             rules = f'-A {chain} -j ACCEPT\n'
         elif case == 'other-chain':
             rules = ':custom-input - [0:0]\n-A custom-input -j ACCEPT\n'
         else:
-            rules = (f'-A {chain} -s 192.168.1.0/24 -p tcp --dport 8443 -j ACCEPT\n'
-                     f'-A {chain} -s 192.168.1.0/24 -p udp --dport 3478 -j ACCEPT\n')
+            rules = (f'-A {chain} -s 192.168.1.0/24 -p tcp --dport 28443 -j ACCEPT\n'
+                     f'-A {chain} -s 192.168.1.0/24 -p udp --dport 23478 -j ACCEPT\n')
         path = ufw_rules[name]
         path.write_text(path.read_text().replace('COMMIT', rules + 'COMMIT'))
     elif case.startswith('oversized-'):
@@ -3027,7 +3027,7 @@ def test_thr327_firewall_rule_files_enable(mount: Any, ufw_rules: dict[str, Path
         if case in ('inactive', 'inactive-custom'):
             raw = b'Status: inactive\n'
         elif case in ('both-user-allows', 'both-user-allows-custom'):
-            raw += b'To  Action  From\n--  ------  ----\n8443/tcp  ALLOW IN  Anywhere\n3478/udp  ALLOW IN  Anywhere\n'
+            raw += b'To  Action  From\n--  ------  ----\n28443/tcp  ALLOW IN  Anywhere\n23478/udp  ALLOW IN  Anywhere\n'
         return SimpleNamespace(returncode=0, stdout=raw)
     monkeypatch.setattr(subprocess, 'run', run)
     observed = []

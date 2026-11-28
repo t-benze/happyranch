@@ -7,7 +7,7 @@ import re
 import stat
 import subprocess
 
-_PORTS = ((8443, 'tcp'), (3478, 'udp'))
+_PORTS = ((28443, 'tcp'), (23478, 'udp'))
 # Stock UFW IPv4 templates (scripts/fixtures/ufw), normalized only for comments
 # and whitespace. Any customization, even one we could consider harmless,
 # makes the probability observation unverified. Stock files never prove live rules.

@@ -5,7 +5,7 @@ import Foundation
 final class HomeBridgeProcessTests: XCTestCase {
     private func trust(_ fingerprint: String = "synthetic-pin") -> SavedHomeTrust {
         SavedHomeTrust(homeID: "home", controlPlaneID: "control", connectorID: "connector",
-            controlURL: "https://control.happyranch.invalid:8443", dialIP: "192.168.1.40", homeEndpoint: "100.64.0.1:443",
+            controlURL: "https://control.happyranch.invalid:28443", dialIP: "192.168.1.40", homeEndpoint: "100.64.0.1:443",
             caDER: Data("synthetic-public-ca".utf8), caSHA256: fingerprint)
     }
     func testFixedEnvironmentAndPipeOnlyHandoff() throws {

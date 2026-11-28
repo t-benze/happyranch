@@ -1,5 +1,64 @@
 # HappyRanch Remote Access — Self-Hosted headscale + DERP Runbook
 
+## Home-network port upgrade (THR-327 seq758)
+
+Home mode uses fixed LAN ports: Headscale coordination and embedded DERP on
+TCP 28443, STUN on UDP 23478, metrics on 127.0.0.1:29090, and TLS gRPC on
+127.0.0.1:29443. These numbers do not establish trust. The control URL is
+`https://control.happyranch.invalid:28443`. Linux and Mac clients learn the
+explicit DERP/STUN ports from the server map; the home CONNECT forwarder
+accepts the fixed name on 28443 or 443 and dials the same admitted LAN IP:28443.
+
+Upgrade in this order:
+
+1. On the current **old build**, **Turn off** home-network access and confirm it is off.
+2. Install the new .deb / Mac build.
+3. **Turn on** home-network access with the new build.
+4. Replace the two manual LAN-only UFW rules, using the same LAN subnet.
+5. Re-invite **each previously approved device**. Devices and their trust are not migrated.
+
+If the new build was installed while the host was still READY on the old
+ports, both Turn on and Turn off refuse before stopping services or changing
+files: “This home network was set up by an older version. Reinstall the previous
+version, Turn off there, then install this version and Turn on.”
+“此家庭网络由旧版本设置。请重新安装之前的版本，在旧版本中关闭家庭网络，然后安装此版本并开启。”
+
+For .deb recovery, replace `PREVIOUS_VERSION`, `NEW_VERSION` and `amd64` with
+the exact previously installed/new package versions and host architecture,
+then use the local package files:
+
+```sh
+sudo apt install --allow-downgrades ./happyranch_PREVIOUS_VERSION_amd64.deb
+# Open the previous build, Turn off, and confirm it is off.
+sudo apt install ./happyranch_NEW_VERSION_amd64.deb
+# Open the new build and Turn on.
+```
+
+For Mac, restore the previous build, Turn off there, then install the new build
+and Turn on. This is a manual home-network recovery procedure, not an updater
+rollback or a device migration. Complete steps 4 and 5 afterward.
+
+For a LAN of `192.168.1.0/24`, run these exact rules; substitute the **same
+actual LAN subnet** in all four commands if yours differs:
+
+```sh
+sudo ufw delete allow from 192.168.1.0/24 to any port 8443 proto tcp
+sudo ufw delete allow from 192.168.1.0/24 to any port 3478 proto udp
+sudo ufw allow from 192.168.1.0/24 to any port 28443 proto tcp
+sudo ufw allow from 192.168.1.0/24 to any port 23478 proto udp
+```
+
+Do not expose metrics or gRPC beyond loopback. These home rules are separate
+from the managed/DIY examples later in this runbook.
+
+The new build never admits an old READY binding, reconnect URL or consumed
+marker. Old-build Turn off already removes the old publication and activation
+state. Only its exact retained `https://control.happyranch.invalid:8443`
+sidecar/provision configuration can be verified as a prior own provision and
+regenerated; it supplies no trust to the new activation. All provenance,
+receipt-digest, custody, ownership and authorization checks remain mandatory.
+
+
 Current Linux home-host daemon outages (TASK-19401): the managed connector now
 retries startup without a start-rate limit, retaining its 120-second per-attempt
 timeout and every readiness/security check. The sidecar follows connector
@@ -9,6 +68,10 @@ this in the installed-systemd acceptance lane. No button is needed after the
 new connector unit has been applied. An install with needrestart may still
 wait for a 120-second start timeout while the app is closed; later retries
 continue. This change does not eliminate that apt delay/message.
+
+The retry-only upgrade description below predates the fixed-port cutover.
+Hosts still on the old home ports must use the five-step port upgrade above;
+Turn on again under this build applies only to an intact **new-port** profile.
 
 Upgrading a READY d05afaac/98a87688 host does **not** replace its helper-published
 connector unit automatically. With no button it keeps the old failure behaviour.

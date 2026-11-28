@@ -1,5 +1,33 @@
 # Remote access and remote jobs contracts
 
+## Home-network port upgrade (THR-327 seq758)
+
+Home mode fixes coordination/embedded DERP at LAN TCP 28443, STUN at LAN UDP
+23478, metrics at 127.0.0.1:29090 and TLS gRPC at 127.0.0.1:29443. No security
+property depends on these numbers. Keep the existing 443 CONNECT alternative.
+
+1. On the current **old build**, **Turn off** and confirm it is off.
+2. Install the new .deb / Mac build.
+3. **Turn on** with the new build.
+4. Replace the manual LAN-only UFW rules from the same subnet: delete TCP 8443
+   and UDP 3478, then add TCP 28443 and UDP 23478.
+5. Re-invite **each previously approved device**; devices/trust are not migrated.
+
+If installed too early, the new build refuses both Turn on and Turn off before
+any stop, disable or file mutation. Reinstall the previous version, Turn off
+there, reinstall the new version and Turn on. The
+[upgrade runbook](../../operations/remote-access-runbook.md#home-network-port-upgrade-thr-327-seq758)
+contains the exact `apt install --allow-downgrades` recovery and four UFW commands.
+
+Every admission/trust path is new-only. Read-only exact legacy URL recognition
+can only choose the bilingual refusal. Only a retained sidecar/provision whose
+ControlURL is exactly `https://control.happyranch.invalid:8443` after old-build
+Turn off is a prior own provision to regenerate; it is never a trust binding.
+B6 has no legacy-publication acceptance. Receipt, custody, ownership and
+authorization checks remain unchanged. Clients consume the explicit DERP/STUN
+ports from the server map.
+
+
 Disposable agent payload paths use `"${TMPDIR:-/tmp}/payload.json"` (expand
 before writing with a file tool). Task-owned jobs already receive their task
 scratch environment. Unbound thread invocations keep the default environment;
@@ -1361,7 +1389,7 @@ cover temp-root/fake-manager behavior; required PR checks remain lint/static.
 
 The Linux identity profile accepts a protected sidecar `control_tls` record with
 `dial_ip` (RFC1918 IPv4) and `ca_sha256` (64 lowercase hex CA DER fingerprint),
-only with `ControlURL=https://control.happyranch.invalid:8443`. The canonical home
+only with `ControlURL=https://control.happyranch.invalid:28443`. The canonical home
 name requires that record. The dedicated process admits the fixed root-owned,
 single-link, bounded exact-one-CA `/etc/happyranch/control-ca.pem` and protected
 empty `/etc/happyranch/empty-ca-directory` before constructing clients (exact
@@ -1378,8 +1406,8 @@ is unchanged.
 
 An ephemeral loopback CONNECT forwarder verifies upstream TLS with only the
 admitted home CA and fixed DNS identity, before returning 200. Its only targets
-are `control.happyranch.invalid:8443` and `:443`, both mapped to literal
-`dial_ip:8443`; absolute HTTP and other/malformed/oversize requests close. It
+are `control.happyranch.invalid:28443` and `:443`, both mapped to literal
+`dial_ip:28443`; absolute HTTP and other/malformed/oversize requests close. It
 re-presents a process-local in-memory leaf to pinned tsnet, using a separate
 ephemeral-only forced fallback pool. Internally owned proxy/root/resolver setup
 precedes clients. Ambient proxy/bypass/keylog/GODEBUG and all `TS_` overrides
@@ -1569,10 +1597,10 @@ No live root/systemd acceptance is claimed.
 | Creation receipt | `/var/lib/happyranch-remote-access/headscale-account.json`, root:root 0600 in root:root 0700 parent; exact object `{version:1, account:"happyranch-headscale", uid:integer, gid:integer, group_created_with_user:true}` (JSON keys quoted on disk). Uses the existing pinned no-follow publication parent, exclusive 0600 pending inode, file/directory fsync and atomic no-replace rename. No pre-useradd intent/adoption. A crash after useradd and before successful receipt publication leaves an **unowned** account. Pending/malformed/foreign/mismatched receipts refuse and are preserved. |
 | Existing account (ruling A) | Exact expected shape without a valid creation receipt may be reused, but is UNOWNED and never modified or deleted. Preparation visibly returns `account=unowned` and `preservation="preserved: not created by HappyRanch"`; this is a typed visible preservation outcome, not cleanup success or failure. Shape mismatch refuses. |
 | Custody | `/etc/happyranch/headscale`, `/var/lib/happyranch-headscale`, `/run/happyranch-headscale`: service UID:GID 0700; policy service UID:GID 0600. Existing directories are validated, never chmod/chown repaired. Empty custody, the exact canonical inert policy, or the final root-receipted config/DERP/leaf/key set below is reusable; unreceipted config/DB/key/socket/pending/unknown entries refuse and are preserved, so preparation cannot adopt a running/unrelated Headscale installation. No payload/notices are changed. |
-| Policy/user layout | Fixed `/etc/happyranch/headscale/policy.hujson`, canonical JSON (valid HuJSON) with exactly one `acls` entry: `action=accept`, `proto=tcp`, `src=["happyranch-invite"]`, `dst=["happyranch-node:443"]`. All else denied by absence of a rule. No wildcard/autogroup/tag/SSH grant or invite-to-invite rule. Future node enrollment creates only the Linux-node user `happyranch-node`; future Mac minter receives dedicated user NAME `happyranch-invite`. These database users are not OS users, and are not created by this inert prefix. Port 443 is the spec's connector tailnet port, distinct from LAN control 8443. |
+| Policy/user layout | Fixed `/etc/happyranch/headscale/policy.hujson`, canonical JSON (valid HuJSON) with exactly one `acls` entry: `action=accept`, `proto=tcp`, `src=["happyranch-invite"]`, `dst=["happyranch-node:443"]`. All else denied by absence of a rule. No wildcard/autogroup/tag/SSH grant or invite-to-invite rule. Future node enrollment creates only the Linux-node user `happyranch-node`; future Mac minter receives dedicated user NAME `happyranch-invite`. These database users are not OS users, and are not created by this inert prefix. Port 443 is the spec's connector tailnet port, distinct from LAN control 28443. |
 | Unit | Separate exact-byte `render_headscale_unit`, `/etc/systemd/system/happyranch-headscale.service` root:root 0644. Fixed libexec binary and `/etc/happyranch/headscale/config.yaml`, service User/Group, empty capabilities and applicable existing system hardening. Only fixed state/runtime write paths, 0700 systemd directories, UMask 0077, restart limits, control-group kill and bounded start/stop. No Install section. No enable/start/reload during preparation. This Headscale preparation leaves connector/sidecar unit bytes unchanged; the later connector retry change is described in [THR-327 renewal unit upgrade](#thr-327-renewal-unit-upgrade-task-19228). |
-| Bounded startup | Tagged v0.25.1 `serve` does not emit sd_notify. The rendered unit uses Type=exec and isolated bundled Python `headscale_service wait-ready` as ExecStartPost: fixed loopback `127.0.0.1:19090` `/metrics`, one-second socket timeouts, 30-second retry deadline inside TimeoutStartSec=40. Tagged Serve opens metrics after HTTPS. This is startup evidence only, not tailnet/connector readiness; the probe is not invoked here. Output is suppressed in the service unit. |
-| Port preflight | `headscale_service.preflight_ports(dial_ip)` validates the same canonical RFC1918 IPv4 contract as the renderer, then samples exclusive AF_INET binds at dial_ip TCP8443/UDP3478 and 127.0.0.1 TCP19090/TCP50443. No reuse option, all probes closed. `occupied-port` on EADDRINUSE; other failures `port-check-uncertain`; invalid input `dial-ip`, no raw exceptions. The 3b-2f-2 prefix below now wires selection and this preflight into preparation; native binds remain NOT RUN in maker verification. A check is an observation, not a reservation against a later binder. |
+| Bounded startup | Tagged v0.25.1 `serve` does not emit sd_notify. The rendered unit uses Type=exec and isolated bundled Python `headscale_service wait-ready` as ExecStartPost: fixed loopback `127.0.0.1:29090` `/metrics`, one-second socket timeouts, 30-second retry deadline inside TimeoutStartSec=40. Tagged Serve opens metrics after HTTPS. This is startup evidence only, not tailnet/connector readiness; the probe is not invoked here. Output is suppressed in the service unit. |
+| Port preflight | `headscale_service.preflight_ports(dial_ip)` validates the same canonical RFC1918 IPv4 contract as the renderer, then samples exclusive AF_INET binds at dial_ip TCP28443/UDP23478 and 127.0.0.1 TCP29090/TCP29443. No reuse option, all probes closed. `occupied-port` on EADDRINUSE; other failures `port-check-uncertain`; invalid input `dial-ip`, no raw exceptions. The 3b-2f-2 prefix below now wires selection and this preflight into preparation; native binds remain NOT RUN in maker verification. A check is an observation, not a reservation against a later binder. |
 | Preparation output/refusals | Secret-free JSON with `state=inert`, `account=created/owned/unowned`, and `preservation=receipt-recorded` or the visible unowned statement. Closed refusal categories: `deb-layout-required`, `account-shape`, `account-create-uncertain`, `account-receipt-uncertain`, `foreign-unit`, `foreign-custody`, `custody-uncertain`; the config prefix adds `inventory`, `no_address`, `multiple_addresses`, `dial_ip`, `address-changed`, `publication-uncertain`, `occupied-port`, `port-check-uncertain`, `materializer-uncertain` and `cleanup-uncertain` (quiescence refusal). Native command text/output and underlying exception contexts are discarded. Partial objects are preserved for operator inspection; no automatic repair/deletion. |
 
 **Foreign systemd inventory:** Before creating any account, receipt, custody or
@@ -1973,12 +2001,12 @@ subdirectories and other suffixes refuse. The caller must separately prove
 ownership, no symlinks, file availability and reviewed restrictive ACL content.
 
 The v0.25.1 configuration pins HTTPS/control and embedded DERP to
-`dial_ip:8443`, STUN to `dial_ip:3478`, metrics to `127.0.0.1:19090`, and TLS
-gRPC to `127.0.0.1:50443` with insecure mode false. The URL remains
-`https://control.happyranch.invalid:8443`. No wildcard/IPv6 listener, ACME or
+`dial_ip:28443`, STUN to `dial_ip:23478`, metrics to `127.0.0.1:29090`, and TLS
+gRPC to `127.0.0.1:29443` with insecure mode false. The URL remains
+`https://control.happyranch.invalid:28443`. No wildcard/IPv6 listener, ACME or
 port-80 listener is configured. The private map has exactly region 999 and node
 999a, `HostName=control.happyranch.invalid`, `IPv4=dial_ip`, `IPv6=none`,
-`DERPPort=8443`, `STUNPort=3478`; no `CertName`, `InsecureForTests` or loopback
+`DERPPort=28443`, `STUNPort=23478`; no `CertName`, `InsecureForTests` or loopback
 entry. Its lowercase YAML keys match Headscale's `derp.paths` loader (not the
 capitalized wire-JSON names). Empty IPv6 would allow AAAA lookup and is forbidden.
 Automatic embedded-region insertion is false; only the protected private map is
@@ -2635,7 +2663,7 @@ member_digests, local_node_stable_id, home_endpoint, phase, ownership`.
 invite identity grammar, `activation_generation` is a nonnegative integer
 (never Boolean), `operation_id` uses the existing 32 lowercase-hex operation
 ID, and `ca_der_sha256` is 64 lowercase hex. `control_url` stores exactly
-`https://control.happyranch.invalid:8443`; endpoints use the existing v2
+`https://control.happyranch.invalid:28443`; endpoints use the existing v2
 ASCII authority validator and dial IP uses its canonical RFC1918 IPv4 predicate.
 Both observation keys are present as JSON null before join; they are populated
 together with a valid StableID and endpoint by observation, and required at
@@ -2901,7 +2929,7 @@ Why no founder: internal transaction with unchanged, fail-closed admission.
 The B4 home_config effect owns a new deterministic exported renderer, A5 publisher
 and independent verifier. This implements the settled staged-to-live transition;
 it grants no installer admission. Sidecar live bytes add ONLY
-`ControlURL=https://control.happyranch.invalid:8443`, closed slice-1b `control_tls`
+`ControlURL=https://control.happyranch.invalid:28443`, closed slice-1b `control_tls`
 (`dial_ip, ca_sha256`) and Ruling 11's closed `home_binding`, derived from protected
 B1 receipt/config values. Preserve immutable IDs and every other prepared byte.
 Connector fields may change only if already parsed for the home profile; absent
@@ -4760,6 +4788,10 @@ sidecar follows. This is a source budget requiring installed-systemd acceptance.
 Persistent unrelated failures also keep retrying; this changes no failure into
 readiness. Sidecar rate limiting remains unchanged.
 
+The retry-only upgrade description below predates the fixed-port cutover.
+Hosts still on the old home ports must use the five-step port upgrade above;
+Turn on again under this build applies only to an intact **new-port** profile.
+
 An already-READY d05afaac/98a87688 host retains its exact previous connector
 unit across package upgrade. With **no button**, it retains the old retry
 behaviour, including a terminal failure already reached. The new package's
@@ -5012,7 +5044,7 @@ The fixed C-locale `/usr/sbin/ufw status verbose` observation has three named
 advisory categories:
 
 - `likely_blocked`: recognized active UFW, default deny incoming, neither an
-  IPv4 user allow for 8443/tcp nor one for 3478/udp, and stock IPv4 before/after
+  IPv4 user allow for 28443/tcp nor one for 23478/udp, and stock IPv4 before/after
   templates. This is a probability: live INPUT allows from initialization or
   other owners can exist even when both files are stock.
 - `clear`: UFW is inactive, or recognized user allows cover both ports with
@@ -5042,7 +5074,7 @@ successful native/CLI result may carry the same optional closed advisory.
 Absent advice never substitutes for setup/effect evidence. `clear` is carried
 without warning text; English and Simplified Chinese host views and CLI say
 that the **home computer's firewall probably blocks** the home ports for
-`likely_blocked`, and tell the user to allow **8443/tcp and 3478/udp from the
+`likely_blocked`, and tell the user to allow **28443/tcp and 23478/udp from the
 home LAN only**, then check Status. Unverified advice is conditional on failed
 connections. No rule contents, addresses, paths or stderr cross the boundary.
 

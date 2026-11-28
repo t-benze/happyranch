@@ -32,7 +32,7 @@ CLI_LIFECYCLE_TIMEOUTS = {"Enable": 482000, "ReplaceFailed": 482000, "Disable": 
 FIREWALL_ADVISORIES = frozenset({"likely_blocked", "clear", "unverified"})
 FIREWALL_STATES = FIREWALL_ADVISORIES | {"unknown", "stale"}
 HOST_STATE_CATEGORIES = frozenset({"residue", "owner", "provenance", "custody", "inventory",
-                                    "quiescence", "timeout", "status_unavailable", "invite_rate_limited", "unknown", "unverified", "not_applicable"})
+                                    "quiescence", "timeout", "status_unavailable", "invite_rate_limited", "unknown", "unverified", "not_applicable", "turn_off_then_on"})
 PREPARATION_CATEGORIES = frozenset({
     "deb-layout-required", "issuer-state-uncertain", "account-shape",
     "account-receipt-uncertain", "foreign-unit", "foreign-custody", "publication-uncertain",

@@ -31,7 +31,7 @@ func TestHomeSessionBackpressuredCancel(t *testing.T) {
 	ca := makeHomeCA(t, true)
 	relay := derp.NewServer(key.NewNode(), func(string, ...any) {})
 	defer relay.Close()
-	region := &tailcfg.DERPRegion{RegionID: 1, RegionCode: "home", Nodes: []*tailcfg.DERPNode{{Name: "home", RegionID: 1, HostName: homeControlName, IPv4: "192.168.1.40", IPv6: "none", DERPPort: 8443, STUNPort: -1}}}
+	region := &tailcfg.DERPRegion{RegionID: 1, RegionCode: "home", Nodes: []*tailcfg.DERPNode{{Name: "home", RegionID: 1, HostName: homeControlName, IPv4: "192.168.1.40", IPv6: "none", DERPPort: 28443, STUNPort: -1}}}
 	control := &testcontrol.Server{Logf: func(string, ...any) {}, DERPMap: &tailcfg.DERPMap{Regions: map[int]*tailcfg.DERPRegion{1: region}}, RequireAuthKey: strings.Repeat("ab", 24)}
 	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/derp/latency-check" {

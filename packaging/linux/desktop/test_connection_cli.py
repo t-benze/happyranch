@@ -224,8 +224,8 @@ class ConnectionCLITests(unittest.TestCase):
                 self.assertEqual((code, result['code'], result['firewallWarning']), (0, 'enableCompleted', category))
                 if category == 'likely_blocked':
                     self.assertIn('probably', error)
-                    self.assertIn('8443/tcp', error)
-                    self.assertIn('3478/udp', error)
+                    self.assertIn('28443/tcp', error)
+                    self.assertIn('23478/udp', error)
                     self.assertIn('home LAN only', error)
                 elif category == 'clear':
                     self.assertEqual(error, '')
@@ -825,6 +825,19 @@ class ConnectionCLITests(unittest.TestCase):
                 self.assertEqual(result, dict(code='hostStateUnrecognized', category='not_applicable',
                                              effect='none', recovery='refresh'))
                 self.assertIn('No change was made.', message)
+                self.assertEqual([call[3] for call in self.bus.calls], [native.METHODS[action]])
+
+    def test_old_home_version_refusal_bilingual_before_actions(self) -> None:
+        self.bus.error = 'ai.happyranch.RemoteAccess1.Error.host_state_unrecognized_turn_off_then_on'
+        for action in ('enable', 'turn-off'):
+            with self.subTest(action=action):
+                self.bus.calls.clear()
+                code, result, message = self.run_native(action, choices='yes\n')
+                self.assertEqual((code, result), (1, dict(code='hostStateUnrecognized',
+                    category='turn_off_then_on', effect='none', recovery='refresh')))
+                self.assertEqual(message.strip(),
+                    'This home network was set up by an older version. Reinstall the previous version, Turn off there, then install this version and Turn on.\n'
+                    '此家庭网络由旧版本设置。请重新安装之前的版本，在旧版本中关闭家庭网络，然后安装此版本并开启。')
                 self.assertEqual([call[3] for call in self.bus.calls], [native.METHODS[action]])
 
     def test_outstanding_invite_refusal_is_named(self) -> None:

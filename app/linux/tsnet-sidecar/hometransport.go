@@ -21,7 +21,7 @@ import (
 )
 
 const homeName = "control.happyranch.invalid"
-const homeURL = "https://control.happyranch.invalid:8443"
+const homeURL = "https://control.happyranch.invalid:28443"
 const homeCAFile = "/etc/happyranch/control-ca.pem"
 const homeCADirectory = "/etc/happyranch/empty-ca-directory"
 
@@ -158,7 +158,7 @@ func readHomeConnect(c net.Conn) error {
 	}
 	lines := strings.Split(string(b), "\r\n")
 	parts := strings.Split(lines[0], " ")
-	if len(parts) != 3 || parts[0] != "CONNECT" || (parts[1] != homeName+":8443" && parts[1] != homeName+":443") || parts[2] != "HTTP/1.1" {
+	if len(parts) != 3 || parts[0] != "CONNECT" || (parts[1] != homeName+":28443" && parts[1] != homeName+":443") || parts[2] != "HTTP/1.1" {
 		return errHomeTransport
 	}
 	seenHost := false

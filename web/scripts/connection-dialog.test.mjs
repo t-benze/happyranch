@@ -370,7 +370,7 @@ test('host view: approval, invite, unconfirmed and manage flags', async () => {
 test('host state categories survive parsing and select bilingual GUI copy', async () => {
   const en = (await import('../src/lib/i18n/locales/en.ts')).default;
   const zh = (await import('../src/lib/i18n/locales/zh-CN.ts')).default;
-  for (const category of ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'status_unavailable', 'invite_rate_limited', 'unknown', 'unverified', 'not_applicable']) {
+  for (const category of ['residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'status_unavailable', 'invite_rate_limited', 'unknown', 'unverified', 'not_applicable', 'turn_off_then_on']) {
     const input = { code: 'hostStateUnrecognized', effect: 'none', recovery: 'refresh', category };
     const failure = conn.parseConnectionFailure(JSON.stringify(input));
     assert.deepEqual(failure, { ...input, category: category === 'unknown' ? 'unverified' : category });
@@ -380,6 +380,10 @@ test('host state categories survive parsing and select bilingual GUI copy', asyn
     assert.equal(typeof en[key], 'string');
     assert.equal(typeof zh[key], 'string');
     assert.notEqual(en[key], zh[key]);
+    if (category === 'turn_off_then_on') {
+      assert.equal(en[key], 'This home network was set up by an older version. Reinstall the previous version, Turn off there, then install this version and Turn on.');
+      assert.equal(zh[key], '此家庭网络由旧版本设置。请重新安装之前的版本，在旧版本中关闭家庭网络，然后安装此版本并开启。');
+    }
     const { HostView } = await import('../connection/src/host.ts');
     const { catalogs } = await import('../connection/src/strings.ts');
     for (const [locale, reason] of [['en', en[key]], ['zh-CN', zh[key]]]) {
@@ -431,8 +435,8 @@ test('host firewall advice preserves READY and renders bilingual LAN-only action
     for (const locale of ['en', 'zh-CN']) {
       const reason = catalogs[locale][key];
       assert.match(reason, locale === 'en' ? /home LAN only/ : /仅允许家庭局域网/);
-      assert.match(reason, /8443\/tcp/);
-      assert.match(reason, /3478\/udp/);
+      assert.match(reason, /28443\/tcp/);
+      assert.match(reason, /23478\/udp/);
       if (category === 'likely_blocked') assert.match(reason, locale === 'en' ? /probably/ : /可能/);
       const receiver = { snapshot, unconfirmed: false, confirm: null,
         pendingLabel: () => null, limited: () => false,

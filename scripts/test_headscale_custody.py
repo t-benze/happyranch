@@ -907,10 +907,10 @@ def test_fixed_port_bindings_and_typed_refusal(monkeypatch, occupied) -> None:
             home.preflight_ports("192.168.1.40")
         assert str(caught.value) == ("port-check-uncertain" if occupied == "uncertain" else "occupied-port")
         assert caught.value.__context__ is None and caught.value.__cause__ is None
-    assert calls == [(("192.168.1.40", 8443), socket.SOCK_STREAM),
-                     (("192.168.1.40", 3478), socket.SOCK_DGRAM),
-                     (("127.0.0.1", 19090), socket.SOCK_STREAM),
-                     (("127.0.0.1", 50443), socket.SOCK_STREAM)][:len(calls)]
+    assert calls == [(("192.168.1.40", 28443), socket.SOCK_STREAM),
+                     (("192.168.1.40", 23478), socket.SOCK_DGRAM),
+                     (("127.0.0.1", 29090), socket.SOCK_STREAM),
+                     (("127.0.0.1", 29443), socket.SOCK_STREAM)][:len(calls)]
     assert len(calls) == (4 if occupied is None else 1 if occupied == "uncertain" else occupied + 1)
     assert len(closed) == len(calls)
 
@@ -930,7 +930,7 @@ def test_readiness_is_fixed_local_and_bounded(monkeypatch, ready) -> None:
     monkeypatch.setattr(home.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
     class Connection:
         def __init__(self, host, port, timeout):
-            assert (host, port) == ("127.0.0.1", 19090)
+            assert (host, port) == ("127.0.0.1", 29090)
             assert 0 < timeout <= 1.0
         def request(self, method, path): assert (method, path) == ("GET", "/metrics")
         def getresponse(self): return SimpleNamespace(status=200 if ready else 503)
@@ -1162,8 +1162,8 @@ def test_thr327_policy_default_without_source_selects_main(fixture, case, bounda
         root = fixture.root / "etc/happyranch/headscale"
         record = json.loads((fixture.receipt().parent / PUBLICATION).read_bytes())
         assert record["dial_ip"] == "192.168.1.40"
-        assert b"listen_addr: 192.168.1.40:8443\n" in (root / "config.yaml").read_bytes()
-        assert b"stun_listen_addr: 192.168.1.40:3478\n" in (root / "config.yaml").read_bytes()
+        assert b"listen_addr: 192.168.1.40:28443\n" in (root / "config.yaml").read_bytes()
+        assert b"stun_listen_addr: 192.168.1.40:23478\n" in (root / "config.yaml").read_bytes()
         assert b"ipv4: 192.168.1.40\n" in (root / "derp.yaml").read_bytes()
         assert fixture.preflights == ["192.168.1.40"]
     expected = list(zip(indices, tables))
@@ -1180,7 +1180,7 @@ def test_config_publication_idempotency_and_address_change(fixture, monkeypatch,
     root = fixture.root / home.CUSTODY[0]
     config, derp = root / "config.yaml", root / "derp.yaml"
     assert config.is_file() and derp.is_file()
-    assert b"listen_addr: 192.168.1.40:8443\n" in config.read_bytes()
+    assert b"listen_addr: 192.168.1.40:28443\n" in config.read_bytes()
     assert b"ipv4: 192.168.1.40\n" in derp.read_bytes()
     receipt = fixture.receipt().parent / PUBLICATION
     record = json.loads(receipt.read_bytes())

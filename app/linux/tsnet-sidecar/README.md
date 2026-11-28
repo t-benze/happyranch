@@ -298,7 +298,7 @@ in both layouts/profiles and `SidecarUnitSpec.home_transport=False` are unchange
 Linux home transport (THR-327 1b) adds the optional protected config record
 `"control_tls":{"dial_ip":"192.168.1.10","ca_sha256":"<64 lowercase hex>"}`
 to the identity profile. It requires the canonical control URL
-`https://control.happyranch.invalid:8443` and an RFC1918 IPv4. That home URL
+`https://control.happyranch.invalid:28443` and an RFC1918 IPv4. That home URL
 cannot use the legacy transport. Slice 3b owns generating this configuration,
 the home CA/server leaf and the private DERP map; the sidecar process generates
 none of those persistent objects. The root-run materializer at the fixed non-PATH
@@ -326,8 +326,8 @@ echoing their values. Refusing the whole `TS_` namespace covers the pinned
 TLS/proxy/DERP/debug and authentication knobs, including future spellings.
 
 The process creates an in-memory issuer/leaf and holds a new `127.0.0.1:0`
-CONNECT listener. Only `control.happyranch.invalid:8443` and `:443` are accepted;
-both dial the admitted literal `dial_ip:8443`. Normal upstream TLS verifies
+CONNECT listener. Only `control.happyranch.invalid:28443` and `:443` are accepted;
+both dial the admitted literal `dial_ip:28443`. Normal upstream TLS verifies
 only the admitted home CA, fixed DNS SAN, time and server usage, before 200.
 Local TLS then re-presents the ephemeral leaf and relays opaque duplex bytes.
 Absolute HTTP (including Noise's HTTP/80 attempt), other targets/methods,

@@ -223,7 +223,7 @@ def intent(v, effect):
 
 def consumed(v):
     v.admin.key = replace(v.admin.key, used=True)
-    digest = hashlib.sha256(b"home-sidecar-home\x00https://control.happyranch.invalid:8443").hexdigest()
+    digest = hashlib.sha256(b"home-sidecar-home\x00https://control.happyranch.invalid:28443").hexdigest()
     put(v.path("/var/lib/happyranch-tsnet-sidecar/credential.consumed"), (digest + "\n").encode())
 
 
@@ -489,10 +489,10 @@ def install_proc_inventory(v, monkeypatch):
     (proc / 'net').mkdir()
     # /proc IPv4 address words are native-endian, ports are hexadecimal.
     tcp = '  sl local_address rem_address st tx_queue rx tr tm retr uid timeout inode\n'
-    tcp += '0: 2801A8C0:20FB 00000000:0000 0A 0:0 0:0 0 0 0 11\n'
-    tcp += '1: 0100007F:4A92 00000000:0000 0A 0:0 0:0 0 0 0 12\n'
-    tcp += '2: 0100007F:C50B 00000000:0000 0A 0:0 0:0 0 0 0 13\n'
-    udp = 'header\n0: 2801A8C0:0D96 00000000:0000 07 0:0 0:0 0 0 0 14\n'
+    tcp += '0: 2801A8C0:6F1B 00000000:0000 0A 0:0 0:0 0 0 0 11\n'
+    tcp += '1: 0100007F:71A2 00000000:0000 0A 0:0 0:0 0 0 0 12\n'
+    tcp += '2: 0100007F:7303 00000000:0000 0A 0:0 0:0 0 0 0 13\n'
+    udp = 'header\n0: 2801A8C0:5BB6 00000000:0000 07 0:0 0:0 0 0 0 14\n'
     for name, content in (('tcp', tcp), ('udp', udp), ('tcp6', 'header\n'), ('udp6', 'header\n')):
         put(proc / 'net' / name, content.encode())
     for inode in range(11, 15):
@@ -510,11 +510,11 @@ def test_thr327_owned_headscale_listener_attribution(venue, monkeypatch, case):
     if case == 'wildcard':
         p = proc / 'net/tcp'; p.write_text(p.read_text().replace('2801A8C0', '00000000'))
     if case == 'missing-port':
-        p = proc / 'net/tcp'; p.write_text(p.read_text().replace('0100007F:C50B', '0100007F:C50C'))
+        p = proc / 'net/tcp'; p.write_text(p.read_text().replace('0100007F:7303', '0100007F:7304'))
     if case == 'foreign-shared':
         p = proc / 'net/udp'; p.write_text(p.read_text() + p.read_text().splitlines()[-1].replace(' 14', ' 99') + '\n')
     if case == 'ipv6-wildcard':
-        (proc / 'net/tcp6').write_text('header\n0: ' + '0' * 32 + ':20FB 0:0 0A 0:0 0:0 0 0 0 99\n')
+        (proc / 'net/tcp6').write_text('header\n0: ' + '0' * 32 + ':6F1B 0:0 0A 0:0 0:0 0 0 0 99\n')
     if case == 'uid': (proc / '321/status').write_text('Uid: 999999 999999 999999 999999\n')
     if case == 'malformed': (proc / 'net/tcp').write_text('header\ntruncated\n')
     if case == 'dropin': v.native.override['DropInPaths'] = '/foreign.conf'
@@ -710,7 +710,7 @@ def test_installer_stays_inert_for_live_profile(venue):
     v = venue
     path = v.path("/etc/happyranch/sidecar.json")
     raw = json.loads(path.read_bytes())
-    raw.update(ControlURL="https://control.happyranch.invalid:8443",
+    raw.update(ControlURL="https://control.happyranch.invalid:28443",
                control_tls=dict(dial_ip=v.prepared.dial_ip, ca_sha256=v.prepared.ca_der_sha256),
                home_binding={key: getattr(v.prepared, key) for key in
                    ("home_id", "control_plane_id", "connector_id", "activation_generation")})
@@ -721,3 +721,15 @@ def test_installer_stays_inert_for_live_profile(venue):
         v.receipts._io._validate_configs({name: v.path("/etc/happyranch/" + name).read_bytes()
             for name in ("connector.json", "sidecar.json", "policy.json")}, staged=True)
     assert not v.native.calls
+
+
+def test_thr327_old_consumed_marker_refused(venue):
+    v = venue
+    consumed(v)
+    marker = v.path("/var/lib/happyranch-tsnet-sidecar/credential.consumed")
+    old = hashlib.sha256(b"home-sidecar-home\x00https://control.happyranch.invalid:8443").hexdigest()
+    marker.write_bytes((old + "\n").encode())
+    with pytest.raises(ActivationRefused):
+        v.production._consumed(v.prepared)
+    consumed(v)
+    v.production._consumed(v.prepared)

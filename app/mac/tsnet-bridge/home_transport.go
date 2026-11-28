@@ -45,7 +45,7 @@ func admitHomeTransport(der []byte, fingerprint, dialIP string, now time.Time) (
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(cert)
-	return roots, net.JoinHostPort(ip.String(), "8443"), nil
+	return roots, net.JoinHostPort(ip.String(), "28443"), nil
 }
 
 // homeTransport holds one immutable admitted remote profile. Keys are generated
@@ -240,7 +240,7 @@ func readHomeConnect(reader *bufio.Reader) bool {
 	}
 	defer req.Body.Close()
 	if req.Method != "CONNECT" || req.Proto != "HTTP/1.1" && req.Proto != "HTTP/1.0" ||
-		req.RequestURI != homeControlName+":8443" && req.RequestURI != homeControlName+":443" ||
+		req.RequestURI != homeControlName+":28443" && req.RequestURI != homeControlName+":443" ||
 		req.ContentLength != 0 || len(req.TransferEncoding) != 0 {
 		return false
 	}

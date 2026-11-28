@@ -14,7 +14,7 @@ import re
 import secrets
 
 _PREFIX = "hrinvite2:"
-_CONTROL_URL = "https://control.happyranch.invalid:8443"
+_CONTROL_URL = "https://control.happyranch.invalid:28443"
 _KEYS = frozenset((
     "v", "mode", "control_url", "control_plane_id", "control_tls",
     "home_endpoint", "home_id", "connector_id", "invite_id", "join_key",

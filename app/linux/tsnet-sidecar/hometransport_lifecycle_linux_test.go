@@ -148,7 +148,7 @@ func runHomeTSNetLifecycle(t *testing.T, scenario string) {
 	}
 	defer reset.Close()
 	reset.SetDeadline(time.Now().Add(time.Second))
-	fmt.Fprintf(reset, "CONNECT %s:8443 HTTP/1.1\r\nHost: %s:8443\r\n\r\n", homeName, homeName)
+	fmt.Fprintf(reset, "CONNECT %s:28443 HTTP/1.1\r\nHost: %s:28443\r\n\r\n", homeName, homeName)
 	if response, err := http.ReadResponse(bufio.NewReader(reset), nil); err != nil || response.StatusCode != 200 {
 		t.Fatal("valid CONNECT failed before cancelled local handshake", err)
 	}
@@ -218,7 +218,7 @@ func runHomeTSNetLifecycle(t *testing.T, scenario string) {
 			t.Fatal(err)
 		}
 		c.SetDeadline(time.Now().Add(time.Second))
-		fmt.Fprintf(c, "CONNECT %s:8443 HTTP/1.1\r\nHost: %s:8443\r\n\r\n", homeName, homeName)
+		fmt.Fprintf(c, "CONNECT %s:28443 HTTP/1.1\r\nHost: %s:28443\r\n\r\n", homeName, homeName)
 		if response, err := http.ReadResponse(bufio.NewReader(c), nil); err != nil || response.StatusCode != 200 {
 			t.Fatal("valid CONNECT failed before local handshake", err)
 		}
@@ -231,7 +231,7 @@ func runHomeTSNetLifecycle(t *testing.T, scenario string) {
 			t.Fatal(err)
 		}
 		c.SetDeadline(time.Now().Add(time.Second))
-		fmt.Fprintf(c, "CONNECT %s:8443 HTTP/1.1\r\nHost: %s:8443\r\n\r\n", homeName, homeName)
+		fmt.Fprintf(c, "CONNECT %s:28443 HTTP/1.1\r\nHost: %s:28443\r\n\r\n", homeName, homeName)
 		if _, err := http.ReadResponse(bufio.NewReader(c), nil); err == nil {
 			t.Fatal("forged certificate got CONNECT 200")
 		}
@@ -277,7 +277,7 @@ func newHomeTSNetFixture(t *testing.T) *homeTSNetFixture {
 	ds := derp.NewServer(key.NewNode(), func(string, ...any) {})
 	t.Cleanup(func() { ds.Close() })
 	dh := derphttp.Handler(ds)
-	region := &tailcfg.DERPRegion{RegionID: 1, RegionCode: "home", Nodes: []*tailcfg.DERPNode{{Name: "home", RegionID: 1, HostName: homeName, IPv4: "127.0.0.2", IPv6: "none", DERPPort: 8443, STUNPort: -1}}}
+	region := &tailcfg.DERPRegion{RegionID: 1, RegionCode: "home", Nodes: []*tailcfg.DERPNode{{Name: "home", RegionID: 1, HostName: homeName, IPv4: "127.0.0.2", IPv6: "none", DERPPort: 28443, STUNPort: -1}}}
 	h2 := &http2.Server{}
 	control := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

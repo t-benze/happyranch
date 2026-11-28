@@ -202,7 +202,7 @@ func TestHomeProcessChild(t *testing.T) {
 	}
 	defer h.Close()
 	// Independent endpoint assertion precedes test-side isolation to owned fake.
-	if h.upstream != "192.168.1.40:8443" {
+	if h.upstream != "192.168.1.40:28443" {
 		os.Exit(37)
 	}
 	h.upstream = strings.TrimPrefix(p.URL, "https://")
@@ -223,7 +223,7 @@ func TestHomeProcessChild(t *testing.T) {
 		connTable[12345] = owned
 		connMu.Unlock()
 		defer observer.Close()
-		raw, reader, status := connectTransport(t, h, homeControlName+":8443")
+		raw, reader, status := connectTransport(t, h, homeControlName+":28443")
 		if p.Kind == "teardown-verifier" {
 			if !strings.Contains(status, " 502 ") {
 				os.Exit(52)
@@ -277,7 +277,7 @@ func TestHomeProcessChild(t *testing.T) {
 	defer cancel()
 	if p.Kind == "derp" {
 		client := derphttp.NewRegionClient(key.NewNode(), func(string, ...any) {}, netmon.NewStatic(), func() *tailcfg.DERPRegion {
-			return &tailcfg.DERPRegion{RegionID: 1, Nodes: []*tailcfg.DERPNode{{Name: "synthetic-home", RegionID: 1, HostName: homeControlName, IPv4: cfg.DialIP, IPv6: "none", DERPPort: 8443, STUNPort: 3478}}}
+			return &tailcfg.DERPRegion{RegionID: 1, Nodes: []*tailcfg.DERPNode{{Name: "synthetic-home", RegionID: 1, HostName: homeControlName, IPv4: cfg.DialIP, IPv6: "none", DERPPort: 28443, STUNPort: 23478}}}
 		})
 		defer client.Close()
 		if client.Connect(ctx) != nil {
@@ -329,7 +329,7 @@ func homeFrame(t *testing.T, cfg homeLaunch) []byte {
 func TestHomeStartupRefusalsAndRootsBeforeEngine(t *testing.T) {
 	ca := makeHomeCA(t, true)
 	cfg := homeLaunchFixture(ca.der)
-	for _, name := range []string{"empty", "multiple", "invalid", "not-ca", "fingerprint", "expired-ca", "secret-redaction", "http", "ip-url", "v1", "public-dial-ip"} {
+	for _, name := range []string{"empty", "multiple", "invalid", "not-ca", "fingerprint", "expired-ca", "secret-redaction", "http", "ip-url", "old-home-port", "old-home-port-resume", "v1", "public-dial-ip"} {
 		t.Run(name, func(t *testing.T) {
 			c := cfg
 			debug := "x509usefallbackroots=1"
@@ -351,7 +351,12 @@ func TestHomeStartupRefusalsAndRootsBeforeEngine(t *testing.T) {
 				c.CA, _ = x509.CreateCertificate(rand.Reader, &expired, ca.cert, &ca.key.PublicKey, ca.key)
 				c.Fingerprint = homeFingerprint(c.CA)
 			case "ip-url":
-				c.ControlURL = "https://192.168.1.40:8443"
+				c.ControlURL = "https://192.168.1.40:28443"
+			case "old-home-port", "old-home-port-resume":
+				if name == "old-home-port-resume" {
+					c.JoinKey = ""
+				}
+				c.ControlURL = "https://control.happyranch.invalid:8443"
 			case "v1":
 				c.Version = 1
 			case "public-dial-ip":
@@ -360,7 +365,7 @@ func TestHomeStartupRefusalsAndRootsBeforeEngine(t *testing.T) {
 				c.JoinKey = "JOIN-KEY-CANARY"
 				c.CA = []byte("RAW-INVITE-CANARY PAIR-SECRET-CANARY COMPLETION-HANDLE-CANARY BEARER-CANARY")
 			case "http":
-				c.ControlURL = "http://192.168.1.40:8443"
+				c.ControlURL = "http://192.168.1.40:28443"
 			}
 			if got := runHomeChild(t, "startup", homeFrame(t, c), debug); got != "-20\n" {
 				t.Fatal("invalid home configuration reached engine admission")

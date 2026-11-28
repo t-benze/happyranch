@@ -157,7 +157,7 @@ public struct RemoteInvite: Sendable, CustomStringConvertible, CustomDebugString
             inviteIDBytes: inviteID, joinKeyBytes: Data(join.utf8), pairSecretBytes: pairSecret)
     }
 
-    static let controlURL = "https://control.happyranch.invalid:8443"
+    static let controlURL = "https://control.happyranch.invalid:28443"
 
     static func homeControlHost(_ text: String) throws -> String {
         guard text == controlURL || text == controlURL + "/" else { throw RemoteInviteError.url }

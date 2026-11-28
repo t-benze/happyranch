@@ -11,7 +11,7 @@ import (
 )
 
 func TestHomeForegroundPair(t *testing.T) {
-	const sc = `{"Profile":"linux-managed-identity-v1","StateDir":"/var/lib/happyranch-tsnet-sidecar","RoleIdentity":"home-sidecar-home","DERPPolicy":"private-only","ListenAddr":":443","ExcludedDaemonPorts":[8765],"ControlURL":"https://control.happyranch.invalid:8443","control_tls":{"dial_ip":"192.168.1.5","ca_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"home_binding":{"home_id":"home","control_plane_id":"control","connector_id":"connector","activation_generation":7}}`
+	const sc = `{"Profile":"linux-managed-identity-v1","StateDir":"/var/lib/happyranch-tsnet-sidecar","RoleIdentity":"home-sidecar-home","DERPPolicy":"private-only","ListenAddr":":443","ExcludedDaemonPorts":[8765],"ControlURL":"https://control.happyranch.invalid:28443","control_tls":{"dial_ip":"192.168.1.5","ca_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},"home_binding":{"home_id":"home","control_plane_id":"control","connector_id":"connector","activation_generation":7}}`
 	const connector = `{"home_id":"home","connector_id":"connector","managed":{"profile":"linux-managed-identity-v1","control_plane_id":"control"}}`
 	for _, scenario := range []string{"valid", "ids", "profile", "extra", "missing", "duplicate", "duplicate-nested", "state", "port"} {
 		t.Run(scenario, func(t *testing.T) {

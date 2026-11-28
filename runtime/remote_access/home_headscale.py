@@ -14,6 +14,10 @@ import yaml
 from runtime.remote_access import invite_v2
 
 
+# Exact former home profile; retained-provision replacement or refusal only.
+LEGACY_HOME_CONTROL_URL = "https://control.happyranch.invalid:8443"
+
+
 class HomeHeadscaleError(ValueError):
     """Closed categories: inventory, no_address, multiple_addresses, dial_ip, policy_path."""
 
@@ -111,10 +115,10 @@ def render_headscale_config(*, dial_ip: str, policy_path: str) -> str:
             r"/etc/happyranch/headscale/[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.hujson", policy_path)):
         raise HomeHeadscaleError("policy_path")
     config = {
-        "server_url": "https://control.happyranch.invalid:8443",
-        "listen_addr": f"{dial_ip}:8443",
-        "metrics_listen_addr": "127.0.0.1:19090",
-        "grpc_listen_addr": "127.0.0.1:50443",
+        "server_url": "https://control.happyranch.invalid:28443",
+        "listen_addr": f"{dial_ip}:28443",
+        "metrics_listen_addr": "127.0.0.1:29090",
+        "grpc_listen_addr": "127.0.0.1:29443",
         "grpc_allow_insecure": False,
         "tls_cert_path": "/etc/happyranch/headscale/server.crt",
         "tls_key_path": "/etc/happyranch/headscale/server.key",
@@ -132,7 +136,7 @@ def render_headscale_config(*, dial_ip: str, policy_path: str) -> str:
                 "region_id": 999,
                 "region_code": "happyranch-home",
                 "region_name": "HappyRanch Home",
-                "stun_listen_addr": f"{dial_ip}:3478",
+                "stun_listen_addr": f"{dial_ip}:23478",
                 "private_key_path": "/var/lib/happyranch-headscale/derp.key",
                 "automatically_add_embedded_derp_region": False,
                 "ipv4": dial_ip,
@@ -201,8 +205,8 @@ def render_private_derp_map(*, dial_ip: str) -> str:
                 "hostname": "control.happyranch.invalid",
                 "ipv4": dial_ip,
                 "ipv6": "none",
-                "derpport": 8443,
-                "stunport": 3478,
+                "derpport": 28443,
+                "stunport": 23478,
                 "stunonly": False,
                 "canport80": False,
             }],

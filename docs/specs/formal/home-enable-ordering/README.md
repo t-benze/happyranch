@@ -97,3 +97,23 @@ the lock is held: the model still abstracts lock ownership into atomic actions.
 The existing finite TLC result does not prove the wait, native timer activity or
 installed acceptance; real-flock standalone cases cover the wait/refusal boundary,
 and the manager must repeat the VM flow on the rebuilt exact reviewed head.
+
+## Fixed home port upgrade (THR-327 seq758)
+
+`HomePortUpgrade.tla` adds the bounded version/refusal model for TASK-19588.
+`Install` changes the build without rewriting protected home state. `OldOff`
+abstracts successful old-build B6; its only port-dependent residue is the
+retained sidecar. `NewOn` regenerates an exact prior own provision with fresh
+trust. `RefuseLegacy` represents HelperLifecycleBackend.capture on both Enable
+and Disable before dispatch can stop, disable or mutate. `RefuseTamper` models
+unchanged staged provenance rejection. `NewOnlyAdmission`, `OldStopUsesOldBuild`,
+`NoTrustMigration` and `RefusalReadOnly` express the upgrade boundary.
+
+Run the existing pinned TLC command above with HomePortUpgrade and
+`port-upgrade.cfg` (expected exit0), then `port-upgrade-unsafe.cfg` (expected
+invariant violation/exit12) in separate task scratch directories. The unsafe
+config models missing version gates only inside this model; it introduces no
+production flag. Results are in RESULTS.md. The graph bounds protected writes
+at four; it abstracts fresh authentication, exact URL matching, custody and
+full B6 cleanup as prerequisites and proves none of their Python refinement,
+native service effects, wall-clock behavior or installed recovery.

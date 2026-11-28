@@ -45,3 +45,12 @@ The first invocation used a wrong cwd and could not find retry.cfg (exit 255);
 no model claim comes from that failed invocation. The original HomeEnable
 model is unchanged and its prior evidence was not repeated. These are bounded
 safety checks with the assumptions and limits described in README.
+
+## TASK-19588 fixed port upgrade
+
+Pinned TLC2 2.19/v1.7.4 jar, OpenJDK21.0.13.1, one worker, fp0, seed1.
+`HomePortUpgrade` / `port-upgrade.cfg`: exit0; 73 generated/25 distinct states,
+queue0, depth8, all four invariants hold. `port-upgrade-unsafe.cfg`: expected
+exit12 with NewOnlyAdmission violation after installing the new build and
+accepting the old profile. This is bounded model evidence, not native/runtime
+acceptance or proof of custody checks. No CI trigger added.

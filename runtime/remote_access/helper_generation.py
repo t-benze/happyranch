@@ -13,7 +13,7 @@ COMMAND = ('/opt/happyranch-desktop/python/bin/python3', '-I', '-m',
            'runtime.remote_access.home_activation')
 FIREWALL_STATES = frozenset({'likely_blocked', 'clear', 'unverified', 'unknown'})
 HOST_STATE_CATEGORIES = frozenset({'residue', 'owner', 'provenance', 'custody',
-                                    'inventory', 'quiescence', 'timeout', 'unknown', 'unverified', 'not_applicable'})
+                                    'inventory', 'quiescence', 'timeout', 'unknown', 'unverified', 'not_applicable', 'turn_off_then_on'})
 SETUP_STATES = frozenset({'off', 'ready', 'pending', 'prepared_no_receipt', 'failed_uncertain',
                           'partial_cleanup', 'runtime_unavailable', 'setup_unverified', 'renewal_failed'})
 PREPARATION_CATEGORIES = frozenset({

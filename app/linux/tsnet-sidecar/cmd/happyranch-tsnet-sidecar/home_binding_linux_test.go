@@ -17,7 +17,7 @@ func TestHomeBindingAdmission(t *testing.T) {
 			cfg.Profile = sidecar.LinuxIdentityProfile
 			cfg.ExpectedPeer = ""
 			cfg.ConnectorAddr = ""
-			cfg.ControlURL = "https://control.happyranch.invalid:8443"
+			cfg.ControlURL = "https://control.happyranch.invalid:28443"
 			cfg.ControlTLS = &sidecar.HomeControlTLS{DialIP: "192.168.1.5", CAFingerprint: strings.Repeat("c", 64)}
 			member := binding
 			switch scenario {

@@ -1056,7 +1056,7 @@ source or protocol was changed. Slice 3c must hash the exact pair-secret text
 sent here and conform to section 6's pinned v2 wire literals.
 
 **Same-CA address recovery (Go v2, leg 5f).** The canonical control URL is
-`https://control.happyranch.invalid:8443`; an optional root slash normalizes away
+`https://control.happyranch.invalid:28443`; an optional root slash normalizes away
 (F2). The CA/fingerprint, home/control-plane IDs and saved node distinguish homes,
 never the shared DNS alias. A refreshed v2 invite supplies a new RFC1918 `dialIP`
 for the same home/CA; recovery uses an empty join key and discards the new invite's
@@ -1097,7 +1097,7 @@ under [section 6](../../docs/specs/2026-11-16-one-click-remote-access.md).
 The exact top-level keys are `v`, `mode`, `control_url`, `control_plane_id`,
 `control_tls`, `home_endpoint`, `home_id`, `connector_id`, `invite_id`, `join_key`,
 `pair_secret`, `issued_at`, `expires_at`; `v` must be 2. Home control URL is exactly
-`https://control.happyranch.invalid:8443`, with only an optional trailing slash
+`https://control.happyranch.invalid:28443`, with only an optional trailing slash
 normalized away. Other names, IP URLs, userinfo/query/fragment/paths refuse.
 `control_tls` local trust is exactly `{kind: local_ca, ca_der, sha256, dial_ip}`;
 RFC1918 canonical dotted IPv4 `dial_ip` is a separate upstream address.
@@ -1182,8 +1182,8 @@ the dedicated helper's isolated fallback pool. The caller must call `Close`; it 
 closes the listener and both sides of all owned streams, then waits for handlers.
 Keys are never serialized, installed or logged.
 
-Only CONNECT for that exact name on 443 or 8443 is admitted; both use the same
-validated literal `dial_ip:8443`. Absolute HTTP (including Noise HTTP/80), other
+Only CONNECT for that exact name on 443 or 28443 is admitted; both use the same
+validated literal `dial_ip:28443`. Absolute HTTP (including Noise HTTP/80), other
 methods/authorities, bodies and malformed/oversize headers refuse before dialing.
 Headers are capped at 8 KiB, concurrent streams at 128 and setup at 10 seconds.
 An explicit upstream pool contains only the admitted home CA. Standard TLS
@@ -1220,7 +1220,7 @@ netmap/startup and native unsigned Darwin, save/reopen/rebuild and sequential-ho
 acceptance remain **NOT RUN**, not inferred from these checks.
 
 Socket tests use synthetic CAs and owned loopback upstream fakes, checking the
-constructor's fixed RFC1918:8443 target independently before test-side endpoint
+constructor's fixed RFC1918:28443 target independently before test-side endpoint
 isolation. Matching-name and wildcard public-equivalent chains independently
 verify in a separate synthetic public pool and are refused by the home verifier.
 No real public-CA private keys or production test hooks are used.

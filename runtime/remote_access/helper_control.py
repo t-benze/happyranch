@@ -30,7 +30,7 @@ INVITE_MUTATIONS = frozenset({'invite-reserve@1', 'invite-invalidate@1', 'revoke
 FAILURES = frozenset({'invalid-request', 'unknown-method', 'wrong-uid', 'unavailable',
                       'busy', 'denied', 'expired', 'changed', 'disconnected', 'host-state-unrecognized',
                       *('host-state-unrecognized-' + category for category in (
-                          'residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'unknown', 'unverified', 'not_applicable', 'invite_rate_limited'))})
+                          'residue', 'owner', 'provenance', 'custody', 'inventory', 'quiescence', 'timeout', 'unknown', 'unverified', 'not_applicable', 'turn_off_then_on', 'invite_rate_limited'))})
 
 
 class Refused(Exception):

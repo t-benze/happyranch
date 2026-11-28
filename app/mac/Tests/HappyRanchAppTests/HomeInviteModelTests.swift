@@ -203,7 +203,7 @@ struct HomeInviteModelTests {
     // Public synthetic CA; no private key is present in this fixture.
     private let ca = "MIIBcDCCARegAwIBAgIBAzAKBggqhkjOPQQDAjAgMR4wHAYDVQQDExVTeW50aGV0aWMgU0FOLWxlc3MgQ0EwHhcNMjMxMTE0MjIxMzIwWhcNMzMwNTE4MDMzMzIwWjAgMR4wHAYDVQQDExVTeW50aGV0aWMgU0FOLWxlc3MgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQn+y+9zcuDcMqqUHzKu60sYl6vJtfgX8DR1VfNh6XtkNUwTmInfcpYhOhYzq94Nc4xe87GBk1JAN43UK9cLaDAo0IwQDAOBgNVHQ8BAf8EBAMCAgQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUyJSU09xAckvJECBK6NS3R58e9wswCgYIKoZIzj0EAwIDRwAwRAIgSGTa05eLWaPEQa9fYBwp979EMWXfu6F1aLr+IlLxlqMCIAv6++jkLKpTs+XT4vP9ETW/CdjHrUHv1hqkirv2ErYF"
 
-    fileprivate func invite(expired: Bool = false, ttl: Int = 299, control: String = "https://control.happyranch.invalid:8443", dialIP: String = "192.168.1.40", home: String = "home", joinKey: String = String(repeating: "ab", count: 24)) throws -> String {
+    fileprivate func invite(expired: Bool = false, ttl: Int = 299, control: String = "https://control.happyranch.invalid:28443", dialIP: String = "192.168.1.40", home: String = "home", joinKey: String = String(repeating: "ab", count: 24)) throws -> String {
         func wire(_ data: Data) -> String { data.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") }
         let now = Int(Date().timeIntervalSince1970)
         let fields: [String: Any] = ["v": 2, "mode": "home", "control_url": control,
@@ -508,7 +508,7 @@ struct HomeInviteModelTests {
         let store = HomeStoreFixture(), session = HomeSessionFixture()
         await session.approve()
         let model = HomeInviteModel(store: store, makeSession: { session })
-        model.accept(try invite(control: "https://control.happyranch.invalid:8443/"))
+        model.accept(try invite(control: "https://control.happyranch.invalid:28443/"))
         #expect(await eventually { model.webURL != nil })
         model.cancel()
         #expect(await eventually { !model.busy })
