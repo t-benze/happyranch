@@ -924,6 +924,12 @@ environment. This standalone shell check observes the actual timing log helpers
 and serving partition with only the ASGI/listener return isolated, the real
 `python -m runtime.daemon` entry refusing a temporary file as daemon home before
 any initialization, and the real launcher with an immediately exiting uv stub.
+The serving fixture uses the daemon's default `_workflow_bootstrap=None`, so
+ordinary startup timing includes no workflow upgrade interval. This fixture
+does not measure whole-daemon startup or establish safe copied-runtime launch:
+normal startup starts task workers and schedulers even with an isolated daemon
+home. Use read-only function timings when existing configuration cannot meet
+a measurement's no-session, no-job and no-external-call constraints.
 It covers present/absent/malformed and out-of-range timestamp inputs, unchanged
 backend fields, pre-import clock placement and Bash's portable clock fallback.
 It starts no serving daemon or worker, adds no CI trigger/check, and does not
