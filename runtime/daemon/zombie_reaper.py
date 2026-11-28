@@ -400,6 +400,10 @@ async def zombie_reaper_loop(
     boot_time = _time.monotonic()
     warm_up_seconds = HEARTBEAT_INTERVAL_SECONDS  # 30s post-boot grace
 
+    # Startup already settles closed visits and publishes after wiring. Do
+    # not repeat synchronous history scans in the ASGI startup completion turn.
+    await asyncio.sleep(interval_seconds)
+    first_sweep = True
     while True:
         t0 = _time.monotonic()
         now = datetime.now(timezone.utc)
@@ -443,6 +447,10 @@ async def zombie_reaper_loop(
                     "zombie reaper sweep failed for org %s", org.slug,
                 )
 
+        if first_sweep:
+            from runtime.daemon.__main__ import _startup_log
+            _startup_log('reaper_first_sweep', 'complete', t0)
+            first_sweep = False
         duration = _time.monotonic() - t0
         state.metrics_registry.record_loop_tick(
             "zombie_reaper", interval_seconds, duration,

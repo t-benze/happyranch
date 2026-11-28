@@ -150,8 +150,10 @@ async def _lifespan(app: FastAPI):
         # enqueue its TASK_FOLLOWUP via asyncio.run_coroutine_threadsafe.
         _main_loop = asyncio.get_running_loop()
         from runtime.daemon.__main__ import discover_completed_workflow_handoffs
-        await discover_completed_workflow_handoffs(state)
-        _wire_then_start_workers(state, _main_loop)
+        with _startup_span('startup_workflow_handoffs'):
+            await discover_completed_workflow_handoffs(state)
+        with _startup_span('startup_wiring_and_workers'):
+            _wire_then_start_workers(state, _main_loop)
 
         # Recover any jobs left in 'running' state from a previous daemon process.
         _now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -228,64 +230,70 @@ async def _lifespan(app: FastAPI):
         # isolated, so it cannot abort daemon startup or suppress other org roots.
         # Surfaces a recurrence of the historical submission-to-dispatch
         # orphan; deliberately NOT a reaper — no automatic mutation.
-        if state.runtime is not None:
-            from runtime.daemon.stale_pending_jobs import scan_all_org_stale_pending
-            for slug, stale_pending in scan_all_org_stale_pending(state.runtime).items():
-                if stale_pending:
-                    _logger.warning(
-                        "stale never-started pending jobs in org %s: %s",
-                        slug,
-                        [
-                            f"{r['id']} (task {r['task_id']}, created {r['created_at']})"
-                            for r in stale_pending
-                        ],
-                    )
+        with _startup_span('startup_stale_pending_jobs'):
+            if state.runtime is not None:
+                from runtime.daemon.stale_pending_jobs import scan_all_org_stale_pending
+                for slug, stale_pending in scan_all_org_stale_pending(state.runtime).items():
+                    if stale_pending:
+                        _logger.warning(
+                            "stale never-started pending jobs in org %s: %s",
+                            slug,
+                            [
+                                f"{r['id']} (task {r['task_id']}, created {r['created_at']})"
+                                for r in stale_pending
+                            ],
+                        )
 
         # _attach_thread_queue_wiring was called above (before workers).
         # The second call at the original location is now a no-op for
         # the wiring; the subsequent jobs_resume_main_loop + blocked-on-job
         # recovery still follow the same order relative to wiring.
-        from runtime.daemon.jobs_runner import attach_jobs_resume_main_loop as _wire_jobs
-        _wire_jobs(
-            _main_loop,
-            lambda slug: state.orgs[slug].orchestrator if slug in state.orgs else None,
-        )
+        with _startup_span('startup_blocked_job_resume'):
+            from runtime.daemon.jobs_runner import attach_jobs_resume_main_loop as _wire_jobs
+            _wire_jobs(
+                _main_loop,
+                lambda slug: state.orgs[slug].orchestrator if slug in state.orgs else None,
+            )
 
-        # Spec §5.7: re-evaluate predicate for blocked-on-job tasks. Catches the
-        # case where a job's terminal happened during a crash window — the job is
-        # now terminal but caller A (jobs_runner hook) never fired because the
-        # daemon was down. Runs AFTER _attach_thread_queue_wiring so resumed
-        # tasks that complete fast (sub-second) still have a wired thread queue
-        # when their _maybe_post_thread_followup fires — otherwise the followup
-        # audits enqueue_unavailable and the thread loses its task-completed
-        # message.
-        from runtime.orchestrator.run_step import _maybe_resume_blocked_task
-        for org in state.orgs_snapshot().values():
-            for _task_id in org.db.list_tasks_blocked_on_jobs():
-                _maybe_resume_blocked_task(
-                    org.orchestrator, _task_id,
-                    trigger="startup_recovery", triggering_job_id=None,
-                )
+            # Spec §5.7: re-evaluate predicate for blocked-on-job tasks. Catches the
+            # case where a job's terminal happened during a crash window — the job is
+            # now terminal but caller A (jobs_runner hook) never fired because the
+            # daemon was down. Runs AFTER _attach_thread_queue_wiring so resumed
+            # tasks that complete fast (sub-second) still have a wired thread queue
+            # when their _maybe_post_thread_followup fires — otherwise the followup
+            # audits enqueue_unavailable and the thread loses its task-completed
+            # message.
+            from runtime.orchestrator.run_step import _maybe_resume_blocked_task
+            for org in state.orgs_snapshot().values():
+                for _task_id in org.db.list_tasks_blocked_on_jobs():
+                    _maybe_resume_blocked_task(
+                        org.orchestrator, _task_id,
+                        trigger="startup_recovery", triggering_job_id=None,
+                    )
 
-        from runtime.orchestrator.task_pause import discover_pause_work
-        for org in state.orgs_snapshot().values():
-            await discover_pause_work(org, state.queue)
+        with _startup_span('startup_pause_discovery'):
+            from runtime.orchestrator.task_pause import discover_pause_work
+            for org in state.orgs_snapshot().values():
+                await discover_pause_work(org, state.queue)
 
-        # GitHub #688 Slice B: enqueue startup-recovered reply-delivery tokens
-        # BEFORE the thread workers start draining each org's queue, so retained
-        # queued wakes and daemon_restart replacements are picked up exactly once
-        # (duplicate notifications remain harmless through the claim CAS).
-        from runtime.daemon.thread_queue import ThreadJob
-        for org in state.orgs_snapshot().values():
-            for token in getattr(org, "_startup_recovered_thread_tokens", []):
-                await org.thread_queue.put(
-                    ThreadJob(org_slug=org.slug, invocation_token=token),
-                )
+        with _startup_span('startup_thread_catchup'):
+            # GitHub #688 Slice B: enqueue startup-recovered reply-delivery tokens
+            # BEFORE the thread workers start draining each org's queue, so retained
+            # queued wakes and daemon_restart replacements are picked up exactly once
+            # (duplicate notifications remain harmless through the claim CAS).
+            from runtime.daemon.thread_queue import ThreadJob
+            for org in state.orgs_snapshot().values():
+                for token in getattr(org, "_startup_recovered_thread_tokens", []):
+                    await org.thread_queue.put(
+                        ThreadJob(org_slug=org.slug, invocation_token=token),
+                    )
 
-        from runtime.infrastructure.thread_archive import sweep_resolved_threads
-        for org in state.orgs_snapshot().values():
-            await sweep_resolved_threads(org)
+            from runtime.infrastructure.thread_archive import sweep_resolved_threads
+            for org in state.orgs_snapshot().values():
+                await sweep_resolved_threads(org)
 
+        from runtime.daemon.__main__ import _startup_clock, _startup_log
+        _scheduler_started = _startup_clock()
         thread_worker_tasks = [
             asyncio.create_task(thread_worker_loop(state, state.settings))
             for _ in range(4)
@@ -378,6 +386,8 @@ async def _lifespan(app: FastAPI):
             artifacts.artifact_service(org)
             install_reference_seams(org, origin=f'http://{org.settings.daemon_bind_host}:{org.settings.daemon_port}')
         shared_artifacts_scheduler_task = asyncio.create_task(shared_artifacts_scheduler_loop(state))
+
+        _startup_log('startup_scheduler_setup', 'complete', _scheduler_started)
 
         # ── Dashboard projection cold-start + periodic refresh ────────────
         # THR-129: per-org durable last-known-good cache, refreshed every 10s.

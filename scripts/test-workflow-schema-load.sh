@@ -4523,12 +4523,28 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     metrics_registry=SimpleNamespace(record_loop_tick=lambda *args: None))
                 async def startup():
                     await discover_completed_workflow_handoffs(state)
-                async def periodic():
-                    # Stop only after the real loop's first complete pass.
+                    # The real startup hook settles before workers; publication
+                    # belongs to the subsequent native thread-queue attachment.
+                    f.org.orchestrator.attach_thread_queue(None, asyncio.get_running_loop())
+                async def periodic(*, during_delay=None):
+                    # Observe the real loop's initial scheduling boundary, then
+                    # stop after its first complete pass without wall-clock sleeps.
                     class EndTick(BaseException): pass
-                    with patch('runtime.daemon.zombie_reaper.asyncio.sleep', side_effect=EndTick):
+                    before = s5snap(f)
+                    queued = tuple(f.queue._queue._queue)
+                    sleeps = []
+                    async def interval(seconds):
+                        sleeps.append(seconds)
+                        assert seconds == 30, 'reaper changed the normal interval'
+                        if len(sleeps) == 1:
+                            assert s5snap(f) == before and tuple(f.queue._queue._queue) == queued, 'reaper worked before its initial interval'
+                            if during_delay is not None: during_delay()
+                            return
+                        raise EndTick
+                    with patch('runtime.daemon.zombie_reaper.asyncio.sleep', side_effect=interval):
                         try: await zombie_reaper_loop(state)
                         except EndTick: pass
+                    assert sleeps == [30, 30], 'periodic publication did not follow one normal interval'
                 if case == 'settlement_receipt':
                     from runtime.orchestrator.task_pause import TaskInvocation
                     async def original_p0():
@@ -4635,7 +4651,19 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                         assert conn.execute('SELECT count(*) FROM workflow_seq_inbox').fetchone()[0] == 2
                     assert f.queue._queue.qsize() == 3, 'entry wakes plus coalesced source wake changed'
                 elif case == 'settlement_delivery':
-                    s5hold(f)
+                    # A native completion during the initial interval is durable
+                    # before the next sweep; no in-memory notification is needed.
+                    while not f.queue._queue.empty(): f.queue._queue.get_nowait()
+                    def complete_during_delay():
+                        s4closed(f, f.ids.visit_id)
+                        with s5reopen(f) as conn:
+                            assert conn.execute('SELECT status FROM tasks WHERE id=?', (f.ids.visit_task_id,)).fetchone()[0] == 'failed'
+                            assert conn.execute('SELECT count(*) FROM workflow_seq_inbox').fetchone()[0] == 0
+                    asyncio.run(periodic(during_delay=complete_during_delay))
+                    assert s4row(f, 'workflow_seq_runs', f.ids.run_id)['state'] == 'held'
+                    assert f.conn.execute('SELECT count(*) FROM workflow_seq_inbox').fetchone()[0] == 1
+                    assert f.source.id in [item[1] for item in f.queue._queue._queue]
+                    # Existing job barrier and coalesced-redelivery keepers.
                     f.conn.execute("UPDATE tasks SET block_kind='blocked_on_job' WHERE id=?", (f.source.id,))
                     f.conn.commit()
                     while not f.queue._queue.empty(): f.queue._queue.get_nowait()

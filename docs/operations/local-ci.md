@@ -4735,7 +4735,14 @@ WORKFLOW_SCHEMA_PYTHON=3.12 bash scripts/test-workflow-schema-load.sh --s5=settl
 ```
 
 These cases extend S5 and run in the full aggregate. Startup and periodic mounts
-are actual production hooks, with a bounded one-tick periodic fixture. They check
+are actual production hooks, with a bounded one-tick periodic fixture. The
+fixture now advances the initial normal interval before the first pass and
+asserts no business/queue work preceded that sleep. The delivery case commits
+an authentic-shaped native completion during the delay, reopens its durable row,
+and observes exactly one Held/inbox obligation and source queue hint afterwards.
+Startup publication uses the native thread-queue attachment after the pre-worker
+settlement hook. These remain synthetic private closure facts, not live timing.
+They check
 terminal T and original-owner receipt-backed Q discovery, atomic Held/inbox and
 SQL rollback/replay, exactly one causal item per run, five redeliveries without
 growth, missed notification publication through existing readiness, sticky

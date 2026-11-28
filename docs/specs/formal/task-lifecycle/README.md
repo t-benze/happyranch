@@ -326,3 +326,15 @@ invariants pass; `never-launched-unsafe.cfg` exit 12, 12 generated/9 distinct,
 depth 3, expected `SafeHumanClose` violation with retained positive evidence.
 Both used one worker, fingerprint 0, seed 1 and task-scratch state directories.
 Small logs: `dev_agent/output/TASK-19067/tlc-{current,unsafe}.log`.
+
+## Startup publication interval
+
+`StartupPublication.tla` and `startup-publication.cfg` model pre-worker closed
+visit settlement, publication after wiring, and an initial normal reaper interval.
+A completion arriving after wiring remains durable and is eventually published by
+a fair periodic sweep. Startup cannot serve before settlement/wiring, and the
+first periodic sweep cannot precede the interval. Two abstract ticks stand for
+30 seconds; this is not a wall-clock serving bound. No cache, authority, history
+validation, cancellation, native custody or queue consumption is modeled. Those
+remain production/private-fixture obligations. Run the pinned TLC recipe above
+with module `StartupPublication` and this config; evidence is task output.
