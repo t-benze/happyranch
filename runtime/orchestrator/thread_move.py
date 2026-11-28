@@ -197,6 +197,8 @@ class ThreadPreparation:
         self.identity = PermanentAgentIdentity(state.org_slug, state.agent_id)
         self.owner_live = True
         self.last_spec: Any = None
+        self.secret_snapshot = None
+        self.prompt_reader = None
         self.executor: str | None = None
         self.model: str | None = None
         self.reasoning_effort: str | None = None
@@ -344,6 +346,11 @@ class ThreadPreparation:
         return True
 
     def _thread_move_commit(self, ctx: Any) -> Any:
+        from runtime.org_secrets.session import refresh_session_spec
+        self.before_fifo()
+        self.last_spec = refresh_session_spec(self.last_spec, self)
+        if self.prompt_reader is not None:
+            self.prompt_reader()  # Rebound using the admitted snapshot before commitment.
         return self.last_spec if self.commit(ctx) else None
 
     def __call__(self) -> None:
@@ -373,6 +380,9 @@ class ThreadPreparation:
             self.admission.write(self, attempts=self.state.attempts[:-1] + (last,))
             self.attempt_open = False
 
+    def defer_selflaunch(self):
+        self.safe_selflaunch_defer = self.attempt_open
+
     def before_selflaunch(self) -> None:
         # Real executors call this AFTER throttle and immediately BEFORE
         # Popen. A passthrough host reservation is not a running process.
@@ -381,6 +391,8 @@ class ThreadPreparation:
         except DeferredTeamMove:
             self.safe_selflaunch_defer = self.attempt_open
             raise
+        if self.prompt_reader is not None:
+            self.prompt_reader()
         if not self.attempt_open and not self.commit():
             raise DeferredTeamMove("team_move_thread_selflaunch_cancelled")
 

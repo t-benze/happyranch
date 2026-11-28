@@ -113,7 +113,8 @@ Excess refuses before provider spawn with a closed environment-budget code.
 
 Reserved prefixes (case-insensitive): `HAPPYRANCH_`, `ANTHROPIC_`, `OPENAI_`,
 `CLAUDE_`, `CODEX_`, `OPENCODE_`, `PI_`, `UV_`, `PIP_`, `DYLD_`, `BEDROCK_`,
-`VERTEX_`, `GOOGLE_CLOUD_`, `AZURE_OPENAI_`.
+`VERTEX_`, `GOOGLE_CLOUD_`, `AZURE_OPENAI_`, `LC_`, `PYTHON` (all names starting
+with PYTHON), `NODE_`, `LD_`, `BASH` and `ZSH`.
 
 Reserved exact names: PATH, HOME, SHELL, USER, LOGNAME, PWD, OLDPWD, SHLVL, _,
 TMPDIR, TMP, TEMP, PYTHONDONTWRITEBYTECODE, PYTHONPATH, PYTHONHOME,
@@ -123,7 +124,24 @@ NODE_COMPILE_CACHE, NODE_OPTIONS, GOCACHE, DBUS_SESSION_BUS_ADDRESS, LD_PRELOAD,
 LD_LIBRARY_PATH, GOOGLE_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, XAI_API_KEY,
 MISTRAL_API_KEY, DEEPSEEK_API_KEY, AZURE_API_KEY, AWS_ACCESS_KEY_ID,
 AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_PROFILE, AWS_REGION,
-AWS_DEFAULT_REGION. The reserve owner is `runtime/org_secrets/names.py`.
+AWS_DEFAULT_REGION, LANG, LANGUAGE, TZ, ENV, SHELLOPTS, PS4, IFS, CDPATH,
+GLOBIGNORE, PROMPT_COMMAND, ZDOTDIR, FPATH, SSL_CERT_FILE, SSL_CERT_DIR,
+REQUESTS_CA_BUNDLE and CURL_CA_BUNDLE. The reserve owner is
+`runtime/org_secrets/names.py`. This intentionally includes whole interpreter,
+loader and shell families: startup diagnostics can emit an invalid control value
+before any agent code runs. API `reserved_name` copy identifies these control
+classes; no input value is included. Delivery independently validates every name;
+a legacy now-reserved record closes admission, never injects its value.
+
+The owned inventory is `_ENV_VARS_TO_STRIP`, `_WORKSPACE_CACHE_ENV_DIRS` and
+`_callee_env` in `runtime/orchestrator/executors.py`; scratch TMPDIR/TMP/TEMP
+and HAPPYRANCH sidecars in `task_scratch.py`; env overlays in `isolation.py`,
+`linux_systemd.py` and `macos_process_group.py`; builtin adapter launch wrappers
+in `runtime/adapters/`; and Linux desktop `child_environment` plus
+`packaging/linux/build-payload.sh` launcher generation. These own PATH, HOME,
+LANG/LC_*, HAPPYRANCH_*, PYTHON*, UV_*, VIRTUAL_ENV, cache and scratch names.
+The reserved-name keeper checks runtime assignment shapes and independent
+interpreter/locale/loader controls, including PYTHONWARNINGS and LC_ALL.
 
 ## Session coverage and holds
 
@@ -137,8 +155,15 @@ AWS_DEFAULT_REGION. The reserve owner is `runtime/org_secrets/names.py`.
 | Local jobs | No additional org-store injection; existing inherited env/scratch rules remain |
 | remote_jobs | N/A: contracts-only, no shipping runner; no injection promised |
 
-New process environments load one coherent current store snapshot and then
-apply authoritative runtime/cache/scratch settings. Stored reserved names fail
+New contained thread/wake/schedule/dream processes select one current snapshot
+at final launch admission, after host/provider capacity waits and before native
+commitment. Values, key readiness/hold, names framing and the complete thread
+prompt bound use that same snapshot. New/Replace/Delete committed during a wait
+therefore affect the admitted child; existing children retain their copies.
+Every thread phase re-bounds the actual shared preamble plus body, trimming only
+optional history and refusing oversized mandatory context. Direct launch attempts
+also select after provider waiting. Authoritative runtime/cache/scratch settings
+are applied afterward. Stored reserved names fail
 closed. Context lookup uses the canonical org workspace, not a global slug
 lookup across runtime installations. Orgs with zero configured secrets never
 hold. A locked key never creates an ExecutorResult crash, consumes a callback

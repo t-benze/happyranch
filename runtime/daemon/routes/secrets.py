@@ -16,7 +16,8 @@ from runtime.org_secrets.names import SecretError
 from runtime.org_secrets.store import store_for
 
 _NO_STORE = {'Cache-Control': 'no-store'}
-_MESSAGES = {'secret_exists': 'Secret already exists. Use Replace value.',
+_MESSAGES = {'reserved_name': 'Name is reserved for runtime, launcher, interpreter, shell, loader or locale controls. Choose an application credential name.',
+             'secret_exists': 'Secret already exists. Use Replace value.',
              'key_locked': 'Secrets locked. Log in to unlock, then check key status.'}
 _MAX_REQUEST_BYTES = 400000  # 64 KiB UTF-8 value, including JSON escaping
 

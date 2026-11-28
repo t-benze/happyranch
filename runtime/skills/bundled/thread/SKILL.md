@@ -674,3 +674,10 @@ REPLY/BOOTSTRAP/TASK_FOLLOWUP transitions, not process exits. Contained stop use
 existing backend controls; direct/passthrough work waits for original exit/timeout
 and records an attributable could-not-stop audit. Neither an abort response nor
 an audit proves process cleanup. New arrivals retain their own native identities.
+
+Org secret names reserve runtime/launcher controls, including LC_*, LANG,
+LANGUAGE, PYTHON*, NODE_*, BASH*, ZSH*, ENV, SHELLOPTS, PS4, IFS, LD_*, DYLD_*,
+TZ and TMPDIR/TMP/TEMP; choose application credential names instead. New native
+sessions select values and names together at final launch admission after
+capacity waiting. Never print, echo, log or commit their values. The complete
+name rule and owned launcher inventory are in `docs/agent-guides/org-secrets.md`.

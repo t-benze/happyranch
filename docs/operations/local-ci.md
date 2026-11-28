@@ -5023,6 +5023,7 @@ uv lock  # only when intentionally changing the dependency manifest
 # UV_PROJECT_ENVIRONMENT must name a fresh absolute task-scratch directory.
 uv sync --frozen --no-dev --python /opt/happyranch-desktop/python/bin/python3
 /path/to/private/environment/bin/python scripts/test_org_secrets.py -v
+/path/to/private/environment/bin/python -m pytest scripts/test_thread_prompt_size.py -q --tb=short -p no:cacheprovider
 /path/to/private/environment/bin/python scripts/generate_openapi_snapshot.py --write
 ```
 

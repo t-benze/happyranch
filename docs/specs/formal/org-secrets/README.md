@@ -29,3 +29,11 @@ Use the pinned TLC 2.19 / v1.7.4 jar and command from
 NoMissingSecrets (exit12). `stalled.cfg` disables rediscovery and must violate
 Progress (exit13); a model that never launches cannot pass. Keep outside CI.
 Actual commands/exits and state counts are recorded in the task evidence/PR.
+
+F2 extends the same finite keeper with two bounded New/Replace/Delete changes
+while work waits for capacity. Discover retains an obsolete revision; Launch
+must select values/readiness/names at the current revision. `NoStaleSnapshot`
+checks this admission rule. `stale.cfg` deliberately delivers the queued
+revision and must violate it (exit 12). Native cancellation/otherHold and
+one-launch invariants remain. The version abstraction does not prove Python
+snapshot plumbing or prompt byte sizing; focused child tests own those seams.

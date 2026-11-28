@@ -103,3 +103,10 @@ do not blindly replay effects, invent another occurrence or claim completion.
 - Do not dispatch tasks or other agents from a dream.
 - Do not call `happyranch report-completion`.
 - Use `body_path` for KB candidate bodies so the JSON payload stays small.
+
+Org secret names reserve runtime/launcher controls, including LC_*, LANG,
+LANGUAGE, PYTHON*, NODE_*, BASH*, ZSH*, ENV, SHELLOPTS, PS4, IFS, LD_*, DYLD_*,
+TZ and TMPDIR/TMP/TEMP; choose application credential names instead. New native
+sessions select values and names together at final launch admission after
+capacity waiting. Never print, echo, log or commit their values. The complete
+name rule and owned launcher inventory are in `docs/agent-guides/org-secrets.md`.

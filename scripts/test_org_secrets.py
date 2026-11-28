@@ -13,6 +13,7 @@ from contextlib import ExitStack
 import hashlib
 import json
 import os
+import shlex
 from pathlib import Path
 import stat
 import subprocess
@@ -60,6 +61,9 @@ class SecretsCases(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.tmp.name)
         self.backend = MemoryKeyring()
         self.stack = ExitStack()
+        # Native children receive only test-safe inherited paths/locale.
+        inherited = {key: os.environ[key] for key in ('PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_CTYPE') if key in os.environ}
+        self.stack.enter_context(patch.dict(os.environ, inherited, clear=True))
         self.stack.enter_context(patch.object(OSKeyring, 'read', lambda b: self.backend.read(b)))
         self.stack.enter_context(patch.object(OSKeyring, 'create', lambda b: self.backend.create(b)))
         self.sentinels = [uuid.uuid4().hex + '\n' + uuid.uuid4().hex]
@@ -175,21 +179,40 @@ class SecretsCases(unittest.IsolatedAsyncioTestCase):
             'HAPPYRANCH_TASK_TMP_ROOT', 'HAPPYRANCH_TASK_SCRATCH_MANIFEST',
             'HAPPYRANCH_ORG_SLUG', 'HAPPYRANCH_RUNTIME_SESSION_ID',
             'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME',
-            'OPENCODE_CONFIG_CONTENT', 'PI_CODING_AGENT_DIR', 'npm_config_cache'}
+            'OPENCODE_CONFIG_CONTENT', 'PI_CODING_AGENT_DIR', 'npm_config_cache',
+            'LC_ALL', 'LC_CTYPE', 'LANG', 'LANGUAGE', 'PYTHONWARNINGS',
+            'PYTHONSTARTUP', 'PYTHONPATH', 'PYTHON_FUTURE_CONTROL', 'PYTHONHOME',
+            'NODE_OPTIONS', 'NODE_EXTRA_CA_CERTS', 'NODE_FUTURE_CONTROL',
+            'BASH_ENV', 'ENV', 'SHELLOPTS', 'BASHOPTS', 'PS4', 'IFS',
+            'LD_DEBUG', 'LD_AUDIT', 'DYLD_PRINT_LIBRARIES', 'TZ', 'TMPDIR'}
+        for name in sorted(names):
+            with self.subTest(reserved=name):
+                self.assertTrue(reserved(name), 'launcher control must be reserved')
+                with self.assertRaises(SecretError) as caught:
+                    validate_name(name.upper())
+                self.assertEqual(caught.exception.code, 'reserved_name')
         self.assertTrue(all(reserved(name) for name in names))
         # Environment names are an externally consumed shape contract. Detect
         # future literal runtime assignments independently of the reserve owner.
         repo = Path(__file__).resolve().parents[1]
         for source in ('runtime/orchestrator/executors.py', 'runtime/orchestrator/task_scratch.py',
                        'runtime/platform/linux_systemd.py', 'runtime/platform/macos_process_group.py',
-                       'runtime/platform/isolation.py'):
-            for node in ast.walk(ast.parse((repo / source).read_text())):
+                       'runtime/platform/isolation.py', 'packaging/linux/desktop/happyranch_window.py',
+                       'runtime/adapters/claude.py', 'runtime/adapters/codex.py',
+                       'runtime/adapters/opencode.py', 'runtime/adapters/pi.py'):
+            tree = ast.parse((repo / source).read_text())
+            if source.endswith('happyranch_window.py'):
+                tree = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'child_environment')
+            for node in ast.walk(tree):
                 if (isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store)
                         and isinstance(node.value, ast.Name) and node.value.id in ('env', 'result', 'base_env')
                         and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str)):
                     self.assertTrue(reserved(node.slice.value), 'runtime environment assignment missing reservation')
                 if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == 'update'
                         and isinstance(node.func.value, ast.Name) and node.func.value.id in ('env', 'result', 'base_env')):
+                    for keyword in node.keywords:
+                        if keyword.arg is not None:
+                            self.assertTrue(reserved(keyword.arg), 'launcher environment keyword missing reservation')
                     for arg in node.args:
                         if isinstance(arg, ast.Dict):
                             self.assertTrue(all(reserved(k.value) for k in arg.keys
@@ -214,6 +237,13 @@ class SecretsCases(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 422)
                 self.assertFalse(self.sentinels[0] in response.text)
                 self.assertEqual(response.headers['cache-control'], 'no-store')
+            for control in ('LC_ALL', 'PYTHONWARNINGS', 'NODE_EXTRA_CA_CERTS'):
+                response = await client.post(path, json={'name': control, 'value': self.sentinels[0]},
+                    headers={'X-Secret-Operation': operation()})
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(response.json()['detail']['code'], 'reserved_name')
+                self.assertIn('launcher', response.json()['detail']['message'])
+                self.assertFalse(self.sentinels[0] in response.text)
             for raw in (b'{', b'[]', b'null', b'{"name":"ONE","name":"TWO","value":"synthetic"}',
                         b'{"name":"ONE","value":NaN}'):
                 response = await client.post(path, content=raw, headers={'X-Secret-Operation': operation()})
@@ -368,6 +398,192 @@ print(json.dumps({'success':True,'returncode':0,'duration_seconds':0,'session_id
                             result = executor.run(**kwargs)
                             self.assertTrue(result.success, 'synthetic child did not complete')
                             self.assertTrue('set' in result.stdout_tail)
+
+    async def test_d01_reserved_controls_never_reach_automatic_diagnostics(self) -> None:
+        from runtime.orchestrator import executors as ex
+        from runtime.orchestrator.run_step import _session_failed_note
+        value = "synthetic-" + uuid.uuid4().hex[:12]
+        self.sentinels.append(value)
+        store = self.store()
+        workspace = store.root / 'workspaces/worker'
+        workspace.mkdir(parents=True)
+        adapter = self.root / 'diagnostic-adapter'
+        child = self.root / 'diagnostic-child.py'
+        child.write_text('import json\nprint(json.dumps(' + repr({
+            'success': True, 'returncode': 0, 'duration_seconds': 0, 'session_id': 'synthetic',
+            'stdout_tail': '', 'stderr_tail': '', 'adapter_metadata': {
+                'adapter': 'diagnostic-adapter', 'adapter_version': '1', 'contract_version': 1}}) + '))\n')
+        adapter.write_text('#!/bin/bash\nexec ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(child)) + '\n')
+        adapter.chmod(0o700)
+        executor = ex.CustomAdapterExecutor(profile_name='synthetic', adapter_entry_id='diagnostic-adapter',
+            adapter_executable=str(adapter), adapter_hash=hashlib.sha256(adapter.read_bytes()).hexdigest(),
+            adapter_version='1', adapter_contract_version=1, provider='synthetic',
+            invocation_context={'agent':'worker', 'org':'alpha', 'invocation_kind':'task'})
+        for name in ('LC_ALL', 'PYTHONWARNINGS'):
+            with self.subTest(control=name):
+                # Emulate an encrypted record accepted by the predecessor policy.
+                with patch('runtime.org_secrets.store.validate_name', side_effect=lambda name: name):
+                    store.mutate('create', name, value, operation())
+                for reader in (lambda: executor.run(workspace=workspace, prompt='Synthetic',
+                                   session_id='synthetic', org_slug='alpha', timeout_seconds=5),
+                               lambda: ex._callee_env(org_slug='alpha', workspace=workspace)):
+                    try:
+                        result = reader()
+                    except SecretError as exc:
+                        self.assertIn(exc.code, ('reserved_name', 'store_unavailable'))
+                        self.assertFalse(value in str(exc))
+                    else:
+                        if isinstance(result, dict):
+                            self.assertFalse(name in result, 'reserved control injected')
+                        else:
+                            self.assertEqual([value in result.stderr_tail,
+                                              value in _session_failed_note(result, None)],
+                                             [False, False], 'automatic diagnostics or failure note disclosed value')
+                            self.fail('stored reserved control did not close launch')
+                # Bypass only disk-name parsing to test the independent injection guard.
+                with patch('runtime.org_secrets.store.validate_name', side_effect=lambda name: name):
+                    with self.assertRaises(SecretError) as caught:
+                        ex._callee_env(org_slug='alpha', workspace=workspace)
+                    self.assertEqual(caught.exception.code, 'reserved_name')
+                    store.mutate('delete', name, None, operation())
+
+    async def test_d03_capacity_wait_refreshes_native_snapshots(self) -> None:
+        from datetime import datetime, timezone
+        import time
+        from scripts.test_agent_retirement import fixture
+        from runtime.models import DreamRecord, WorkHourRecord, WorkHourMode, ScheduleRecord, ScheduleKind, ScheduleStatus
+        from runtime.infrastructure.work_hours_store import WorkHoursStore
+        from runtime.infrastructure.schedule_store import ScheduleStore
+        from runtime.orchestrator.host_supervisor import AdmissionController, AdmissionRequest
+        from runtime.orchestrator.team_move import DeferredTeamMove
+        from runtime.orchestrator.thread_move import bind_thread_preparation
+        from runtime.orchestrator import executors as ex
+        for kind in ('thread', 'wake', 'schedule', 'dream'):
+            changes = ('create', 'replace', 'delete', 'locked', 'cancelled', 'passthrough_locked')
+            for change in changes + (('prompt_growth', 'trim_growth') if kind == 'thread' else ()):
+                self.backend.locked = False
+                with self.subTest(kind=kind, change=change):
+                    async with fixture(self.root / (kind + '-' + change)) as (org, _client):
+                        workspace = org.root / 'workspaces/worker'
+                        store = store_for(org.root)
+                        if change not in ('create', 'prompt_growth', 'trim_growth'):
+                            store.mutate('create', 'SYNTH_NAME', 'before', operation())
+                        move = org.db._team_move_coordinator
+                        now = datetime.now(timezone.utc)
+                        if kind == 'thread':
+                            from runtime.models import ThreadRecord, ThreadMessageKind
+                            org.db.insert_thread(ThreadRecord(id='THR-wait', subject='Synthetic'))
+                            org.db.add_thread_participant('THR-wait', 'worker', added_by='founder')
+                            org.db.record_conversational_arrival(thread_id='THR-wait', speaker='founder',
+                                kind=ThreadMessageKind.MESSAGE, body_markdown='Synthetic', recipients=['worker'])
+                            token = org.db.get_reply_delivery_state('THR-wait', 'worker').queued_invocation_token
+                            owner = move.threads.reserve(token)
+                            owner.claim = org.db.peek_conversational_reply(token)
+                            commit = owner._thread_move_commit
+                        else:
+                            if kind == 'dream':
+                                org.db.insert_dream(DreamRecord(id='DREAM-001', agent_name='worker', local_date='2026-11-28', scheduled_for=now, window_end=now))
+                                source = 'DREAM-001'
+                            elif kind == 'wake':
+                                WorkHoursStore(org.db._conn, org.db._lock, db=org.db).insert(WorkHourRecord(id='WORK-001', agent_name='worker', local_date='2026-11-28', slot='synthetic', mode=WorkHourMode.WINDOWED, scheduled_for=now))
+                                source = 'WORK-001'
+                            else:
+                                ScheduleStore(org.db._conn, org.db._lock, db=org.db).insert(ScheduleRecord(id='SCHED-001', agent_name='worker', kind=ScheduleKind.ONE_SHOT, fire_at=now, status=ScheduleStatus.FIRING, normalized_brief='Synthetic', source_instruction='Synthetic'))
+                                source = 'SCHED-001'
+                            owner = move.producers.reserve(kind, source)
+                            commit = owner._producer_move_commit
+                        self.assertIsNotNone(owner)
+                        owner.retry_schedule('provider', ())
+                        if change in ('prompt_growth', 'trim_growth'):
+                            from runtime.daemon.thread_runner import _bound_thread_prompt, THREAD_PROMPT_MAX_BYTES
+                            from runtime.models import ThreadMessage
+                            available = THREAD_PROMPT_MAX_BYTES - len(ex._SESSION_LIFETIME_PREAMBLE.encode())
+                            history = [ThreadMessage(thread_id='THR-wait', seq=1, speaker='founder',
+                                kind=ThreadMessageKind.MESSAGE, body_markdown='h' * 500),
+                                ThreadMessage(thread_id='THR-wait', seq=2, speaker='founder',
+                                kind=ThreadMessageKind.MESSAGE, body_markdown='m' * (available - 500))]
+                            def bounded_prompt():
+                                result = _bound_thread_prompt(''.join(m.body_markdown for m in history),
+                                    messages=history, mandatory_from_seq=1 if change == 'prompt_growth' else 2,
+                                    rebuild=lambda kept: ''.join(m.body_markdown for m in kept),
+                                    preamble=ex._session_preamble('alpha', workspace))
+                                if result is None:
+                                    raise ex.PromptTransportTooLargeError('prompt_too_large')
+                                if change == 'trim_growth' and owner.secret_snapshot is not None:
+                                    self.assertEqual(result[1], [2])
+                                return result[0]
+                            owner.prompt_reader = bounded_prompt
+                        owner.last_spec = ex.build_command_launch_spec(cmd=[sys.executable, '-c',
+                            'import os,sys,json; p=sys.stdin.read(); v=os.environ.get("SYNTH_NAME"); print(json.dumps([v=="after",v is None,("SYNTH_NAME" in p)]))'],
+                            workspace=workspace, input_text='Synthetic', org_slug='alpha', session_id=owner.session_id)
+                        controller = AdmissionController(cap=1)
+                        def request(label):
+                            return AdmissionRequest(org='alpha', invocation_kind=kind, logical_id=label, executor_profile='synthetic')
+                        held = controller.acquire(request('holder'), timeout=3)
+                        def launch():
+                            with controller.acquire(request('queued'), timeout=3) as lease:
+                                def admitted():
+                                    spec = commit(lease.ctx)
+                                    if spec is None:
+                                        return 'refused'
+                                    if change == 'passthrough_locked':
+                                        from runtime.org_secrets.session import admit_session_values
+                                        self.backend.locked = True
+                                        _STORES[org.root.resolve()] = OrgSecrets(org.root)
+                                        admit_session_values('alpha', workspace, selflaunch=True)
+                                    # Mutate once more AFTER admission: the preamble must
+                                    # still describe the delivered snapshot, not this read.
+                                    if change == 'create':
+                                        store.mutate('delete', 'SYNTH_NAME', None, operation())
+                                    note = ex._session_preamble('alpha', workspace)
+                                    body = owner.prompt_reader() if kind == 'thread' and owner.prompt_reader else 'Synthetic'
+                                    self.assertLessEqual(len((note + body).encode()), 512 * 1024)
+                                    child = subprocess.run(spec.argv, cwd=spec.cwd, env=spec.env,
+                                        input=note + body, capture_output=True, text=True, timeout=5)
+                                    self.assertEqual(child.returncode, 0)
+                                    return json.loads(child.stdout)
+                                if kind == 'thread':
+                                    with bind_thread_preparation(owner):
+                                        return admitted()
+                                return owner.invoke(admitted)
+                        with ThreadPoolExecutor(max_workers=1) as pool:
+                            future = pool.submit(launch)
+                            try:
+                                deadline = time.monotonic() + 2
+                                while controller.queue_depth() == 0 and time.monotonic() < deadline:
+                                    time.sleep(0.005)
+                                self.assertEqual(controller.queue_depth(), 1, 'child never entered real capacity wait')
+                                self.assertFalse(future.done())
+                                if change == 'locked':
+                                    self.backend.locked = True
+                                    _STORES[org.root.resolve()] = OrgSecrets(org.root)
+                                elif change == 'cancelled':
+                                    owner.owner_live = False
+                                elif change == 'passthrough_locked':
+                                    pass  # Lock lands only after the host's commitment.
+                                elif change in ('prompt_growth', 'trim_growth'):
+                                    store.mutate('create', 'SYNTH_NAME', 'after', operation())
+                                else:
+                                    store.mutate(change, 'SYNTH_NAME', None if change == 'delete' else 'after', operation())
+                            finally:
+                                held.release()
+                            if change in ('locked', 'cancelled', 'prompt_growth', 'passthrough_locked'):
+                                expected_error = ex.PromptTransportTooLargeError if change == 'prompt_growth' else DeferredTeamMove
+                                with self.assertRaises(expected_error):
+                                    future.result(timeout=5)
+                                if change == 'passthrough_locked':
+                                    owner.direct_terminal()
+                                    self.assertTrue(owner.state.attempts[-1].no_launch_deferred)
+                                    self.assertTrue(owner.state.attempts[-1].quiescent)
+                                self.assertFalse(owner.attempt_open)
+                                owner.owner_live = True
+                                owner.finish(deferred=True, failed=False)
+                            else:
+                                self.assertEqual(future.result(timeout=5),
+                                    [change != 'delete', change == 'delete', change != 'delete'])
+                                owner.direct_terminal()
+                                owner.finish(deferred=False, failed=False)
+                        self.backend.locked = False
 
     async def test_p01_unsafe_roots_and_named_export_exclusion(self) -> None:
         from runtime.portability.roots import classify_root_entries, RootClassification, EXCLUDE_ORG_SECRETS

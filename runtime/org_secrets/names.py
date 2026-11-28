@@ -19,12 +19,19 @@ RESERVED_NAMES = frozenset({
     'MISTRAL_API_KEY', 'DEEPSEEK_API_KEY', 'AZURE_API_KEY',
     'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
     'AWS_PROFILE', 'AWS_REGION', 'AWS_DEFAULT_REGION',
+    'LANG', 'LANGUAGE', 'TZ', 'ENV', 'SHELLOPTS', 'PS4', 'IFS', 'CDPATH',
+    'GLOBIGNORE', 'PROMPT_COMMAND', 'ZDOTDIR', 'FPATH',
+    'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE',
 })
 RESERVED_PREFIXES = (
     'HAPPYRANCH_', 'ANTHROPIC_', 'OPENAI_', 'CLAUDE_', 'CODEX_', 'OPENCODE_',
     'PI_', 'UV_', 'PIP_', 'DYLD_', 'BEDROCK_', 'VERTEX_', 'GOOGLE_CLOUD_',
     'AZURE_OPENAI_',
+    # Interpreters/loaders consume these before application code and may echo
+    # invalid values in automatic startup diagnostics. Reserve whole families.
+    'LC_', 'PYTHON', 'NODE_', 'LD_', 'BASH', 'ZSH',
 )
+
 
 
 class SecretError(RuntimeError):
