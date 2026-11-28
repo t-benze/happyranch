@@ -2836,6 +2836,16 @@ Only exhaustive absence returns a real EMPTY `_CodingInventory`/`QueuedStorage`,
 including empty reverse point-dependency facts. It never returns retained=None
 or a partial positive reconstruction.
 
+The B1 retained-table subset uses SQL negative discrimination over every matched
+column before the original bounded acquisition/decoder. Only plain ASCII values
+with no reference or uncertain JSON shape can be ruled out in SQL. Duplicates,
+encoded/native cells, nested JSON text, non-ASCII/opaque text and depth/number
+uncertainty remain candidates. Result references inside arrays retain their
+enclosing field name. Original L and retained/C ledgers remain cumulative.
+The F layout is still COMPLETE: native metadata/audit acquisition must also fit
+those allowances before its gate can be enabled. This subset makes no F write
+success or handler-latency claim.
+
 A/B/C/L and the retained ledger, original caps and absolute deadline remain
 cumulative through probes, selected replay and fallback. The private complete
 reader composition inputs reuse the just-matched layout in the same unchanged

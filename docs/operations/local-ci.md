@@ -4920,6 +4920,16 @@ results/audits and consumption receipts with an empty retained inventory. Option
 `MIXED_DEFAULT_READ_DATABASE` use the same synthetic fixture copy under task-tmp
 for an exact base/head comparison, never a live database.
 
+The B1 retained-table subset adds `--s7a=mixed_candidates` and
+`--s7a=mixed_candidate_fallback` to the same Python3.14/3.12 command. The first
+drives real source/target cancellation with 100 unrelated publication snapshots
+and disconnected retained corruption, requiring an EMPTY retained inventory and
+unchanged journals. The second compares original COMPLETE outcomes for duplicate
+and escaped keys, opaque UTF8, unknown encoded/typed cells, depth, nonfinite and
+scalar JSON, nested JSON, array/string result references and reference keys.
+`mixed_corruption` and `mixed_budget` remain affected-closure/exhaustion keepers.
+F remains COMPLETE; these J-layout tests do not claim F fast-path acceptance.
+
 C1's unused selected-reader APIs/tests/docs are removed by normal revert; the
 original complete retained corruption keepers remain. Group 7b wires the mixed
 cancellation/legacy/member-capture/tail sites to this adapter. Complete

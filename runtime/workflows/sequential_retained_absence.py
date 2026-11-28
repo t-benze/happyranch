@@ -154,6 +154,10 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
         return _reference(value, name=name, texts=texts, results=result_ids, result_texts=result_texts,
                           budget=budget, clock=clock, structured=structured)
 
+    retained_keys = ordered(texts) + ordered(result_ids) + ordered(result_texts)
+    _reserve(budget, 1024 + 32 * len(retained_keys) + 2 * sum(
+        len(key.encode('utf8')) for key in retained_keys if type(key) is str))
+
     def rows(table: str, columns: tuple[str, ...], *, where: str = '1', args: tuple = ()) -> Iterator[tuple]:
         # Exact schema admission precedes this use of names. Native candidate
         # projections retain the same finite value/row/byte gates too.
@@ -188,13 +192,76 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
             args += text_keys + result_keys + values
         return ' OR '.join(clauses) or '0', args
 
+    def retained_candidates(columns: tuple[str, ...]) -> tuple[str, tuple]:
+        """Overselect references/uncertainty; SQL negatives spend only L.
+
+        JSON1 is not the decoder: it accepts invalid UTF8, truncates some text
+        operations at NUL, and has different number/depth rules. Only plain
+        ASCII raw AND decoded text can be negative here. Everything encoded,
+        nested, duplicate, deep or otherwise uncertain reaches _reference with
+        the original bounded acquisition. The rowid pages in _bounded_rows
+        retain indexed forward progress; no table/column is exempted.
+        """
+        keys = retained_keys
+        # Reuse numbered bindings across columns, including json_tree probes.
+        # _bounded_rows appends its original paging/remaining-credit bindings.
+        matches = '(' + ','.join('?' + str(i + 1) for i in range(len(keys))) + ')'
+        text_matches = '(' + ','.join('?' + str(i + 1) for i in range(len(texts))) + ')'
+        result_matches = '(' + ','.join('?' + str(i + 1) for i in range(len(texts), len(keys))) + ')'
+        ascii_bad = "'*[^ -~' || char(9,10,13) || ']*'"
+
+        def uncertain_text(value: str) -> str:
+            return ('(' + value + ' GLOB (' + ascii_bad + ') OR length(CAST('
+                    + value + ' AS BLOB))!=length(' + value + '))')
+
+        clauses = []
+        for column in columns:
+            budget.step()
+            quoted = '"' + column.replace('"', '""') + '"'
+            text = 'CAST(' + quoted + ' AS TEXT)'
+            structured = column.endswith(('_bytes', '_json')) or column == 'captured_members'
+            if column.endswith(('_base64', '_hex')):
+                clauses.append('(' + quoted + ' IS NOT NULL)')
+                continue
+            # Arrays inherit the enclosing field name in _reference. Fullkey
+            # includes those ancestors; quoted punctuation only overselects.
+            result_path = ('1' if column == 'id' or 'result' in column else
+                           "(key='id' OR instr(fullkey,'result')>0 OR instr(fullkey,'.id')>0)")
+            tree = ('EXISTS (WITH tree AS MATERIALIZED (SELECT * FROM json_tree(' + text + ')) '
+                'SELECT 1 FROM tree WHERE atom IN ' + text_matches + ' OR key IN ' + text_matches
+                + ' OR (' + result_path + ' AND atom IN ' + result_matches + ')'
+                + " OR instr(key,'base64')>0 OR instr(key,'hex')>0 OR key='storage_class'"
+                + " OR (type='text' AND (" + uncertain_text('atom')
+                + " OR substr(ltrim(atom,char(9,10,11,12,13,32)),1,1) IN ('{','[')))"
+                + " OR (typeof(key)='text' AND " + uncertain_text('key') + ')'
+                + " OR (typeof(atom)='real' AND (atom>1.7976931348623157e308 OR atom< -1.7976931348623157e308))"
+                # Dots/brackets inside quoted names only overestimate depth.
+                + " OR length(fullkey)-length(replace(fullkey,'.',''))"
+                + "+length(fullkey)-length(replace(fullkey,'[',''))+1>24"
+                + " UNION ALL SELECT 1 FROM tree WHERE typeof(key)='text'"
+                + ' GROUP BY parent,key HAVING count(*)>1)')
+            json_case = ('CASE WHEN NOT json_valid(' + text + ') THEN 1 WHEN json_type('
+                         + text + ") NOT IN ('object','array') THEN 1 ELSE " + tree + ' END')
+            clauses.append('(CASE WHEN ' + quoted + ' IS NULL THEN 0 '
+                + 'WHEN typeof(' + quoted + ") NOT IN ('text','blob') THEN "
+                + ('1 ' if structured else '(typeof(' + quoted + ")!='integer' OR "
+                   + (quoted + ' IN ' + matches if column == 'id' or 'result' in column else '0') + ') ')
+                + 'WHEN length(CAST(' + quoted + ' AS BLOB))>1048576 THEN 1 '
+                + 'WHEN ' + uncertain_text(text) + ' THEN 1 '
+                + 'WHEN ' + text + ' IN ' + matches + ' THEN 1 '
+                + ('ELSE ' + json_case if structured else 'WHEN substr(ltrim(' + text
+                   + ",char(9,10,11,12,13,32)),1,1) IN ('{','[') THEN " + json_case + ' ELSE 0')
+                + ' END)')
+        return ' OR '.join(clauses) or '0', keys
+
     try:
         for table, columns in metadata.items():
             if not table.startswith('workflow_') or table.startswith('workflow_seq_'):
                 continue
             names = tuple(row[1] for row in columns)
             where = "version=1 AND kind!='legacy'" if table == 'workflow_task_ownership' else '1'
-            for row in rows(table, names, where=where):
+            candidates, args = retained_candidates(names)
+            for row in rows(table, names, where='(' + where + ') AND (' + candidates + ')', args=args):
                 clock.check()
                 for name, value in zip(names, row[:len(names)], strict=True):
                     if references(name, value, structured=name.endswith(('_bytes', '_json'))

@@ -273,6 +273,17 @@ encodings, a positive reference, selected retained ownership, @1 data or an
 unsupported layout all use the original complete reader. No positive retained
 inventory is reconstructed by this adapter.
 
+The B1 retained-table subset discriminates every column in SQL under original L,
+then acquires only candidates through the existing bounded rowid pages. SQL can
+rule out only plain ASCII scalar/JSON values with no matching task/run/instance
+or appropriately named result reference. Duplicate keys, nested JSON strings,
+encoded/native cells, non-ASCII/opaque text, nonfinite values and excessive depth
+remain candidates for the unchanged decoder. Arrays preserve inherited result
+field names. This avoids decoding unrelated publication snapshots. It does not
+enable the observed F layout: that gate stays COMPLETE until the remaining
+native metadata/audit proof fits the same cumulative allowances. No F fast-path
+or approximately 100 ms acceptance follows from this subset.
+
 Only exhaustive absence constructs an EMPTY retained `_CodingInventory` with a
 real empty `QueuedStorage` and empty reverse cancellation dependencies. All
 returned mixed native rows remain exactly closure I. No retained=None or partial

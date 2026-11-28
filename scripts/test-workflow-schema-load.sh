@@ -109,7 +109,8 @@ S7A_CASES = ('plural_links', 'held_cause', 'history_label', 'unavailable',
     'source_outer_capacity', 'source_outer_replay', 'source_outer_rollback',
     'control_scope', 'cancel_fence_scope', 'cancel_finish_scope',
     'settings_scope', 'settings_corruption', 'builtin_scope',
-    'mixed_empty', 'mixed_corruption', 'mixed_unrelated', 'mixed_fallback', 'mixed_budget', 'mixed_default', 'mixed_native')
+    'mixed_empty', 'mixed_corruption', 'mixed_unrelated', 'mixed_fallback', 'mixed_budget', 'mixed_default', 'mixed_native',
+    'mixed_candidates', 'mixed_candidate_fallback')
 s7a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s7a='):
     s7a_case = sys.argv[1].split('=', 1)[1]
@@ -8645,7 +8646,8 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     'initiator_scope', 'dispatch_scope', 'hold_scope', 'start_callback_scope',
                     'control_scope', 'cancel_fence_scope', 'cancel_finish_scope',
                     'settings_scope', 'settings_corruption', 'builtin_scope',
-                    'mixed_empty', 'mixed_corruption', 'mixed_unrelated', 'mixed_fallback', 'mixed_budget', 'mixed_default', 'mixed_native'):
+                    'mixed_empty', 'mixed_corruption', 'mixed_unrelated', 'mixed_fallback', 'mixed_budget', 'mixed_default', 'mixed_native',
+                    'mixed_candidates', 'mixed_candidate_fallback'):
             from runtime.workflows import sequential_history, sequential_views
             from runtime.workflows.sequential_control import validate_control_write
             from runtime.workflows.sequential_task_history import read_write_history, read_cancellation_headroom
@@ -8792,6 +8794,50 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     print('PASS S7a', case, 'original source outer writer/proofs/publication/rollback', flush=True)
                 continue
 
+            if case == 'mixed_candidates':
+                from runtime.workflows import sequential_mixed_history as mixed_owner
+                from runtime.workflows.coding_authority_history import _Budget
+                with s6fixture() as f:
+                    raw = s4bytes({'items': [{'note': 'ordinary', 'number': i} for i in range(120)]})
+                    for i in range(100):
+                        damage(f, 'workflow_publication_journals',
+                            'INSERT INTO workflow_publication_journals VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                            ('negative-journal-'+str(i), 'unrelated', i+1, i, raw, '0'*64,
+                             'synthetic', 'unrelated-sid', 0, 'cache_installed', 'unrelated', None))
+                    damage(f, 'workflow_coding_events',
+                        'INSERT INTO workflow_coding_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                        ('negative-event', 'unrelated', 1, None, 'scratch', 'synthetic', 'negative',
+                         '0'*64, 'run_started', None, b'{"task_id":"unrelated"}', '0'*64, '2026-11-01T00:00:00+00:00'))
+                    # Complete validation owns these corrupt disconnected rows;
+                    # the mixed writer must prove every column has no reference.
+                    before_journals = tuple(tuple(r) for r in f.conn.execute('SELECT * FROM workflow_publication_journals ORDER BY id'))
+                    try:
+                        read_sequential_history(f.conn, expected_org_slug='scratch')
+                    except ValueError:
+                        pass
+                    else:
+                        raise AssertionError('B1 fixture did not exercise disconnected retained corruption')
+                    supplied = _Budget()
+                    with s5reopen(f) as conn, patch.object(mixed_owner, 'read_sequential_history',
+                            side_effect=AssertionError('B1 negative journals called complete reader')):
+                        selected = mixed_owner.read_mixed_write_history_uncommitted(conn, org_slug='scratch',
+                            task_id=f.source.id, budget=sequential_history._ReadBudget(), retained_budget=supplied)
+                    assert selected.retained[1].budget is supplied and not any(vars(selected.retained[1].queued).values())
+                    # Real source/target cancellation, not just helper success.
+                    candidates = {f.source.id, *(ids.carrier_task_id for ids in f.batch_ids),
+                                  *(ids.visit_task_id for ids in f.batch_ids)}
+                    live = {key for key in candidates if f.db.get_task(key).status not in
+                            ('completed','failed','cancelled','superseded')}
+                    with patch.object(mixed_owner, 'read_sequential_history',
+                            side_effect=AssertionError('B1 mixed write fell back on unrelated JSON')):
+                        reply = s6bcancel(f)
+                    assert reply['ok'] and set(reply['cancelled']) == live, ('B1 cancellation set', reply, live)
+                    assert all(f.db.get_task(key).status == 'cancelled' for key in live)
+                    assert all(s4row(f, 'workflow_seq_runs', ids.run_id)['state'] == 'finished' for ids in f.batch_ids)
+                    assert tuple(tuple(r) for r in f.conn.execute('SELECT * FROM workflow_publication_journals ORDER BY id')) == before_journals
+                    print('PASS S7a mixed_candidates 100 disconnected corrupt journals; EMPTY inventory; real mixed cancellation committed', flush=True)
+                continue
+
             with s4fixture() as f:
                 task_path = '/tasks/' + f.source.id + '/sequential-workflows'
                 if case.startswith('mixed_') and case != 'mixed_native':
@@ -8859,7 +8905,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             Path(os.environ['MIXED_DEFAULT_OUTPUT']).write_text(json.dumps(asdict(full),
                                 sort_keys=True, separators=(',', ':'), default=encode))
                         print('PASS S7a mixed_default: old wrapper/default complete rows, inventory and ledger', flush=True)
-                    elif case in ('mixed_corruption', 'mixed_fallback'):
+                    elif case in ('mixed_corruption', 'mixed_fallback', 'mixed_candidate_fallback'):
                         import base64
 
                         from runtime.infrastructure.task_pause_controls import PauseControlError
@@ -8873,11 +8919,16 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
 
                         if case == 'mixed_corruption':
                             variants = ('event', 'parent_cycle', 'parent_missing', 'namespace')
+                        elif case == 'mixed_candidate_fallback':
+                            variants = ('disconnected_duplicate', 'escaped_duplicate', 'opaque_utf8',
+                                'encoded_unknown', 'typed_unknown', 'deep_unknown', 'nonfinite', 'integer_overflow', 'scalar_json',
+                                'nested_json', 'array_result', 'string_result', 'key_reference')
                         else:
                             variants = ('mapping', 'task_scalar', 'run_scalar', 'instance_scalar',
                                 'result_scalar', 'document_result', 'json', 'escaped_json', 'base64', 'hex',
                                 'native_cell', 'native_integer', 'native_callback', 'ordinary_audit', 'native_journal',
                                 'ownership', 'revisit', 'settings_pointer', 'duplicate_json', 'unknown_journal', 'unknown_native_shape', 'unknown')
+                        candidate_mismatches = []
                         for variant in variants:
                             with s4fixture() as victim:
                                 target = victim.source.id
@@ -8980,6 +9031,35 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                                         raw = ('{"task_id":"' + target + '","task_id":"unrelated"}').encode()
                                     if variant == 'escaped_json':
                                         raw = ('{"task_id":"' + ''.join('\\u%04x' % ord(c) for c in target) + '"}').encode()
+                                    if case == 'mixed_candidate_fallback':
+                                        result = victim.conn.execute('SELECT source_result_id FROM workflow_seq_runs WHERE id=?',
+                                            (victim.ids.run_id,)).fetchone()[0]
+                                        if variant == 'disconnected_duplicate':
+                                            raw = b'{"ordinary":1,"ordinary":2}'
+                                        elif variant == 'escaped_duplicate':
+                                            raw = b'{"ordinary":1,"\\u006frdinary":2}'
+                                        elif variant == 'opaque_utf8':
+                                            raw = b'{"ordinary":"\xff"}'
+                                        elif variant == 'encoded_unknown':
+                                            raw = b'{"snapshot_bytes_base64":"bad$"}'
+                                        elif variant == 'typed_unknown':
+                                            raw = s4bytes(dict(name='id', storage_class='blob', value='ordinary'))
+                                        elif variant == 'deep_unknown':
+                                            raw = b'{"x":' * 25 + b'{}' + b'}' * 25
+                                        elif variant == 'nonfinite':
+                                            raw = b'{"ordinary":1e999}'
+                                        elif variant == 'integer_overflow':
+                                            raw = b'{"ordinary":' + b'1' * 5000 + b'}'
+                                        elif variant == 'scalar_json':
+                                            raw = b'17'
+                                        elif variant == 'nested_json':
+                                            raw = s4bytes(dict(payload=json.dumps(dict(task_id=target))))
+                                        elif variant == 'array_result':
+                                            raw = s4bytes(dict(result_ids=[result]))
+                                        elif variant == 'string_result':
+                                            raw = s4bytes(dict(result_id=str(result)))
+                                        elif variant == 'key_reference':
+                                            raw = s4bytes({target: 'ordinary'})
                                     damage(victim, 'workflow_coding_events',
                                         'INSERT INTO workflow_coding_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                                         ('unrelated-event', instance, 1, None, 'scratch', 'synthetic', variant,
@@ -8990,10 +9070,15 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                                 supplied = sequential_history._ReadBudget()
                                 retained = _Budget()
                                 actual = outcome(lambda: mixed(victim, budget=supplied, retained=retained))
+                                if case == 'mixed_candidate_fallback' and actual != expected:
+                                    candidate_mismatches.append(variant)
+                                    print('B1 candidate fallback mismatch', variant, expected[0], actual[0], flush=True)
+                                    continue
                                 assert actual == expected, (variant, 'fallback outcome differs', expected, actual)
                                 assert s4snap(victim) == before
                                 assert supplied.consumed > 0 and supplied.traversed > 0
                                 print('PASS S7a', case, variant, actual[:2] if actual[0] != 'accepted' else ('accepted',), flush=True)
+                        assert not candidate_mismatches, ('B1 candidate fallback lost original outcome', candidate_mismatches)
                     elif case == 'mixed_unrelated':
                         old = s7legacy(f)
                         damage(f, 'workflow_seq_events', 'UPDATE workflow_seq_events SET event_digest=? WHERE run_id=?',
