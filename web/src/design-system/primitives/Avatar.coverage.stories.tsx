@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react';
 import { Avatar, type AvatarSize, type AvatarTone } from './Avatar';
 
-const TONES: AvatarTone[] = ['founder', 'manager', 'worker', 'soft', 'neutral'];
+const TONES: AvatarTone[] = ['founder', 'manager', 'worker', 'soft', 'neutral', 'guest'];
 const SIZES: AvatarSize[] = ['sm', 'md', 'lg'];
 
 const meta = {

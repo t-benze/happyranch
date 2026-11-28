@@ -30,6 +30,42 @@ thread_id, guest_id and invite_code. MCP is external-app-only, setup CLI-only;
 both routes are excluded from the browser contract and remain remotely denied.
 No guest Web UI or upload/fetch tools ship in slice 2.
 
+### Thread guest Web UI (slice 4)
+
+The thread detail rail adds **Invite desktop app** beside Invite participant,
+and a **Guests** group under the agents. Each seat shows the daemon's label, its
+state (invited / joined / ended), its expiry, "read to #n · m new" (m counts
+loaded messages above `last_read_seq`) and when it was last active. **Copy
+nudge** (joined seats) copies the fixed English prompt `Check HappyRanch thread
+THR-n for new messages and respond.`. **New code** (invited seats) and
+**Revoke** (any seat that has not ended) call the existing seat routes. The
+seat projection has no "listening" field, so the web does not show that state.
+
+The invite dialog (`GuestInviteDialog`) asks for the app (Claude desktop
+labelled untested), the lifetime (1 hour / 24 hours default / 7 days) and the
+read scope (whole thread default / from now on). It shows the §7.5 warning
+about what the guest will read. After Create invite or New code, it shows the
+daemon's one-time prompt with Copy prompt, the shown-once / 10-minute note and
+New code while the seat is still invited. The prompt is kept only in dialog
+state.
+
+When the app's active target is a remote Host (`useRemoteHost`), Invite desktop
+app, New code and Revoke are not rendered. The seat list, Copy nudge and a short
+"only on this computer" note stay.
+
+Messages with a `guest:G-n` speaker show the seat label, a `guest` badge and
+the Avatar `guest` tone (attention-soft). Inbox rows show `Guest G-n` for a
+guest last speaker. The `thread_guest_invited`, `thread_guest_joined` and
+`thread_guest_ended` system rows (`system_payload` `{kind_tag, guest_id,
+label[, cause]}`) render as translated event chips with the label and cause.
+Before this slice, they showed the raw tag.
+
+Settings ▸ Organization ▸ Desktop app guests shows read-only text for Codex
+desktop: the `guests setup` command, `<runtime>/orgs/SLUG/guests/codex_desktop/`
+and the config stanza. The stanza uses the page's own loopback port when the
+daemon serves the page, else 8765. It calls no route. All strings ship in `en`
+and `zh-CN`.
+
 Start@2 B2+B3 uses genuine atomic first/later completion admission, original source
 settlement, initiator-owned hold recovery and source-never-auto-completes semantics;
 [the current contract](contracts/reusable-workflows.md#r2-unit-b-start2-admission-and-continuation) owns details.

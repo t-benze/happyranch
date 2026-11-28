@@ -2,8 +2,10 @@
 
 Status: **Approved by the founder (THR-362 msg56, decisions 1–16); slice 1 built
 in PR #1867 (TASK-19051). Slice 2 implemented in TASK-19141; independent
-exact-head review/QA and merge remain delivery gates.** Slices 3–4 remain unbuilt;
-the first real product join/read/post is still founder-attended after merge.
+exact-head review/QA and merge remain delivery gates.** Slice 3 remains unbuilt.
+Slice 4 (web) is implemented in TASK-19745; independent review/QA and merge
+remain delivery gates. The first real product join/read/post is still
+founder-attended after merge.
 
 This replaces the task hand-off design proposed in
 [PR #1555](https://github.com/t-benze/happyranch/pull/1555)
@@ -636,6 +638,13 @@ TypeScript client mirror in `web/src/lib/api/threads.ts`); add nothing to
 `runtime/remote_access/route_policy.json`.
 
 ### 13.2 Web
+
+**Implemented in TASK-19745 (slice 4).** One deviation: the "listening" state is
+not shown. The seat projection has no field for an open `wait_for_messages`
+call, so seats show joined plus "last active". Showing listening needs a
+backend projection field, which is follow-up work. Strings live in the typed
+locale catalogs (`web/src/lib/i18n/locales/en.ts`, `zh-CN.ts`);
+`features/threads/strings.ts` only re-exports error helpers.
 
 - Participants rail: **Invite desktop app** button; guest seats listed under the
   agents in their own "Guests" group, each with label, state (invited / joined /

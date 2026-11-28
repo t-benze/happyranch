@@ -33,6 +33,10 @@ import type {
   ArchiveArgs,
   ComposeArgs,
   InviteArgs,
+  InviteGuestArgs,
+  GuestInviteResult,
+  GuestSeatArgs,
+  RevokeGuestResult,
   MutationLike,
   QueryLike,
   RemoveParticipantArgs,
@@ -541,6 +545,50 @@ function useRemoveParticipant(threadId: string): MutationLike<
   });
 }
 
+/** Guest seat routes take the bare seat id (`G-n`); reads project `guest:G-n`. */
+function guestSeatId(guestId: string): string {
+  return guestId.startsWith('guest:') ? guestId.slice('guest:'.length) : guestId;
+}
+
+function useInviteGuest(threadId: string): MutationLike<InviteGuestArgs, GuestInviteResult> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: InviteGuestArgs) => threadsApi.inviteThreadGuest(slug, threadId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+    },
+    retry: false,
+  });
+}
+
+function useReplaceGuestCode(threadId: string): MutationLike<GuestSeatArgs, GuestInviteResult> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ guestId }: GuestSeatArgs) =>
+      threadsApi.replaceThreadGuestCode(slug, threadId, guestSeatId(guestId)),
+    onSettled: () => {
+      // A lapsed seat is ended by this call (409 guest_seat_ended): refresh either way.
+      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+    },
+    retry: false,
+  });
+}
+
+function useRevokeGuest(threadId: string): MutationLike<GuestSeatArgs, RevokeGuestResult> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ guestId }: GuestSeatArgs) =>
+      threadsApi.revokeThreadGuest(slug, threadId, guestSeatId(guestId)),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+    },
+    retry: false,
+  });
+}
+
 function useArchiveThread(threadId: string): MutationLike<
   ArchiveArgs,
   Awaited<ReturnType<typeof threadsApi.archiveThread>>
@@ -727,6 +775,9 @@ export const realThreadsApi: ThreadsApi = {
   useSendFollowUp,
   useInviteAgent,
   useRemoveParticipant,
+  useInviteGuest,
+  useReplaceGuestCode,
+  useRevokeGuest,
   useArchiveThread,
   useResumeThread,
   useAbortReplies,

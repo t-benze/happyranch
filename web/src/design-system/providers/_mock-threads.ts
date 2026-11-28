@@ -22,8 +22,12 @@ import type {
   ComposeArgs,
   ComposeResult,
   InfiniteQueryLike,
+  GuestInviteResult,
+  GuestSeatArgs,
   InviteArgs,
+  InviteGuestArgs,
   InviteResult,
+  RevokeGuestResult,
   MutationLike,
   QueryLike,
   RemoveParticipantArgs,
@@ -408,6 +412,29 @@ function useInviteAgent(threadId: string): MutationLike<InviteArgs, InviteResult
   });
 }
 
+// The prototype has no desktop-app guest seats (THR-362): the founder-only seat
+// routes are loopback daemon routes. Fail visibly rather than fake a code.
+function unavailableGuestMutation<TArgs, TResult>(): MutationLike<TArgs, TResult> {
+  return {
+    mutateAsync: async () => {
+      throw new Error('Desktop app guests are not available in the prototype.');
+    },
+    isPending: false,
+  };
+}
+
+function useInviteGuest(_threadId: string): MutationLike<InviteGuestArgs, GuestInviteResult> {
+  return unavailableGuestMutation();
+}
+
+function useReplaceGuestCode(_threadId: string): MutationLike<GuestSeatArgs, GuestInviteResult> {
+  return unavailableGuestMutation();
+}
+
+function useRevokeGuest(_threadId: string): MutationLike<GuestSeatArgs, RevokeGuestResult> {
+  return unavailableGuestMutation();
+}
+
 function useRemoveParticipant(
   threadId: string,
 ): MutationLike<RemoveParticipantArgs, RemoveParticipantResult> {
@@ -612,6 +639,9 @@ export const mockThreadsApi: ThreadsApi = {
   useSendFollowUp,
   useInviteAgent,
   useRemoveParticipant,
+  useInviteGuest,
+  useReplaceGuestCode,
+  useRevokeGuest,
   useArchiveThread,
   useResumeThread,
   useAbortReplies,
