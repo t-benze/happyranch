@@ -18,10 +18,23 @@ The app embeds pinned **Sparkle 2.10.1**. The updater starts only when the
 bundle's `SUPublicEDKey` is canonical base64 of exactly 32 bytes. Optional build
 argument `--sparkle-public-key PUBLIC_KEY` retains strict validation. With a
 valid key the build writes `SUEnableAutomaticChecks=YES` and
-`SUAutomaticallyUpdate=YES` (silent check/download); without one it omits the
+`SUAutomaticallyUpdate=YES` (automatic check/download defaults); without one it omits the
 key, writes both false, leaves the updater unstarted and disables Check for
 Updates. The feed stays `https://app.happyranch.ai/mac/appcast.xml`. Only the
 founder supplies the public key; no private key or generation is part of this build.
+
+**HappyRanch → Update Settings…** beside **Check for Updates…** discloses
+the feed and request data in English and Chinese. Turning off **Automatically
+check for updates** disables both future automatic checks and downloads through
+Sparkle's persisted `automaticallyChecksForUpdates` / `automaticallyDownloadsUpdates`
+properties; startup preserves the choice. Re-enabling turns both on. Manual
+checks remain available; in-progress or already downloaded updates may still
+complete. Keyless builds show the disclosure with the checkbox disabled.
+The request exposes the public IP address and uses
+`HappyRanch/<app version> Sparkle/2.10.1` as its default User-Agent.
+Optional system-profile sending is kept off; Sparkle does not explicitly add
+macOS version or hardware details to our feed request. See the
+[request details and pinned source references](../../app/mac/README.md#internal-candidate-build).
 
 Relaunch requests always enter the app's postpone gate, including Sparkle's
 scheduled/impatient prompt. The app consumes only the new read-only
