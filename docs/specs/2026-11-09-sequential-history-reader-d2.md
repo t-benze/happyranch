@@ -280,9 +280,14 @@ or appropriately named result reference. Duplicate keys, nested JSON strings,
 encoded/native cells, non-ASCII/opaque text, nonfinite values and excessive depth
 remain candidates for the unchanged decoder. Arrays preserve inherited result
 field names. This avoids decoding unrelated publication snapshots. It does not
-enable the observed F layout: that gate stays COMPLETE until the remaining
-native metadata/audit proof fits the same cumulative allowances. No F fast-path
-or approximately 100 ms acceptance follows from this subset.
+enable the observed F layout. Native task-results metadata and eligible audit
+payloads now share this conservative candidate walk, with original reserved
+Coding scalar/prefix candidates and independent Coding/workflow audit task
+bindings. Distinct action lookup preserves the original eligible action set.
+Uncertain candidates still use the original decoder; the observed native result
+history exhausts its unchanged retained decode allowance. The F gate therefore
+stays COMPLETE until that proof fits the same cumulative allowances. No generic
+control exemption, F fast-path or approximately 100 ms acceptance follows.
 
 Only exhaustive absence constructs an EMPTY retained `_CodingInventory` with a
 real empty `QueuedStorage` and empty reverse cancellation dependencies. All

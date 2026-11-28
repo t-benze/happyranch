@@ -2842,8 +2842,16 @@ with no reference or uncertain JSON shape can be ruled out in SQL. Duplicates,
 encoded/native cells, nested JSON text, non-ASCII/opaque text and depth/number
 uncertainty remain candidates. Result references inside arrays retain their
 enclosing field name. Original L and retained/C ledgers remain cumulative.
-The F layout is still COMPLETE: native metadata/audit acquisition must also fit
-those allowances before its gate can be enabled. This subset makes no F write
+Native task-results metadata and eligible audit payloads use the same conservative
+candidate walk before bounded acquisition. Original Coding scalar/prefix markers
+remain candidates, including compiler/validator/source pins. The original audit
+action set is located through distinct native action values; task bindings for
+Coding/workflow actions are inspected independently of payload negatives. Unknown
+or encoded candidates still enter the original decoder, and every probe and
+fallback shares the original ledgers and deadline. No native control action is
+exempted. The F layout stays COMPLETE: conservative native candidates still
+exhaust the unchanged retained decode allowance on the observed copy, so the
+required affordable absence proof is incomplete. This subset makes no F write
 success or handler-latency claim.
 
 A/B/C/L and the retained ledger, original caps and absolute deadline remain

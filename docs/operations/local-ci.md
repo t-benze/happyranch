@@ -4929,6 +4929,16 @@ and escaped keys, opaque UTF8, unknown encoded/typed cells, depth, nonfinite and
 scalar JSON, nested JSON, array/string result references and reference keys.
 `mixed_corruption` and `mixed_budget` remain affected-closure/exhaustion keepers.
 F remains COMPLETE; these J-layout tests do not claim F fast-path acceptance.
+The B1 native continuation adds `--s7a=mixed_native_candidates` (100 plain native
+results and 100 audits across original eligible actions, real mixed cancellation,
+unchanged native rows) and `--s7a=mixed_native_fallback` (both native tables,
+reference/escaped/array/key and duplicate/opaque/encoded/typed/nested/deep/number
+unknown shapes, plus valid Unicode and reserved compiler-pin candidates).
+The latter compares original complete outcomes for references/unknowns and
+observes the original decoder for valid candidates it can prove unrelated.
+Both run with the same Python3.14/3.12 commands; existing mixed corruption and
+cumulative-budget keepers remain. The observed F probe still exhausts retained
+decode bytes, so F acceptance remains NOT RUN rather than substituted with J.
 
 C1's unused selected-reader APIs/tests/docs are removed by normal revert; the
 original complete retained corruption keepers remain. Group 7b wires the mixed

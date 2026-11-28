@@ -154,6 +154,7 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
         return _reference(value, name=name, texts=texts, results=result_ids, result_texts=result_texts,
                           budget=budget, clock=clock, structured=structured)
 
+    scalar = set(CODING_PREFIXES) | set(CODING_VALUES) | set(CODING_NAMESPACE_COLUMNS)
     retained_keys = ordered(texts) + ordered(result_ids) + ordered(result_texts)
     _reserve(budget, 1024 + 32 * len(retained_keys) + 2 * sum(
         len(key.encode('utf8')) for key in retained_keys if type(key) is str))
@@ -192,7 +193,7 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
             args += text_keys + result_keys + values
         return ' OR '.join(clauses) or '0', args
 
-    def retained_candidates(columns: tuple[str, ...]) -> tuple[str, tuple]:
+    def retained_candidates(columns: tuple[str, ...], *, native: bool = False, offset: int = 0) -> tuple[str, tuple]:
         """Overselect references/uncertainty; SQL negatives spend only L.
 
         JSON1 is not the decoder: it accepts invalid UTF8, truncates some text
@@ -203,11 +204,28 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
         retain indexed forward progress; no table/column is exempted.
         """
         keys = retained_keys
+        native_marker = ''
+        if native:
+            values = ordered({value for group in CODING_VALUES.values() for value in group})
+            _reserve(budget, 1024 + 32 * len(values) + 2 * sum(len(value.encode('utf8')) for value in values))
+            native_marker = (" OR key='format' OR atom IN ("
+                + ','.join('?' + str(offset + len(keys) + i + 1) for i in range(len(values))) + ')'
+                + " OR (key='action' AND substr(lower(atom),1,7)='coding_')"
+                + " OR (key IN ('namespace','authority_namespace','org_namespace') AND instr(atom,'coding-setup')>0)"
+                + " OR (key='registrar' AND substr(lower(atom),1,14)='builtin:coding-')")
+            keys += values
+            for name, prefixes in CODING_PREFIXES.items():
+                for prefix in prefixes:
+                    budget.step()
+                    _reserve(budget, 256 + 16 * len(keys) + 4 * len(prefix))
+                    keys += (prefix,)
+                    native_marker += (" OR (key='" + name + "' AND substr(atom,1," + str(len(prefix))
+                                      + ')=?' + str(offset + len(keys)) + ')')
         # Reuse numbered bindings across columns, including json_tree probes.
         # _bounded_rows appends its original paging/remaining-credit bindings.
-        matches = '(' + ','.join('?' + str(i + 1) for i in range(len(keys))) + ')'
-        text_matches = '(' + ','.join('?' + str(i + 1) for i in range(len(texts))) + ')'
-        result_matches = '(' + ','.join('?' + str(i + 1) for i in range(len(texts), len(keys))) + ')'
+        matches = '(' + ','.join('?' + str(offset + i + 1) for i in range(len(retained_keys))) + ')'
+        text_matches = '(' + ','.join('?' + str(offset + i + 1) for i in range(len(texts))) + ')'
+        result_matches = '(' + ','.join('?' + str(offset + i + 1) for i in range(len(texts), len(retained_keys))) + ')'
         ascii_bad = "'*[^ -~' || char(9,10,13) || ']*'"
 
         def uncertain_text(value: str) -> str:
@@ -219,7 +237,8 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
             budget.step()
             quoted = '"' + column.replace('"', '""') + '"'
             text = 'CAST(' + quoted + ' AS TEXT)'
-            structured = column.endswith(('_bytes', '_json')) or column == 'captured_members'
+            structured = (column.endswith(('_bytes', '_json')) or column == 'captured_members'
+                          or (native and column not in scalar))
             if column.endswith(('_base64', '_hex')):
                 clauses.append('(' + quoted + ' IS NOT NULL)')
                 continue
@@ -230,6 +249,7 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
             tree = ('EXISTS (WITH tree AS MATERIALIZED (SELECT * FROM json_tree(' + text + ')) '
                 'SELECT 1 FROM tree WHERE atom IN ' + text_matches + ' OR key IN ' + text_matches
                 + ' OR (' + result_path + ' AND atom IN ' + result_matches + ')'
+                + native_marker
                 + " OR instr(key,'base64')>0 OR instr(key,'hex')>0 OR key='storage_class'"
                 + " OR (type='text' AND (" + uncertain_text('atom')
                 + " OR substr(ltrim(atom,char(9,10,11,12,13,32)),1,1) IN ('{','[')))"
@@ -284,7 +304,6 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
                 ('cid', 'name', 'type', 'notnull', 'dflt_value', 'pk', 'hidden'), ('cid',), clock, (table,)))
             if not columns:
                 return None
-            scalar = set(CODING_PREFIXES) | set(CODING_VALUES) | set(CODING_NAMESPACE_COLUMNS)
             payloads = tuple(name for name in columns if name.endswith(('_bytes', '_json'))
                              or name in ('payload', 'author_principal', 'published_by', 'active_chain', 'active_fanout')
                              or name in scalar)
@@ -292,13 +311,19 @@ def read_absent_retained_inventory(conn: sqlite3.Connection, *, metadata: dict,
                 payloads = ('payload',)
             selected = (columns if table == 'audit_log' else
                         tuple(dict.fromkeys(('id', *(('task_id',) if table == 'task_results' else ()), *payloads))))
-            where, args = native_candidates(payloads)
+            where, args = (native_candidates(payloads) if table == 'tasks' else
+                           retained_candidates(payloads, native=True))
             if table == 'audit_log':
-                # Other native actions (including @2 result-stage bookkeeping)
-                # enter retained history only through an embedded source/event
-                # capture, already walked above. They are not retained roots.
-                where = ("substr(lower(action),1,7)='coding_' OR substr(action,1,9)='workflow_' OR "
-                         "(action IN ('completion_report','org_config_write') AND (" + where + '))')
+                # Locate the original action set through the covering action
+                # index before touching payloads. No action is exempted. Other
+                # native actions remain embedded source/event captures above.
+                actions = "substr(lower(action),1,7)='coding_' OR substr(action,1,9)='workflow_'"
+                task_where, task_args = retained_candidates(('task_id',), offset=len(args))
+                where = ("action IN (SELECT action FROM (SELECT DISTINCT action FROM audit_log) WHERE " + actions
+                         + " OR action IN ('completion_report','org_config_write')) AND ((" + where
+                         + " OR typeof(action)!='text') OR ((" + actions + ') AND (' + task_where + ')))')
+                _reserve(budget, 512 + 16 * (len(args) + len(task_args)))
+                args += task_args
             for raw in rows(table, selected, where=where, args=args):
                 row = dict(zip(selected, raw[:len(selected)], strict=True))
                 clock.check()

@@ -110,7 +110,7 @@ S7A_CASES = ('plural_links', 'held_cause', 'history_label', 'unavailable',
     'control_scope', 'cancel_fence_scope', 'cancel_finish_scope',
     'settings_scope', 'settings_corruption', 'builtin_scope',
     'mixed_empty', 'mixed_corruption', 'mixed_unrelated', 'mixed_fallback', 'mixed_budget', 'mixed_default', 'mixed_native',
-    'mixed_candidates', 'mixed_candidate_fallback')
+    'mixed_candidates', 'mixed_candidate_fallback', 'mixed_native_candidates', 'mixed_native_fallback')
 s7a_case = None
 if len(sys.argv) == 2 and sys.argv[1].startswith('--s7a='):
     s7a_case = sys.argv[1].split('=', 1)[1]
@@ -8647,7 +8647,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     'control_scope', 'cancel_fence_scope', 'cancel_finish_scope',
                     'settings_scope', 'settings_corruption', 'builtin_scope',
                     'mixed_empty', 'mixed_corruption', 'mixed_unrelated', 'mixed_fallback', 'mixed_budget', 'mixed_default', 'mixed_native',
-                    'mixed_candidates', 'mixed_candidate_fallback'):
+                    'mixed_candidates', 'mixed_candidate_fallback', 'mixed_native_candidates', 'mixed_native_fallback'):
             from runtime.workflows import sequential_history, sequential_views
             from runtime.workflows.sequential_control import validate_control_write
             from runtime.workflows.sequential_task_history import read_write_history, read_cancellation_headroom
@@ -8794,7 +8794,7 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     print('PASS S7a', case, 'original source outer writer/proofs/publication/rollback', flush=True)
                 continue
 
-            if case == 'mixed_candidates':
+            if case in ('mixed_candidates', 'mixed_native_candidates'):
                 from runtime.workflows import sequential_mixed_history as mixed_owner
                 from runtime.workflows.coding_authority_history import _Budget
                 with s6fixture() as f:
@@ -8804,6 +8804,18 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             'INSERT INTO workflow_publication_journals VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                             ('negative-journal-'+str(i), 'unrelated', i+1, i, raw, '0'*64,
                              'synthetic', 'unrelated-sid', 0, 'cache_installed', 'unrelated', None))
+                    if case == 'mixed_native_candidates':
+                        f.db.insert_task(TaskRecord(id='negative-native', assigned_agent='s3_manager',
+                            team='engineering', brief='Private plain native negatives'))
+                        f.conn.executemany('INSERT INTO task_results(task_id,agent,session_id,status,decision_json,created_at) '
+                            'VALUES (?,?,?,?,?,?)', [('negative-native', 'synthetic', 'sid', 'completed',
+                            raw.decode(), '2026-11-01T00:00:00+00:00')] * 100)
+                        f.conn.executemany('INSERT INTO audit_log(task_id,agent,action,payload,timestamp) '
+                            'VALUES (?,?,?,?,?)', [('negative-native', 'synthetic', action,
+                            raw.decode(), '2026-11-01T00:00:00+00:00') for action in
+                            ('workflow_integrity_check', 'coding_observation', 'CoDiNg_observation', 'completion_report', 'org_config_write')
+                            for _ in range(20)])
+                        f.conn.commit()
                     damage(f, 'workflow_coding_events',
                         'INSERT INTO workflow_coding_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                         ('negative-event', 'unrelated', 1, None, 'scratch', 'synthetic', 'negative',
@@ -8811,6 +8823,10 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     # Complete validation owns these corrupt disconnected rows;
                     # the mixed writer must prove every column has no reference.
                     before_journals = tuple(tuple(r) for r in f.conn.execute('SELECT * FROM workflow_publication_journals ORDER BY id'))
+                    if case == 'mixed_native_candidates':
+                        before_native = {table: tuple(tuple(r) for r in f.conn.execute(
+                            'SELECT * FROM '+table+" WHERE task_id='negative-native' ORDER BY id"))
+                            for table in ('task_results','audit_log')}
                     try:
                         read_sequential_history(f.conn, expected_org_slug='scratch')
                     except ValueError:
@@ -8835,7 +8851,11 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                     assert all(f.db.get_task(key).status == 'cancelled' for key in live)
                     assert all(s4row(f, 'workflow_seq_runs', ids.run_id)['state'] == 'finished' for ids in f.batch_ids)
                     assert tuple(tuple(r) for r in f.conn.execute('SELECT * FROM workflow_publication_journals ORDER BY id')) == before_journals
-                    print('PASS S7a mixed_candidates 100 disconnected corrupt journals; EMPTY inventory; real mixed cancellation committed', flush=True)
+                    if case == 'mixed_native_candidates':
+                        assert {table: tuple(tuple(r) for r in f.conn.execute(
+                            'SELECT * FROM '+table+" WHERE task_id='negative-native' ORDER BY id"))
+                            for table in ('task_results','audit_log')} == before_native
+                    print('PASS S7a', case, '100 disconnected journals/native negatives; EMPTY inventory; real mixed cancellation committed', flush=True)
                 continue
 
             with s4fixture() as f:
@@ -8856,7 +8876,68 @@ if s4a_case or s4b_case or s5_case or s6a_case or s6b_case or s7a_case or s8b_ca
                             return sequential_history.read_sequential_history(conn, expected_org_slug='scratch',
                                 task_id=f.source.id)
 
-                    if case == 'mixed_empty':
+                    if case == 'mixed_native_fallback':
+                        from runtime.workflows import sequential_mixed_history as mixed_owner
+                        from runtime.workflows import sequential_retained_absence as absence_owner
+                        from runtime.workflows._read_exhaustion import exhausted
+                        variants = ('reference', 'escaped_reference', 'result_array', 'reference_key',
+                            'duplicate', 'escaped_duplicate', 'opaque', 'base64', 'hex', 'typed',
+                            'nested', 'deep', 'nonfinite', 'scalar', 'unicode', 'compiler_pin')
+                        mismatches = []
+                        def outcome(call):
+                            try:
+                                value = call()
+                            except (ValueError, RuntimeError, sqlite3.Error) as exc:
+                                return (type(exc).__name__, str(exc), exhausted(exc))
+                            return ('accepted', value.layout, value.status, value.definition_ids, value.run_ids,
+                                value.task_history, vars(value.retained[1].queued))
+                        for table in ('task_results', 'audit_log'):
+                            for variant in variants:
+                                with s4fixture() as victim:
+                                    target = victim.source.id
+                                    result = victim.conn.execute('SELECT source_result_id FROM workflow_seq_runs WHERE id=?',
+                                        (victim.ids.run_id,)).fetchone()[0]
+                                    bodies = dict(reference=s4bytes(dict(task_id=target)),
+                                        escaped_reference=('{"task_id":"'+''.join('\\u%04x' % ord(c) for c in target)+'"}').encode(),
+                                        result_array=s4bytes(dict(result_ids=[result])), reference_key=s4bytes({target: 'ordinary'}),
+                                        duplicate=b'{"ordinary":1,"ordinary":2}', escaped_duplicate=b'{"ordinary":1,"\\u006frdinary":2}',
+                                        opaque=b'{"ordinary":"\xff"}', base64=b'{"snapshot_base64":"bad$"}', hex=b'{"snapshot_hex":"bad$"}',
+                                        typed=s4bytes(dict(name='id', storage_class='blob', value='ordinary')),
+                                        nested=s4bytes(dict(payload=json.dumps(dict(task_id=target)))),
+                                        deep=b'{"x":'*25+b'{}'+b'}'*25, nonfinite=b'{"ordinary":1e999}', scalar=b'17',
+                                        unicode=s4bytes(dict(ordinary='plain \u4e2d')),
+                                        compiler_pin=s4bytes(dict(compiler_pin='workflow-coding-unknown')))
+                                    raw = bodies[variant]
+                                    if variant in ('reference','duplicate','nested','unicode','compiler_pin'):
+                                        raw = raw.decode('utf8')
+                                    victim.db.insert_task(TaskRecord(id='native-fallback', assigned_agent='s3_manager',
+                                        team='engineering', brief='Private uncertain native input'))
+                                    if table == 'task_results':
+                                        sql = ('INSERT INTO task_results(task_id,agent,session_id,status,decision_json,created_at) '
+                                               'VALUES (?,?,?,?,?,?)')
+                                        args = ('native-fallback','synthetic','sid','completed',raw,'2026-11-01T00:00:00+00:00')
+                                    else:
+                                        sql = 'INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES (?,?,?,?,?)'
+                                        args = ('native-fallback','synthetic','workflow_integrity_check',raw,'2026-11-01T00:00:00+00:00')
+                                    damage(victim, table, sql, args)
+                                    before = s5snap(victim)
+                                    expected = outcome(lambda: complete_mixed(victim))
+                                    with patch.object(mixed_owner, 'read_sequential_history', wraps=mixed_owner.read_sequential_history) as fallback, \
+                                            patch.object(absence_owner, '_reference', wraps=absence_owner._reference) as decoder:
+                                        actual = outcome(lambda: mixed(victim))
+                                    if variant in ('unicode', 'compiler_pin'):
+                                        decoded = any(call.args and call.args[0] == raw for call in decoder.call_args_list)
+                                        matched = actual[0] == 'accepted' and not any(actual[-1].values()) and decoded
+                                    else:
+                                        matched = actual == expected and fallback.call_count == 1
+                                    if not matched:
+                                        mismatches.append((table,variant))
+                                        print('B1 native fallback mismatch', table, variant, 'complete_calls', fallback.call_count, flush=True)
+                                    else:
+                                        print('PASS S7a mixed_native_fallback',table,variant,actual[0],flush=True)
+                                    assert s5snap(victim) == before, ('native fallback wrote rows',table,variant)
+                        assert not mismatches, ('B1 native fallback lost original outcome',mismatches)
+                    elif case == 'mixed_empty':
                         full = complete_mixed(f)
                         from runtime.workflows import sequential_mixed_history as mixed_owner
                         original_retained = _Budget(consumed=1024)
