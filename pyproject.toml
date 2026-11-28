@@ -13,6 +13,9 @@ dependencies = [
     "websockets>=12",
     "python-multipart>=0.0.29",
     "python-dateutil>=2.9",
+    "cryptography>=46.0.5",
+    "secretstorage>=3.5; sys_platform == 'linux'",
+    "keyring>=25.7; sys_platform == 'darwin'",
 ]
 
 [project.scripts]

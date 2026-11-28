@@ -26,7 +26,16 @@ BOUND = 16_000
 @pytest.mark.parametrize("case", ["exact", "trimmed"])
 def test_final_executor_payload_bound(provider: str, transport: str, case: str, tmp_path: Path) -> None:
     cap = runner.THREAD_PROMPT_MAX_BYTES
-    preamble = executors._SESSION_LIFETIME_PREAMBLE
+    from runtime.org_secrets.keyring import OSKeyring
+    from runtime.org_secrets.store import store_for
+    import uuid
+    workspace = tmp_path / 'alpha/workspaces/worker'
+    workspace.mkdir(parents=True)
+    with patch.object(OSKeyring, 'read', return_value=b'x' * 32):
+        store = store_for(workspace.parent.parent)
+        store.mutate('create', 'SYNTH_NAME', 'synthetic', str(uuid.uuid4()))
+    preamble = executors._session_preamble('alpha', workspace)
+    assert 'SYNTH_NAME' in preamble
     available = cap - len(preamble.encode("utf-8"))
     # Multibyte mandatory content ends exactly at the final-payload boundary.
     body = "界" * (available // 3) + "x" * (available % 3)
@@ -44,7 +53,10 @@ def test_final_executor_payload_bound(provider: str, transport: str, case: str, 
             return "".join(message.body_markdown or "" for message in kept)
 
         body = rebuild(messages)
-    bounded = runner._bound_thread_prompt(body, messages=messages, mandatory_from_seq=3, rebuild=rebuild)
+    if case == 'exact':
+        assert runner._bound_thread_prompt(body + 'x', messages=[], mandatory_from_seq=1,
+            rebuild=None, preamble=preamble) is None
+    bounded = runner._bound_thread_prompt(body, messages=messages, mandatory_from_seq=3, rebuild=rebuild, preamble=preamble)
     assert bounded is not None
     prompt, shown = bounded
     executor = {
@@ -58,7 +70,7 @@ def test_final_executor_payload_bound(provider: str, transport: str, case: str, 
          patch("runtime.orchestrator.workspace_adapters.allow_rules_for_agent", return_value=[]), \
          patch.object(executors, seam) as capture, \
          patch("subprocess.Popen", side_effect=AssertionError("provider must never run")):
-        getattr(executor, transport)(workspace=tmp_path, prompt=prompt, session_id="synthetic")
+        getattr(executor, transport)(workspace=workspace, prompt=prompt, session_id="synthetic", org_slug="alpha")
     capture.assert_called_once()
     payload = capture.call_args.kwargs["input_text"]
     assert payload == preamble + prompt
@@ -79,15 +91,20 @@ def delivery_note(start: int, end: int) -> str:
 @pytest.fixture
 async def org(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[OrgState]:
     # Same standalone synthetic-org venue as test_task_cancel; no lifespan.
-    async with fixture(tmp_path / "org") as (state, _client):
-        write_canonical_instruction_pair(state.root / "workspaces" / "worker", "Synthetic initialized prompt.\n")
-        monkeypatch.setattr(runner, "materialize_workspace_skills", lambda *a, **k: [])
-        monkeypatch.setattr(runner, "validate_workspace_skills_integrity", lambda *a, **k: None)
-        monkeypatch.setattr(runner, "refresh_workspace_repos", lambda *a, **k: [])
-        monkeypatch.setattr(runner, "resolve_managed_skills_index", lambda **k: "")
-        monkeypatch.setattr(runner, "render_current_time_line", lambda *a: "2026-11-14T00:00Z")
-        monkeypatch.setattr(runner, "THREAD_PROMPT_MAX_BYTES", BOUND, raising=False)
-        yield state
+    from runtime.org_secrets.keyring import OSKeyring
+    from runtime.org_secrets.store import store_for
+    import uuid
+    with patch.object(OSKeyring, 'read', return_value=b'x' * 32):
+        async with fixture(tmp_path / "org") as (state, _client):
+            store_for(state.root).mutate('create', 'SYNTH_NAME', 'synthetic', str(uuid.uuid4()))
+            write_canonical_instruction_pair(state.root / "workspaces" / "worker", "Synthetic initialized prompt.\n")
+            monkeypatch.setattr(runner, "materialize_workspace_skills", lambda *a, **k: [])
+            monkeypatch.setattr(runner, "validate_workspace_skills_integrity", lambda *a, **k: None)
+            monkeypatch.setattr(runner, "refresh_workspace_repos", lambda *a, **k: [])
+            monkeypatch.setattr(runner, "resolve_managed_skills_index", lambda **k: "")
+            monkeypatch.setattr(runner, "render_current_time_line", lambda *a: "2026-11-14T00:00Z")
+            monkeypatch.setattr(runner, "THREAD_PROMPT_MAX_BYTES", BOUND, raising=False)
+            yield state
 
 
 def seed(org: OrgState, *, history: list[str], required: list[str], resume: bool = False) -> str:
@@ -154,7 +171,7 @@ async def test_under_bound_prompt_unchanged(
         value = builder(**kwargs)
         rendered.append(value)
         monkeypatch.setattr(runner, "THREAD_PROMPT_MAX_BYTES",
-                            len((executors._SESSION_LIFETIME_PREAMBLE + value + delivery_note(2, 3)).encode()) + headroom)
+                            len((executors._session_preamble(org.slug, org.root / "workspaces/worker") + value + delivery_note(2, 3)).encode()) + headroom)
         return value
 
     with patch.object(runner, builder.__name__, side_effect=observe):
@@ -180,7 +197,7 @@ async def test_optional_trimming_preserves_claimed_range(org: OrgState, path: st
     assert len(executor.calls) == (1 if path == "fresh" else 2)
     for call in executor.calls:
         prompt = call["prompt"]
-        assert len(prompt.encode("utf-8")) <= BOUND
+        assert len((executors._session_preamble(org.slug, org.root / "workspaces/worker") + prompt).encode("utf-8")) <= BOUND
         assert "CLAIM-A" in prompt and "CLAIM-B" in prompt and token in prompt
         if not call.get("resume_session_id"):
             assert "OLD-HUGE" not in prompt and "RECENT-HUGE" not in prompt
@@ -212,7 +229,7 @@ async def test_oversize_fails_before_phase_launch(org: OrgState, path: str, monk
 
         def just_over_final_bound(**kwargs: Any) -> str:
             value = builder(**kwargs)
-            final_bytes = len((executors._SESSION_LIFETIME_PREAMBLE + value + delivery_note(required_seq, required_seq)).encode("utf-8"))
+            final_bytes = len((executors._session_preamble(org.slug, org.root / "workspaces/worker") + value + delivery_note(required_seq, required_seq)).encode("utf-8"))
             monkeypatch.setattr(runner, "THREAD_PROMPT_MAX_BYTES", final_bytes - 1)
             return value
 
@@ -232,7 +249,7 @@ async def test_oversize_fails_before_phase_launch(org: OrgState, path: str, monk
             nonlocal padding
             value = original_full(**kwargs)
             if padding is None:
-                padding = "S" * (BOUND - len((executors._SESSION_LIFETIME_PREAMBLE + value + delivery_note(2, 2)).encode("utf-8")))
+                padding = "S" * (BOUND - len((executors._session_preamble(org.slug, org.root / "workspaces/worker") + value + delivery_note(2, 2)).encode("utf-8")))
             return value + padding
 
         monkeypatch.setattr(runner, "build_thread_prompt", fill_header)

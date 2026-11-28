@@ -212,7 +212,13 @@
     "GET /api/v1/orgs/{slug}/workflows/sequential/settings/v2/operations",
     "PUT /api/v1/orgs/{slug}/workflows/sequential/settings/admission",
     "GET /api/v1/orgs/{slug}/workflows/sequential/settings/admission/operations",
-    "GET /api/v1/runtime/workflow-setup/orgs/{slug}"
+    "GET /api/v1/runtime/workflow-setup/orgs/{slug}",
+    "GET /api/v1/orgs/{slug}/secrets",
+    "POST /api/v1/orgs/{slug}/secrets",
+    "PUT /api/v1/orgs/{slug}/secrets/{name}",
+    "DELETE /api/v1/orgs/{slug}/secrets/{name}",
+    "POST /api/v1/orgs/{slug}/secrets/key-status",
+    "GET /api/v1/orgs/{slug}/secrets/operations/{operation_id}"
   ],
   "excluded": {
     "POST /api/v1/orgs/{slug}/guests/mcp": "loopback external-app MCP only; never browser-consumed or remotely allowed",

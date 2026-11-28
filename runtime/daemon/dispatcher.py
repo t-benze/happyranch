@@ -53,6 +53,10 @@ class Dispatcher:
             org = attachment if attachment is not None else self._state.get_org(slug)
         except KeyError:
             return False
+        if not org.orchestrator._org_secrets.ready():
+            org.orchestrator._team_moves.defer_task(task_id, metadata)
+            logger.info('task %s/%s held: org_secrets_locked', slug, task_id)
+            return False
         from runtime.workflows.recovery import SEQUENTIAL_HELD_KINDS, classify_task
         ownership = classify_task(org.db, task_id, org_slug=slug)
         if ownership.kind == 'coding_attempt':

@@ -1,0 +1,51 @@
+# Org secrets hold / restart model (F01)
+
+This finite single-org/single-original-work model covers configured and empty
+orgs, locked/cached keys, queued/pending/live/terminal work, a competing hold,
+one restart that discards queue hints, unlock, last-secret deletion and redelivery.
+
+| Action | Source correspondence |
+| --- | --- |
+| Ready / Unlock | OrgSecrets.ready/probe, names-only key-status API and periodic re-probe |
+| Discover | Existing startup pending-work discovery, generation-aware deferred task publisher, thread runnable_tokens and producer _released_sources |
+| Launch | Dispatcher.task_admission_allowed, Orchestrator.run_step, run_native_producer and run_invocation, followed by existing native ownership/hold validation |
+| Restart | Pending source rows retained; safe deferred native producer/thread ownership retains original identity; volatile notification hints disappear |
+| Release / Cancel / Finish | Existing independent Pause/terminal/owner gates; secrets recovery grants no new ownership |
+| DeleteLast | Locked Delete removes the last configured record; empty org readiness ignores key state |
+
+`NoMissingSecrets`, `OneLaunch`, `TerminalAbsorbing` and `TypeOK` are safety
+properties. `Progress` requires a launch or terminal cancellation under explicit
+weak fairness for unlock, competing-hold release, discovery, launch and finish.
+The restart count is bounded to one. Unavailable scheduling/storage/provider
+venues, permanent other holds and sticky unknown owners are outside the progress
+assumption. Original identity is one fixed work slot, never a newly allocated task.
+The model does not prove Python refinement, keyring/AEAD correctness, filesystem
+atomicity, real agent delivery or platform cleanup.
+
+Use the pinned TLC 2.19 / v1.7.4 jar and command from
+[the existing formal venue](../task-lifecycle/README.md#run-tlc), substitute
+`OrgSecrets` and `current.cfg`, with distinct task-scratch metadirs.
+`unsafe.cfg` deliberately removes both readiness checks and must violate
+NoMissingSecrets (exit12). `stalled.cfg` disables rediscovery and must violate
+Progress (exit13); a model that never launches cannot pass. Keep outside CI.
+Actual commands/exits and state counts are recorded in the task evidence/PR.
+
+F2 extends the same finite keeper with two bounded New/Replace/Delete changes
+while work waits for capacity. Discover retains an obsolete revision; Launch
+must select values/readiness/names at the current revision. `NoStaleSnapshot`
+checks this admission rule. `stale.cfg` deliberately delivers the queued
+revision and must violate it (exit 12). Native cancellation/otherHold and
+one-launch invariants remain. The version abstraction does not prove Python
+snapshot plumbing or prompt byte sizing; focused child tests own those seams.
+
+F4 uses `AdmissionRefusal.tla` with `refusal.cfg` in the same TLC venue. Capacity
+wait → preparation → final refusal and host-passthrough commitment → pre-Popen
+refusal both retain zero native launches. Original clean owners settle and a
+later queued arrival recovers; preexisting unknown stays sticky. `refusal-poison.cfg`
+reintroduces the generic-catch poisoning defect (NoInventedUnknown, exit 12).
+`refusal-erase.cfg` incorrectly clears old uncertainty (PriorUnknownPreserved,
+exit 12). The model assumes successful abandonment and original settlement;
+failed abandonment remains an explicit unknown hold in the Python keeper.
+It does not prove Python refinement, containment, persistence, prompt sizes or
+real startup execution. The real supervisor/native-owner keeper owns those
+observable settlement/recovery assertions in the supported synthetic venue.

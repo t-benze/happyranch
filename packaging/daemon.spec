@@ -58,6 +58,9 @@ _common_analysis_kwargs = dict(
           for slug in ('manage-agent', 'manage-repo', 'reflection')],
     ],
     hiddenimports=[
+        'cryptography.hazmat.primitives.ciphers.aead',
+        'keyring.backends.macOS',
+        'keyring.backends.macOS.api',
         # ---- Third-party lazy/dynamic imports ----
         'uvicorn.loops.auto',
         'uvicorn.loops.uvloop',

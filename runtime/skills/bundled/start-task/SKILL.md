@@ -5,6 +5,15 @@ description: Use this skill at the start of every task. Parses task_id, session_
 
 # start-task
 
+## Org secrets in session environments
+
+Org secrets arrive in new agent sessions as environment variables; only their
+names appear in framing. Never print, echo, log, commit or include their values
+in callbacks. Running processes retain existing copies after replace/delete.
+All code under the shared OS account can read them; this is no isolation or
+use-only guarantee. Standalone local jobs receive no additional org-store
+injection, and inherited environment is not stripped or isolated by this policy.
+
 ## Steps
 
 1. **Parse parameters.** Extract `task_id`, `session_id`, `brief`, and (when present) `role_guidance` from the prompt above. Hold `session_id` in a variable for the lifetime of this session — every callback to `happyranch` must include it. When the `role_guidance` block is absent (typical worker spawn), treat `brief` as your complete per-task instruction.
@@ -1052,3 +1061,14 @@ deferrals retain their own rules. This grants no agent journal cleanup,
 historical repair, daemon restart or deployment authority.
 
 A root Pause holds future task execution, not your already running callback. Complete truthful progress/completion for your original task/session and preserve real job evidence. A held-root deferred invocation is not an execution failure, and Resume grants no new session, step, budget or permission. Only the server-captured ordinary-purpose actual running session (including a normal v2-admitted manager session) may auto-run its already-authorized unreviewed jobs while held; recovery sessions retain their existing purpose restrictions.
+
+Org secret names reserve runtime/launcher controls, including LC_*, LANG,
+LANGUAGE, PYTHON*, NODE_*, NPM_CONFIG_*, GIT_*/GITPERLLIB, BASH*, ZSH*, ENV,
+SHELLOPTS, PS1/PS2/PS4, IFS, LD_*, DYLD_*, CURL_*, OPENSSL_*, GCONV_*,
+GLIBC_*, MALLOC_*, NSS_*, RUST_*/CARGO_*/RUSTUP_*/RUSTC_*, BUN_*/V8_*,
+GH_*/GITHUB_*, SSH_*/GPG_*/GNUPG*/GNUTLS_*, LESS*, GO*/PERL*,
+DEBUG, SSLKEYLOGFILE, EDITOR/VISUAL/PAGER and PROMPT/RPROMPT,
+TZ and TMPDIR/TMP/TEMP; choose application credential names instead. New native
+sessions select values and names together at final launch admission after
+capacity waiting. Never print, echo, log or commit their values. The complete
+name rule and owned launcher inventory are in `docs/agent-guides/org-secrets.md`.

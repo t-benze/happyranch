@@ -105,3 +105,19 @@ SELECT org_slug, agent_name, task_id, session_context, session_id, executor,
        provider_session_id, observed_at, source_ref
 FROM skill_use_events ORDER BY id DESC LIMIT 100;
 ```
+
+### Session diagnostics and final admission refusal (org secrets)
+
+Session-only exact masking uses the values in the actual final launch environment,
+including contained launches and replacements after launch. Executor diagnostic
+streams are masked before tailing; parsed error fields and exceptions are masked
+before the runtime saves failure notes/errors. No global secret scan is performed.
+See [org secrets](../org-secrets.md) for reserved tool/control families and limits.
+
+A typed expected prompt/environment refusal at final admission, before backend
+launch, abandons preparation and returns ordinary FAILURE with a closed reason.
+It never enters the generic unexpected-exception failed_cleanup path. Passthrough
+pre-Popen refusal can settle only the original attempt proven not launched;
+failed abandonment, prior uncertainty and all unrelated exception routes retain
+their existing conservative treatment. A clean refusal releases its owner and
+does not veto startup recovery of a later queued conversational reply.

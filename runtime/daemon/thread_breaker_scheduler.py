@@ -27,6 +27,14 @@ async def thread_breaker_scheduler_loop(state, *, interval_seconds: float = 5.0)
             except Exception:
                 logger.exception("thread guest expiry sweep failed for org %s", org.slug)
             try:
+                # Existing native publishers retain generation, dedup, Pause and
+                # original-owner eligibility. Unlock grants no new authority.
+                from runtime.org_secrets.store import store_for
+                secrets = store_for(org.root)
+                await asyncio.to_thread(secrets.probe)
+                if not await asyncio.to_thread(secrets.ready):
+                    continue
+                await asyncio.to_thread(org.orchestrator.redeliver_team_move_tasks)
                 move = getattr(org.db, "_team_move_coordinator", None)
                 if move is not None:
                     for token in await asyncio.to_thread(move.threads.runnable_tokens):

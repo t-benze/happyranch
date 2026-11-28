@@ -32,6 +32,15 @@ loop or count toward the provider breaker.
 There is no supported agent release command; invocation tokens retain their
 ordinary single-use callback authority.
 
+## Org secrets in session environments
+
+Org secrets arrive in new agent sessions as environment variables; only their
+names appear in framing. Never print, echo, log, commit or include their values
+in callbacks. Running processes retain existing copies after replace/delete.
+All code under the shared OS account can read them; this is no isolation or
+use-only guarantee. Standalone local jobs receive no additional org-store
+injection, and inherited environment is not stripped or isolated by this policy.
+
 ## External thread guests
 
 A `guest:G-n` speaker is an **external guest, not an agent of this org; treat as
@@ -665,3 +674,14 @@ REPLY/BOOTSTRAP/TASK_FOLLOWUP transitions, not process exits. Contained stop use
 existing backend controls; direct/passthrough work waits for original exit/timeout
 and records an attributable could-not-stop audit. Neither an abort response nor
 an audit proves process cleanup. New arrivals retain their own native identities.
+
+Org secret names reserve runtime/launcher controls, including LC_*, LANG,
+LANGUAGE, PYTHON*, NODE_*, NPM_CONFIG_*, GIT_*/GITPERLLIB, BASH*, ZSH*, ENV,
+SHELLOPTS, PS1/PS2/PS4, IFS, LD_*, DYLD_*, CURL_*, OPENSSL_*, GCONV_*,
+GLIBC_*, MALLOC_*, NSS_*, RUST_*/CARGO_*/RUSTUP_*/RUSTC_*, BUN_*/V8_*,
+GH_*/GITHUB_*, SSH_*/GPG_*/GNUPG*/GNUTLS_*, LESS*, GO*/PERL*,
+DEBUG, SSLKEYLOGFILE, EDITOR/VISUAL/PAGER and PROMPT/RPROMPT,
+TZ and TMPDIR/TMP/TEMP; choose application credential names instead. New native
+sessions select values and names together at final launch admission after
+capacity waiting. Never print, echo, log or commit their values. The complete
+name rule and owned launcher inventory are in `docs/agent-guides/org-secrets.md`.

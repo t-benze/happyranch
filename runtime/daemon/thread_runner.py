@@ -84,6 +84,7 @@ THREAD_PROMPT_MAX_BYTES = 512 * 1024
 def _bound_thread_prompt(
     prompt: str, *, messages: list[ThreadMessage], mandatory_from_seq: int,
     rebuild: Callable[[list[ThreadMessage]], str] | None,
+    preamble: str = _SESSION_LIFETIME_PREAMBLE,
 ) -> tuple[str, list[int]] | None:
     """Keep the newest optional prefix history that fits, never a partial message.
 
@@ -94,7 +95,7 @@ def _bound_thread_prompt(
     # Every built-in executor adds this same preamble on direct and supervised
     # launches (including phase reentry). Bound the final payload, not just the
     # runner-built portion; retain one provider-independent admission limit.
-    available = THREAD_PROMPT_MAX_BYTES - len(_SESSION_LIFETIME_PREAMBLE.encode("utf-8"))
+    available = THREAD_PROMPT_MAX_BYTES - len(preamble.encode("utf-8"))
     if len(prompt.encode("utf-8")) <= available:
         return prompt, [m.seq for m in messages]
     if rebuild is None:
@@ -1252,6 +1253,9 @@ async def run_invocation(
         try:
             if cancellation is not None:
                 raise cancellation
+            from runtime.org_secrets.store import store_for
+            if not store_for(org_state.root).ready():
+                raise DeferredTeamMove('org_secrets_locked')
             with bind_thread_preparation(owner):
                 owner.before_fifo()
                 await _run_invocation_owned(org_state=org_state, invocation_token=invocation_token,
@@ -1722,27 +1726,44 @@ async def _run_invocation_owned(
             rebuild: Callable[[list[ThreadMessage]], str] | None = None,
         ) -> _InvokeResult:
             nonlocal shown_seqs
-            bounded = _bound_thread_prompt(
-                run_prompt, messages=run_messages or [], rebuild=rebuild,
-                mandatory_from_seq=claim.running_from_seq if claim else inv.triggering_seq,
-            )
-            if bounded is None:
-                # This result never enters the executor/throttle/supervisor or
-                # a native launch attempt. Do not classify it as no-callback.
+            from runtime.orchestrator.executors import _session_preamble, PromptTransportTooLargeError
+            source_prompt = run_prompt
+            move_owner.secret_snapshot = None
+
+            def admitted_prompt() -> str:
+                nonlocal shown_seqs
+                bounded = _bound_thread_prompt(
+                    source_prompt, messages=run_messages or [], rebuild=rebuild,
+                    mandatory_from_seq=claim.running_from_seq if claim else inv.triggering_seq,
+                    preamble=_session_preamble(org_state.slug, Path(workspace)),
+                )
+                if bounded is None:
+                    raise PromptTransportTooLargeError(
+                        f"prompt_too_large: exceeds {THREAD_PROMPT_MAX_BYTES} UTF-8 bytes with mandatory context")
+                prompt, selected_seqs = bounded
+                if run_messages is not None:
+                    shown_seqs = selected_seqs
+                return prompt
+
+            move_owner.prompt_reader = admitted_prompt
+            try:
+                run_prompt = admitted_prompt()
+            except PromptTransportTooLargeError as exc:
                 return _InvokeResult(result=ExecutorResult(
                     success=False, duration_seconds=0, session_id=session_id,
-                    error=f"prompt_too_large: exceeds {THREAD_PROMPT_MAX_BYTES} UTF-8 bytes with mandatory context",
-                    failure_category="prompt_too_large", provider_launched=False,
+                    error=str(exc), failure_category="prompt_too_large", provider_launched=False,
                 ))
-            run_prompt, selected_seqs = bounded
-            if run_messages is not None:
-                shown_seqs = selected_seqs
             control = move_owner.abort_control
             with control.lock:
                 control.mode, control.launched, control.worker_running = None, False, True
             with bind_thread_preparation(move_owner):
                 try:
                     return _invoke_bound(run_prompt, resume)
+                except PromptTransportTooLargeError as exc:
+                    return _InvokeResult(result=ExecutorResult(
+                        success=False, duration_seconds=0, session_id=session_id,
+                        error=str(exc), failure_category="prompt_too_large", provider_launched=False,
+                    ))
                 finally:
                     # Audit failure must not abandon an already-launched direct
                     # child before its original executor communicate/timeout.
@@ -1861,7 +1882,7 @@ async def _run_invocation_owned(
                     if not contained:
                         move_owner.abort_control.launched = False
                 run_kwargs = dict(
-                    workspace=Path(workspace), prompt=run_prompt,
+                    workspace=Path(workspace), prompt=move_owner.prompt_reader(),
                     session_id=session_id, timeout_seconds=timeout,
                     on_throttle_event=_on_throttle_event,
                     pre_launch_validator=_pre_launch_validator if not contained else None,

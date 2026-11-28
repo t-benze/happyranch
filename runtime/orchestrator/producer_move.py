@@ -153,6 +153,7 @@ class ProducerPreparation:
         self.identity = PermanentAgentIdentity(state.org_slug, state.agent_id)
         self.owner_live = True
         self.last_spec = None
+        self.secret_snapshot = None
         self.executor = self.model = None
         self.attempt_open = False
         self.safe_defer = False
@@ -256,10 +257,16 @@ class ProducerPreparation:
         return True
 
     def _producer_move_commit(self, ctx):
+        from runtime.org_secrets.session import refresh_session_spec
+        self.before_fifo()
+        self.last_spec = refresh_session_spec(self.last_spec, self)
         return self.last_spec if self.commit(ctx) else None
 
     def __call__(self):
         pass  # final private commitment protocol; no pre-prepare launch grant
+
+    def defer_selflaunch(self):
+        self.safe_defer = self.attempt_open
 
     def before_selflaunch(self):
         try:
@@ -593,6 +600,9 @@ async def run_native_producer(org, kind, source_id, action):
         owner = admission.reserve(kind, source_id)
         if owner is None:
             return
+        from runtime.org_secrets.store import store_for
+        if kind != 'job' and not store_for(org.root).ready():
+            raise DeferredTeamMove('org_secrets_locked')
         return await action(owner)
     except DeferredTeamMove:
         deferred = True  # owner rows remain unchanged; no failure/callback

@@ -76,6 +76,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, timedelta
 from typing import Any, Protocol
 
+from runtime.org_secrets.diagnostics import activate_environment, mask_text, session_diagnostics, session_masker
 from runtime.platform.session_backend import (
     BackendError,
     Capability,
@@ -84,6 +85,7 @@ from runtime.platform.session_backend import (
     CleanupStatus,
     LaunchSpec,
     PendingHandle,
+    PrelaunchRefused,
     Receipt,
     ResourceSample,
     RunningHandle,
@@ -966,6 +968,7 @@ class _AttemptContext:
         self._terminal_reason: TerminalReason | None = None
         self._error: str | None = None
         self._cleanup_error: str | None = None
+        self._mask_text = session_masker()
         self._launch_result: LaunchResult | None = None
         self._retry_worthy = False
         self._running: RunningHandle | None = None
@@ -1022,7 +1025,7 @@ class _AttemptContext:
 
     def set_error(self, error: str) -> None:
         with self._lock:
-            self._error = error
+            self._error = self._mask_text(error)
 
     def error(self) -> str | None:
         with self._lock:
@@ -1036,6 +1039,8 @@ class _AttemptContext:
 
     def set_launch_result(self, result: LaunchResult) -> None:
         with self._lock:
+            if result.error is not None:
+                result = replace(result, error=self._mask_text(result.error))
             self._launch_result = result
             if result.timed_out:
                 reason = TerminalReason.TIMEOUT
@@ -1184,7 +1189,7 @@ class _AttemptContext:
             )
         except Exception as exc:
             receipt = None
-            self._cleanup_error = str(exc)
+            self._cleanup_error = self._mask_text(str(exc))
         finally:
             with self._cond:
                 self._finish_in_progress = False
@@ -1244,7 +1249,7 @@ class _AttemptContext:
                 # never leaks the admission lease (the run loop releases it
                 # exactly once in ``finally`` regardless).
                 logger.warning(
-                    "host session receipt publisher raised (contained): %s", exc
+                    "host session receipt publisher raised (contained): %s", self._mask_text(str(exc))
                 )
         finally:
             with self._cond:
@@ -1435,6 +1440,7 @@ class HostSessionSupervisor:
 
     # ── run ───────────────────────────────────────────────────────
 
+    @session_diagnostics(new_session=True)
     def run(
         self,
         request: AdmissionRequest,
@@ -1632,7 +1638,7 @@ class HostSessionSupervisor:
             if reservation is not None:
                 reservation.failed_cleanup()
             logger.warning(
-                "HostSessionSupervisor on_terminal hook raised: %s", exc,
+                "HostSessionSupervisor on_terminal hook raised: %s", mask_text(str(exc)),
             )
             if not isinstance(exc, Exception):
                 raise
@@ -1802,6 +1808,13 @@ class HostSessionSupervisor:
             from runtime.orchestrator.task_pause import DeferredRootPause
             try:
                 finalized = task_commit(ctx)
+            except PrelaunchRefused as exc:
+                # The final commitment refused before backend.launch. Abandon
+                # owns preparation closure; failures remain sticky as before.
+                ctx.freeze_terminal(TerminalReason.FAILURE)
+                ctx.set_error(exc.code)
+                ctx._org_abandoned = self._safe_abandon(self._backend, pending, request.move_reservation)
+                return self._outcome(request, ctx, attempt)
             except DeferredRootPause:
                 ctx._org_abandoned = self._safe_abandon(self._backend, pending, request.move_reservation)
                 raise
@@ -1823,7 +1836,8 @@ class HostSessionSupervisor:
                         ctx._org_abandoned = self._safe_abandon(self._backend, pending, request.move_reservation)
                         raise
                     ctx.freeze_terminal(TerminalReason.FAILURE)
-                    ctx.set_error(f"final pre-launch validation failed: {exc}")
+                    ctx.set_error(exc.code if isinstance(exc, PrelaunchRefused)
+                        else f"final pre-launch validation failed: {exc}")
                     # Keep the actionable validation error; _abandon_pre_launch
                     # intentionally replaces it with the concurrent terminal
                     # winner's generic text for cancellation/shutdown paths.
@@ -1839,6 +1853,7 @@ class HostSessionSupervisor:
             self._abandon_pre_launch(ctx, pending, attempt, request.move_reservation)
             return self._outcome(request, ctx, attempt)
         # ── launch ──
+        activate_environment(launch_spec.env)
         ctx._org_launch_started = True
         try:
             running = self._backend.launch(pending, launch_spec)
@@ -1875,7 +1890,18 @@ class HostSessionSupervisor:
             result = launch_body(running)
         except Exception as exc:  # launch body never replaces terminal state
             from runtime.orchestrator.team_move import DeferredTeamMove
-            if (hasattr(final_prelaunch_validator, "_thread_move_commit") or hasattr(final_prelaunch_validator, "_producer_move_commit")) and isinstance(exc, DeferredTeamMove):
+            native_owner = (hasattr(final_prelaunch_validator, "_thread_move_commit")
+                or hasattr(final_prelaunch_validator, "_producer_move_commit"))
+            if (native_owner and isinstance(exc, PrelaunchRefused)
+                    and running.backend == "passthrough" and running.process is None
+                    and final_prelaunch_validator.attempt_open
+                    and not final_prelaunch_validator.state.attempts[-1].launched):
+                # The host's passthrough handle is not a process. The exact
+                # original owner still proves no Popen/on_started occurred.
+                final_prelaunch_validator.defer_selflaunch()
+                ctx.set_error(exc.code)
+                ctx.freeze_terminal(TerminalReason.FAILURE)
+            elif native_owner and isinstance(exc, DeferredTeamMove):
                 deferred_thread_admission = exc
                 ctx.freeze_terminal(TerminalReason.CANCELLED)
             else:
@@ -1967,7 +1993,7 @@ class HostSessionSupervisor:
         except BaseException as exc:
             if reservation is not None:
                 reservation.failed_cleanup()
-            logger.warning("backend.abandon(%r) raised: %s", pending.token, exc)
+            logger.warning("backend.abandon(%r) raised: %s", pending.token, mask_text(str(exc)))
             if not isinstance(exc, Exception):
                 raise
             return False
