@@ -172,6 +172,8 @@ class Orchestrator:
         self._settings = settings
         self._paths = paths
         self._slug = slug
+        from runtime.org_secrets.store import store_for
+        self._org_secrets = store_for(paths.root)
         self._name_metadata_reader = None
         self._audit = AuditLogger(db)
         self._teams = teams
@@ -774,6 +776,10 @@ class Orchestrator:
         It is passed directly to ``run_step_impl`` as a function parameter —
         no shared mutable state.
         """
+        if not self._org_secrets.ready():
+            self._team_moves.defer_task(task_id, metadata)
+            logger.info('task %s held: org_secrets_locked', task_id)
+            return
         from runtime.orchestrator.run_step import run_step_impl
         run_step_impl(self, task_id, metadata=metadata)
 

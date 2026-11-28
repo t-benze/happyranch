@@ -1,5 +1,16 @@
 # Agent Executors And Permissions
 
+## Org secrets
+
+New task/subtask, thread (including a fresh process resuming a provider session),
+wake, schedule and dream processes receive their org's secrets through the shared
+launch environment. The framing lists variable names only. Never print, echo,
+log or commit their values. Running processes and their descendants keep copies
+through replace/delete; provider-side revocation is separate. Standalone local
+jobs get no additional org-store injection; inherited environment is no isolation
+promise. remote_jobs has no shipping execution path. The shared OS account is
+the trust boundary. See the [backend contract](org-secrets.md).
+
 ## Task temporary storage (THR-307 seq430)
 
 Task launches already prepare `<workspace>/.happyranch/task-tmp/<task_id>/` and

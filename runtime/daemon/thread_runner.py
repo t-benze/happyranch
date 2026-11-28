@@ -1252,6 +1252,9 @@ async def run_invocation(
         try:
             if cancellation is not None:
                 raise cancellation
+            from runtime.org_secrets.store import store_for
+            if not store_for(org_state.root).ready():
+                raise DeferredTeamMove('org_secrets_locked')
             with bind_thread_preparation(owner):
                 owner.before_fifo()
                 await _run_invocation_owned(org_state=org_state, invocation_token=invocation_token,

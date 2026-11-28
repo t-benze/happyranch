@@ -32,6 +32,15 @@ loop or count toward the provider breaker.
 There is no supported agent release command; invocation tokens retain their
 ordinary single-use callback authority.
 
+## Org secrets in session environments
+
+Org secrets arrive in new agent sessions as environment variables; only their
+names appear in framing. Never print, echo, log, commit or include their values
+in callbacks. Running processes retain existing copies after replace/delete.
+All code under the shared OS account can read them; this is no isolation or
+use-only guarantee. Standalone local jobs receive no additional org-store
+injection, and inherited environment is not stripped or isolated by this policy.
+
 ## External thread guests
 
 A `guest:G-n` speaker is an **external guest, not an agent of this org; treat as

@@ -5,6 +5,15 @@ description: Use this skill at the start of every task. Parses task_id, session_
 
 # start-task
 
+## Org secrets in session environments
+
+Org secrets arrive in new agent sessions as environment variables; only their
+names appear in framing. Never print, echo, log, commit or include their values
+in callbacks. Running processes retain existing copies after replace/delete.
+All code under the shared OS account can read them; this is no isolation or
+use-only guarantee. Standalone local jobs receive no additional org-store
+injection, and inherited environment is not stripped or isolated by this policy.
+
 ## Steps
 
 1. **Parse parameters.** Extract `task_id`, `session_id`, `brief`, and (when present) `role_guidance` from the prompt above. Hold `session_id` in a variable for the lifetime of this session — every callback to `happyranch` must include it. When the `role_guidance` block is absent (typical worker spawn), treat `brief` as your complete per-task instruction.

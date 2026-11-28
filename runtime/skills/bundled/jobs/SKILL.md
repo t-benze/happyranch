@@ -5,6 +5,15 @@ description: Run an authorized script in the background; inspect its actual resu
 
 # jobs
 
+## Org secrets in session environments
+
+Org secrets arrive in new agent sessions as environment variables; only their
+names appear in framing. Never print, echo, log, commit or include their values
+in callbacks. Running processes retain existing copies after replace/delete.
+All code under the shared OS account can read them; this is no isolation or
+use-only guarantee. Standalone local jobs receive no additional org-store
+injection, and inherited environment is not stripped or isolated by this policy.
+
 ## When to use
 
 Use a job for a command that does not return (a dev server or watcher), takes

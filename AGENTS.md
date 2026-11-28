@@ -57,6 +57,8 @@ Coding v3 has additive Founder Workflows → Setup Save and separate Allow/Disab
 
 ## Agent-side rules
 
+Org secrets arrive in new sessions as named environment variables; never print, echo, log or commit their values. See [org secrets](docs/agent-guides/org-secrets.md).
+
 - Perform side effects through the `happyranch` CLI. The baseline allow rule for every agent is `happyranch`.
 - Completion and callback payloads must be single-line `happyranch ... --from-file <path>` invocations; shell separators and multiline continuations break permission matching. **The `--from-file` path MUST be absolute** (e.g. `${TMPDIR:-/tmp}/completion.json`), never relative — a relative path resolves against the agent's cwd and can litter stray files under the runtime orgs root.
 - Keep task-only evidence, including routine/automatic screenshots, logs, QA evidence and review packets, in `output/<actual-task-id>/`, report that `output_dir`, and retrieve via `happyranch recall`; binary handoff uses a fresh task attachment.

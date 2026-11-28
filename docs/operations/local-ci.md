@@ -5012,3 +5012,27 @@ refuse with exact rollback and context reset. These extend real SQLite/writer
 fixtures; no mock inventory or production test seam is added. Prior group-1–7R
 keepers and exact clean-head local CI/OpenAPI remain required maker evidence;
 final serial-head full schema suites remain a separate root-owned gate.
+
+## Org secrets Slice A focused checks
+
+Run the standalone unittest script with a task-private frozen runtime environment
+(no pytest or retired-suite import):
+
+```sh
+uv lock  # only when intentionally changing the dependency manifest
+# UV_PROJECT_ENVIRONMENT must name a fresh absolute task-scratch directory.
+uv sync --frozen --no-dev --python /opt/happyranch-desktop/python/bin/python3
+/path/to/private/environment/bin/python scripts/test_org_secrets.py -v
+/path/to/private/environment/bin/python scripts/generate_openapi_snapshot.py --write
+```
+
+The focused script replaces only the OS-keyring adapter test-side before org
+construction; it drives real filesystem/AEAD/ASGI/launch-env/hold boundaries.
+Its shell child is a native delivery observation, not real agent acceptance.
+D02 requires separately qualified providers in an isolated scratch daemon, never
+founder credential-store copies. OS adapter acceptance uses a fresh private
+session D-Bus plus an isolated Secret Service data root, never the ambient bus.
+Mac login-Keychain acceptance requires a disposable Mac account. Packaged Python
+imports must be checked independently of the ambient development interpreter.
+F01 uses the existing pinned TLC venue with the org-secrets configs, outside CI.
+General integration stays SKIPPED under THR-243 seq42; no ad hoc Product E2E.

@@ -12,6 +12,15 @@ Preparation and recovery refusals belong to the maintained
 Preserve the original occurrence and identity; never create a replacement,
 fabricate completion or reset a window. Process return alone is not cleanup proof.
 
+## Org secrets in session environments
+
+Org secrets arrive in new agent sessions as environment variables; only their
+names appear in framing. Never print, echo, log, commit or include their values
+in callbacks. Running processes retain existing copies after replace/delete.
+All code under the shared OS account can read them; this is no isolation or
+use-only guarantee. Standalone local jobs receive no additional org-store
+injection, and inherited environment is not stripped or isolated by this policy.
+
 ## Procedure
 
 1. Review the dream prompt and the recent window it provides.

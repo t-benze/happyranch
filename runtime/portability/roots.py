@@ -41,6 +41,7 @@ EXCLUDE_CACHE = "cache"
 EXCLUDE_ZERO_BYTE_LEGACY_RESIDUE = "zero_byte_legacy_residue"
 EXCLUDE_WORKSPACE_NON_MEMORY = "workspace_non_memory"
 EXCLUDE_TASK_OUTPUT = "task_output"
+EXCLUDE_ORG_SECRETS = "org_secrets_reentered_on_new_machine"
 
 # ── Reject reasons ───────────────────────────────────────────────────────────
 REJECT_UNKNOWN_ROOT = "unknown_root"
@@ -142,6 +143,10 @@ def _classify_child(child: Path) -> list[ClassifiedEntry]:
     if not _is_regular_entry(child):
         return [ClassifiedEntry(path=rel, classification=RootClassification.REJECT,
                                 reason=REJECT_NONREGULAR)]
+
+    if name == "secrets":
+        return [ClassifiedEntry(path=rel, classification=(RootClassification.EXCLUDE if child.is_dir() else RootClassification.REJECT),
+                                reason=(EXCLUDE_ORG_SECRETS if child.is_dir() else REJECT_NONREGULAR))]
 
     if name in ALLOWED_ROOTS:
         # happyranch.db is a regular file; every other allowed root is a dir.

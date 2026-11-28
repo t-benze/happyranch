@@ -593,6 +593,9 @@ async def run_native_producer(org, kind, source_id, action):
         owner = admission.reserve(kind, source_id)
         if owner is None:
             return
+        from runtime.org_secrets.store import store_for
+        if kind != 'job' and not store_for(org.root).ready():
+            raise DeferredTeamMove('org_secrets_locked')
         return await action(owner)
     except DeferredTeamMove:
         deferred = True  # owner rows remain unchanged; no failure/callback

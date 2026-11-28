@@ -142,6 +142,29 @@ def grant(supervisor, path, node="node-a", secret="synthetic-invite"):
     return device, completed["credential"]
 
 
+@pytest.mark.parametrize("method,suffix", [
+    ("GET", ""), ("POST", ""), ("PUT", "/SYNTH_NAME"),
+    ("DELETE", "/SYNTH_NAME"), ("POST", "/key-status"),
+    ("GET", "/operations/00000000-0000-0000-0000-000000000001"),
+])
+def test_org_secrets_local_only_unclassified_denied(monkeypatch, method, suffix):
+    forwarder = ForwardingHarness()
+    monkeypatch.setattr(supervisor_module, "HttpLoopbackForwarder", lambda *a, **kw: forwarder)
+    with running(monkeypatch) as (path, supervisor):
+        _, credential = grant(supervisor, path)
+        # This control proves the genuine pinned identity reaches route policy.
+        assert result(call(path, "node-a", credential=credential))[0] == 200
+        assert len(forwarder.streams) == 1
+        raw = request("/api/v1/orgs/synthetic/secrets" + suffix, credential=credential)
+        raw = method.encode() + raw[raw.index(b" "):]
+        response = exchange(str(path), frame(b"node-a") + raw)
+        assert result(response) == (403, {"error": "unclassified_denied"})
+        assert credential.encode() not in response
+        # HTTP also uses open_stream so revocation can close an in-flight hop.
+        assert len(forwarder.streams) == 1, "Secrets must not reach the daemon hop"
+        assert not forwarder.forwarded
+
+
 def test_ceremony_pin_bearer_and_restart(monkeypatch, tmp_path):
     monkeypatch.setattr(supervisor_module, "HttpLoopbackForwarder", lambda *a, **kw: ForwardingHarness())
     state_path = tmp_path / "state" / "trust.json"
