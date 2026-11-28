@@ -1615,8 +1615,10 @@ check. One package-owned helper unit is also excluded, only at
 regular single-link root:root 0644 file with bytes exactly equal to the trusted
 in-code `installer.PACKAGED_HELPER_UNIT_BYTES`. Both inventory consumers use the
 same predicate after their bounded no-follow read and signature checks; expected
-bytes never come from the scanned filesystem. Native packaging tests bind the
-shipped unit and build-deb's installed copy to that constant. Changed bytes,
+bytes never come from the scanned filesystem. The single pin includes F3's
+exact optional UFW lock-file carve-out; old and new byte sets are not accepted.
+Native packaging tests bind the shipped unit and build-deb's installed copy to
+that constant. Changed bytes,
 metadata or type, same-name `/etc` or `/run` copies and helper drop-ins gain no
 exclusion. Every regular file under `/usr/share/dbus-1/system-services`,
 `/usr/local/share/dbus-1/system-services` and `/etc/dbus-1/system-services`, when
@@ -3941,7 +3943,7 @@ settlement before terminal success. No step renews the budget.
 
 Interruption after a complete staging step permits only exact owner reuse on the
 next fresh-auth Enable; unknown/pending/partial residue is never adopted or
-deleted. Forward activation retains Ruling 17 and B7 recovery. Ready Enable may perform only the ordinary boot-equivalent start of exact enabled owned units, then joined verification; it never replays activation. Disable, replacement closure, invite and renewal effects and the
+deleted. Forward activation retains Ruling 17 and B7 recovery. Ready Enable may perform the ordinary boot-equivalent start of exact enabled owned units, joined verification and the scoped F3 UFW reconciliation below; it never replays activation. Disable, replacement closure, invite and renewal effects and the
 closed B5/B6/B17 maps remain unchanged. Temp-root tests exercise all five owners,
 including replacement closure, repeated Turn off/Turn on, CAS, refusal and expiry;
 native/NSS/materializer/LAN responses are simulated. Installed acceptance remains I6.
@@ -4263,10 +4265,11 @@ noncurrent renewed policy enables/starts zero units. Earlier inert publication
 retains its existing reloads and read-only manager inspection. Every subsequent
 check, admission and runtime gate is strict. The later `managed_services`
 re-stamp remains, with timer enable before verifier socket/target enable and
-managed target start. Ready Enable may start exact enabled owned units as at boot, then verify joined; it never replays activation. I3a fresh-auth recovery
-still only verifies and
-publishes (or rolls over to prepared); it never renews policy, links the timer or
-replays any other effect. A later forward Enable runs the existing effect path.
+managed target start. Ready Enable may start exact enabled owned units as at boot, verify joined and reconcile the scoped F3 UFW plan below; it never replays activation. I3a fresh-auth recovery
+verifies and publishes (or rolls over to prepared). After joined recovery it may
+reconcile that same scoped F3 UFW plan, the only effect exception; it never
+renews policy, links the timer or replays any other effect. A later forward
+Enable runs the existing effect path.
 The existing managed-fragment check also validates both renewal units before
 any mutating manager call: exact `/usr/lib/systemd/system/<unit>` FragmentPath,
 empty DropInPaths, Names containing only that unit, loaded state without a
@@ -4566,7 +4569,7 @@ Why no founder: implements approved recognized-failure recovery without terminal
 
 **B18 — Explicit token repair and known-version upgrade.**
 No new method: fresh-auth `Enable()` repairs only a positively classified
-`repair_required` live profile; already-ready Enable permits only ordinary start and joined verification, never activation replay.
+`repair_required` live profile; already-ready Enable permits ordinary start, joined verification and the scoped F3 UFW reconciliation below, never activation replay.
 Close admission/quiesce → same recorded release UID/home → same-FD token read
 → transactional exact-file/digest update → loaded-unit/READY revalidation →
 reopen. Preserve installation IDs, pins, epochs and revocations. Package postinst
@@ -5050,8 +5053,147 @@ The remote client snapshot does not carry host firewall Status. Replacing the
 client's generic home-network-unavailable explanation therefore needs a new
 protocol field and remains follow-up; this change adds none to that snapshot.
 
-Inspection never adds/removes/modifies firewall rules. Automatic rule management
-remains Founder-reserved. Service user, sandbox, capabilities, ReadWritePaths,
-R2 custody, home-only trust and authentication/authorization remain unchanged.
+The F2 inspector never changes firewall rules. Founder THR-327 seq722 authorizes
+only the F3 effects and exact lock-file sandbox carve-out below. Service user,
+capabilities, R2 custody, home-only trust and authentication/authorization
+remain unchanged.
 Installed-package/UFW and cross-device qualification remain separate from the
 standalone temporary-file/native-simulation venue.
+
+### THR-327 F3: owned home LAN UFW rules
+
+Founder THR-327 seq722 authorizes the root helper's Enable, after joined
+activation, to share F2's bounded UFW observation and add/adopt exactly two
+allow specifications on installed, active UFW: from the selected home LAN
+subnet to the Headscale dial IP, 8443/tcp and 3478/udp, each commented
+`happyranch-home-headscale`. No caller supplies addresses, prefixes, paths,
+commands or flags. The kernel prefix is retained for the same interface/address
+chosen by `select_lan_dial_ip`. That selector stays IPv4/RFC1918; F3 adds no
+IPv6 selection. The exact unique network must contain the dial IP, be private
+RFC1918/ULA, and be no wider than /16. Missing/ambiguous, public or wider
+prefixes skip the effect and retain F2 advice. Absent/inactive UFW is a no-op.
+Firewalld and raw nftables receive F2 advice only: no F3 mutation through either.
+
+The packaged root helper retains `ProtectSystem=strict`, `ProtectHome=read-only`,
+`PrivateTmp=yes` and `NoNewPrivileges=yes`. Its only F3 sandbox carve-out is
+`ReadWritePaths=-/run/ufw.lock`: UFW must write its own lock even to inspect rules.
+The leading `-` skips a missing file at unit start; it grants no writable `/run`
+directory. The package ships `/usr/lib/tmpfiles.d/happyranch-ufw-lock.conf`
+containing only `f /run/ufw.lock 0644 root root -`, for systemd-tmpfiles to
+create the empty lock at boot. This matches UFW's lock metadata and creates no
+rule. F3 adds no maintainer script, install-time tmpfiles invocation or helper
+restart. The existing configure-only postinst from the connector upgrade fix
+reloads the system manager; DEBIAN contains `control`, `md5sums` and `postinst`.
+Distro triggers and D-Bus activation retain their existing behavior.
+If install/upgrade leaves the lock unavailable in the helper namespace, reboot
+once and press Turn on again. The worker checks the existing lock without
+creating it before any rule effect. If missing or read-only, both ports record
+`skipped_ufw_lock_unavailable` ("skipped: ufw lock unavailable") in the journal
+and Status. Enable can complete without firewall effects; Turn off has no F3
+rule to remove. Repeating Enable after lock access returns can acquire the rules.
+Previously acquired or uncertain ownership never becomes a skip: unavailable
+cleanup remains uncertain with its intent retained. UFW startup security checks
+remain enabled against the fixed `/usr/sbin/ufw` CLI path before its frontend is
+constructed. No directory-wide grant, out-of-sandbox UFW execution, capability,
+user or dependency change is permitted by this carve-out.
+
+UFW's distro `hex_encode` represents the fixed comment in both rule specs,
+matching the CLI parser and persisted backend representation. `UFWRule.match`
+is unchanged and authoritative: 0 adopts our tagged exact allow; -2
+leaves the existing differently tagged/untagged allow untouched; -1 leaves a
+different action/log collision untouched and reports it as blocking. Any
+collision vetoes add, even alongside an exact owned rule. Only no-match adds.
+The fixed system-Python worker holds UFW's POSIX lock across fresh inspection
+and execution of `/usr/sbin/ufw` with fixed-action argv in the same process,
+closing the inspection/add race. The distro CLI releases this process-wide
+POSIX lock itself. The worker closes its old handle, re-acquires the native
+lock, then constructs a fresh frontend and verifies the exact persisted spec
+under that re-acquired lock; an unlocked CLI return is never verification.
+A fixed supervisor retains the existing activation-directory flock descriptor
+until the native worker group and all descendants are killed and reaped, on
+success, timeout or backend death. Parent-death binding requests that cleanup
+without killing the custody holder. Supervisor and worker share one absolute
+cap, the earlier of the existing eight-second worker budget and the original
+operation deadline. It is never extended after a lock wait. The worker checks
+it after native lock acquisition and immediately before the rule command.
+An uncertain native lifetime keeps custody; a later Turn off cannot claim
+cleanup while that group could still act. UFW already supplies its Python
+modules; no new dependency or privilege model is added. No shell, ufw enable/disable/reset,
+insert, reorder or separate reload is issued.
+UFW imports and CLI output use a binary-capable capture, including its
+import-time stdout binding. Success messages such as `Rule added` cannot
+prefix the worker's single strict JSON reply or turn a completed add into an
+unverified activation. Command failures still refuse success and retain the
+existing rollback/recovery behavior.
+
+The existing protected activation journal has an optional nonsecret `firewall`
+record: exact subnet and two ordered port states. Older journals omit it and
+retain their byte encoding, effect order and recovery behavior. Each native
+add/remove intent is durable before its command; completion follows verified readback.
+Pending and absent/inactive/lock-unavailable skips never attempted a rule.
+No-effect cleanup retains that durable provenance through its audit intent,
+then commits `removed` directly, without publishing a native `remove_intent`.
+An interruption therefore needs neither UFW nor its lock to finish cleanup.
+An existing `remove_intent` still represents uncertain native removal and
+requires verified cleanup; absence of UFW never erases that uncertainty.
+After add/delete, a fresh backend read under the re-acquired UFW lock checks
+the exact encoded spec independently of collision-prioritized summaries. Add succeeds
+only when that exact rule exists; removal succeeds only when it is absent.
+A successful CLI exit with a surviving rule retains `remove_intent` in the
+journal and Status and an uncertain audit outcome, including rollback,
+replacement cleanup and Turn off. Existing
+local activation/Turn off audit shapes bracket each port with fixed nonsecret
+subjects. A lost add completion retains enough evidence to adopt the tagged
+rule on retry or remove it on cleanup. B7 preserves the record; a generation
+rollover cleans the old plan first. Failed-Enable rollback and Turn off
+cleanup delete only an allow with our comment AND the exact source,
+destination, protocol and port. Missing owned rules are idempotent. Uncertain
+cleanup retains its intent and refuses successful cleanup. Founder hand-added
+rules, including identical untagged allows and denies, are never removed.
+Unchanged repeated Enable leaves settled journal/audit bytes untouched. If UFW
+later becomes inactive, ownership stays recorded for Turn off cleanup.
+
+For an already-READY upgrade, read Status, quit the app, reinstall the new deb
+with `sudo apt-get install -y --reinstall ./happyranch_0.1.0-1_amd64.deb`, reopen,
+wait 15 seconds, read Status, then press Turn on again once. If that press is
+refused with `ready-restart-failed-turn-off` after Status read failed/offline,
+wait 30 seconds and confirm Status is ready/available. Then press Turn on again
+once more: expect `enableCompleted` and both tagged LAN rules. The first refused
+press must leave no untracked firewall effect; any retained effect must be
+journaled and removable by Turn off. This is the known pre-existing N3/N5 case;
+F3 does not repair it. A second refusal on a ready/available host is a stop
+condition. Do not add a manual daemon-reload or service restart. F3 upgrade
+acceptance uses this procedure; an identical archive
+reinstall does not model replacement by a different build's unit-file mtimes.
+
+StatusV2 optionally carries `firewall.ports`; native/CLI Status projects it as
+`firewallPorts`, exactly `8443/tcp` and `3478/udp`. States are `added`,
+`preexisting_not_owned` (already allowed by your existing rule),
+`blocked_by_existing` (your existing rule blocks this port),
+`skipped_ufw_absent`, `skipped_ufw_inactive`, `skipped_ufw_lock_unavailable`,
+`skipped_subnet_rejected`, plus
+`pending`, `add_intent`, `remove_intent`, `removed`, `unverified` during recovery.
+The joined transaction journal owns this record; the READY receipt deliberately
+has no firewall member. The existing setup-status child reads recorded effects
+without a UFW subprocess. The bounded F2 firewall child additionally compares
+settled port states with live UFW under its existing lock: a missing rule,
+inactive UFW or unavailable read reports `unverified`; an identical manual allow
+reports `preexisting_not_owned`. It never changes the ownership journal, resolves
+an intent or repairs a rule. Pending/cleanup and skip states retain their meaning.
+A skipped or timed-out optional firewall child leaves the recorded facts in a
+delivered V2 frame. Neither view proves packet reachability or setup readiness.
+The original Status deadline/watchdog and v1 compatibility remain unchanged.
+Missing public ports remain an acceptance failure: capture the raw StatusV2
+reply/error and timing rather than infer loss from the READY receipt. Frames
+without this extension remain valid for older peers.
+
+F2 recognizes UFW's canonical `dial_ip port/protocol` formatter only for the
+protected receipt's exact address. Numeric interface-scoped allows for unrelated
+ports do not supply home-port evidence; an interface-scoped rule affecting a
+home port, another destination address, an unknown profile or custom supplemental
+rules remains unverified. Stock-file, output-bound and closed-value checks stay
+in place. Identical untagged allows need neither a duplicate nor a false warning.
+
+Replace failed remains installer-only and refuses home activation before
+admission; that path cannot acquire F3 rules. Use Turn off for retained F3
+activation effects. This preserves the existing R2 compatibility contract.

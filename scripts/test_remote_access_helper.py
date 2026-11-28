@@ -1482,6 +1482,53 @@ def test_status_v2_deadline_and_single_worker(venue: Any, monkeypatch: Any) -> N
     assert not authority.calls and not operations.effects
 
 
+@pytest.mark.parametrize('reader', ['invite', 'policy'])
+def test_status_v2_optional_reader_preserves_legacy_fallback(
+        venue: Any, monkeypatch: Any, reader: str) -> None:
+    """Slow optional reads must keep main's watchdog/v1 fallback semantics.
+
+    Observable contract: real private-bus StatusV2 expires, while v1 retains
+    failed/not-ready. Regression: shorten an existing reader's budget by .3s,
+    delivering runtime_unavailable before the watchdog instead of v1 failed.
+    The blocked-snapshot test above owns the required read; the firewall table
+    owns the later F2 advice, not these invite/policy timeout boundaries.
+    No production test seam. The synthetic child is killed/reaped by run().
+    """
+    helper, authority, operations, client, _ = venue
+    observed = HELPER._helper_generation.GenerationSnapshot(7, 'a' * 32, os.getuid(), 'ready')
+    monkeypatch.setattr(helper.generations, 'current_generation', lambda _: observed)
+    monkeypatch.setattr(HELPER._helper_generation.HomeLifecycleClient, 'setup_status',
+                        lambda *args: {'setup': 'runtime_unavailable'})
+    children = []
+
+    def slow(self: Any, *args: Any) -> dict:
+        # The dependency outlives either allowance; use a real bounded child
+        # rather than a sleep that ignores the production timeout argument.
+        try:
+            subprocess.run([sys.executable, '-I', '-c', 'import time; time.sleep(10)'],
+                           timeout=args[-1], check=True, capture_output=True)
+        finally:
+            children.append('reaped')
+        raise AssertionError('synthetic child unexpectedly completed')
+
+    monkeypatch.setattr(HELPER._helper_generation.HomeLifecycleClient, 'invite_status',
+                        slow if reader == 'invite' else lambda *args: {'invite': 'none', 'expires_at': None})
+    monkeypatch.setattr(HELPER._helper_generation.HomeLifecycleClient, 'policy_status',
+                        slow if reader == 'policy' else lambda *args: {'policy': 'current'})
+    legacy = Call(client, 'Status').finish()
+    assert legacy['phase'] == 'failed' and not legacy['ready']
+    detail = Call(client, 'StatusV2')
+    try:
+        assert detail.done.wait(5)
+        assert detail.reply.get_message_type() == Gio.DBusMessageType.ERROR, detail.reply.get_body().unpack()
+        detail.finish('expired')
+    finally:
+        eventually(lambda: helper.status_worker is None)
+    assert children == ['reaped']
+    assert not authority.calls and not operations.effects
+    assert not helper.cursors and not helper.audit.path.exists()
+
+
 @pytest.mark.parametrize('method,event', [('ApprovePending', 'device_approved'),
                                          ('RejectPending', 'device_rejected'),
                                          ('RevokeSelected', 'device_revoked')])

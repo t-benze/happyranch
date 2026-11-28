@@ -104,7 +104,7 @@ def collect_lan_inventory() -> tuple[tuple[LANInterface, ...], tuple[LANDefaultR
                         else:  # ERROR, OVERRUN and unknown messages never mean an empty dump.
                             raise ValueError
                         data = data[(length + 3) & ~3:]
-        interfaces: dict[int, tuple[bool, bool, list[str]]] = {}
+        interfaces: dict[int, tuple[bool, bool, list[str], list[int]]] = {}
         for body in messages[16]:
             if len(body) < 16:
                 raise ValueError
@@ -112,11 +112,11 @@ def collect_lan_inventory() -> tuple[tuple[LANInterface, ...], tuple[LANDefaultR
             _attributes(body[16:])
             if index <= 0 or index in interfaces:
                 raise ValueError
-            interfaces[index] = bool(flags & 1), bool(flags & 8), []
+            interfaces[index] = bool(flags & 1), bool(flags & 8), [], []
         for body in messages[20]:
             if len(body) < 8:
                 raise ValueError
-            family, _, _, _, index = struct.unpack_from("=BBBBI", body)
+            family, prefixlen, _, _, index = struct.unpack_from("=BBBBI", body)
             if family not in (socket.AF_INET, socket.AF_INET6):
                 continue
             attrs = _attributes(body[8:])
@@ -124,6 +124,7 @@ def collect_lan_inventory() -> tuple[tuple[LANInterface, ...], tuple[LANDefaultR
                 raise ValueError
             address = socket.inet_ntop(family, attrs[2] if 2 in attrs else attrs[1])
             interfaces[index][2].append(address)
+            interfaces[index][3].append(prefixlen)
         routes: list[LANDefaultRoute] = []
         for body in messages[24]:
             if len(body) < 12:
@@ -159,8 +160,8 @@ def collect_lan_inventory() -> tuple[tuple[LANInterface, ...], tuple[LANDefaultR
                 if index not in interfaces:
                     raise ValueError
                 routes.append(LANDefaultRoute(index, source, table, family))
-        return (tuple(LANInterface(index, up, loopback, tuple(addresses))
-                      for index, (up, loopback, addresses) in interfaces.items()), tuple(routes))
+        return (tuple(LANInterface(index, up, loopback, tuple(addresses), tuple(prefixes))
+                      for index, (up, loopback, addresses, prefixes) in interfaces.items()), tuple(routes))
     except (OSError, ValueError, KeyError, struct.error, OverflowError):
         pass
     raise HeadscaleServiceError("inventory")

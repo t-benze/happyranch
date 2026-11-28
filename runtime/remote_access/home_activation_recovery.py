@@ -53,6 +53,7 @@ def validate_recovery_transaction(previous: HomeActivationTransaction,
                                   updated: HomeActivationTransaction) -> None:
     """A verified recovery alone may replace the terminal prefix with eight done effects."""
     if (previous.phase != "failed_uncertain" or previous.binding() != updated.binding()
+            or previous.firewall != updated.firewall
             or updated.phase != "joined" or updated.recovery_observation is None
             or tuple(e.name for e in updated.effects) != EFFECTS
             or any(e.state != "done" for e in updated.effects)):

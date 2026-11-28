@@ -18,4 +18,6 @@ ReadWritePaths=-/var/lib/happyranch-tsnet-sidecar
 ReadWritePaths=-/run/happyranch-headscale
 ReadWritePaths=-/run/happyranch-connector
 ReadWritePaths=-/run/happyranch-tsnet-sidecar
+# UFW's mandatory lock, without making /run writable. Missing at start => skip.
+ReadWritePaths=-/run/ufw.lock
 ReadWritePaths=-/opt/happyranch

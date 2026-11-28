@@ -607,10 +607,21 @@ class Protocol:
             raise ValueError('invalid status detail')
         if 'firewall' in value:
             firewall = value['firewall']
-            if (type(firewall) is not dict or set(firewall) != {'state', 'age_seconds'}
+            if (type(firewall) is not dict or set(firewall) not in (
+                    {'state', 'age_seconds'}, {'state', 'age_seconds', 'ports'})
                     or type(firewall['state']) is not str or firewall['state'] not in FIREWALL_STATES
                     or type(firewall['age_seconds']) is not int or firewall['age_seconds'] < 0):
                 raise ValueError('invalid firewall detail')
+            if 'ports' in firewall:
+                ports = firewall['ports']
+                if (type(ports) is not dict or set(ports) != {'8443/tcp', '3478/udp'}
+                        or any(type(s) is not str or s not in {'added', 'preexisting_not_owned',
+                            'blocked_by_existing', 'skipped_ufw_absent', 'skipped_ufw_inactive', 'skipped_ufw_lock_unavailable',
+                            'skipped_subnet_rejected', 'pending', 'add_intent', 'remove_intent',
+                            'removed', 'unverified'} for s in ports.values())):
+                    raise ValueError('invalid firewall ports')
+                if firewall['age_seconds'] <= 30:
+                    snapshot = {**snapshot, 'firewallPorts': dict(ports)}
             if firewall['age_seconds'] <= 30 and firewall['state'] in FIREWALL_ADVISORIES:
                 snapshot = {**snapshot, 'firewallWarning': firewall['state']}
         part = value['setup']

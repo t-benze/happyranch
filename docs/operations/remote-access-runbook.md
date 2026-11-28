@@ -27,6 +27,154 @@ mismatches. Do not manually modify units or promise Turn off recovery; the
 existing partial-cleanup limit remains. The manager must rerun the failed and
 healthy upgrade cases with the postinst package before founder upgrade acceptance.
 
+For an already-READY upgrade, read Status, quit the app, reinstall the new deb
+with `sudo apt-get install -y --reinstall ./happyranch_0.1.0-1_amd64.deb`, reopen,
+wait 15 seconds, read Status, then press Turn on again once. If that press is
+refused with `ready-restart-failed-turn-off` after Status read failed/offline,
+wait 30 seconds and confirm Status is ready/available. Then press Turn on again
+once more: expect `enableCompleted` and both tagged LAN rules. The first refused
+press must leave no untracked firewall effect; any retained effect must be
+journaled and removable by Turn off. This is the known pre-existing N3/N5 case;
+F3 does not repair it. A second refusal on a ready/available host is a stop
+condition. Do not add a manual daemon-reload or service restart. F3 upgrade
+acceptance uses this procedure; an identical archive
+reinstall does not model replacement by a different build's unit-file mtimes.
+
+## Managed home LAN firewall (THR-327 F3)
+
+The managed home root helper's Enable adds 8443/tcp and 3478/udp allows only
+when UFW is installed and active. Both are scoped from the exact selected LAN
+subnet to the Headscale listener IP and commented `happyranch-home-headscale`.
+The same dial-IP selector supplies the interface/address; its kernel prefix
+must yield an unambiguous private network no wider than /16. Otherwise Status
+reports `skipped_subnet_rejected` and F2's advisory remains available. Absent or
+inactive UFW is a no-op. Firewalld/raw nftables receive F2 advice only, with no F3 mutation.
+The helper never enables/disables/resets/reorders UFW or issues a separate reload.
+
+Existing hand-added rules coexist: an identical untagged/differently commented
+allow is left untouched (`preexisting_not_owned`: already allowed by your
+existing rule); a different action/log collision is left untouched
+(`blocked_by_existing`: your existing rule blocks this port). Turn off does not
+remove either. An exact tagged HappyRanch rule is adopted. Only no-match adds.
+The helper holds UFW's own lock across matching and its fixed rule command.
+Because the distro CLI releases this process-wide POSIX lock, the helper closes
+the old handle and re-acquires the lock before fresh exact-spec readback. Specs
+use the distro's hex encoding for the fixed comment, matching persisted UFW rules without changing its matcher. A zero CLI
+exit alone does not establish an add or removal: readback must prove the exact
+tagged rule present or absent, respectively. If a rule survives deletion,
+rollback/replacement cleanup/Turn off refuse success; Status and the journal
+retain `remove_intent` and the audit records uncertainty. Hand-added LAN rules
+continue to coexist and are never removed by F3.
+
+The helper service's narrow sandbox carve-out is
+`ReadWritePaths=-/run/ufw.lock`, because UFW needs a writable lock even for
+inspection. `/run` stays read-only; all existing hardening remains enabled.
+The `-` means systemd ignores an absent file at service start, so availability
+is checked without creating the lock before either rule can be added. Do not
+assume `ufw.service` creates it at boot: its distro startup script differs from
+the UFW CLI. The package instead ships
+`/usr/lib/tmpfiles.d/happyranch-ufw-lock.conf`, containing only
+`f /run/ufw.lock 0644 root root -`. systemd-tmpfiles creates this empty lock at
+boot with UFW's own mode and owner; it does not run UFW or change any rule.
+F3 adds no maintainer script, install-time tmpfiles command or helper restart.
+The existing configure-only postinst reloads the system manager after package
+replacement. Distro triggers and the helper's D-Bus activation lifecycle remain
+in place.
+If absent or read-only, both ports show `skipped_ufw_lock_unavailable`
+("skipped: ufw lock unavailable"); Enable adds neither rule. If Status says
+"skipped: ufw lock unavailable", reboot once and press Turn on again. This can
+be needed after a fresh install or upgrade before the new lock and unit's mount
+are available together. Check the lock and helper's effective mount policy if
+the skip persists after reboot.
+Never make `/run` writable or run UFW outside the helper to bypass this skip.
+If rules were already acquired, unavailable cleanup retains its intent and
+reports uncertainty instead of claiming removal. Existing rules remain owned
+until a later verified cleanup.
+
+Turn off and failed-Enable rollback remove only the
+fixed comment AND exact allow/source/destination/port/protocol specification.
+The protected activation journal records each intent before the effect and
+completion afterward, so interrupted add/delete remains recoverable. Old
+journals without the optional firewall record still recover. If cleanup is
+uncertain it retains the intent and refuses successful cleanup. Pending and
+absent/inactive/lock-unavailable skip records retain their no-effect provenance
+until cleanup commits `removed` directly; interrupted no-effect cleanup requires
+neither UFW nor its lock. Existing native `remove_intent` records still fail
+closed until verified removal.
+A native supervisor retains the original activation-directory custody until the
+worker process group and all descendants are killed and reaped, including on
+backend death. The worker and supervisor share one absolute cap, bounded by
+the original operation deadline and existing eight-second worker budget. It is
+never extended after lock acquisition and is checked immediately before effects. A later Turn off cannot
+enter while an earlier worker could still act. Fresh-auth joined recovery may
+reconcile the scoped F3 plan; renewal/timer/activation replay remain forbidden.
+Repeating Enable with unchanged firewall facts leaves settled journal/audit
+bytes untouched. Making UFW inactive later retains ownership so Turn off still
+removes the exact tagged rules from its persisted configuration.
+UFW's normal success messages are captured separately from the helper's strict
+JSON result, including messages bound to stdout during UFW import. A completed
+rule add must not become `activation-unverified` merely because `Rule added`
+preceded that result. For preservation evidence, retain `ufw show added` and
+`ufw status numbered` before Enable and after Turn off, comparing normalized
+rules in their original order. A changed rules-file hash alone does not prove
+a changed rule: UFW may rewrite headers or formatting. Keep both hashes and
+the normalized comparison, including unrelated and identical untagged rules.
+Replace failed remains installer-only: its existing pre-admission refusal for
+home activation is unchanged. That path cannot acquire F3 rules; use Turn off
+for an activation with a retained firewall plan.
+
+`StatusV2` exposes per-port `firewall.ports`; the host CLI Status JSON exposes
+`firewallPorts` with `8443/tcp` and `3478/udp`. Expected states include `added`,
+`preexisting_not_owned`, `blocked_by_existing`, `skipped_ufw_absent`,
+`skipped_ufw_inactive`, `skipped_ufw_lock_unavailable`, `skipped_subnet_rejected`,
+`removed`; pending intents or
+`unverified` require recovery/inspection. The joined transaction journal owns
+these facts; the READY receipt deliberately has no firewall field. Setup-status
+reads recorded effects without a UFW process. The bounded firewall advice child
+also compares settled effects with live UFW. Deleted rules, inactive UFW and
+unavailable reads report `unverified`; a matching manual allow reports
+`preexisting_not_owned`. Status changes no rule, journal or pending intent.
+If optional advice runs out of time, a delivered V2 frame retains recorded
+facts; no port field proves reachability. A missing public field remains an
+acceptance failure: retain raw StatusV2/error/timing evidence, rather than infer
+that the READY commit discarded the journal. Existing deadlines remain fixed.
+UFW's address-qualified formatter is understood only for the protected home
+address; unknown home-port interface scope and custom supplemental rules remain
+unverified.
+
+Founder THR-327 seq749 assigns F3 acceptance to a manual run on the real host.
+The disposable-VM budget is closed. This documentation authorizes no host action
+by an agent. Before/after Turn on and Turn off, the founder should compare all
+unrelated rule bytes/order and both identical untagged manual allows, then check
+Status after the ordinary host restart. No duplicate or manual-rule deletion is
+permitted. For LAN STUN from the Mac, the pinned server requires a Binding
+Request with SOFTWARE `tailnode` and a final valid FINGERPRINT; a bare 20-byte
+request is silently discarded. Require Binding Success 0x0101, exact cookie and
+transaction ID, source `dial_ip:3478`, and XOR-MAPPED-ADDRESS equal to the Mac's
+bound LAN IP and UDP port. On timeout retain the host's generated
+`derp.server.enabled`/`stun_listen_addr`, actual UDP listener address/PID and
+packet counters before/after that one request. The packaged configuration enables
+embedded DERP/STUN and binds STUN to `dial_ip:3478`; source review cannot prove
+runtime binding or delivery. Do not upgrade Headscale or change firewall rules
+as a diagnostic shortcut.
+
+For manual inspection, run `sudo ufw status numbered` and `sudo ufw show added`.
+If manual recovery is needed, read the exact subnet and dial IP from the
+protected activation journal and compare the comment and full specification.
+Only after confirming ownership, repeat the corresponding full command with
+`delete` before `allow`, for example (replace these synthetic addresses with
+the journal's exact values):
+
+```sh
+sudo ufw delete allow proto tcp from 192.168.42.0/24 to 192.168.42.10 port 8443 comment happyranch-home-headscale
+sudo ufw delete allow proto udp from 192.168.42.0/24 to 192.168.42.10 port 3478 comment happyranch-home-headscale
+```
+
+Never delete by port alone or by a stale numbered-rule index. Leave unrelated
+and identical untagged founder rules untouched. The cloud provisioning examples
+later in this historical runbook describe a separate self-hosted deployment;
+they are not commands issued by managed home Enable.
+
 For the fixed outside-home test server, follow the founder-run [test-server hardening guide](remote-access-test-server-hardening.md) (PR-A; version/relay/ACL decisions remain deferred).
 
 **Phase-2 Part A** — deploy artifact runbook
@@ -413,8 +561,9 @@ all artifact/provenance/custody checks still apply. After the existing
 shipped policy under its held flock and requires currentness before that effect's
 reload and before ANY enable/start. Existing inert publication reloads occur
 earlier. Failure enables/starts no unit; the later managed-services renewal and
-timer-before-target order remain. Recovery never renews and Ready Enable only
-inspects. Status never writes policy or any other retained file.
+timer-before-target order remain. Recovery never renews. Ready Enable retains
+its existing owned-unit restart/verification path and reconciles the scoped F3
+UFW plan above. Status never writes policy or any other retained file.
 
 Only bounded sidecar `health.json` / `.health-N` diagnostics may remain while
 that unit is inactive and quiescent; other runtime entries and verifier

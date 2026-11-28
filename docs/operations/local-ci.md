@@ -4286,6 +4286,70 @@ checks change systemd hardening, required CI selection or workflow triggers.
 
 ## Fixed remote-access helper
 
+F3 extends the same standalone temporary-root/native-fake venue:
+`PYTHONPATH=$PWD uv run --frozen --python /usr/bin/python3 pytest scripts/test_home_firewall.py -q --tb=short`.
+It uses the installed UFW CLI parser (including persisted hex comments) and
+matcher with fake OS/CLI effects; no host rule,
+system bus or service is changed. Cases cover tagged add/adoption, untagged,
+deny/log collisions, exact cleanup, add-before-commit interruption, failed-Enable
+rollback, absent/inactive UFW, rejected subnets, kernel prefix retention, old
+journals, Status projection, unchanged repeated Enable, retained cleanup after
+UFW becomes inactive, admission-refusal preservation, the real CLI startup
+identity, exact-file sandbox shape, missing/read-only lock skips before either
+rule, and uncertain cleanup with retained ownership. Keep the F2 checks below. Neither suite is added to CI; required checks stay lint/static only.
+
+The existing `test_worker_cli_identity` also fresh-loads the real distro
+message formatter and checks the worker's JSON output, lifecycle READY and both
+recorded rules. This covers UFW's import-time stdout binding and binary writes;
+the CLI effect remains synthetic and no host rule is touched.
+`test_unowned_rules_survive_turn_off` retains simultaneous identical untagged
+TCP and foreign-comment UDP rules through public Turn off.
+`test_surviving_delete` covers successful CLI exits with a surviving exact rule,
+including foreign/action/log collisions: no removed/succeeded journal or audit,
+and Status retains cleanup intent.
+The `native_add` row of `test_failed_enable_rolls_back` likewise refuses READY
+when add exits zero without a persisted rule; the existing `journal_commit`
+row retains the later lost-commit rollback check.
+
+TASK-19599 adds `test_interrupted_no_effect_cleanup` for pending and all three
+no-effect skip states: crash immediately after the first cleanup journal write,
+fresh-owner cleanup twice, then Enable with UFW still absent. Pre-fix this
+boundary published `remove_intent`; fixed no-effect cleanup commits `removed`
+directly. `test_worker_posix_readback_lock` uses real distro lockf acquisition
+and release on a private file and an independent subprocess probe during fresh
+rule matching. `test_worker_lifetime` drives real helper/backend/supervisor/
+worker/descendant processes with a private blocking lock and harmless effect
+file: after helper/native timeout or a successful reply and custody release,
+unlocking cannot produce a late effect. `test_worker_deadline_after_lock`
+advances the native fixture clock across lock acquisition and requires refusal
+before any rule command. All spawned processes are reaped. These tests grant
+no live UFW effects.
+
+TASK-19580 extends this venue with a legacy READY refresh (the receipt has no
+firewall member), identical untagged TCP/UDP/both plus the retained foreign-rule
+case, crashes after either add and before READY followed by Enable/Turn off,
+and fresh-backend live Status after rule deletion/replacement, inactivity or
+unavailable UFW. The fixture compares all preserved rule fields and unchanged
+journal/audit bytes; real host rules-file and packet acceptance remain the
+founder's manual check (THR-327 seq749), not a VM or local-fixture pass. The F2
+table covers exact destination-IP formatting including unrelated management
+rules, a different address and an unresolved home-port interface. Missing
+public ports in JOB-9838 remain unresolved until raw transport evidence exists;
+the local READY refresh rejects the proposed txn-to-READY field-loss cause.
+Authoring fail/pass and byte-exact mutation restoration use this same venue.
+
+The existing F2 subprocess table and F3 native fixture assert the fixed
+`PATH=/usr/sbin:/usr/bin:/sbin:/bin` used by UFW and its sysctl child.
+`/usr/bin/python3 -B packaging/linux/test_build_deb.py -v` also checks the
+data-only `/usr/lib/tmpfiles.d/happyranch-ufw-lock.conf`, its root:root 0644
+archive metadata and md5sums entry. The existing installed-contract check
+retains main's exact `control`, `md5sums` and configure-only `postinst`
+contract in DEBIAN. `test_status_journal_without_ufw` additionally verifies
+backend per-port facts in both firewall and setup-status replies without a live
+UFW worker or journal/audit mutation. The mounted Status table additionally
+requires those facts when slow policy observation leaves no advice budget;
+the installed lane must still prove the full unchanged Status watchdog.
+
 F2 firewall fixtures and the real helper admission/status mount extend the
 existing standalone script selection:
 `PYTHONPATH=$PWD uv run --frozen --no-sync pytest scripts/test_home_activation_backend.py scripts/test_helper_mount.py -k thr327_firewall -q --tb=short`.
@@ -4385,6 +4449,15 @@ uses the existing standalone script venue with a disposable private dbus-daemon,
 a fake polkit Authority, and temporary Unix sockets. System Python needs the
 already-required python3-gi/Gio; tests load its fixed distribution library path.
 No host bus, installed polkit definition, service, or live Headscale is touched.
+`test_status_v2_optional_reader_preserves_legacy_fallback` covers slow invite
+and policy children that consume their remaining observation budget. F3 keeps
+main's invite/policy budgets: shortening them can deliver a detailed V2
+`runtime_unavailable` frame where main's unchanged watchdog expires and the
+native caller retains v1 `failed`. The test uses bounded disposable children
+and the real private-bus watchdog; it does not assert that the runtime is ready
+or repair the known post-upgrade refusal.
+The existing `test_no_secret_in_logs_or_replies` also preserves the refusal
+category when the internal setup snapshot carries optional firewall ports.
 Native authentication dialogs are NOT RUN. Slice 2b-2 below covers the real
 operation binding using the retained temporary-socket venue.
 The source policy/bus definitions are not installed or wired into the package.

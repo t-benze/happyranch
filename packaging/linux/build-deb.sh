@@ -183,6 +183,7 @@ with tempfile.TemporaryDirectory(prefix='happyranch-deb-') as temporary:
         ('systemd/happyranch-remote-access-helper.service', 'usr/lib/systemd/system/happyranch-remote-access-helper.service'),
         ('systemd/happyranch-remote-access-policy-renew.service', 'usr/lib/systemd/system/happyranch-remote-access-policy-renew.service'),
         ('systemd/happyranch-remote-access-policy-renew.timer', 'usr/lib/systemd/system/happyranch-remote-access-policy-renew.timer'),
+        ('tmpfiles.d/happyranch-ufw-lock.conf', 'usr/lib/tmpfiles.d/happyranch-ufw-lock.conf'),
     ):
         destination = stage / destination
         destination.parent.mkdir(parents=True, exist_ok=True)

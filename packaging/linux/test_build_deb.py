@@ -340,6 +340,11 @@ class NoticeCollectionTests(unittest.TestCase):
         goroot.mkdir(exist_ok=True)
         (goroot / 'LICENSE').write_text('synthetic Go notice\n')
         raw = '\n'.join(json.dumps(dict(Module=module)) for module in modules)
+        bridge = self.source / 'app/mac/tsnet-bridge'
+        bridge.mkdir(parents=True, exist_ok=True)
+        client_main = json.dumps(dict(Path='happyranch/tsnet-bridge', Main=True, Dir=str(bridge)))
+        client_vendor = {key: value for key, value in self.vendor.items() if key != 'Replace'}
+        client_raw = json.dumps(dict(Module=client_vendor))
         binary = payload / 'libexec/headscale/headscale'
         binary.parent.mkdir(parents=True)
         binary.write_bytes(b'synthetic Headscale for complete collector')
@@ -349,15 +354,33 @@ class NoticeCollectionTests(unittest.TestCase):
         original = json.dumps({key: self.vendor[key] for key in ('Path', 'Version', 'Sum', 'Dir')})
         toolchain = json.dumps(dict(Path='golang.org/toolchain', Version='v0.0.1-go1.23.4.linux-amd64',
                                     Sum='h1:toolchain', Dir=str(goroot)))
+        replies = {
+            ('go', 'list', '-buildvcs=false', '-mod=readonly', '-deps', '-json',
+             './cmd/happyranch-tsnet-sidecar'): raw,
+            ('go', 'env', 'GOROOT'): str(goroot),
+            ('go', 'list', '-m', '-json'): client_main,
+            ('go', 'list', '-buildvcs=false', '-mod=readonly', '-deps', '-json', '.'): client_raw,
+            ('go', 'version', '-m', str(binary)): headscale,
+            ('go', 'mod', 'download', '-json', 'example.com/vendor@v1.0.0'): original,
+            ('go', 'mod', 'download', '-json', 'golang.org/toolchain@v0.0.1-go1.23.4.linux-amd64'): toolchain,
+        }
+
+        def go_output(command: list[str], **kwargs: Any) -> str:
+            return replies[tuple(command)]
+
         with patch.object(sys, 'argv', ['collect-notices.py', str(self.source), str(payload)]), \
                 patch.dict(os.environ, GOMODCACHE=str(self.work / 'go-modules')), \
                 patch('importlib.metadata.distributions', return_value=[]), \
                 patch.dict(self.collector['main'].__globals__, headscale_pin=lambda: pin), \
-                patch('subprocess.check_output', side_effect=[raw, str(goroot), headscale, original, toolchain]):
+                patch('subprocess.check_output', side_effect=go_output):
             self.collector['main']()
         return payload / 'licenses'
 
     def test_local_health_excluded_and_external_original_retained(self) -> None:
+        # Observe both native graphs through the complete notice collector.
+        # Omitting collect_client_go must lose the client inventory/original.
+        # Client association tests do not exercise this top-level publication;
+        # synthetic Go replies require no test-only production seam.
         for version in ('v0.0.0', None):
             with self.subTest(version=version):
                 local = dict(self.local)
@@ -373,6 +396,11 @@ class NoticeCollectionTests(unittest.TestCase):
                 self.assertEqual((notices / 'HappyRanch-LICENSE').read_bytes(),
                                  (self.source / 'LICENSE').read_bytes())
                 self.assertTrue((notices / 'headscale-modules.json').is_file())
+                self.assertTrue((notices / 'client-go-modules.json').is_file())
+                self.assertEqual(json.loads((notices / 'client-go-modules.json').read_text()),
+                                 [{key: self.vendor[key] for key in ('Path', 'Version', 'Sum')}])
+                self.assertEqual((notices / 'client-go/example.com/vendor@v1.0.0/LICENSE').read_bytes(),
+                                 self.original)
                 self.assertEqual(json.loads((notices / 'headscale-modules.json').read_text()),
                                  [{key: self.vendor[key] for key in ('Path', 'Version', 'Sum')}])
                 self.assertEqual((notices / 'headscale/modules/example.com/vendor@v1.0.0/LICENSE').read_bytes(),
@@ -507,6 +535,8 @@ class DebPackageTests(unittest.TestCase):
             'ReadWritePaths=-/run/happyranch-headscale',
             'ReadWritePaths=-/run/happyranch-connector',
             'ReadWritePaths=-/run/happyranch-tsnet-sidecar',
+            "# UFW's mandatory lock, without making /run writable. Missing at start => skip.",
+            'ReadWritePaths=-/run/ufw.lock',
             'ReadWritePaths=-/opt/happyranch',
         ])
 
@@ -526,6 +556,29 @@ class DebPackageTests(unittest.TestCase):
     def test_helper_unit_reference_matches_shipped_bytes(self) -> None:
         self.assertEqual((BUILDER.parent / 'systemd/happyranch-remote-access-helper.service').read_bytes(),
                          self.helper_unit_reference())
+
+    def test_packaged_ufw_lock_tmpfiles(self) -> None:
+        # Contract: dpkg installs only data for the narrow boot-time UFW lock.
+        # Regression: omit the copy, change its path/metadata/type, or widen it
+        # to a directory grant. The installed-contract test owns DEBIAN contents
+        # but does not check this tmpfiles data. No test-only production seam.
+        expected = b'f /run/ufw.lock 0644 root root -\n'
+        destination = 'usr/lib/tmpfiles.d/happyranch-ufw-lock.conf'
+        result = self.build(self.payload('x86_64'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deb = self.work / 'dist/happyranch_0.1.0-1_amd64.deb'
+        data = subprocess.check_output(['dpkg-deb', '--fsys-tarfile', deb])
+        with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+            self.assertIn('./' + destination, archive.getnames())
+            member = archive.getmember('./' + destination)
+            self.assertTrue(member.isfile())
+            self.assertEqual((member.uname, member.gname, member.uid, member.gid, member.mode),
+                             ('root', 'root', 0, 0, 0o644))
+            self.assertEqual(archive.extractfile(member).read(), expected)
+        control = self.work / 'tmpfiles-control'
+        subprocess.run(['dpkg-deb', '-e', deb, control], check=True)
+        digest = hashlib.md5(expected, usedforsecurity=False).hexdigest()
+        self.assertIn(f'{digest}  {destination}', (control / 'md5sums').read_text().splitlines())
 
     def test_packaged_user_unit_directives(self) -> None:
         self.assertEqual(UNIT.read_text().splitlines(), [

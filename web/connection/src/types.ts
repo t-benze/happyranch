@@ -10,6 +10,9 @@ export type InviteState = 'none' | 'issued' | 'expired' | 'used' | 'unknown'
 export interface Device { label: string; comparisonPhrase: string | null }
 export interface Computer { computerRef: string; label: string }
 export interface HostSnapshot {
+  firewallPorts?: Record<'8443/tcp' | '3478/udp', 'added' | 'preexisting_not_owned' | 'blocked_by_existing'
+    | 'skipped_ufw_absent' | 'skipped_ufw_inactive' | 'skipped_ufw_lock_unavailable' | 'skipped_subnet_rejected'
+    | 'pending' | 'add_intent' | 'remove_intent' | 'removed' | 'unverified'>;
   firewallWarning?: 'likely_blocked' | 'unverified' | 'clear';
   setup: 'off' | 'pending' | 'ready' | 'paused' | 'failed' | 'unknown'
     | 'prepared_no_receipt' | 'failed_uncertain' | 'partial_cleanup' | 'runtime_unavailable' | 'setup_unverified' | 'renewal_failed';
